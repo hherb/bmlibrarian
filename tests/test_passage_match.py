@@ -2,19 +2,23 @@
 Tests for bmlibrarian.utils.passage_match.
 
 Covers whitespace/case normalisation with offset mapping, exact and fuzzy
-passage location, rejection of paraphrases and fabrications, input
-validation, and the performance bound that motivated the module (the old
-sliding-window matcher in CitationFinderAgent took ~30 s per citation on a
-1 kB abstract).
+passage location (including inserted and dropped words, text edges and
+repeated phrasing), rejection of paraphrases and fabrications, the result
+invariants, input validation, a seeded comparison against exhaustive search,
+and the performance bound that motivated the module (the old sliding-window
+matcher in CitationFinderAgent took ~30 s per citation on a 1 kB abstract).
 """
 
+import random
 import time
+from difflib import SequenceMatcher
 
 import pytest
 
 from bmlibrarian.utils.passage_match import (
     PassageMatch,
     find_passage,
+    fits_text,
     normalize_with_offsets,
 )
 
@@ -39,9 +43,16 @@ SENTENCES = [
 ABSTRACT = " ".join(SENTENCES)
 
 # Generous wall-clock bound for a fuzzy match on a ~10 kB text. The old
-# implementation would take hours here; the new one takes milliseconds.
+# implementation would take hours here; the new one takes well under 0.5 s.
 FUZZY_TIME_BUDGET_SECONDS = 2.0
 LONG_TEXT_REPEATS = 10
+
+# Seeded comparison against exhaustive search over word-boundary windows.
+PROPERTY_SEED = 20261017
+PROPERTY_TRIALS = 60
+PROPERTY_THRESHOLD = 0.95
+# Allowed shortfall of find_passage's score against the exhaustive best.
+PROPERTY_SCORE_TOLERANCE = 0.01
 
 
 class TestNormalizeWithOffsets:
@@ -128,6 +139,110 @@ class TestFuzzyMatch:
         assert "twice daily" in match.text
         assert match.text in ABSTRACT
 
+    def test_dropped_word_maps_to_full_source_sentence(self) -> None:
+        passage = SENTENCES[4].replace("a median follow-up", "a follow-up")
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        assert match.matched
+        assert match.text == SENTENCES[4]
+
+    def test_inserted_word_maps_to_source_sentence(self) -> None:
+        passage = SENTENCES[3].replace("major bleeding", "major clinical bleeding")
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        assert match.matched
+        assert match.text == SENTENCES[3]
+
+    def test_edit_in_first_word_of_text(self) -> None:
+        passage = SENTENCES[0].replace("Background:", "Backgruond:")
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        assert match.matched
+        assert match.start == 0
+        assert match.text == SENTENCES[0]
+
+    def test_edit_in_last_word_of_text(self) -> None:
+        passage = SENTENCES[6].replace("lower mortality.", "lower mortalty.")
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        assert match.matched
+        assert match.end == len(ABSTRACT)
+        assert match.text == SENTENCES[6]
+
+    def test_changed_final_punctuation_keeps_source_punctuation(self) -> None:
+        # Dropping the mismatched "." would score higher; spans end on word
+        # boundaries so the citation keeps the source's full last word.
+        passage = SENTENCES[5].replace("warfarin.", "warfarin;")
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        assert match.matched
+        assert match.text == SENTENCES[5]
+
+    def test_fuzzy_match_does_not_start_mid_number(self) -> None:
+        # "3% per year with apixaban" only occurs inside "2.13% per year ...";
+        # returning a span starting at "3%" would misquote the number.
+        match = find_passage("3% per ear; with apixaban", ABSTRACT, min_similarity=0.95)
+        assert not match.matched
+
+    def test_better_match_beats_location_with_more_seed_votes(self) -> None:
+        # The decoy repeats the passage's first 70% verbatim (more seed
+        # votes) but ends differently; the source has scattered typos
+        # (fewer votes) yet is the only span above the threshold.
+        passage = SENTENCES[4]
+        cut = int(len(passage) * 0.7)
+        decoy = passage[:cut] + " an unrelated ending about placebo recipients."
+        source = "".join(
+            "Q" if index % 22 == 6 and index < cut and char != " " else char
+            for index, char in enumerate(passage)
+        )
+        text = decoy + " Filler sentence about something else entirely. " + source
+        match = find_passage(passage, text, min_similarity=0.95)
+        assert match.matched
+        assert match.start == text.index(source)
+        assert match.text == source
+
+    def test_unicode_whitespace_in_source(self) -> None:
+        text = "Mortality was lower (p\u2009<\u20090.05) with\u00a0apixaban."
+        match = find_passage("(p < 0.05) with apixaban.", text, min_similarity=0.95)
+        assert match.exact
+        assert match.text == "(p\u2009<\u20090.05) with\u00a0apixaban."
+
+    def test_no_edge_whitespace_around_fuzzy_span(self) -> None:
+        text = "Intro.\n\nAspirin reduces the risk of heart attack in patients.\n\nOther."
+        match = find_passage(
+            "Aspirin reduces the risk of heart attack in patient.", text, min_similarity=0.95
+        )
+        assert match.matched
+        assert match.text == "Aspirin reduces the risk of heart attack in patients."
+
+    def test_threshold_is_inclusive(self) -> None:
+        # One substitution in 20 characters: ratio is exactly 38/40 = 0.95.
+        text = "xxxxx abcdefghij klmnopqrs yyyyy"
+        match = find_passage("abcdefghij klmnopqrZ", text, min_similarity=0.95)
+        assert match.similarity == pytest.approx(0.95)
+        assert match.matched
+        assert not find_passage("abcdefghij klmnopqrZ", text, min_similarity=0.951).matched
+
+    def test_fuzzy_match_is_not_exact(self) -> None:
+        passage = SENTENCES[4].replace("hazard ratio", "hazard-ratio")
+        assert not find_passage(passage, ABSTRACT, min_similarity=0.95).exact
+        assert find_passage(SENTENCES[4], ABSTRACT, min_similarity=0.95).exact
+
+    def test_long_passage_is_fast(self) -> None:
+        # The whole ~1 kB abstract, with two edits, against a ~10 kB text.
+        text = " ".join(
+            f"Section {i}. " + " ".join(SENTENCES) for i in range(LONG_TEXT_REPEATS)
+        )
+        passage = ABSTRACT.replace("twice daily", "twice-daily").replace("Major", "Majr")
+        started = time.perf_counter()
+        match = find_passage(passage, text, min_similarity=0.95)
+        elapsed = time.perf_counter() - started
+        assert match.matched
+        assert elapsed < FUZZY_TIME_BUDGET_SECONDS
+
+    def test_long_non_matching_passage_is_fast(self) -> None:
+        passage = " ".join(reversed(SENTENCES))
+        started = time.perf_counter()
+        match = find_passage(passage, ABSTRACT, min_similarity=0.95)
+        elapsed = time.perf_counter() - started
+        assert not match.matched
+        assert elapsed < FUZZY_TIME_BUDGET_SECONDS
+
     def test_long_text_is_fast(self) -> None:
         text = " ".join(
             f"Section {i}. " + " ".join(SENTENCES) for i in range(LONG_TEXT_REPEATS)
@@ -183,6 +298,114 @@ class TestRejection:
         match = find_passage(passage, text, min_similarity=0.95)
         assert match == PassageMatch(similarity=match.similarity)
         assert not match.matched
+
+    def test_passage_too_long_for_text_is_rejected_without_search(self) -> None:
+        match = find_passage(ABSTRACT, SENTENCES[5], min_similarity=0.95)
+        assert match == PassageMatch(similarity=0.0)
+
+
+class TestFitsText:
+    """fits_text() bounds the passage length that can reach the threshold."""
+
+    def test_bound(self) -> None:
+        # P <= T(2-s)/s: at s=0.5, a 30-char passage fits a 10-char text.
+        assert fits_text(30, 10, 0.5)
+        assert not fits_text(31, 10, 0.5)
+        assert fits_text(10, 10, 1.0)
+        assert not fits_text(11, 10, 1.0)
+
+
+class TestPassageMatchInvariants:
+    """PassageMatch rejects internally inconsistent values."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"similarity": 1.5},
+            {"similarity": -0.1},
+            {"similarity": 0.9, "start": 1, "end": 4},
+            {"similarity": 0.9, "text": "abc"},
+            {"similarity": 0.9, "start": 4, "end": 4, "text": ""},
+            {"similarity": 0.9, "start": 0, "end": 4, "text": "abc"},
+            {"similarity": 0.9, "exact": True},
+        ],
+    )
+    def test_inconsistent_values_raise(self, kwargs: dict) -> None:
+        with pytest.raises(ValueError):
+            PassageMatch(**kwargs)
+
+    def test_consistent_values(self) -> None:
+        assert PassageMatch(similarity=0.97, start=2, end=5, text="abc").matched
+        assert not PassageMatch(similarity=0.3).matched
+
+
+def _exhaustive_best(passage: str, text: str, min_similarity: float) -> float:
+    """Best similarity over every word-boundary window of admissible length."""
+    norm_passage, _ = normalize_with_offsets(passage)
+    norm_text, _ = normalize_with_offsets(text)
+    length = len(norm_passage)
+    starts = [
+        i for i in range(len(norm_text))
+        if norm_text[i] != " " and (i == 0 or norm_text[i - 1] == " ")
+    ]
+    ends = [
+        i for i in range(1, len(norm_text) + 1)
+        if norm_text[i - 1] != " " and (i == len(norm_text) or norm_text[i] == " ")
+    ]
+    shortest = length * min_similarity / (2 - min_similarity)
+    longest = length * (2 - min_similarity) / min_similarity
+    matcher = SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(norm_passage)
+    best = 0.0
+    for start in starts:
+        for end in ends:
+            if end - start < shortest:
+                continue
+            if end - start > longest:
+                break
+            matcher.set_seq1(norm_text[start:end])
+            if matcher.quick_ratio() > best:
+                best = max(best, matcher.ratio())
+    return best
+
+
+def _random_edits(passage: str, rng: random.Random) -> str:
+    """Apply 1-3 character or word insertions/deletions/substitutions."""
+    chars = list(passage)
+    for _ in range(rng.randint(1, 3)):
+        index = rng.randrange(len(chars))
+        operation = rng.choice(["substitute", "insert", "delete", "insert_word"])
+        if operation == "substitute":
+            chars[index] = rng.choice("abcdefghijklmnopqrstuvwxyz,;")
+        elif operation == "insert":
+            chars.insert(index, rng.choice("abcdefghijklmnopqrstuvwxyz"))
+        elif operation == "delete" and len(chars) > 2:
+            del chars[index]
+        else:
+            chars[index:index] = list(" clinical")
+    return "".join(chars)
+
+
+def test_matches_exhaustive_search_on_random_edits() -> None:
+    """Seeded property test: no missed matches, no wrong spans, near-best scores."""
+    rng = random.Random(PROPERTY_SEED)
+    for _ in range(PROPERTY_TRIALS):
+        sentences = SENTENCES[:]
+        rng.shuffle(sentences)
+        text = " ".join(sentences[:4])
+        word_starts = [0] + [i + 1 for i, char in enumerate(text) if char == " "]
+        start = rng.choice(word_starts[:-10])
+        source = text[start:start + rng.randint(40, 200)]
+        passage = _random_edits(source, rng)
+
+        best = _exhaustive_best(passage, text, PROPERTY_THRESHOLD)
+        match = find_passage(passage, text, PROPERTY_THRESHOLD)
+
+        assert match.matched == (best >= PROPERTY_THRESHOLD), passage
+        if match.matched:
+            assert text[match.start:match.end] == match.text
+            assert match.text == match.text.strip()
+            assert match.similarity >= best - PROPERTY_SCORE_TOLERANCE, passage
 
 
 class TestValidation:

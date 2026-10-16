@@ -13,21 +13,32 @@ between the normalised passage and the normalised candidate window. Text is
 normalised by lowercasing and collapsing whitespace; an offset map turns a
 window in normalised text back into an exact span of the original.
 
-Search strategy (bounded; cost grows roughly linearly with the text length
-and quadratically with the passage length — milliseconds for a sentence,
-~0.4 s for a 1 kB passage):
+Search strategy:
 
 1. Exact substring match of the normalised passage (similarity 1.0).
-2. Seed voting: the passage is cut into short non-overlapping seeds, each
+2. Size check: a passage longer than ``len(text) * (2-s)/s`` cannot reach
+   threshold ``s`` against any window, so it is rejected without a search.
+3. Seed voting: the passage is cut into short non-overlapping seeds, each
    seed's occurrences in the text vote for an alignment offset. A window
    scoring ``>= min_similarity`` contains at most ``2P(1-s)/s`` edit points,
    so with that many seeds plus one, at least one seed survives intact and
-   votes for the true location (for high thresholds such as 0.95; seed
-   length is floored at ``SEED_MIN_LENGTH``, so low thresholds are
-   best-effort).
-3. For the best-supported offsets, the window's start and end are refined
-   over nearby word boundaries, scoring each candidate with one cached
-   ``SequenceMatcher``.
+   votes for the true location. This holds for high thresholds such as 0.95,
+   provided that seed is not skipped as too common (more than
+   ``SEED_MAX_OCCURRENCES`` hits) and its location ranks among the
+   ``MAX_CANDIDATE_REGIONS`` best supported. Seed length is floored at
+   ``SEED_MIN_LENGTH``, so low thresholds are best-effort.
+4. For each candidate location, one ``SequenceMatcher`` alignment of the
+   passage against the surrounding text estimates where the passage starts
+   and ends; the window edges are then refined over the few word boundaries
+   near those estimates. This is a local search: the result is the best
+   window found, not a guaranteed global optimum.
+
+Cost is dominated by step 4: per candidate location, one alignment plus a
+bounded number of window scores (independent of the passage length), each a
+``SequenceMatcher`` comparison that costs quadratic or more in the passage
+length ``P``. The seed lookups are linear in the text length. Measured on
+prose: a sentence takes a few milliseconds, a 1 kB passage about 0.1 s, a
+2 kB passage up to about 2 s.
 """
 
 from __future__ import annotations
@@ -38,6 +49,7 @@ from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from itertools import accumulate
+from typing import Callable
 
 # Shortest seed used for voting; shorter seeds match almost anywhere.
 SEED_MIN_LENGTH = 4
@@ -47,6 +59,12 @@ SEED_MAX_OCCURRENCES = 64
 MAX_CANDIDATE_REGIONS = 5
 # Alternating start/end refinement passes per candidate location.
 REFINEMENT_PASSES = 2
+# Matching blocks shorter than this are ignored when estimating where the
+# passage starts and ends; short blocks also match stray text nearby.
+EDGE_BLOCK_MIN_LENGTH = 2 * SEED_MIN_LENGTH
+# Characters searched for word boundaries on either side of an estimated
+# window edge (a few words).
+EDGE_SEARCH_MARGIN = 16
 
 _SPACE = " "
 
@@ -55,19 +73,48 @@ _SPACE = " "
 class PassageMatch:
     """Result of :func:`find_passage`.
 
+    A match is either accepted (``start``, ``end`` and ``text`` all set) or
+    rejected (all three None); ``__post_init__`` enforces this.
+
     Attributes:
-        similarity: Best similarity found (1.0 for an exact match, 0.0 when no
-            candidate location was found at all). Reported even when the
-            match is rejected.
+        similarity: Best similarity found, in [0, 1]. 1.0 for a passage found
+            verbatim after normalisation; 0.0 when no candidate location was
+            found at all, or the passage is too long to reach the threshold
+            against the text. Reported even when the match is rejected.
         start: Start index of the matched span in the original text, or None.
         end: End index (exclusive) of the matched span, or None.
         text: ``original_text[start:end]`` when the match was accepted, else None.
+        exact: True when the normalised passage occurs verbatim in the
+            normalised text (only case and whitespace differ).
     """
 
     similarity: float
     start: int | None = None
     end: int | None = None
     text: str | None = None
+    exact: bool = False
+
+    def __post_init__(self) -> None:
+        """Reject internally inconsistent results.
+
+        Raises:
+            ValueError: If ``similarity`` is outside [0, 1], the span fields
+                are only partly set, the span is empty or inconsistent with
+                ``text``, or ``exact`` is set on a rejected match.
+        """
+        if not 0.0 <= self.similarity <= 1.0:
+            raise ValueError(f"similarity must be in [0, 1], got {self.similarity}")
+        span = (self.start, self.end, self.text)
+        if all(field is None for field in span):
+            if self.exact:
+                raise ValueError("a rejected match cannot be exact")
+            return
+        if self.start is None or self.end is None or self.text is None:
+            raise ValueError("start, end and text must be all set or all None")
+        if not 0 <= self.start < self.end or len(self.text) != self.end - self.start:
+            raise ValueError(
+                f"invalid span start={self.start} end={self.end} for {len(self.text)} chars"
+            )
 
     @property
     def matched(self) -> bool:
@@ -109,7 +156,11 @@ def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
 
 
 def find_passage(passage: str, text: str, min_similarity: float) -> PassageMatch:
-    """Find the span of ``text`` that best matches ``passage``.
+    """Find the best-scoring span of ``text`` it can locate for ``passage``.
+
+    An exact match (after normalisation) is returned as the raw source span
+    and may start or end mid-word; a fuzzy match starts and ends on word
+    boundaries (unless no boundary lies near an estimated edge).
 
     Args:
         passage: Passage to locate (e.g. an LLM's "verbatim" quote).
@@ -136,7 +187,11 @@ def find_passage(passage: str, text: str, min_similarity: float) -> PassageMatch
 
     exact_at = norm_text.find(norm_passage)
     if exact_at >= 0:
-        return _accepted(text, offsets, exact_at, exact_at + len(norm_passage), 1.0)
+        return _accepted(
+            text, offsets, exact_at, exact_at + len(norm_passage), 1.0, exact=True
+        )
+    if not fits_text(len(norm_passage), len(norm_text), min_similarity):
+        return PassageMatch(similarity=0.0)
 
     max_edits = max_edit_points(len(norm_passage), min_similarity)
     matcher = SequenceMatcher(None, autojunk=False)
@@ -145,7 +200,7 @@ def find_passage(passage: str, text: str, min_similarity: float) -> PassageMatch
     best_similarity, best_start, best_end = 0.0, 0, 0
     for anchor in _candidate_anchors(norm_passage, norm_text, max_edits):
         similarity, start, end = _refine_window(
-            matcher, norm_text, anchor, len(norm_passage), max_edits + 1
+            matcher, norm_text, anchor, len(norm_passage), max_edits + 1, min_similarity
         )
         if similarity > best_similarity:
             best_similarity, best_start, best_end = similarity, start, end
@@ -153,6 +208,24 @@ def find_passage(passage: str, text: str, min_similarity: float) -> PassageMatch
     if best_similarity >= min_similarity:
         return _accepted(text, offsets, best_start, best_end, best_similarity)
     return PassageMatch(similarity=best_similarity)
+
+
+def fits_text(passage_length: int, text_length: int, min_similarity: float) -> bool:
+    """Whether a passage this long could reach the threshold against the text.
+
+    A window ``W`` of the text matches at most ``W`` characters, so
+    ``ratio <= 2W / (P + W) <= 2T / (P + T)``; that bound reaches ``s`` only
+    when ``P <= T(2-s)/s``.
+
+    Args:
+        passage_length: Length of the normalised passage.
+        text_length: Length of the normalised text.
+        min_similarity: Acceptance threshold in (0, 1].
+
+    Returns:
+        False when no window of the text can score ``>= min_similarity``.
+    """
+    return passage_length * min_similarity <= text_length * (2 - min_similarity)
 
 
 def max_edit_points(passage_length: int, min_similarity: float) -> int:
@@ -182,8 +255,8 @@ def _candidate_anchors(passage: str, text: str, max_edits: int) -> list[int]:
         max_edits: Bound from :func:`max_edit_points`; also the clustering radius.
 
     Returns:
-        Up to ``MAX_CANDIDATE_REGIONS`` offsets (possibly negative or past the
-        end of ``text``), strongest first, more than ``max_edits`` apart.
+        Up to ``MAX_CANDIDATE_REGIONS`` offsets (possibly negative), strongest
+        first, more than ``max_edits`` apart.
     """
     seed_length = max(SEED_MIN_LENGTH, len(passage) // (max_edits + 1))
     votes: Counter[int] = Counter()
@@ -242,44 +315,134 @@ def _refine_window(
     anchor: int,
     passage_length: int,
     slack: int,
+    min_similarity: float,
 ) -> tuple[float, int, int]:
     """Choose the best-scoring window near an anchor offset.
 
-    Starts from ``[anchor, anchor + passage_length)`` and alternately moves the
-    start, then the end, to the best word boundary within ``slack``.
+    Aligns the passage against ``text`` around the anchor (``slack`` on either
+    side) to estimate where it starts and ends, then, starting from the word
+    boundaries nearest those estimates, alternately moves the start, then the
+    end, to the best nearby word boundary. Refinement is skipped when the
+    alignment matches too few characters for any window to reach
+    ``min_similarity``; the estimated window's score is then returned for
+    diagnostics.
 
     Args:
         matcher: SequenceMatcher with the normalised passage set as ``seq2``.
         text: Normalised text.
-        anchor: Candidate start offset (may lie outside ``text``).
+        anchor: Candidate start offset (may be negative).
         passage_length: Length of the normalised passage.
-        slack: Search radius around the initial start and end.
+        slack: Radius around the anchored window searched for the passage.
+        min_similarity: Acceptance threshold in (0, 1].
 
     Returns:
         ``(similarity, start, end)`` of the best window, in normalised indices.
     """
     length = len(text)
-    initial_start = min(max(anchor, 0), length - 1)
-    initial_end = min(max(anchor + passage_length, initial_start + 1), length)
-    start_candidates = _word_starts(text, initial_start - slack, initial_start + slack)
-    start_candidates.add(initial_start)
-    end_candidates = _word_ends(text, initial_end - slack, initial_end + slack)
-    end_candidates.add(initial_end)
-
-    best_start, best_end = initial_start, initial_end
+    starts, ends, aligned = _edge_estimates(matcher, text, anchor, passage_length, slack)
+    start_candidates = _near_boundaries(_word_starts, text, starts, 0, length - 1)
+    end_candidates = _near_boundaries(_word_ends, text, ends, 1, length)
+    best_start = _closest(start_candidates, starts[0])
+    viable_ends = [end for end in end_candidates if end > best_start]
+    best_end = _closest(viable_ends or [min(best_start + passage_length, length)], ends[1])
     best = _similarity(matcher, text, best_start, best_end, floor=-1.0)
+    # A window matching M characters scores at most 2M / (P + M). ``aligned``
+    # is difflib's count for the wider region (a heuristic, not the longest
+    # common subsequence), so this skips regions that are almost surely too
+    # dissimilar; the exhaustive-search test in test_passage_match guards it.
+    if 2 * aligned < min_similarity * (passage_length + aligned):
+        return best, best_start, best_end
     for _ in range(REFINEMENT_PASSES):
-        for start in sorted(start_candidates):
+        for start in start_candidates:
             if start < best_end:
                 score = _similarity(matcher, text, start, best_end, floor=best)
                 if score > best:
                     best, best_start = score, start
-        for end in sorted(end_candidates):
+        for end in end_candidates:
             if end > best_start:
                 score = _similarity(matcher, text, best_start, end, floor=best)
                 if score > best:
                     best, best_end = score, end
     return best, best_start, best_end
+
+
+def _near_boundaries(
+    boundaries: Callable[[str, int, int], set[int]],
+    text: str,
+    estimates: tuple[int, int],
+    lowest: int,
+    highest: int,
+) -> list[int]:
+    """Word boundaries within ``EDGE_SEARCH_MARGIN`` of either estimate.
+
+    Args:
+        boundaries: :func:`_word_starts` or :func:`_word_ends`.
+        text: Normalised text.
+        estimates: Low and high estimate of the edge.
+        lowest: Smallest valid edge index.
+        highest: Largest valid edge index.
+
+    Returns:
+        Sorted candidate edges; the clamped estimates themselves when no word
+        boundary lies near them (e.g. inside one very long token).
+    """
+    found: set[int] = set()
+    for estimate in estimates:
+        found |= boundaries(
+            text, estimate - EDGE_SEARCH_MARGIN, estimate + EDGE_SEARCH_MARGIN
+        )
+    if not found:
+        found = {min(max(estimate, lowest), highest) for estimate in estimates}
+    return sorted(found)
+
+
+def _closest(candidates: list[int], target: int) -> int:
+    """The candidate nearest ``target`` (the lower one on ties)."""
+    return min(candidates, key=lambda candidate: (abs(candidate - target), candidate))
+
+
+def _edge_estimates(
+    matcher: SequenceMatcher,
+    text: str,
+    anchor: int,
+    passage_length: int,
+    slack: int,
+) -> tuple[tuple[int, int], tuple[int, int], int]:
+    """Estimate where the passage starts and ends near an anchor.
+
+    The passage is aligned against ``text`` from ``slack`` before the anchor
+    to ``slack`` past the anchored end. Its start lies between where the
+    first substantial matching block begins and where the passage would begin
+    if its unmatched prefix were substitutions (inserted words put it at the
+    former, substituted ones at the latter); likewise for the end.
+
+    Args:
+        matcher: SequenceMatcher with the normalised passage set as ``seq2``.
+        text: Normalised text.
+        anchor: Candidate start offset (may be negative).
+        passage_length: Length of the normalised passage.
+        slack: Radius around the anchored window to align against.
+
+    Returns:
+        ``((start_low, start_high), (end_low, end_high), aligned)``: edge
+        estimates in normalised text indices (not clamped to the text; both
+        pairs are the anchored window edges when the alignment has no
+        substantial block), and the number of passage characters aligned.
+    """
+    low = max(anchor - slack, 0)
+    high = min(anchor + passage_length + slack, len(text))
+    matcher.set_seq1(text[low:high])
+    all_blocks = matcher.get_matching_blocks()
+    aligned = sum(block.size for block in all_blocks)
+    blocks = [block for block in all_blocks if block.size >= EDGE_BLOCK_MIN_LENGTH]
+    if not blocks:
+        anchored_end = anchor + passage_length
+        return (anchor, anchor), (anchored_end, anchored_end), aligned
+    first, last = blocks[0], blocks[-1]
+    first_at = low + first.a
+    last_end = low + last.a + last.size
+    unmatched_tail = passage_length - (last.b + last.size)
+    return (first_at - first.b, first_at), (last_end, last_end + unmatched_tail), aligned
 
 
 def _similarity(
@@ -323,7 +486,12 @@ def _word_ends(text: str, low: int, high: int) -> set[int]:
 
 
 def _accepted(
-    original: str, offsets: list[int], start: int, end: int, similarity: float
+    original: str,
+    offsets: list[int],
+    start: int,
+    end: int,
+    similarity: float,
+    exact: bool = False,
 ) -> PassageMatch:
     """Map a normalised window back onto the original text.
 
@@ -333,6 +501,7 @@ def _accepted(
         start: Window start in normalised indices.
         end: Window end (exclusive) in normalised indices; ``end > start``.
         similarity: Similarity of the window.
+        exact: Whether the window is a verbatim (normalised) match.
 
     Returns:
         An accepted :class:`PassageMatch` spanning whole original characters.
@@ -348,4 +517,5 @@ def _accepted(
         start=original_start,
         end=original_end,
         text=original[original_start:original_end],
+        exact=exact,
     )

@@ -7,6 +7,7 @@ that answer user questions, building a queue of verifiable citations.
 
 import json
 import logging
+import math
 from typing import Dict, List, Optional, Any, Iterator, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,13 +15,45 @@ import psycopg
 
 from .base import BaseAgent
 from .queue_manager import TaskPriority, TaskStatus
-from ..utils.passage_match import find_passage
+from ..utils.passage_match import PassageMatch, find_passage
 
 logger = logging.getLogger(__name__)
 
 # Minimum similarity between the LLM's "verbatim" passage and the abstract
 # span it is matched to; below this the passage is treated as a paraphrase.
 CITATION_MIN_SIMILARITY = 0.95
+
+# Why an LLM citation response was rejected (logged, and recorded in
+# ``failed_citations`` when the final attempt fails). All are retried.
+REJECT_NOT_JSON_OBJECT = "response is not a JSON object"
+REJECT_BAD_RELEVANCE = "relevance_score is not a number"
+REJECT_PASSAGE_NOT_TEXT = "passage is missing or not text"
+REJECT_PASSAGE_EMPTY = "passage is empty"
+REJECT_PASSAGE_NOT_FOUND = "passage not found in abstract"
+REJECT_BELOW_THRESHOLD = "passage similarity below threshold"
+REJECT_MISSING_SUMMARY = "summary is missing or not text"
+
+# Characters of a rejected LLM passage kept in failed_citations / in logs.
+FAILED_PASSAGE_STORED_CHARS = 200
+FAILED_PASSAGE_LOGGED_CHARS = 100
+
+
+def _as_relevance(value: Any) -> Optional[float]:
+    """Parse an LLM relevance score.
+
+    Args:
+        value: Raw ``relevance_score`` from the LLM response.
+
+    Returns:
+        The score as a finite float, or None if it is not a number.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return score if math.isfinite(score) else None
 
 
 @dataclass
@@ -43,6 +76,25 @@ class Citation:
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class _ResponseCheck:
+    """Outcome of checking one LLM citation response against the abstract.
+
+    Exactly one of three cases: ``irrelevant`` (the LLM found nothing relevant
+    enough; stop without retrying), ``failure`` set (reject and retry), or
+    accepted: ``passage`` holds the abstract's own text for the matched span,
+    with the response's ``summary`` and ``relevance_score``.
+    """
+
+    irrelevant: bool = False
+    failure: Optional[str] = None
+    match: PassageMatch = PassageMatch(similarity=0.0)
+    llm_passage: str = ""
+    passage: str = ""
+    relevance_score: float = 0.0
+    summary: str = ""
 
 
 class CitationFinderAgent(BaseAgent):
@@ -102,12 +154,13 @@ class CitationFinderAgent(BaseAgent):
             logger.info(f"CitationAgent initialized with evaluator_id={self._evaluator_id}")
 
         # Initialize validation statistics tracking
-        self._validation_stats = {
+        self._validation_stats: Dict[str, Any] = {
             'total_extractions': 0,
             'validations_passed': 0,
             'validations_failed': 0,
             'exact_matches': 0,
             'fuzzy_matches': 0,
+            'errors': 0,
             'failed_citations': []
         }
 
@@ -120,7 +173,7 @@ class CitationFinderAgent(BaseAgent):
         llm_passage: str,
         abstract: str,
         min_similarity: float = CITATION_MIN_SIMILARITY
-    ) -> tuple[bool, float, Optional[str]]:
+    ) -> PassageMatch:
         """
         Verify citation passage exists in abstract and extract exact matching text.
 
@@ -132,23 +185,108 @@ class CitationFinderAgent(BaseAgent):
         Args:
             llm_passage: Text extracted by LLM (may be modified/paraphrased)
             abstract: Source abstract to search
-            min_similarity: Minimum similarity threshold (0.0-1.0]
+            min_similarity: Acceptance threshold in (0, 1]; default
+                ``CITATION_MIN_SIMILARITY``.
 
         Returns:
-            (is_valid, similarity_score, exact_text_from_abstract)
-            - is_valid: Whether a good match was found
-            - similarity_score: Best match similarity (1.0 = perfect)
-            - exact_text_from_abstract: The actual text from abstract (None if invalid)
+            The :class:`PassageMatch`. ``matched`` tells whether the passage was
+            accepted, ``text`` holds the abstract's own wording of the matched
+            span, and ``exact`` is True when only case and whitespace differed.
         """
         match = find_passage(llm_passage, abstract, min_similarity)
         if match.text is not None:
             logger.debug(
-                f"Found {'exact' if match.similarity == 1.0 else 'fuzzy'} match in "
-                f"abstract (similarity={match.similarity:.3f}, {len(match.text)} chars)"
+                f"Found {'exact' if match.exact else 'fuzzy'} match in abstract "
+                f"(similarity={match.similarity:.3f}, {len(match.text)} chars)"
             )
         else:
             logger.debug(f"No valid match found (best similarity={match.similarity:.3f})")
-        return match.matched, match.similarity, match.text
+        return match
+
+    def _check_response(
+        self,
+        citation_data: Any,
+        abstract: str,
+        min_relevance: float,
+        min_similarity: float,
+    ) -> _ResponseCheck:
+        """
+        Check an LLM citation response and verify its passage against the abstract.
+
+        Args:
+            citation_data: Parsed JSON response from the LLM.
+            abstract: Source abstract the passage must come from.
+            min_relevance: Minimum relevance score to accept a citation.
+            min_similarity: Passage acceptance threshold in (0, 1].
+
+        Returns:
+            A :class:`_ResponseCheck`: irrelevant, rejected with a reason
+            (``REJECT_*``), or accepted with the matched abstract span.
+        """
+        if not isinstance(citation_data, dict):
+            return _ResponseCheck(
+                failure=REJECT_NOT_JSON_OBJECT, llm_passage=repr(citation_data)
+            )
+        if not citation_data.get('has_relevant_content', False):
+            return _ResponseCheck(irrelevant=True)
+
+        raw_passage = citation_data.get('relevant_passage')
+        llm_passage = raw_passage if isinstance(raw_passage, str) else repr(raw_passage)
+        relevance_score = _as_relevance(citation_data.get('relevance_score', 0.0))
+        if relevance_score is None:
+            return _ResponseCheck(failure=REJECT_BAD_RELEVANCE, llm_passage=llm_passage)
+        if relevance_score < min_relevance:
+            logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
+            return _ResponseCheck(irrelevant=True)
+
+        if not isinstance(raw_passage, str):
+            return _ResponseCheck(failure=REJECT_PASSAGE_NOT_TEXT, llm_passage=llm_passage)
+        if not raw_passage.strip():
+            return _ResponseCheck(failure=REJECT_PASSAGE_EMPTY, llm_passage=llm_passage)
+
+        match = self._validate_and_extract_exact_match(raw_passage, abstract, min_similarity)
+        if match.text is None:
+            # 0.0 means no candidate span at all, not a near miss.
+            reason = REJECT_PASSAGE_NOT_FOUND if match.similarity == 0.0 else REJECT_BELOW_THRESHOLD
+            return _ResponseCheck(failure=reason, match=match, llm_passage=llm_passage)
+
+        summary = citation_data.get('summary')
+        if not isinstance(summary, str):
+            return _ResponseCheck(
+                failure=REJECT_MISSING_SUMMARY, match=match, llm_passage=llm_passage
+            )
+        return _ResponseCheck(
+            match=match,
+            llm_passage=llm_passage,
+            passage=match.text,
+            relevance_score=relevance_score,
+            summary=summary,
+        )
+
+    def _extraction_summary(
+        self, extracted: int, documents: int, failed_before: int, errors_before: int
+    ) -> str:
+        """
+        Describe a batch extraction, including rejected passages and errors.
+
+        Args:
+            extracted: Citations extracted in this batch.
+            documents: Documents processed in this batch.
+            failed_before: ``validations_failed`` before the batch started.
+            errors_before: ``errors`` before the batch started.
+
+        Returns:
+            A one-line summary for logs and progress callbacks.
+        """
+        summary = f"Extracted {extracted} citations from {documents} documents"
+        rejected = self._validation_stats['validations_failed'] - failed_before
+        errors = self._validation_stats['errors'] - errors_before
+        notes = []
+        if rejected:
+            notes.append(f"{rejected} rejected: passage could not be verified in the abstract")
+        if errors:
+            notes.append(f"{errors} failed with an error, see log")
+        return f"{summary} ({'; '.join(notes)})" if notes else summary
 
     def get_validation_stats(self) -> Dict[str, Any]:
         """Get citation validation statistics."""
@@ -186,9 +324,11 @@ class CitationFinderAgent(BaseAgent):
         abstract = document.get('abstract', '')
         title = document.get('title', 'Untitled')
 
-        if not abstract:
-            logger.warning(f"No abstract found for document {doc_id}")
+        if not isinstance(abstract, str) or not abstract.strip():
+            logger.warning(f"No abstract text found for document {doc_id}")
             return None
+
+        min_similarity = CITATION_MIN_SIMILARITY
 
         # Retry loop: initial attempt + retries
         for attempt in range(self.max_retries + 1):
@@ -255,31 +395,19 @@ Respond only with valid JSON."""
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 
-                # Check if relevant content was found
-                if not citation_data.get('has_relevant_content', False):
+                check = self._check_response(
+                    citation_data, abstract, min_relevance, min_similarity
+                )
+                if check.irrelevant:
                     return None
 
-                relevance_score = float(citation_data.get('relevance_score', 0.0))
-                if relevance_score < min_relevance:
-                    logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
-                    return None
-
-                # VALIDATE citation text and extract exact match from abstract
-                # A missing or non-text passage is a failed validation (retried),
-                # not an unexpected error.
-                llm_passage = citation_data.get('relevant_passage')
-                if isinstance(llm_passage, str):
-                    is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
-                        llm_passage,
-                        abstract
-                    )
-                else:
-                    llm_passage = repr(llm_passage)
-                    is_valid, similarity, exact_text = False, 0.0, None
-
-                if not is_valid:
+                if check.failure is not None:
                     # Validation failed - check if we should retry
                     is_final_attempt = (attempt == self.max_retries)
+                    detail = (
+                        f"{check.failure} (similarity={check.match.similarity:.3f}, "
+                        f"threshold={min_similarity})"
+                    )
 
                     if is_final_attempt:
                         # Final attempt failed - track statistics and reject
@@ -287,38 +415,40 @@ Respond only with valid JSON."""
                         self._validation_stats['validations_failed'] += 1
                         self._validation_stats['failed_citations'].append({
                             'document_id': doc_id,
-                            'similarity': similarity,
-                            'llm_passage': llm_passage[:200],
+                            'reason': check.failure,
+                            'similarity': check.match.similarity,
+                            'llm_passage': check.llm_passage[:FAILED_PASSAGE_STORED_CHARS],
                             'question': user_question,
                             'attempts': attempt + 1
                         })
 
                         logger.warning(
-                            f"🚫 CITATION VALIDATION FAILED (document {doc_id}): "
-                            f"similarity={similarity:.3f} < threshold={CITATION_MIN_SIMILARITY}. "
+                            f"🚫 CITATION VALIDATION FAILED (document {doc_id}): {detail}. "
                             f"All {self.max_retries + 1} attempts exhausted. REJECTING. "
-                            f"LLM output: {llm_passage[:100]}..."
+                            f"LLM output: {check.llm_passage[:FAILED_PASSAGE_LOGGED_CHARS]}..."
                         )
                         return None
                     else:
                         # Not final attempt - log and retry
                         logger.warning(
                             f"⚠️  CITATION VALIDATION FAILED (document {doc_id}, attempt {attempt + 1}): "
-                            f"similarity={similarity:.3f} < threshold={CITATION_MIN_SIMILARITY}. "
-                            f"Will retry ({self.max_retries - attempt} attempts remaining)..."
+                            f"{detail}. Will retry ({self.max_retries - attempt} attempts remaining)..."
                         )
                         continue  # Retry
 
                 # Validation succeeded! Track statistics and return citation
+                match = check.match
                 self._validation_stats['total_extractions'] += 1
                 self._validation_stats['validations_passed'] += 1
 
-                if similarity == 1.0:
+                if match.exact:
                     self._validation_stats['exact_matches'] += 1
                 else:
                     self._validation_stats['fuzzy_matches'] += 1
+                if match.text != check.llm_passage:
                     logger.info(
-                        f"✓ Citation fuzzy-matched (similarity={similarity:.3f}). "
+                        f"✓ Citation {'exact' if match.exact else 'fuzzy'}-matched "
+                        f"(similarity={match.similarity:.3f}). "
                         f"Replaced LLM text with exact abstract text (doc {doc_id})"
                     )
 
@@ -331,9 +461,9 @@ Respond only with valid JSON."""
 
                 # Create citation with EXACT text from abstract (not LLM-generated)
                 citation = Citation(
-                    passage=exact_text,  # ← Use extracted exact text, not LLM's version!
-                    summary=citation_data['summary'],
-                    relevance_score=relevance_score,
+                    passage=check.passage,  # ← Use extracted exact text, not LLM's version!
+                    summary=check.summary,
+                    relevance_score=check.relevance_score,
                     document_id=str(document['id']),  # Ensure string format
                     document_title=title,
                     authors=document.get('authors', []),
@@ -346,8 +476,12 @@ Respond only with valid JSON."""
 
                 return citation
 
-            except Exception as e:
-                logger.error(f"Error extracting citation from document {doc_id} (attempt {attempt + 1}): {e}")
+            except Exception:
+                self._validation_stats['errors'] += 1
+                logger.exception(
+                    f"Unexpected error extracting citation from document {doc_id} "
+                    f"(attempt {attempt + 1})"
+                )
                 # Don't retry on unexpected exceptions
                 return None
 
@@ -375,7 +509,7 @@ Respond only with valid JSON."""
         Returns:
             List of extracted citations
         """
-        citations = []
+        citations: List[Citation] = []
         qualifying_docs = [
             (doc, score) for doc, score in scored_documents
             if score.get('score', 0) >= score_threshold
@@ -386,6 +520,8 @@ Respond only with valid JSON."""
             return citations
 
         logger.info(f"Processing {len(qualifying_docs)} documents at or above threshold {score_threshold}")
+        failed_before = self._validation_stats['validations_failed']
+        errors_before = self._validation_stats['errors']
 
         for i, (document, score_result) in enumerate(qualifying_docs):
             # Call progress callback with document title
@@ -403,7 +539,11 @@ Respond only with valid JSON."""
                 citations.append(citation)
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
 
-        logger.info(f"Extracted {len(citations)} citations from {len(qualifying_docs)} documents")
+        summary = self._extraction_summary(
+            len(citations), len(qualifying_docs), failed_before, errors_before
+        )
+        logger.info(summary)
+        self._call_callback("citation_extraction_completed", summary)
         return citations
     
     def submit_citation_extraction_tasks(self, user_question: str,
@@ -748,6 +888,8 @@ Respond only with valid JSON."""
             return []
 
         results = []
+        failed_before = self._validation_stats['validations_failed']
+        errors_before = self._validation_stats['errors']
         self._call_callback("citation_extraction_started", f"Extracting citations from {len(qualifying_docs)} documents")
 
         for i, (doc, score_result, scoring_id) in enumerate(qualifying_docs):
@@ -788,15 +930,18 @@ Respond only with valid JSON."""
                 if progress_callback:
                     progress_callback(i + 1, len(qualifying_docs))
 
-            except Exception as e:
-                logger.error(f"Failed to extract citation from document {i+1}: {e}")
+            except Exception:
+                self._validation_stats['errors'] += 1
+                logger.exception(f"Failed to extract citation from document {i+1}")
                 # Continue with other documents
                 continue
 
         total_extracted = len(results)
         self._call_callback(
             "citation_extraction_completed",
-            f"Extracted {total_extracted} citations from {len(qualifying_docs)} documents"
+            self._extraction_summary(
+                total_extracted, len(qualifying_docs), failed_before, errors_before
+            )
         )
 
         logger.info(f"Extracted {total_extracted} citations with audit tracking")
