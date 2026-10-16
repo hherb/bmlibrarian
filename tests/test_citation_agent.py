@@ -188,6 +188,8 @@ class TestCitationFinderAgent(unittest.TestCase):
             # Should process only 2 documents above threshold 3.0
             # extract_citation_from_document should be called twice
             self.assertEqual(self.agent.extract_citation_from_document.call_count, 2)
+            # Every extraction returned None, so no citations are collected
+            self.assertEqual(citations, [])
     
     def test_submit_citation_extraction_tasks(self):
         """Test submitting citation tasks to queue."""
