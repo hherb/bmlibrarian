@@ -51,7 +51,7 @@ This makes BMLibrarian uniquely valuable for healthcare workers in remote region
 ### Multiple Search Strategies with AI Assistance
 
 BMLibrarian employs sophisticated multi-strategy search capabilities:
-- **Multi-model query generation**: Use multiple AI models to generate diverse database queries
+- **Multi-model query generation**: Use multiple AI models to generate diverse database queries *(not currently wired into any app — see ROADMAP §1)*
 - **Semantic search**: Vector-based similarity search using document embeddings
 - **HyDE (Hypothetical Document Embeddings)**: Generate hypothetical answers to improve search relevance
 - **Keyword extraction**: Traditional keyword-based search as fallback
@@ -194,7 +194,7 @@ A markdown editor with integrated citation management for academic writing.
 - **Transparency Assessment**: Detect undisclosed bias risk by evaluating funding disclosure, COI statements, data availability, trial registration, and author contributions (CLI, Lab GUI, bulk metadata enrichment)
 - **PaperChecker System**: Fact-check medical abstracts by searching for contradictory literature evidence
 - **Fact Checker System**: LLM training data auditing with literature validation (CLI, desktop GUI, blind mode, incremental mode, SQLite integration)
-- **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
+- **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents *(not currently wired into any app — see ROADMAP §1)*
 - **Semantic Chunking**: Multiple chunking strategies (adaptive, sentence-based, SpaCy NLP) with vector embeddings for improved retrieval
 - **LLM Provider Abstraction**: Unified interface across multiple LLM providers with token tracking
 - **Thesaurus/MeSH Expansion**: Term expansion and synonym lookup for improved search coverage
@@ -297,11 +297,10 @@ The **BMLibrarian Fact Checker** is a specialized tool for auditing biomedical s
 - **Interactive human review** with statement-by-statement navigation
 - **Blind mode** - hide AI evaluations to prevent bias during human annotation
 - **Incremental mode** - filter to show only unannotated statements for efficient review
-- **Database integration** - automatic SQLite database creation from JSON files
-- **Intelligent merging** - import new statements without overwriting existing annotations
+- **Database integration** - PostgreSQL `factcheck` schema by default, or a portable SQLite review package (`--db-file`, created with `scripts/export_review_package.py`)
 - **Citation inspection** - expandable cards with full abstracts and highlighted passages
 - **Multi-user support** - track annotations by different reviewers
-- **Export functionality** - save human-annotated results for analysis
+- **Export functionality** - export human annotations from a review package to JSON with `scripts/export_human_evaluations.py`
 
 ### Use Cases
 
@@ -313,34 +312,32 @@ The **BMLibrarian Fact Checker** is a specialized tool for auditing biomedical s
 
 ### Database Workflow
 
-The fact checker uses SQLite databases for persistent storage:
+The fact checker stores everything in the PostgreSQL `factcheck` schema:
 
-1. **First run with JSON**: Creates `.db` file alongside input JSON (e.g., `results.json` → `results.db`)
-2. **Subsequent runs**: Intelligently merges new statements from JSON without overwriting existing evaluations/annotations
-3. **Real-time persistence**: All AI evaluations and human annotations saved immediately to database
-4. **Incremental processing**: Skip already-evaluated statements with `--incremental` flag
-5. **Cross-tool compatibility**: CLI and GUI share the same database format
+1. **Real-time persistence**: All AI evaluations and human annotations saved immediately to the database
+2. **Incremental processing**: Skip already-evaluated statements with `--incremental` flag
+3. **Cross-tool compatibility**: CLI and review GUI share the same schema
+4. **Offline review**: `scripts/export_review_package.py` exports a self-contained SQLite package that reviewers open with `fact_checker_review_gui.py --db-file`
 
 ### Example Workflow
 
 ```bash
-# Step 1: Generate fact-check results from statements
+# Step 1: Generate fact-check results from statements (stored in PostgreSQL)
 uv run python fact_checker_cli.py statements.json -o results.json
-# Creates: results.json (JSON output) and results.db (SQLite database)
 
 # Step 2: Review with GUI in blind mode (no AI bias)
-uv run python fact_checker_review_gui.py --input-file results.db --blind --user alice
+uv run python fact_checker_review_gui.py --blind --user alice
 # Human reviewer annotates statements without seeing AI evaluations
 
 # Step 3: Review remaining statements in normal mode
-uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice
+uv run python fact_checker_review_gui.py --incremental --user alice
 # Shows only statements not yet annotated by alice
 
-# Step 4: Export annotated results
-# Use GUI "Save Reviews" button → results_annotated.json
-
-# Step 5: Analyze results
-uv run python analyze_factcheck_progress.py results_annotated.json
+# Optional: distribute an offline SQLite review package to an external reviewer
+uv run python scripts/export_review_package.py --output review_package.db --exported-by alice
+uv run python fact_checker_review_gui.py --db-file review_package.db --user bob
+uv run python scripts/export_human_evaluations.py --db-file review_package.db --annotator bob -o bob.json
+uv run python scripts/import_human_evaluations.py bob.json
 ```
 
 ## PaperChecker System
@@ -364,7 +361,7 @@ The **BMLibrarian PaperChecker** is a sophisticated fact-checking system for med
 - **Markdown export** for detailed reports per abstract
 - **Database persistence** in PostgreSQL `papercheck` schema
 
-#### Laboratory GUI (`paper_checker_lab.py`)
+#### Laboratory GUI (`scripts/paper_checker_lab.py`)
 - **Interactive testing** with step-by-step workflow visualization
 - **Real-time progress** showing each processing stage
 - **Results inspection** for all intermediate outputs
@@ -394,7 +391,7 @@ uv run python paper_checker_cli.py --pmid 12345678 23456789
 uv run python paper_checker_cli.py abstracts.json --quick
 
 # Interactive laboratory
-uv run python paper_checker_lab.py
+uv run python scripts/paper_checker_lab.py
 ```
 
 ### Documentation
@@ -422,7 +419,7 @@ The **Paper Weight Assessment** system evaluates the evidential strength of biom
 
 ```bash
 # Launch the Paper Weight Laboratory (GUI)
-uv run python paper_weight_lab.py
+uv run python scripts/paper_weight_lab.py
 
 # Features:
 # - Search documents by PMID, DOI, or title
@@ -464,7 +461,7 @@ print(f"Confidence: {extraction.extraction_confidence:.1%}")
 
 ```bash
 # Interactive PICO Laboratory
-uv run python pico_lab.py
+uv run python scripts/pico_lab.py
 
 # Batch process documents
 # Export to CSV for systematic review tools (Covidence, DistillerSR)
@@ -506,7 +503,7 @@ The **PRISMA 2020 Agent** assesses systematic reviews and meta-analyses against 
 
 ```bash
 # Launch the PRISMA 2020 Laboratory (GUI)
-uv run python prisma2020_lab.py
+uv run python scripts/prisma2020_lab.py
 
 # Features:
 # - Automatic suitability screening
@@ -542,8 +539,8 @@ The **Document Interrogation** interface provides an interactive chat experience
 ### Example Usage
 
 ```bash
-# Launch the Configuration GUI (includes Document Interrogation tab)
-uv run python bmlibrarian_config_gui.py
+# Launch the Qt GUI (includes the Document Interrogation tab)
+uv run python bmlibrarian_qt.py
 
 # Workflow:
 # 1. Navigate to "Document Interrogation" tab
@@ -651,7 +648,7 @@ uv run python -c "from bmlibrarian.discovery import download_pdf_for_document; .
 - **Browser-Based Downloader**: Playwright automation for Cloudflare-protected PDFs (optional)
 
 ### Advanced Analytics
-- **Multi-Model Query Generation**: Use multiple AI models (up to 3) to generate diverse database queries for 20-40% improved document retrieval
+- **Multi-Model Query Generation**: Use multiple AI models (up to 3) to generate diverse database queries for 20-40% improved document retrieval *(not currently wired into any app — see ROADMAP §1)*
 - **Query Performance Tracking**: Real-time analysis of which models and parameters find the most relevant documents
 - **Counterfactual Analysis**: Systematic search for contradictory evidence with progressive audit trail
 - **Evidence Strength Assessment**: Quality evaluation with citation validation and rejection reasoning
@@ -727,25 +724,21 @@ uv run python bmlibrarian_cli.py --auto "What are the cardiovascular benefits of
 
 #### Desktop Research Application
 ```bash
-# Launch the GUI research application
-uv run python bmlibrarian_research_gui.py
+# Launch the Qt GUI and open the Research tab
+uv run python bmlibrarian_qt.py
 
 # Features:
-# - Visual workflow progress with collapsible step cards
+# - Sub-tabs for each workflow stage: Search, Literature, Scoring, Citations,
+#   Preliminary report, Counterfactual analysis, Report
 # - Real-time agent execution with model configuration
-# - Multi-model query generation with smart pagination and result tracking
-# - Query performance statistics showing model effectiveness
-# - Progressive counterfactual audit trail showing claims, queries, searches, and results
-# - Formatted markdown report preview with scrolling
-# - Direct file save functionality
-# - Complete transparency into citation validation and rejection reasoning
-# - Automatic audit trail persistence to PostgreSQL database
+# - Formatted markdown report preview
+# - Save the final report as Markdown or export it as JSON
 ```
 
 #### Configuration GUI
 ```bash
-# Launch the configuration interface
-uv run python bmlibrarian_config_gui.py
+# Launch the Qt GUI and open the Configuration (or Settings) tab
+uv run python bmlibrarian_qt.py
 
 # Configure agents, models, and parameters through GUI:
 # - Model selection with live refresh from Ollama
@@ -794,30 +787,26 @@ uv run python examples/fact_checker_demo.py
 
 #### Fact-Checker Review GUI
 ```bash
-# Human review and annotation of fact-checking results
+# Human review and annotation of fact-checking results (PostgreSQL factcheck schema)
 uv run python fact_checker_review_gui.py
 
-# Load JSON file (auto-creates SQLite database for annotations)
-uv run python fact_checker_review_gui.py --input-file results.json
-
-# Load existing database directly
-uv run python fact_checker_review_gui.py --input-file results.db
+# Review an offline SQLite package (created with scripts/export_review_package.py)
+uv run python fact_checker_review_gui.py --db-file review_package.db --user alice
 
 # BLIND MODE - hide AI evaluations to prevent annotation bias
-uv run python fact_checker_review_gui.py --input-file results.db --blind --user alice
+uv run python fact_checker_review_gui.py --blind --user alice
 # Perfect for unbiased human annotation without AI influence
 
 # INCREMENTAL MODE - show only unannotated statements
-uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice
+uv run python fact_checker_review_gui.py --incremental --user alice
 # Efficiently review only statements you haven't annotated yet
 
 # Multi-user workflow with user tracking
-uv run python fact_checker_review_gui.py --input-file results.db --user bob
+uv run python fact_checker_review_gui.py --user bob
 # Track annotations by different reviewers
 
 # Features:
-# - Automatic SQLite database creation from JSON files
-# - Intelligent merging: import new statements without overwriting existing annotations
+# - PostgreSQL by default, or a self-contained SQLite review package via --db-file
 # - Real-time persistence: all annotations saved immediately to database
 # - Statement-by-statement review with progress tracking
 # - Compare original, AI, and human annotations side-by-side
@@ -826,7 +815,7 @@ uv run python fact_checker_review_gui.py --input-file results.db --user bob
 # - Blind mode for unbiased annotation (hide AI evaluations)
 # - Incremental mode for efficient review (filter unannotated statements)
 # - Multi-user support with annotator metadata
-# - Export reviewed annotations to JSON file
+# - Export annotations from a review package to JSON with scripts/export_human_evaluations.py
 # - Perfect for quality control and training data validation
 ```
 
@@ -948,32 +937,28 @@ The fact-checking command-line tool (`fact_checker_cli.py`) provides:
 - **Detailed output** - comprehensive metadata, statistics, and evidence lists
 
 ### Fact-Checker Review GUI
-The human review desktop application (`fact_checker_review_gui.py`) provides:
+The human review desktop application (`fact_checker_review_gui.py`, PySide6/Qt; also available as the "Fact Checker" tab of `bmlibrarian_qt.py`) provides:
 - **Interactive review interface** with statement-by-statement navigation
 - **Blind mode** - hide AI evaluations to prevent annotation bias for unbiased human judgments
 - **Incremental mode** - filter to show only unannotated statements for efficient review
-- **Database integration** - automatic SQLite database creation and intelligent JSON import/merge
+- **Database integration** - PostgreSQL `factcheck` schema, or a self-contained SQLite review package (`--db-file`, created with `scripts/export_review_package.py`)
 - **Citation inspection** - expandable cards with full abstracts and highlighted passages
 - **Multi-user support** - track annotations by different reviewers with metadata
 - **Comparison view** - see original annotations, AI evaluations, and human annotations side-by-side
 - **Real-time persistence** - all annotations saved immediately to database
-- **Export functionality** - save human-annotated results to JSON for analysis
+- **Export functionality** - export human annotations from a review package to JSON with `scripts/export_human_evaluations.py`
 - **Quality control** - perfect for training data validation and model evaluation
 
 ### Desktop Research Application
-The GUI research application (`bmlibrarian_research_gui.py`) offers:
+The Research tab of the Qt GUI (`bmlibrarian_qt.py`) offers:
 - Native cross-platform desktop interface built with PySide6/Qt
-- Visual workflow progress with collapsible step cards
-- Multi-model query generation with smart pagination and result tracking
-- Progressive counterfactual audit trail with real-time updates
-- PostgreSQL audit trail for persistent session tracking
+- Sub-tabs for each workflow stage (search, literature, scoring, citations, preliminary report, counterfactual analysis, final report)
 - Real-time agent execution with configured AI models
-- Formatted markdown report preview with scrollable display
-- Direct file save functionality
-- Complete transparency into citation validation and rejection reasoning
+- Formatted markdown report preview
+- Save the final report as Markdown or export it as JSON
 
 ### Configuration Interface
-The configuration GUI (`bmlibrarian_config_gui.py`) provides:
+The Configuration and Settings tabs of the Qt GUI (`bmlibrarian_qt.py`) provide:
 - Tabbed interface for agent-specific configuration
 - Model selection with live refresh from Ollama server
 - Parameter adjustment with interactive sliders and visual value displays
@@ -982,16 +967,15 @@ The configuration GUI (`bmlibrarian_config_gui.py`) provides:
 - Support for configuring query diversity, pagination, and performance tracking
 
 ### Laboratory Tools
-- **Paper Reviewer Lab** (`paper_reviewer_lab.py`): Comprehensive paper assessment with 11-step unified workflow (PySide6/Qt)
-- **Paper Checker Lab** (`paper_checker_lab.py`): Interactive medical abstract fact-checking with step-by-step visualization
-- **Paper Weight Lab** (`paper_weight_lab.py`): Evidential weight assessment across five quality dimensions (PySide6/Qt)
-- **PubMed Search Lab** (`pubmed_search_lab.py`): Search PubMed API directly without local database (PySide6/Qt)
-- **QueryAgent Lab** (`query_lab.py`): Experimental interface for natural language to SQL conversion
-- **PICO Lab** (`pico_lab.py`): Interactive PICO component extraction from research papers
-- **PRISMA 2020 Lab** (`prisma2020_lab.py`): Systematic review compliance assessment against 27-item checklist
-- **Transparency Lab** (`transparency_lab.py`): Undisclosed bias risk assessment for research papers
-- **Study Assessment Lab** (`study_assessment_lab.py`): Research quality and trustworthiness evaluation
-- **Citation Lab** (`citation_lab.py`): Citation extraction experimentation
+- **Paper Reviewer Lab** (`scripts/paper_reviewer_lab.py`): Comprehensive paper assessment with 11-step unified workflow (PySide6/Qt)
+- **Paper Checker Lab** (`scripts/paper_checker_lab.py`): Interactive medical abstract fact-checking with step-by-step visualization
+- **Paper Weight Lab** (`scripts/paper_weight_lab.py`): Evidential weight assessment across five quality dimensions (PySide6/Qt)
+- **PubMed Search Lab** (`scripts/pubmed_search_lab.py`): Search PubMed API directly without local database (PySide6/Qt)
+- **QueryAgent Lab** (`scripts/query_lab.py`): Experimental interface for natural language to SQL conversion
+- **PICO Lab** (`scripts/pico_lab.py`): Interactive PICO component extraction from research papers
+- **PRISMA 2020 Lab** (`scripts/prisma2020_lab.py`): Systematic review compliance assessment against 27-item checklist
+- **Transparency Lab** (`scripts/transparency_lab.py`): Undisclosed bias risk assessment for research papers
+- **Study Assessment Lab** (`scripts/study_assessment_lab.py`): Research quality and trustworthiness evaluation
 - **Agent Demonstrations**: Examples showcasing multi-agent capabilities in `examples/` directory
 
 ## Configuration System
@@ -1011,7 +995,7 @@ Each agent can be individually configured with:
 - **Agent-Specific Settings**: Citation count limits, scoring thresholds, etc.
 
 ### Multi-Model Query Generation Configuration
-Configure query diversity for improved document retrieval:
+Configure query diversity for improved document retrieval. **Note:** these settings currently have no effect; the Qt research tab and the CLI use single-model query generation (ROADMAP §1).
 - **Multi-Model Enabled**: Toggle feature on/off (default: disabled)
 - **Models**: Select up to 3 different AI models for query generation
 - **Queries Per Model**: Generate 1-3 diverse queries per model
@@ -1189,8 +1173,8 @@ uv run python -m pytest tests/ -m integration
 
 # Test CLI and GUI applications
 uv run python bmlibrarian_cli.py --quick
-uv run python bmlibrarian_research_gui.py --auto "test question" --quick
-uv run python bmlibrarian_config_gui.py --debug
+uv run python bmlibrarian_cli.py --auto "test question" --quick
+uv run python bmlibrarian_qt.py
 ```
 
 Test suite: **145 test files** across all modules
@@ -1205,12 +1189,11 @@ uv run python examples/reporting_demo.py
 uv run python examples/counterfactual_demo.py
 
 # Launch laboratory tools
-uv run python query_lab.py  # QueryAgent experimental interface
+uv run python scripts/query_lab.py  # QueryAgent experimental interface (Qt)
 
 # Run applications in development mode
-uv run python bmlibrarian_cli.py --debug
-uv run python bmlibrarian_research_gui.py --debug
-uv run python bmlibrarian_config_gui.py --debug
+uv run python bmlibrarian_cli.py --verbose
+uv run python bmlibrarian_qt.py --env .env  # Qt GUI with an explicit env file
 ```
 
 ### Development Principles

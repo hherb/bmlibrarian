@@ -1,5 +1,7 @@
 # Human Approval Logging - Implementation Summary
 
+> **Note (2026-10-16)**: the GUI side of this system was part of the Flet-based Research GUI (`bmlibrarian_research_gui.py`), which has been removed. The GUI modules referenced below (`gui/components.py`, `gui/interactive_handler.py`, `gui/workflow.py`, `gui/workflow_steps_handler.py`) no longer exist, and the Qt Research tab does not provide approve/override controls (see ROADMAP §1). The database logging (`human_edit_logger.py`) remains. This document is kept as a record of the design.
+
 ## Overview
 
 BMLibrarian now captures **both human edits AND explicit approvals** of LLM outputs. This provides richer training data by distinguishing between:
@@ -198,7 +200,8 @@ For each task:
 # Run test suite
 python test_human_edit_logging.py
 
-# Test in GUI
+# Test in GUI (former Flet Research GUI - removed 2026-10-16;
+# the Qt Research tab does not currently offer approve/override controls)
 python bmlibrarian_research_gui.py
 # 1. Enter research question
 # 2. Review document scores

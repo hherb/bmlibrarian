@@ -8,8 +8,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from PySide6.QtCore import QThread, Signal
 import logging
 
-# Import ReportBuilder for consistent final report generation (same as Flet GUI)
-from bmlibrarian.gui.report_builder import ReportBuilder
+from .report_builder import ReportBuilder
 from bmlibrarian.agents.citation_agent import Citation
 
 
@@ -293,7 +292,7 @@ class WorkflowThread(QThread):
                 if self._check_cancellation(step_name):
                     return
 
-                # Use the comprehensive find_contradictory_literature method (same as Flet GUI)
+                # Use the comprehensive find_contradictory_literature method
                 # This does ALL the work:
                 # 1. Analyzes report to generate counterfactual questions
                 # 2. Searches for contradictory documents
@@ -345,7 +344,7 @@ class WorkflowThread(QThread):
                         )
                         self.step_completed.emit(step_name)
 
-                        # Store comprehensive counterfactual results (matching Flet structure)
+                        # Store comprehensive counterfactual results (structure ReportBuilder expects)
                         self.counterfactual_results = {
                             'analysis': analysis_obj,
                             'questions': counterfactual_questions,
@@ -385,7 +384,7 @@ class WorkflowThread(QThread):
                 if self._check_cancellation(step_name):
                     return
 
-                # Use ReportBuilder to create final report (same approach as Flet GUI)
+                # Use ReportBuilder to create the final report
                 # This wraps the preliminary report (which contains all citations) with metadata sections
                 try:
                     # Create workflow steps list for metadata
@@ -394,7 +393,7 @@ class WorkflowThread(QThread):
                     # Initialize ReportBuilder
                     report_builder = ReportBuilder(workflow_steps)
 
-                    # Build comprehensive final report using same method as Flet GUI
+                    # Build comprehensive final report
                     # This preserves all citations from the preliminary report
                     self.final_report = report_builder.build_final_report(
                         research_question=self.question,

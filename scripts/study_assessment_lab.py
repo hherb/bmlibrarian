@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """
-Study Assessment Lab - Interactive GUI for Study Quality Assessment
+Study Assessment Laboratory - evaluate study quality and trustworthiness (PySide6/Qt).
 
-This application provides an interactive interface for assessing the quality,
-design, and trustworthiness of biomedical research papers stored in the
-BMLibrarian database.
+Opens the main Qt application's "study_assessment" plugin in a standalone window.
 
 Usage:
-    uv run python study_assessment_lab.py
+    uv run python scripts/study_assessment_lab.py
 """
 
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+# Add src to path for imports when run from a source checkout
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from bmlibrarian.lab.study_assessment_lab import run_study_assessment_lab
 
-if __name__ == '__main__':
-    run_study_assessment_lab()
+def main() -> int:
+    """Launch the study_assessment plugin in its own window.
+
+    Returns:
+        Process exit code
+    """
+    from bmlibrarian.gui.qt.core.standalone import run_plugin_standalone
+    from bmlibrarian.gui.qt.plugins.study_assessment.plugin import create_plugin
+
+    return run_plugin_standalone(create_plugin)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

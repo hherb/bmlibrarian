@@ -19,13 +19,7 @@ from .config_manager import GUIConfigManager
 from .event_bus import EventBus
 from ..plugins.base_tab import BaseTabPlugin
 
-# Import for agent cleanup
-try:
-    from ...workflow import cleanup_agents
-    CLEANUP_AGENTS_AVAILABLE = True
-except ImportError:
-    CLEANUP_AGENTS_AVAILABLE = False
-    cleanup_agents = None
+from bmlibrarian.agents.lifecycle import cleanup_agents, initialize_agents_in_main_thread
 
 
 class BMLibrarianMainWindow(QMainWindow):
@@ -95,33 +89,19 @@ class BMLibrarianMainWindow(QMainWindow):
         self.logger.info("Main window initialized")
 
     def _initialize_agents(self):
-        """Initialize BMLibrarian agents in main thread (for research workflow)."""
-        try:
-            self.logger.info("Initializing BMLibrarian agents...")
+        """Initialize BMLibrarian agents in main thread (for research workflow).
 
-            # Import initialize function from Flet GUI (framework-agnostic)
-            from ...workflow import initialize_agents_in_main_thread
-
-            # Initialize all agents
-            self.agents = initialize_agents_in_main_thread()
-
-            if self.agents:
-                self.logger.info("✅ Agents initialized successfully")
-            else:
-                self.logger.warning("⚠️ Agent initialization returned None")
-
-        except ImportError as e:
-            self.logger.error(f"Failed to import required modules: {e}", exc_info=True)
-            self.agents = None
-        except ConnectionError as e:
-            self.logger.error(f"Failed to connect to database or Ollama: {e}", exc_info=True)
-            self.agents = None
-        except (FileNotFoundError, ValueError) as e:
-            self.logger.error(f"Configuration error: {e}", exc_info=True)
-            self.agents = None
-        except Exception as e:
-            self.logger.error(f"Unexpected error during agent initialization: {e}", exc_info=True)
-            self.agents = None
+        ``initialize_agents_in_main_thread`` logs its own errors and returns
+        None on failure; the status bar then says so (see
+        ``_create_status_bar``), since the research tab cannot work without
+        agents.
+        """
+        self.logger.info("Initializing BMLibrarian agents...")
+        self.agents = initialize_agents_in_main_thread()
+        if self.agents:
+            self.logger.info("✅ Agents initialized successfully")
+        else:
+            self.logger.warning("⚠️ Agent initialization failed; research workflow unavailable")
 
     def _setup_ui(self):
         """Setup the main window UI."""
@@ -242,7 +222,12 @@ class BMLibrarianMainWindow(QMainWindow):
         """Create the status bar."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        if self._username:
+        if not self.agents:
+            self.status_bar.showMessage(
+                "⚠ Agents could not be initialized (see log): the research "
+                "workflow is unavailable"
+            )
+        elif self._username:
             self.status_bar.showMessage(f"Logged in as {self._username}")
         else:
             self.status_bar.showMessage("Ready")
@@ -669,14 +654,12 @@ class BMLibrarianMainWindow(QMainWindow):
                 )
 
         # Cleanup agents (return audit connection to pool)
-        if self.agents and CLEANUP_AGENTS_AVAILABLE:
+        if self.agents:
             try:
                 cleanup_agents(self.agents)
                 self.logger.info("✅ Agents cleaned up")
             except Exception as e:
                 self.logger.error(f"Error cleaning up agents: {e}", exc_info=True)
-        elif self.agents and not CLEANUP_AGENTS_AVAILABLE:
-            self.logger.warning("cleanup_agents not available - skipping agent cleanup")
 
         self.logger.info("Application closing")
         event.accept()

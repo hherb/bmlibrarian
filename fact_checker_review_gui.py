@@ -1,72 +1,154 @@
 #!/usr/bin/env python3
 """
-Fact-Checker Review GUI for BMLibrarian
+Fact-Checker Review GUI for BMLibrarian (PySide6/Qt).
 
-A graphical interface for human reviewers to annotate and review fact-checking results.
-Entry point for the fact-checker review GUI application.
-Uses the refactored BMLibrarian factchecker module.
+Standalone window for human reviewers to annotate fact-checking results,
+using the same review tab as the main Qt application's "Fact Checker" tab.
+Works against PostgreSQL (default) or a portable SQLite review package
+(``--db-file``) for external reviewers without PostgreSQL.
+
+Usage:
+    uv run python fact_checker_review_gui.py
+    uv run python fact_checker_review_gui.py --user alice --incremental
+    uv run python fact_checker_review_gui.py --user bob --blind
+    uv run python fact_checker_review_gui.py --user alice --db-file review_package.db
 """
 
 import argparse
+import logging
+import sqlite3
 import sys
 from pathlib import Path
+from typing import List, Optional
 
-import flet as ft
-
-# Add src to path for imports
+# Add src to path for imports when run from a source checkout
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from bmlibrarian.factchecker.gui.review_app import FactCheckerReviewApp
+# Review packages are SQLite files with this extension (export_review_package.py)
+REVIEW_PACKAGE_SUFFIX = ".db"
+# Tables every review package has (factchecker/db/sqlite_schema.sql)
+REVIEW_PACKAGE_TABLES = frozenset({
+    "package_metadata", "statements", "annotators", "human_annotations",
+})
 
 
-def main():
-    """Main entry point for the application."""
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv: Argument list (defaults to sys.argv[1:])
+
+    Returns:
+        Parsed arguments
+    """
     parser = argparse.ArgumentParser(
-        description="BMLibrarian Fact-Checker Review GUI - Human annotation interface for fact-checking results"
+        description="BMLibrarian Fact-Checker Review GUI - Human annotation "
+                    "interface for fact-checking results"
     )
     parser.add_argument(
         "--incremental",
         action="store_true",
-        help="Incremental mode: only show statements you haven't annotated yet"
+        help="Incremental mode: only show statements you haven't annotated yet",
     )
     parser.add_argument(
         "--user",
         type=str,
-        help="Username to use (suppresses login dialog)"
+        help="Annotator username to start with",
     )
     parser.add_argument(
         "--blind",
         action="store_true",
-        help="Blind mode: hide original and AI annotations from human annotator"
+        help="Blind mode: hide original and AI annotations from the annotator",
     )
     parser.add_argument(
         "--db-file",
         type=str,
-        help="SQLite database file to use (for portable review packages). If not specified, uses PostgreSQL."
+        help="SQLite review package to use. If not specified, uses PostgreSQL.",
     )
+    return parser.parse_args(argv)
 
-    args = parser.parse_args()
 
-    # Validate db-file if provided
-    if args.db_file:
-        db_path = Path(args.db_file)
-        if not db_path.exists():
-            print(f"Error: SQLite database file not found: {args.db_file}")
-            return 1
-        if db_path.suffix != '.db':
-            print(f"Error: Database file must have .db extension: {args.db_file}")
-            return 1
+def validate_db_file(db_file: Optional[str]) -> Optional[str]:
+    """Check a review-package path; return an error message or None if OK.
 
-    # Create and run app
-    app = FactCheckerReviewApp(
-        incremental=args.incremental,
-        default_username=args.user,
-        blind_mode=args.blind,
-        db_file=args.db_file
+    Args:
+        db_file: Path given with --db-file, or None
+
+    Returns:
+        Error message, or None when the path is acceptable (or not given)
+    """
+    if not db_file:
+        return None
+    db_path = Path(db_file)
+    if not db_path.is_file():
+        return f"SQLite database file not found: {db_file}"
+    if db_path.suffix != REVIEW_PACKAGE_SUFFIX:
+        return f"Database file must have {REVIEW_PACKAGE_SUFFIX} extension: {db_file}"
+    return check_review_package_tables(db_path)
+
+
+def check_review_package_tables(db_path: Path) -> Optional[str]:
+    """Check that a SQLite file is a review package, without modifying it.
+
+    Opens the file read-only, so pointing --db-file at an unrelated database
+    neither changes it nor fails later with a cryptic "no such table".
+
+    Args:
+        db_path: Path to an existing file
+
+    Returns:
+        Error message, or None if the file has the review-package tables
+    """
+    try:
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return f"Cannot read {db_path} as a SQLite database: {e}"
+    missing = REVIEW_PACKAGE_TABLES - {row[0] for row in rows}
+    if missing:
+        return (
+            f"{db_path} is not a BMLibrarian review package (missing tables: "
+            f"{', '.join(sorted(missing))}). Create one with "
+            f"scripts/export_review_package.py"
+        )
+    return None
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main entry point for the application.
+
+    Args:
+        argv: Argument list (defaults to sys.argv[1:])
+
+    Returns:
+        Process exit code
+    """
+    args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
+
+    error = validate_db_file(args.db_file)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+
+    from bmlibrarian.gui.qt.core.standalone import run_widget_standalone
+    from bmlibrarian.gui.qt.plugins.fact_checker.fact_checker_tab import FactCheckerTabWidget
+
+    return run_widget_standalone(
+        lambda: FactCheckerTabWidget(
+            db_file=args.db_file,
+            default_username=args.user,
+            blind_mode=args.blind,
+            incremental=args.incremental,
+        ),
+        title="BMLibrarian - Fact-Checker Review",
+        argv=[sys.argv[0]],
     )
-    ft.app(target=app.main)
-
-    return 0
 
 
 if __name__ == "__main__":

@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """
-PICO Lab - Interactive GUI for PICO Component Extraction
+PICO Laboratory - extract Population, Intervention, Comparison and Outcome (PySide6/Qt).
 
-This application provides an interactive interface for extracting PICO
-(Population, Intervention, Comparison, Outcome) components from biomedical
-research papers stored in the BMLibrarian database.
+Opens the main Qt application's "pico_lab" plugin in a standalone window.
 
 Usage:
-    uv run python pico_lab.py
+    uv run python scripts/pico_lab.py
 """
 
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+# Add src to path for imports when run from a source checkout
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from bmlibrarian.lab.pico_lab import run_pico_lab
 
-if __name__ == '__main__':
-    run_pico_lab()
+def main() -> int:
+    """Launch the pico_lab plugin in its own window.
+
+    Returns:
+        Process exit code
+    """
+    from bmlibrarian.gui.qt.core.standalone import run_plugin_standalone
+    from bmlibrarian.gui.qt.plugins.pico_lab.plugin import create_plugin
+
+    return run_plugin_standalone(create_plugin)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

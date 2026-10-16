@@ -34,9 +34,9 @@ Send the `.db` file to external reviewers via:
 
 **What Reviewers Need:**
 - Python 3.12+
-- Flet library (`pip install flet`)
+- A BMLibrarian checkout with dependencies installed (`uv sync`; includes PySide6) —
+  `fact_checker_review_gui.py` imports the `bmlibrarian` package. No PostgreSQL needed.
 - The review package `.db` file
-- The `fact_checker_review_gui.py` script
 
 ---
 

@@ -14,7 +14,7 @@ This document describes the technical architecture for BMLibrarian's database-ba
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Application Layer                               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│  │  Qt GUI      │  │  Flet GUI    │  │  CLI Apps    │  │  Agent Factory   │ │
+│  │  Qt GUI      │  │ Standalone Qt│  │  CLI Apps    │  │  Agent Factory   │ │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘ │
 └─────────┼─────────────────┼─────────────────┼───────────────────┼───────────┘
           │                 │                 │                   │
@@ -304,6 +304,8 @@ CREATE TABLE bmlsettings.user_sessions (
     hostname TEXT
 );
 ```
+
+> `'flet_gui'` is still accepted by the schema (migration `012_create_bmlsettings_schema.sql`) for existing rows, but no current client uses it: the Flet GUIs were removed on 2026-10-16.
 
 ### Functions
 

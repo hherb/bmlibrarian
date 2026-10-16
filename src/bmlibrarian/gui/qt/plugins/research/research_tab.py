@@ -1,7 +1,7 @@
 """
 Research tab widget for BMLibrarian Qt GUI.
 
-Qt-native design matching Flet functionality with proper Qt widgets and layouts.
+Qt-native design with proper Qt widgets and layouts.
 This is the main widget that orchestrates the research workflow interface.
 """
 

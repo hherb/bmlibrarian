@@ -49,6 +49,8 @@ review; re-verify line numbers before fixing, they will drift.
 ## P2 — Structural debt (highest leverage first)
 
 ### 1. Finish the Flet → Qt migration, then delete Flet (~20k lines)
+**Status 2026-10-16: done — Flet deleted and `flet` dropped from the dependencies** (flet 1.0 changed its event model). The Qt fact-checker tab now takes `--db-file`/blind/incremental and has the "unclear" option, but still no confidence dropdown (ROADMAP §1); `citation_lab.py` was removed without a Qt port (loss accepted); `report_builder.py` moved to `gui/qt/plugins/research/`, `document_card_factory_base.py` to `gui/`; the four lab launchers open the Qt plugins. Not ported: the inter-rater agreement statistics dialog, `session_id` stamping, and the Flet `--web`/`--port` and `--auto`/`--quick` launch options. The list below is kept as the original gap analysis.
+
 Gap analysis (2026-07-19) found these must be closed BEFORE deleting:
 1. **Qt fact-checker review tab is a partial port** (`gui/qt/plugins/fact_checker/`):
    - No SQLite review-package support: `fact_checker_tab.py` `_auto_load_data()` (~line 812) hardcodes `db_file=None`/postgresql; backend support exists (`factchecker/db/sqlite_db.py`) — add a package picker / `--db-file` path.

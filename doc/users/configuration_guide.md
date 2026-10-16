@@ -80,8 +80,8 @@ cp .env.example .env
 # 3. Edit environment variables
 # Edit .env with your database credentials
 
-# 4. Launch configuration GUI (easiest method)
-uv run python bmlibrarian_config_gui.py
+# 4. Launch the Qt GUI and use its Configuration tab (easiest method)
+uv run python bmlibrarian_qt.py
 
 # OR create configuration file manually
 mkdir -p ~/.bmlibrarian
@@ -286,7 +286,7 @@ Each agent supports common parameters plus agent-specific settings:
 
 **Usage**:
 ```bash
-uv run python bmlibrarian_config_gui.py
+uv run python bmlibrarian_qt.py   # then open the Configuration or Settings tab
 ```
 
 **Features**:
@@ -323,9 +323,6 @@ code ~/.bmlibrarian/config.json
 ```bash
 # Override specific settings
 uv run python bmlibrarian_cli.py --max-results 50 --score-threshold 3.0
-
-# Quick mode with overrides
-uv run python bmlibrarian_research_gui.py --quick --max-citations 20
 ```
 
 ## Model Configuration
@@ -540,15 +537,12 @@ BMLibrarian automatically validates configuration on startup:
 
 **Test Configuration**:
 ```bash
-# Test with Configuration GUI
-uv run python bmlibrarian_config_gui.py
+# Test with the Qt GUI's Configuration tab
+uv run python bmlibrarian_qt.py
 # Click "Test Connection" button
 
 # Test with CLI quick mode
 uv run python bmlibrarian_cli.py --quick
-
-# Test with Research GUI
-uv run python bmlibrarian_research_gui.py --quick
 ```
 
 **Validation Checklist**:
@@ -642,9 +636,6 @@ git commit -m "Add configuration template"
 ```bash
 # CLI with debug output
 uv run python bmlibrarian_cli.py --debug
-
-# GUI with debug output  
-uv run python bmlibrarian_config_gui.py --debug
 ```
 
 **Configuration Inspection**:

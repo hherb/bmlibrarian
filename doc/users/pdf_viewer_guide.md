@@ -1,5 +1,7 @@
 # PDF Viewer Guide
 
+> **Note (2026-10-16)**: this guide was written for the PDF viewer of the former Flet GUI, which has been removed. The Qt application's PDF viewer (`src/bmlibrarian/gui/qt/widgets/pdf_viewer.py`) uses Qt's native `QPdfView`; rendering details, zoom levels and the programmatic API described below may differ.
+
 ## Overview
 
 The Document Interrogation tab includes a powerful PDF viewer with comprehensive features for viewing, navigating, searching, and highlighting PDF documents.

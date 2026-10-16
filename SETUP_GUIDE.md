@@ -360,15 +360,12 @@ After successful setup:
    uv run python bmlibrarian_cli.py
    ```
 
-3. **Test the Research GUI**:
+3. **Test the Research GUI** (Research tab):
    ```bash
-   uv run python bmlibrarian_research_gui.py
+   uv run python bmlibrarian_qt.py
    ```
 
-4. **Configure Agents**:
-   ```bash
-   uv run python bmlibrarian_config_gui.py
-   ```
+4. **Configure Agents**: use the Configuration or Settings tab of the same Qt GUI (`uv run python bmlibrarian_qt.py`).
 
 ## CI/CD Integration
 

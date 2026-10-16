@@ -184,10 +184,9 @@ Since this project uses `uv` for package management:
   - `uv run python export_to_pdf.py report.md -o report.pdf --letter --font-size 12` - Export with US Letter format and custom font size
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
-  - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
-  - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
-  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results (PostgreSQL-based)
-  - `uv run python fact_checker_review_gui.py --user alice` - Launch review GUI with username (skip login dialog)
+  - `uv run python bmlibrarian_qt.py` - Main PySide6/Qt desktop app (research, search, configuration, fact-checker review, labs as plugin tabs)
+  - `uv run python fact_checker_review_gui.py` - Standalone Qt fact-checker review window (PostgreSQL by default)
+  - `uv run python fact_checker_review_gui.py --user alice` - Launch review GUI as annotator alice
   - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
   - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
   - `uv run python fact_checker_review_gui.py --user alice --db-file review_package.db` - Review with SQLite package (no PostgreSQL needed)
@@ -205,7 +204,7 @@ Since this project uses `uv` for package management:
   - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
   - `uv run python scripts/import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
 - **Laboratory Tools**:
-  - `uv run python scripts/query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
+  - `uv run python scripts/query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion (opens the Qt plugin tab in a standalone window via `gui/qt/core/standalone.py`, as do the PICO, Study Assessment and PRISMA 2020 labs below)
   - `uv run python scripts/pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
   - `uv run python scripts/study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python scripts/prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
@@ -458,10 +457,11 @@ BMLibrarian uses a factory pattern for creating document cards with consistent f
 
 **Usage Example**:
 ```python
+from pathlib import Path
 from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
-from bmlibrarian.gui.qt.document_card_factory_base import DocumentCardData, CardContext
+from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
 
-factory = QtDocumentCardFactory(parent=parent_widget)
+factory = QtDocumentCardFactory(base_pdf_dir=Path("~/knowledgebase/pdf").expanduser())
 card_data = DocumentCardData(
     doc_id=12345,
     title="Example Study",
@@ -487,6 +487,11 @@ card = factory.create_card(card_data)
 ### Multi-Model Query Generation
 
 BMLibrarian supports using multiple AI models to generate diverse database queries for improved document retrieval. This feature leverages the strengths of different models to create query variations that often find more relevant literature than single-model approaches.
+
+> **Not currently wired into any app** (since 2026-10-16): its entry point
+> `QueryAgent.find_abstracts_multi_query` was only used, outside demos and
+> benchmark scripts, by the retired Flet research GUI; the Qt research tab
+> and the CLI use single-model `convert_question`. See ROADMAP §1.
 
 **Key Features**:
 - **Query Diversity**: Generate 1-3 queries per model using up to 3 different models
@@ -576,6 +581,7 @@ bmlibrarian/
 │   │   ├── editor_agent.py    # Comprehensive report editing and integration
 │   │   ├── queue_manager.py   # SQLite-based task queue system
 │   │   ├── orchestrator.py    # Multi-agent workflow coordination
+│   │   ├── lifecycle.py       # Create/clean up the full agent set for GUI apps
 │   │   ├── transparency_data.py # Transparency assessment data models and constants
 │   │   ├── transparency_agent.py # TransparencyAgent for undisclosed bias risk detection
 │   │   └── query_generation/  # Multi-model query generation system
@@ -625,19 +631,21 @@ bmlibrarian/
 │       └── workflow_steps.py  # Enum-based workflow step definitions
 │   └── gui/                   # Graphical user interfaces (PySide6/Qt)
 │       ├── __init__.py        # GUI module exports
+│       ├── document_card_factory_base.py # Framework-neutral document card factory base
 │       └── qt/                # Qt/PySide6-based GUI components
 │           ├── __init__.py    # Qt module entry point
 │           ├── core/          # Core application infrastructure
+│           │   └── standalone.py # Open a plugin tab in its own window (lab launchers)
 │           ├── plugins/       # Plugin system (research, fact_checker, etc.)
 │           ├── widgets/       # Reusable Qt widgets
 │           ├── resources/     # Resources and styling (dpi_scale, stylesheets)
 │           └── qt_document_card_factory.py  # Qt document card factory
-│   └── lab/                   # Experimental tools and interfaces
-│       ├── __init__.py        # Lab module exports
-│       ├── query_lab.py       # QueryAgent experimental GUI
-│       ├── pico_lab.py        # PICOAgent experimental GUI for PICO component extraction
-│       ├── study_assessment_lab.py # StudyAssessmentAgent experimental GUI for study quality evaluation
-│       ├── prisma2020_lab.py  # PRISMA2020Agent experimental GUI for PRISMA 2020 compliance assessment
+│   └── lab/                   # Experimental Qt tools (Query/PICO/PRISMA/Study labs are gui/qt/plugins tabs)
+│       ├── __init__.py        # Lazy lab exports (importing one lab never imports the others)
+│       ├── paper_checker_lab/ # PaperChecker laboratory
+│       ├── paper_reviewer_lab/ # Paper Reviewer laboratory
+│       ├── paper_weight_lab/  # Paper Weight Assessment laboratory
+│       ├── pubmed_search_lab.py # PubMed Search laboratory
 │       └── transparency_lab.py # TransparencyAgent experimental GUI for undisclosed bias risk assessment
 │   └── factchecker/           # Fact-checker module (PostgreSQL-based)
 │       ├── __init__.py        # Fact-checker module exports
@@ -652,14 +660,7 @@ bmlibrarian/
 │       │   ├── app.py         # Main CLI entry point
 │       │   ├── commands.py    # Command handlers
 │       │   └── formatters.py  # Output formatting
-│       └── gui/               # Review GUI application
-│           ├── __init__.py
-│           ├── review_app.py  # Main review application
-│           ├── data_manager.py    # Database queries
-│           ├── annotation_manager.py  # Annotation logic
-│           ├── statement_display.py   # Statement UI
-│           ├── citation_display.py    # Citation cards
-│           └── dialogs.py     # Login/export dialogs
+│       (review GUI: gui/qt/plugins/fact_checker, launched by fact_checker_review_gui.py)
 │   └── paperchecker/          # PaperChecker module (abstract fact-checking)
 │       ├── __init__.py        # PaperChecker module exports
 │       ├── data_models.py     # Type-safe dataclasses (Statement, Verdict, etc.)
@@ -748,9 +749,8 @@ bmlibrarian/
 ├── data/                      # Temporary test data (gitignored)
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
 ├── bmlibrarian_qt.py          # Qt-based main entry point
-├── bmlibrarian_research_gui.py # Desktop research GUI application (modular entry point)
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
-├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
+├── fact_checker_review_gui.py # Standalone Qt fact-checker review window (--user/--blind/--incremental/--db-file)
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
 ├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
 ├── model_benchmark_cli.py     # Model benchmarking CLI for evaluating document scoring models
@@ -831,113 +831,42 @@ bmlibrarian/
 
 ## Usage Examples
 
-### Research GUI Application
+### Desktop GUI (PySide6/Qt)
 
-BMLibrarian includes a comprehensive desktop research application built with PySide6/Qt:
-
-```bash
-# Start the research GUI application
-uv run python bmlibrarian_research_gui.py
-
-# Research GUI Features:
-# - Multi-line text input for medical research questions
-# - Interactive/automated workflow toggle
-# - Visual workflow progress with collapsible step cards
-# - Real-time agent execution with proper model configuration
-# - Formatted markdown report preview with scrolling
-# - Full integration with BMLibrarian's multi-agent system
-
-# Command line options:
-uv run python bmlibrarian_research_gui.py --auto "research question"  # Automated execution
-uv run python bmlibrarian_research_gui.py --quick                    # Quick mode with limits
-uv run python bmlibrarian_research_gui.py --max-results 100          # Custom search limits
-uv run python bmlibrarian_research_gui.py --score-threshold 3.0      # Custom relevance threshold
-```
-
-The Research GUI provides:
-- **Desktop Application**: Native cross-platform desktop interface using PySide6
-- **Visual Workflow**: Collapsible cards showing real-time progress through 11 workflow steps
-- **Agent Integration**: Uses configured models from `~/.bmlibrarian/config.json`
-- **Document Processing**: Scores ALL found documents by default (no artificial limits)
-- **Citation Extraction**: Processes ALL documents above relevance threshold
-- **Report Generation**: Full markdown rendering with GitHub-style formatting
-- **Configuration Support**: Respects agent models, parameters, and thresholds from config
-- **Performance Modes**: Normal (all documents) vs Quick (limited for speed)
-
-### Configuration GUI Application
-
-BMLibrarian includes a modern graphical configuration interface built with PySide6/Qt:
+`bmlibrarian_qt.py` is the desktop application: a plugin-based tabbed window
+(research workflow, search, configuration/settings, document interrogation,
+fact-checker review, systematic review, and the Query/PICO/PRISMA/Study labs).
 
 ```bash
-# Start the desktop configuration GUI
-uv run python bmlibrarian_config_gui.py
-
-# GUI Features:
-# - Native desktop application with tabbed interface
-# - Document Interrogation tab: Interactive document viewer with AI chatbot for Q&A
-# - Separate configuration tabs for each agent
-# - Model selection with live refresh from Ollama server
-# - Parameter adjustment with sliders and input fields
-# - Configuration save/load functionality
-# - Connection testing to verify Ollama availability
-# - Reset to defaults option
-# - Cross-platform compatibility
-
-# Command line options:
-uv run python bmlibrarian_config_gui.py --debug            # Enable debug mode
+uv run python bmlibrarian_qt.py
+uv run python bmlibrarian_qt.py --user herb --env .debug_env   # auto-login, alternate env file
 ```
 
-The GUI provides:
-- **Native Desktop App**: Cross-platform desktop application using PySide6
-- **Document Interrogation**: Interactive split-pane interface for document Q&A
-  - Left pane: Document viewer (PDF, Markdown, text files) with 60% width
-  - Right pane: Chat interface with dialogue bubbles (40% width)
-  - File selector and model dropdown in top bar
-  - Support for programmatic document loading from other plugins
-  - Message history with user/AI distinction
-  - Real-time chat with selected Ollama model
-- **Agent Configuration**: Individual tabs for Query, Scoring, Citation, Reporting, Counterfactual, and Editor agents
-- **Model Management**: Dropdown selection with live model refresh from Ollama
-- **Parameter Tuning**: Interactive sliders for temperature, top-p, and agent-specific settings
-- **General Settings**: Ollama server configuration, database settings, and CLI defaults
-- **File Operations**: Save/load configuration files with JSON format
-- **Connection Testing**: Verify Ollama server connectivity and list available models
+The research tab scores ALL found documents by default (no artificial limits),
+extracts citations from ALL documents above the relevance threshold, and uses
+the configured models from `~/.bmlibrarian/config.json`. Long-running work runs
+on `QThread` workers (`WorkflowThread`, `PDFDiscoveryWorker`) — never block the
+GUI thread.
+
+The Flet GUIs (`bmlibrarian_research_gui.py`, the Flet config app and review
+app, Flet labs) were **retired on 2026-10-16**: flet 1.0 changed its event model
+and every Flet app except the Citation lab already had a Qt equivalent
+(remaining gaps: ROADMAP §1). Do not reintroduce Flet.
 
 ### Fact-Checker Review GUI Application
 
-BMLibrarian includes a human review and annotation interface for fact-checking results:
+`fact_checker_review_gui.py` opens the Qt fact-checker review tab in its own
+window:
 
 ```bash
-# Start the Fact-Checker Review GUI
-uv run python fact_checker_review_gui.py
-
-# Load JSON file (auto-creates SQLite database for annotations)
-uv run python fact_checker_review_gui.py --input-file results.json
-
-# Load existing database directly
-uv run python fact_checker_review_gui.py --input-file results.db
-
-# Incremental mode: only show statements without AI evaluations
-uv run python fact_checker_review_gui.py --input-file results.json --incremental
+uv run python fact_checker_review_gui.py                                    # PostgreSQL factcheck schema
+uv run python fact_checker_review_gui.py --user alice --incremental         # only statements alice hasn't annotated
+uv run python fact_checker_review_gui.py --user bob --blind                 # hide original + AI annotations
+uv run python fact_checker_review_gui.py --user alice --db-file review_package.db   # SQLite review package
 ```
 
-The Fact-Checker Review GUI provides:
-- **Database Auto-Creation**: Automatically creates SQLite database from JSON files (e.g., `results.json` → `results.db`)
-- **Intelligent Merging**: If database exists, imports new statements from JSON without overwriting existing annotations
-- **CLI-Consistent Behavior**: Same database workflow as the fact-checker CLI for seamless integration
-- **Real-Time Persistence**: All annotations saved directly to database as you review
-- **Incremental Mode**: Filter to show only unevaluated statements (consistent with CLI)
-- **Multi-User Support**: Track annotations by different reviewers with annotator metadata
-- **Evidence Review**: Examine supporting citations with expandable cards showing full abstracts
-- **Annotation Comparison**: View original, AI, and human annotations side-by-side
-
-**Database Workflow** (matches CLI):
-1. Load `results.json`: Checks if `results.db` exists
-2. If DB exists: Merges new statements from JSON (skips existing with evaluations/annotations)
-3. If DB doesn't exist: Creates new database and imports all JSON data
-4. All annotations are saved to the database in real-time
-
-This ensures that the GUI and CLI provide identical database management behavior, making it easy to switch between interfaces or use both for different tasks.
+Annotations are saved in real time; multiple annotators are tracked by
+username. Import fact-check results with `fact_checker_cli.py` first.
 
 ### Fact-Checker Distribution System for Inter-Rater Reliability
 
@@ -947,7 +876,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 1. **Export Review Package** (PostgreSQL → SQLite):
    ```bash
-   uv run python export_review_package.py --output review_package.db --exported-by username
+   uv run python scripts/export_review_package.py --output review_package.db --exported-by username
    ```
    - Creates self-contained SQLite database with:
      - All statements and AI evaluations
@@ -958,7 +887,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
    - Ready for distribution via file sharing
 
 2. **Distribute to External Reviewers**:
-   - Send `.db` file + `fact_checker_review_gui.py` to reviewers
+   - Send the `.db` file to reviewers (they run `fact_checker_review_gui.py` from a BMLibrarian checkout set up with `uv sync`; no PostgreSQL server needed)
    - No PostgreSQL installation required
    - Works offline with full functionality
 
@@ -973,7 +902,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 4. **Export Human Evaluations** (SQLite → JSON):
    ```bash
-   uv run python export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
+   uv run python scripts/export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
    ```
    - Lightweight JSON export (1-10 KB per statement)
    - Contains: statement_id, statement_text, annotation, explanation
@@ -981,7 +910,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 5. **Re-import to PostgreSQL** (JSON → PostgreSQL):
    ```bash
-   uv run python import_human_evaluations.py alice.json bob.json charlie.json
+   uv run python scripts/import_human_evaluations.py alice.json bob.json charlie.json
    ```
    - Creates/updates annotator records with username tagging
    - Validates statements match by ID and text
@@ -999,7 +928,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 **Key Features**:
 - **Database Abstraction**: Unified interface supporting both PostgreSQL and SQLite backends
 - **Self-Contained Packages**: All data needed for review in single `.db` file
-- **No Dependencies**: Reviewers don't need PostgreSQL, just Python + PySide6
+- **No Dependencies**: Reviewers don't need a PostgreSQL server, just a BMLibrarian checkout set up with `uv sync`
 - **Validation**: Statement text matching prevents mismatches during import
 - **Multi-Reviewer Support**: Track annotations by username for inter-rater analysis
 - **Security**: Audit trail via export_history, encrypted distribution recommended
@@ -1014,9 +943,9 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 - `src/bmlibrarian/factchecker/db/sqlite_db.py`: SQLite implementation
 - `src/bmlibrarian/factchecker/db/postgresql_db.py`: PostgreSQL wrapper
 - `src/bmlibrarian/factchecker/db/sqlite_schema.sql`: Complete SQLite schema
-- `export_review_package.py`: Review package export script
-- `export_human_evaluations.py`: Human annotations export script
-- `import_human_evaluations.py`: PostgreSQL import script
+- `scripts/export_review_package.py`: Review package export script
+- `scripts/export_human_evaluations.py`: Human annotations export script
+- `scripts/import_human_evaluations.py`: PostgreSQL import script
 
 ### Fact-Checker Statistical Analysis
 
@@ -1183,8 +1112,7 @@ report = reporting_agent.generate_citation_based_report(
 ### Testing and Quality Assurance:
 - Run full test suite: `uv run python -m pytest tests/`
 - Test CLI: `uv run python bmlibrarian_cli.py --quick`
-- Test Research GUI: `uv run python bmlibrarian_research_gui.py --auto "test question" --quick`
-- Test Configuration GUI: `uv run python bmlibrarian_config_gui.py`
+- Test the Qt GUI: `uv run python bmlibrarian_qt.py`
 - Test agent demos: `uv run python examples/agent_demo.py`
 - Test counterfactual analysis: `uv run python examples/counterfactual_demo.py`
 - Verify Ollama connection before LLM operations

@@ -1,5 +1,11 @@
 # Multi-Model Query Generation Guide
 
+> **Not currently wired into any app** (since 2026-10-16). The entry point
+> `QueryAgent.find_abstracts_multi_query` was only used by the retired Flet research GUI. The Qt
+> Research tab and the CLI (`bmlibrarian_cli.py`) both use single-model `convert_question`, so the
+> `query_generation` settings below currently have no effect. Wiring it back in is tracked in
+> [ROADMAP §1](../../ROADMAP.md). The CLI and Auto Mode sections below describe the **planned** behaviour.
+
 ## Overview
 
 Multi-model query generation is a feature that improves document retrieval quality by using multiple AI models to generate diverse database queries from your research question. Different models have different strengths, and combining their perspectives often yields better coverage of relevant literature.
@@ -59,7 +65,10 @@ ollama list
 
 ### Basic Usage
 
-#### Example with CLI
+#### Example with CLI (planned)
+
+> Not implemented yet: the CLI currently generates a single query with one model, regardless of
+> `multi_model_enabled`.
 
 ```bash
 # Start the CLI
@@ -77,7 +86,7 @@ uv run python bmlibrarian_cli.py
 
 #### Example with GUI
 
-The Research GUI (`bmlibrarian_research_gui.py`) automatically uses multi-model generation if enabled in your configuration. No additional steps required.
+The former Flet Research GUI (`bmlibrarian_research_gui.py`) used multi-model generation automatically; it was removed on 2026-10-16. The Qt Research tab (`uv run python bmlibrarian_qt.py`) does not currently use multi-model query generation. The settings can still be edited in the Qt Configuration tab, but they currently have no effect.
 
 ## Configuration
 
@@ -153,7 +162,10 @@ Best for: Comprehensive literature reviews, maximum coverage
 
 **Expected behavior**: Up to 9 queries (3 models × 3 queries each), typically fewer after de-duplication
 
-## Workflow
+## Workflow (planned)
+
+> The workflow below describes the planned behaviour once multi-model generation is wired into an
+> app again (see [ROADMAP §1](../../ROADMAP.md)); no app currently runs it.
 
 ### Interactive Mode
 
@@ -165,9 +177,9 @@ Best for: Comprehensive literature reviews, maximum coverage
 6. **De-duplication**: Document IDs are merged and de-duplicated automatically
 7. **Continue workflow**: Proceed with normal scoring and citation extraction
 
-### Auto Mode
+### Auto Mode (planned)
 
-When running in auto mode (`--auto` flag):
+When running in auto mode (`--auto` flag), once implemented:
 - All queries are executed automatically
 - No user review or selection
 - Best for batch processing or scripted workflows

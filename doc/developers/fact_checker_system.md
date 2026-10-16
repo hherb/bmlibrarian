@@ -29,21 +29,15 @@ The Fact Checker system provides automated verification of biomedical statements
            │   │       - Multi-user annotation support
            │   │       - No data duplication (FK to public.document)
            │   │
-           │   ├─► cli/
-           │   │   ├─► app.py (main CLI entry point)
-           │   │   ├─► commands.py (CLI command handlers)
-           │   │   └─► formatters.py (output formatting)
-           │   │
-           │   └─► gui/
-           │       ├─► review_app.py (main GUI application)
-           │       ├─► data_manager.py (database queries)
-           │       ├─► annotation_manager.py (annotation logic)
-           │       ├─► statement_display.py (statement UI)
-           │       ├─► citation_display.py (citation cards)
-           │       └─► dialogs.py (login, export dialogs)
+           │   └─► cli/
+           │       ├─► app.py (main CLI entry point)
+           │       ├─► commands.py (CLI command handlers)
+           │       └─► formatters.py (output formatting)
+           │
+           ├─► src/bmlibrarian/gui/qt/plugins/fact_checker/ (PySide6 review tab, see "GUI Tool")
            │
            ├─► fact_checker_cli.py (thin entry point)
-           └─► fact_checker_review_gui.py (thin entry point)
+           └─► fact_checker_review_gui.py (thin Qt entry point)
 ```
 
 ### Data Flow
@@ -624,67 +618,25 @@ def main():
 
 ### fact_checker_review_gui.py
 
-Graphical interface for human annotation.
+Graphical interface (PySide6/Qt) for human annotation. The Flet-based review app
+(`src/bmlibrarian/factchecker/gui/`) was removed on 2026-10-16; the launcher now opens
+the same review widget that the main Qt application (`bmlibrarian_qt.py`) shows as its
+"Fact Checker" tab, in a standalone window via `run_widget_standalone()`
+(`src/bmlibrarian/gui/qt/core/standalone.py`).
 
-**Location**: `src/bmlibrarian/factchecker/gui/review_app.py`
+**Location**: `src/bmlibrarian/gui/qt/plugins/fact_checker/`
 
-**Architecture**:
-
-```
-FactCheckerReviewApp (main application)
-│
-├─► DataManager (database queries)
-│   ├─ Load statements from PostgreSQL
-│   ├─ Filter by annotator (incremental mode)
-│   └─ Fetch evidence with abstracts
-│
-├─► AnnotationManager (annotation logic)
-│   ├─ Save annotations to database
-│   ├─ Track review progress
-│   └─ Calculate review duration
-│
-├─► StatementDisplay (statement UI)
-│   ├─ Display statement and annotations
-│   ├─ Handle blind mode
-│   └─ Navigation controls
-│
-├─► CitationDisplay (citation cards)
-│   ├─ Expandable citation cards
-│   ├─ Abstract fetching from database
-│   └─ Citation highlighting
-│
-└─► Dialogs (login, export)
-    ├─ Login dialog with user profile
-    ├─ Export dialog
-    └─ Error notifications
-```
-
-**Key Classes**:
-
-```python
-class FactCheckerReviewApp:
-    """Main review GUI application."""
-
-    def __init__(self, incremental=False, default_username=None, blind_mode=False):
-        self.incremental = incremental
-        self.default_username = default_username
-        self.blind_mode = blind_mode
-        self.db = FactCheckerDB()
-        self.data_manager = DataManager(self.db)
-        self.annotation_manager = AnnotationManager(self.db)
-
-    def main(self, page: ft.Page):
-        """Main entry point for Flet app."""
-        # Initialize UI
-        # Load statements from database
-        # Display review interface
-```
+- `fact_checker_tab.py` - `FactCheckerTabWidget` (main review widget; PostgreSQL or SQLite review package). Builds the statement, annotation and navigation areas itself; blind mode is applied in `FactCheckerTabWidget._apply_blind_mode`
+- `citation_widget.py` - `CitationListWidget` (evidence citation cards)
+- `timer_widget.py` - `TimerWidget` (review time tracking)
+- `plugin.py` - `FactCheckerPlugin` (registers the tab in the main Qt app)
 
 **Command-Line Arguments**:
 
-- `--user USERNAME`: Skip login dialog
-- `--incremental`: Show only unannotated statements
+- `--user USERNAME`: Pre-fill the annotator username field (there is no login dialog)
+- `--incremental`: Show only statements you haven't annotated yet
 - `--blind`: Hide AI and original annotations
+- `--db-file FILE.db`: Use a SQLite review package instead of PostgreSQL
 
 ## Testing
 

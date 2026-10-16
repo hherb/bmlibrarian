@@ -1,5 +1,7 @@
 # Citation Review System - Implementation Summary
 
+> **Note (2026-10-16)**: the interactive citation review interface described here was part of the Flet-based Research GUI (`bmlibrarian_research_gui.py`), which has been removed. The GUI modules referenced below (`gui/components.py`, `gui/interactive_handler.py`) no longer exist, and the Qt Research tab (`bmlibrarian_qt.py`) does not provide this accept/refuse review step. The citation model fields and database logging (`citation_agent.py`, `human_edit_logger.py`) remain. This document is kept as a record of the design.
+
 ## Overview
 
 BMLibrarian now features an interactive citation review interface that allows users to accept or refuse each extracted citation. Citations are displayed with their full abstract and highlighted passages, making it easy to validate the AI's extraction quality.
@@ -264,7 +266,7 @@ Track and display:
 ## Testing
 
 ```bash
-# Test in GUI
+# Test in GUI (former Flet Research GUI - removed 2026-10-16)
 python bmlibrarian_research_gui.py
 
 # Workflow:

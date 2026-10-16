@@ -1,5 +1,7 @@
 # Human Edit Logging System
 
+> **Note (2026-10-16)**: the GUI integration described here was part of the Flet-based Research GUI (`bmlibrarian_research_gui.py`), which has been removed. The GUI modules referenced below (`gui/components.py`, `gui/interactive_handler.py`, `gui/workflow_steps_handler.py`) no longer exist, and the Qt Research tab does not log human edits or approvals (see ROADMAP §1). The backend logger (`src/bmlibrarian/agents/human_edit_logger.py`) remains.
+
 ## Overview
 
 The BMLibrarian system now captures all human edits, approvals, and rejections of LLM output for training data collection and analysis. This allows us to build datasets for fine-tuning and improving our AI models.

@@ -43,7 +43,7 @@ The interface is divided into two main areas:
 
 1. **Launch the GUI**
    ```bash
-   uv run python bmlibrarian_config_gui.py
+   uv run python bmlibrarian_qt.py
    ```
 
 2. **Navigate to Document Interrogation Tab**
@@ -85,17 +85,24 @@ The interface is divided into two main areas:
 
 ## Programmatic Integration
 
-The Document Interrogation tab can be integrated with other plugins:
+The Document Interrogation tab (`DocumentInterrogationTabWidget` in
+`src/bmlibrarian/gui/qt/plugins/document_interrogation/`) registers itself as a document receiver,
+so other tabs can send it a database document:
 
 ```python
-# Access the tab from the config app
-doc_tab = app.tab_objects['document_interrogation']
+from bmlibrarian.gui.qt.core.document_receiver_registry import DocumentReceiverRegistry
 
-# Load document programmatically
-doc_tab.load_document_programmatically('/path/to/document.pdf')
+# Send a document from another tab (dict with at least an 'id' or 'document_id' key)
+DocumentReceiverRegistry().send_document(
+    "document_interrogation", {"id": 12345, "title": "Example Study"}
+)
+
+# With a direct reference to the tab widget:
+doc_tab.load_database_document(12345, title="Example Study")
+doc_tab.receive_document({"id": 12345, "title": "Example Study"})
 
 # Clear chat history
-doc_tab.clear_chat()
+doc_tab.clear_conversation()
 ```
 
 ## UI Layout Specification
@@ -210,23 +217,21 @@ doc_tab.clear_chat()
 
 ### Component Architecture
 
-**File**: `src/bmlibrarian/gui/tabs/document_interrogation_tab.py`
+**File**: `src/bmlibrarian/gui/qt/plugins/document_interrogation/document_interrogation_tab.py`
 
-**Main Class**: `DocumentInterrogationTab`
+**Main Class**: `DocumentInterrogationTabWidget` (PySide6; the former Flet `DocumentInterrogationTab` was removed on 2026-10-16)
 
 **Key Methods**:
-- `build()`: Constructs the UI layout
-- `_build_top_bar()`: Creates file selector and model dropdown
-- `_build_split_pane()`: Creates two-pane layout
-- `_build_document_viewer_pane()`: Left pane for documents
-- `_build_chat_interface_pane()`: Right pane for chat
-- `_load_document()`: Loads and displays documents
-- `_create_message_bubble()`: Creates styled chat bubbles
-- `load_document_programmatically()`: API for external integration
+- `_setup_ui()`: Constructs the UI layout
+- `_create_top_bar()`: Creates file selector and model dropdown
+- `_create_split_pane()`: Creates two-pane layout
+- `_create_document_pane()`: Left pane for documents
+- `_create_chat_pane()`: Right pane for chat
+- `_add_chat_bubble()`: Adds a styled chat bubble (`ChatBubble`)
 
 ### Dependencies
 
-- **Flet**: UI framework
+- **PySide6 (Qt)**: UI framework
 - **Ollama**: LLM model provider
 - **Python pathlib**: File path handling
 - **Future**: PyMuPDF for PDF rendering
@@ -324,43 +329,55 @@ Uses configuration from `~/.bmlibrarian/config.json`:
 
 ## API Reference
 
-### DocumentInterrogationTab Class
+### DocumentInterrogationTabWidget Class
 
 ```python
-class DocumentInterrogationTab:
-    """Document interrogation tab with split-pane viewer and chat."""
+class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
+    """Document interrogation tab with split-pane viewer and chat (PySide6/Qt)."""
 
-    def __init__(self, app: BMLibrarianConfigApp):
-        """Initialize the tab with reference to main app."""
+    RECEIVER_ID = "document_interrogation"
 
-    def build(self) -> ft.Container:
-        """Build and return the tab UI layout."""
+    def __init__(self, parent: Optional[QWidget] = None):
+        """Initialize the tab."""
 
-    def load_document_programmatically(self, file_path: str):
+    def load_database_document(self, document_id: int, title: Optional[str] = None):
         """
-        Load a document programmatically.
+        Load a document from the database for interrogation (ensures embeddings
+        exist, then shows the PDF or full text in the viewer pane).
 
         Args:
-            file_path: Absolute path to document
+            document_id: Database ID of the document
+            title: Optional document title for display
         """
 
-    def clear_chat(self):
-        """Clear the chat history and reset to welcome message."""
+    def receive_document(self, document_data: dict) -> bool:
+        """
+        Receive a document from another tab (IDocumentReceiver).
+
+        Args:
+            document_data: Document dictionary with at least an 'id' key
+
+        Returns:
+            True if the document was accepted
+        """
+
+    def clear_conversation(self):
+        """Clear the conversation history and chat display."""
 ```
 
-### ChatMessage Class
+### ChatBubble Class
 
 ```python
-class ChatMessage:
-    """Represents a single chat message."""
+class ChatBubble(QFrame):
+    """A single chat message bubble with DPI-aware dimensions and markdown support."""
 
-    def __init__(self, text: str, is_user: bool):
+    def __init__(self, text: str, is_user: bool, scale: dict, parent: Optional[QWidget] = None):
         """
-        Create a chat message.
-
         Args:
-            text: Message content
-            is_user: True if user message, False if AI response
+            text: Message text (supports markdown formatting)
+            is_user: True if user message, False if AI message
+            scale: Font-relative scaling dimensions from get_font_scale()
+            parent: Optional parent widget
         """
 ```
 

@@ -302,7 +302,7 @@ class UserService:
         Args:
             username: The username to authenticate.
             password: The plaintext password.
-            client_type: Type of client (qt_gui, flet_gui, cli, api).
+            client_type: Type of client (qt_gui, cli, api).
             client_version: Version of the client application.
             hostname: Hostname of the client machine.
             create_session: Whether to create a session token.

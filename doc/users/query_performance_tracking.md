@@ -29,7 +29,7 @@ For each query, the system tracks:
 
 Performance tracking is automatically enabled when you use multi-model query generation through:
 
-- **Research GUI** (`bmlibrarian_research_gui.py`): Statistics displayed in console after document scoring
+- **Research GUI**: the former Flet Research GUI (`bmlibrarian_research_gui.py`, removed 2026-10-16) printed these statistics after document scoring. The Qt Research tab (`bmlibrarian_qt.py`) does not currently use multi-model query generation or performance tracking
 - **CLI** (`bmlibrarian_cli.py`): Statistics shown after the scoring step (future implementation)
 
 ### Manual Integration

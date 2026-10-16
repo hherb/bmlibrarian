@@ -10,6 +10,30 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Flet GUI retired** (2026-10-16, branch `refactor/retire-flet`, stacked
+  on `fix/p1-gui-correctness`): flet 1.0 runs sync handlers on the event
+  loop (0.28 used a thread pool), makes dialogs/FilePicker async services
+  and splits Tabs — a behavioural rewrite of ~25k lines, while every Flet
+  app except the Citation lab had a Qt plugin equivalent. Owner chose to retire Flet. Deleted
+  `gui/flet/`, `factchecker/gui/`, the `gui/*.py` shims, the Flet labs and
+  `bmlibrarian_research_gui.py`; dropped `flet` (24 packages, incl.
+  oauthlib). Kept/relocated: `gui/document_card_factory_base.py`,
+  `agents/lifecycle.py` (agent init/cleanup), research
+  `report_builder.py`. `fact_checker_review_gui.py` is now a Qt launcher
+  (`--user/--blind/--incremental/--db-file`, SQLite review packages work);
+  `scripts/{query,pico,prisma2020,study_assessment}_lab.py` open the Qt
+  plugins via `gui/qt/core/standalone.py`. `lab/__init__` is lazy (it
+  eagerly imported the Flet query lab, so **every Qt lab** was broken).
+  `paper_weight_lab` "find full text" now runs on `PDFDiscoveryWorker`
+  too. Remaining Flet-only features → ROADMAP §1 — notably multi-model
+  query generation, whose only caller was the Flet workflow, is now unwired.
+  Review follow-ups (PR #277): `--blind` really hides the AI/original
+  columns (they were only greyed out — rerun any blind annotation done with
+  the Qt tab before this fix); incremental "all annotated" is a finished
+  state; "n/a" is never written (it violated the CHECK constraint); unknown
+  `--user` names must be confirmed; "unclear" option added;
+  `standalone.py` runs plugin `cleanup()` on quit; `tests/test_no_flet.py`
+  guards against flet or deleted-module imports coming back.
 - **P1 GUI batch + Qt/Flet decoupling** (2026-10-16, branch
   `fix/p1-gui-correctness`): dependabot's oauthlib 4 bump (#267) dragged
   `flet` 0.28.3 → 1.0.3, and `bmlibrarian/gui/__init__.py` eagerly imported
@@ -28,7 +52,14 @@ off new work. Longer-term structural items live in
   replaces a query on a non-existent `pdf_filename` column), and
   `database.get_document_details` derives `pmid` via the pure
   `extract_pmid(external_id, source_name)` — numeric ids from non-PubMed
-  sources are no longer reported as PMIDs.
+  sources are no longer reported as PMIDs. Review follow-ups (PR #276):
+  `_finalize_discovery_result` returns a `FindPdfOutcome` (real reason
+  shown; failed DB write → "Not Saved"); `QtDocumentCardFactory.shutdown()`
+  stops discovery threads on quit; `fetch_document_details()` raises on DB
+  errors so citation enrichment can report an outage. Pre-existing issues
+  filed: #278 (FETCH verification prompt on a worker thread), #279
+  (CrossRef DOI written before verification), #280 (review packages assume
+  PubMed is source id 1).
 
 - **P1 backend correctness batch** (2026-10-15, PR #272): parameterised
   source filters, per-document guards in counterfactual + transparency
@@ -82,25 +113,6 @@ off new work. Longer-term structural items live in
   removed `PaperWeightAssessmentAgent._get_db_connection`;
   `test_resolvers.py::test_construct_proxy_url`,
   `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
-
-## In progress: port the Flet GUIs to flet 1.0
-
-Owner decision (2026-10-16): keep oauthlib 4 / flet 1.0.3 and port, rather
-than pin `flet<0.29` (which forces oauthlib back to 3.3.1). Affected: the
-Flet research GUI (`bmlibrarian_research_gui.py`, `gui/flet/`), the Flet
-fact-checker review GUI (`fact_checker_review_gui.py`, `factchecker/gui/`),
-the Flet labs in `lab/`, plus the top-level `gui/*.py` Flet shims — 54 files.
-Scope from static scans (scripts in the PR description): ~400 renamed
-attributes (`ft.padding.*`/`border.*`/`margin.*`/`alignment.*` →
-`ft.Padding`/`Border`/`Margin`/`Alignment.CENTER`, `ElevatedButton` →
-`Button(content=…)`, `ft.app` → `ft.run`, `FLET_APP` → `AppView.FLET_APP`,
-`ImageFit` → `BoxFit`) and ~75 constructor-keyword breaks (`Tab(text,
-content)` + `Tabs(tabs=…)` → `Tabs(content=Column[TabBar, TabBarView],
-length=…)`, `Dropdown(on_change)` → `on_select`, `TextField(helper_text)` →
-`helper`, `ExpansionTile(initially_expanded)` → `expanded`,
-`Icon(name)` → `icon`, `Container(max_width)`), plus runtime-only changes
-(dialogs via `page.show_dialog`, FilePicker as a service) found by
-launching each app.
 
 ## Next up (imminent — from the 2026-07-19 review, P1)
 

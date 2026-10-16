@@ -479,9 +479,6 @@ Enable async operations:
 # Launch Qt GUI
 uv run python bmlibrarian_qt.py
 
-# Launch legacy Flet GUI
-uv run python bmlibrarian_research_gui.py
-
 # Run tests (when you add them)
 uv run python -m pytest tests/gui/qt/
 

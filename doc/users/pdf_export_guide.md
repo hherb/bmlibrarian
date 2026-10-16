@@ -217,10 +217,10 @@ print(f"\nPDF report saved to: {pdf_path}")
 
 ### From GUI
 
-The Research GUI can integrate PDF export:
+A PySide6/Qt widget (for example in the Research tab of `bmlibrarian_qt.py`) can integrate PDF export:
 
 ```python
-# In bmlibrarian_research_gui.py
+# Example method on a PySide6 widget
 def export_to_pdf(self):
     """Export current report to PDF"""
     if not self.final_report:
