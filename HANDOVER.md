@@ -11,7 +11,7 @@ off new work. Longer-term structural items live in
 ## Recently landed (context)
 
 - **Fact-check evaluation no longer starves on large evidence sets**
-  (2026-10-18, branch `fix/factcheck-large-evidence`, closes #296). Root
+  (2026-10-18, PR #300, closes #296). Root
   cause, reproduced on the backed-up evidence: `gpt-oss:20b` reasons within
   `num_predict`, and on 49 citations it spent the flat 2,000 tokens on
   thinking and returned empty content (the prompt is only ~4 k tokens;
