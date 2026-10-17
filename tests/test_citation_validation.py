@@ -421,8 +421,102 @@ def test_batch_summary_reports_rejections() -> None:
     completed = [data for step, data in events if step == "citation_extraction_completed"]
     assert completed == [
         "Extracted 1 citations from 2 documents "
-        "(1 rejected: passage could not be verified in the abstract)"
+        "(1 rejected: passage not found in abstract ×1)"
     ]
+
+
+def test_batch_summary_breaks_rejections_down_by_reason() -> None:
+    """A fragment is not reported as an unverifiable passage."""
+    events = []
+    agent = CitationFinderAgent(
+        model="gpt-oss:20b",
+        show_model_info=False,
+        max_retries=0,
+        callback=lambda step, data: events.append((step, data)),
+    )
+    documents = [
+        ({"id": i, "title": "t", "abstract": ABSTRACT}, {"score": 4}) for i in (1, 2, 3)
+    ]
+    responses = [
+        _llm_response("Statins lower cholesterol."),
+        _llm_response("Aspirin"),
+        _llm_response("Aspirin"),
+    ]
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=responses
+    ):
+        agent.process_scored_documents_for_citations("q", documents)
+
+    completed = [data for step, data in events if step == "citation_extraction_completed"]
+    assert completed == [
+        "Extracted 0 citations from 3 documents (3 rejected: "
+        f"{REJECT_PASSAGE_NOT_FOUND} ×1, {REJECT_INCOMPLETE_SENTENCE} ×2)"
+    ]
+
+
+def test_retry_tells_the_model_why_its_passage_was_rejected() -> None:
+    """A retry is not the identical prompt: it names the rejection reason."""
+    _, citation, llm = _extract_with_llm_responses(
+        [_llm_response("Aspirin"), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert citation is not None
+    first_prompt = llm.call_args_list[0].args[0]
+    retry_prompt = llm.call_args_list[1].args[0]
+    assert REJECT_INCOMPLETE_SENTENCE not in first_prompt
+    assert REJECT_INCOMPLETE_SENTENCE in retry_prompt
+
+
+def test_connection_outage_is_retried_with_backoff(_no_backoff_waits: list) -> None:
+    """A dropped LLM connection is retried; success on retry is not an error."""
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False)
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent,
+        "_generate_and_parse_json",
+        side_effect=[ConnectionError("Ollama restarting"), _llm_response(GOOD_PASSAGE)],
+    ) as llm:
+        citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+    assert llm.call_count == 2
+    assert agent.get_validation_stats()["errors"] == 0
+    assert len(_no_backoff_waits) == 1
+
+
+def test_unreachable_server_is_retried_before_counting_an_error(_no_backoff_waits: list) -> None:
+    """A failed connection test is retried with backoff too."""
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False)
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", side_effect=[False, True]), patch.object(
+        agent, "_generate_and_parse_json", return_value=_llm_response(GOOD_PASSAGE)
+    ):
+        citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is not None
+    assert agent.get_validation_stats()["errors"] == 0
+    assert len(_no_backoff_waits) == 1
+
+
+def test_persistent_outage_is_one_error_naming_the_document(_no_backoff_waits: list) -> None:
+    """When every attempt fails, the error is counted once and the document recorded."""
+    agent = CitationFinderAgent(
+        model="gpt-oss:20b", show_model_info=False, transient_retry_attempts=3
+    )
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=ConnectionError("Ollama down")
+    ) as llm:
+        citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is None
+    assert llm.call_count == 3
+    stats = agent.get_validation_stats()
+    assert stats["errors"] == 1
+    assert [entry["document_id"] for entry in stats["errored_documents"]] == [7]
+    assert "Ollama down" in stats["errored_documents"][0]["error"]
+    assert len(_no_backoff_waits) == 2
 
 if __name__ == "__main__":
     # Run tests

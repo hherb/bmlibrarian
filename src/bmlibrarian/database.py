@@ -5,7 +5,7 @@ import re
 import time
 import logging
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, List, Tuple, Union, cast, LiteralString, Any
+from typing import Dict, Generator, Optional, List, Tuple, Union, cast, LiteralString, Any, Callable, Iterable
 from datetime import date
 
 import psycopg
@@ -16,6 +16,12 @@ from pathlib import Path
 from bmlibrarian.db_conninfo import build_conninfo
 from bmlibrarian import db_test_guard
 from bmlibrarian.env_loader import load_bmlibrarian_env
+from bmlibrarian.utils.transient_retry import (
+    DEFAULT_TRANSIENT_ATTEMPTS,
+    DEFAULT_TRANSIENT_BASE_SECONDS,
+    DEFAULT_TRANSIENT_CAP_SECONDS,
+    call_with_backoff,
+)
 
 # Load environment variables: the file named by BMLIBRARIAN_ENV_FILE if set
 # (e.g. ~/.bmlibrarian/.env_pg18), else ~/.bmlibrarian/.env, else ./.env.
@@ -1223,6 +1229,66 @@ def _apply_rrf_reranking(documents: List[Dict], strategies_used: List[str], k: i
         doc['_combined_score'] = rrf_score
 
 
+def _merge_strategy_results(
+    all_documents: Dict[Any, Dict],
+    rows: List[Dict],
+    strategy: str,
+    score_of: Callable[[Dict], Any],
+) -> None:
+    """
+    Merge one strategy's rows into the combined result, by document ID.
+
+    Args:
+        all_documents: document_id -> document dict with ``_search_scores``.
+        rows: The strategy's documents.
+        strategy: Key under which each document's score is stored.
+        score_of: Extracts the strategy's score from a row.
+    """
+    for doc in rows:
+        doc_id = doc['id']
+        if doc_id not in all_documents:
+            all_documents[doc_id] = doc
+            all_documents[doc_id]['_search_scores'] = {}
+        all_documents[doc_id]['_search_scores'][strategy] = score_of(doc)
+
+
+def _run_search_strategy(
+    strategy: str,
+    fetch: Callable[[], Iterable[Dict]],
+    retry_config: Dict[str, Any],
+    strategy_metadata: Dict[str, Any],
+) -> Optional[List[Dict]]:
+    """
+    Run one search strategy, retrying recoverable failures with backoff.
+
+    The rows are collected inside the attempt, so a strategy that fails
+    midway contributes nothing rather than a partial result.
+
+    Args:
+        strategy: Strategy name (``semantic``, ``bm25``, ``fulltext``).
+        fetch: Returns the strategy's rows (may be a generator).
+        retry_config: ``search_strategy.retry`` settings (``max_attempts``,
+            ``base_delay``, ``max_delay``); missing keys use the defaults.
+        strategy_metadata: ``search_hybrid`` metadata; a failure is appended
+            to its ``strategies_failed``.
+
+    Returns:
+        The rows, or None if the strategy failed.
+    """
+    try:
+        return call_with_backoff(
+            lambda: list(fetch()),
+            description=f"{strategy} search",
+            max_attempts=retry_config.get('max_attempts', DEFAULT_TRANSIENT_ATTEMPTS),
+            base_delay=retry_config.get('base_delay', DEFAULT_TRANSIENT_BASE_SECONDS),
+            max_delay=retry_config.get('max_delay', DEFAULT_TRANSIENT_CAP_SECONDS),
+        )
+    except Exception as e:
+        logger.error(f"{strategy} search failed: {e}", exc_info=True)
+        strategy_metadata['strategies_failed'].append({'strategy': strategy, 'error': str(e)})
+        return None
+
+
 def search_hybrid(
     search_text: str,
     query_text: str,
@@ -1250,8 +1316,15 @@ def search_hybrid(
         Tuple of (documents, strategy_metadata):
             - documents: List of unique documents with scores from each strategy
             - strategy_metadata: Dict containing strategies used and their parameters;
-              ``strategies_failed`` lists each strategy that raised
-              (``{'strategy', 'error'}``), whose results are therefore missing
+              ``strategies_failed`` lists each strategy that still raised
+              after retries (``{'strategy', 'error'}``), whose results are
+              therefore missing; ``fallback_used`` is ``'fulltext'`` when no
+              strategy was enabled and fulltext ran instead, else None.
+
+    A strategy that fails with a recoverable error (dropped connection,
+    timeout) is retried with exponential backoff, as configured under
+    ``search_strategy.retry``. When enabled strategies fail, fulltext is not
+    run in their place: the failure is reported instead.
     """
     from .config import get_config
 
@@ -1267,6 +1340,8 @@ def search_hybrid(
         # Strategies that raised: [{'strategy': name, 'error': message}].
         # Callers use this to tell "found nothing" from "could not search".
         'strategies_failed': [],
+        # 'fulltext' when no strategy was enabled and fulltext ran instead.
+        'fallback_used': None,
         'semantic_search_params': None,
         'bm25_search_params': None,
         'fulltext_search_params': None
@@ -1293,120 +1368,101 @@ def search_hybrid(
 
     logger.info(f"  Search text: '{search_text}'")
     logger.info(f"  Query text: '{query_text}'")
+    retry_config = search_config.get('retry', {})
 
     # Priority order: semantic -> BM25 -> fulltext
     # 1. Semantic Search (if enabled)
     semantic_config = search_config.get('semantic', {})
     if semantic_config.get('enabled', False):
-        try:
-            threshold = semantic_config.get('similarity_threshold', 0.7)
-            max_results = semantic_config.get('max_results', 100)
-            embedding_model = semantic_config.get('embedding_model', 'snowflake-arctic-embed2:latest')
+        threshold = semantic_config.get('similarity_threshold', 0.7)
+        max_results = semantic_config.get('max_results', 100)
+        embedding_model = semantic_config.get('embedding_model', 'snowflake-arctic-embed2:latest')
 
-            logger.info(f"Executing semantic search (threshold={threshold}, max={max_results})")
-
-            semantic_count = 0
-            for doc in search_with_semantic(search_text, threshold, max_results):
-                doc_id = doc['id']
-                if doc_id not in all_documents:
-                    all_documents[doc_id] = doc
-                    all_documents[doc_id]['_search_scores'] = {}
-                all_documents[doc_id]['_search_scores']['semantic'] = doc.get('semantic_score', 0)
-                semantic_count += 1
-
+        logger.info(f"Executing semantic search (threshold={threshold}, max={max_results})")
+        rows = _run_search_strategy(
+            'semantic',
+            lambda: search_with_semantic(search_text, threshold, max_results),
+            retry_config, strategy_metadata,
+        )
+        if rows is not None:
+            _merge_strategy_results(
+                all_documents, rows, 'semantic', lambda doc: doc.get('semantic_score', 0)
+            )
             strategies_used.append('semantic')
             strategy_metadata['semantic_search_params'] = {
                 'model': embedding_model,
                 'threshold': threshold,
                 'max_results': max_results,
-                'documents_found': semantic_count
+                'documents_found': len(rows)
             }
-
-            logger.info(f"  Semantic search found {semantic_count} documents")
-
-        except Exception as e:
-            logger.error(f"Semantic search failed: {e}", exc_info=True)
-            strategy_metadata['strategies_failed'].append(
-                {'strategy': 'semantic', 'error': str(e)}
-            )
+            logger.info(f"  Semantic search found {len(rows)} documents")
 
     # 2. BM25 Search (if enabled)
     bm25_config = search_config.get('bm25', {})
     if bm25_config.get('enabled', False):
-        try:
-            max_results = bm25_config.get('max_results', 100)
-            k1 = bm25_config.get('k1', 1.2)
-            b = bm25_config.get('b', 0.75)
+        max_results = bm25_config.get('max_results', 100)
+        k1 = bm25_config.get('k1', 1.2)
+        b = bm25_config.get('b', 0.75)
 
-            logger.info(f"Executing BM25 search (k1={k1}, b={b}, max={max_results})")
-
-            bm25_count = 0
-            for doc in search_with_bm25(query_text, max_results, use_pubmed, use_medrxiv, use_others):
-                doc_id = doc['id']
-                if doc_id not in all_documents:
-                    all_documents[doc_id] = doc
-                    all_documents[doc_id]['_search_scores'] = {}
-                # Use bm25_score if available (future-proof), fallback to rank field
-                all_documents[doc_id]['_search_scores']['bm25'] = doc.get('bm25_score', doc.get('rank', 0))
-                bm25_count += 1
-
+        logger.info(f"Executing BM25 search (k1={k1}, b={b}, max={max_results})")
+        rows = _run_search_strategy(
+            'bm25',
+            lambda: search_with_bm25(query_text, max_results, use_pubmed, use_medrxiv, use_others),
+            retry_config, strategy_metadata,
+        )
+        if rows is not None:
+            # Use bm25_score if available (future-proof), fallback to rank field
+            _merge_strategy_results(
+                all_documents, rows, 'bm25',
+                lambda doc: doc.get('bm25_score', doc.get('rank', 0)),
+            )
             strategies_used.append('bm25')
             strategy_metadata['bm25_search_params'] = {
                 'k1': k1,
                 'b': b,
                 'max_results': max_results,
                 'query_expression': query_text,
-                'documents_found': bm25_count
+                'documents_found': len(rows)
             }
+            logger.info(f"  BM25 search found {len(rows)} documents")
 
-            logger.info(f"  BM25 search found {bm25_count} documents")
-
-        except Exception as e:
-            logger.error(f"BM25 search failed: {e}", exc_info=True)
-            strategy_metadata['strategies_failed'].append(
-                {'strategy': 'bm25', 'error': str(e)}
-            )
-
-    # 3. Fulltext Search (if enabled) - fallback to keyword if neither semantic nor BM25
+    # 3. Fulltext Search (if enabled)
     # Try 'fulltext' first, fall back to 'keyword' for backward compatibility
     fulltext_config = search_config.get('fulltext', search_config.get('keyword', {}))
     fulltext_enabled = fulltext_config.get('enabled', False)
 
-    # Enable fulltext as fallback if no other strategies are enabled
-    if not strategies_used:
+    # Fulltext is the fallback only when no strategy is enabled at all; when
+    # enabled strategies failed, the failure is reported instead of being
+    # papered over by a strategy the user did not configure.
+    if not fulltext_enabled and not strategies_used and not strategy_metadata['strategies_failed']:
         fulltext_enabled = True
+        strategy_metadata['fallback_used'] = 'fulltext'
         logger.info("No search strategies enabled - using fulltext as fallback")
 
     if fulltext_enabled:
-        try:
-            max_results = fulltext_config.get('max_results', 100)
+        max_results = fulltext_config.get('max_results', 100)
 
-            logger.info(f"Executing fulltext search (max={max_results})")
-
-            fulltext_count = 0
-            for doc in search_with_fulltext_function(query_text, max_results, use_pubmed, use_medrxiv, use_others):
-                doc_id = doc['id']
-                if doc_id not in all_documents:
-                    all_documents[doc_id] = doc
-                    all_documents[doc_id]['_search_scores'] = {}
-                # Use fulltext_score if available (future-proof), fallback to rank field
-                all_documents[doc_id]['_search_scores']['fulltext'] = doc.get('fulltext_score', doc.get('rank', 0))
-                fulltext_count += 1
-
+        logger.info(f"Executing fulltext search (max={max_results})")
+        rows = _run_search_strategy(
+            'fulltext',
+            lambda: search_with_fulltext_function(
+                query_text, max_results, use_pubmed, use_medrxiv, use_others
+            ),
+            retry_config, strategy_metadata,
+        )
+        if rows is not None:
+            # Use fulltext_score if available (future-proof), fallback to rank field
+            _merge_strategy_results(
+                all_documents, rows, 'fulltext',
+                lambda doc: doc.get('fulltext_score', doc.get('rank', 0)),
+            )
             strategies_used.append('fulltext')
             strategy_metadata['fulltext_search_params'] = {
                 'max_results': max_results,
                 'query_expression': query_text,
-                'documents_found': fulltext_count
+                'documents_found': len(rows)
             }
-
-            logger.info(f"  Fulltext search found {fulltext_count} documents")
-
-        except Exception as e:
-            logger.error(f"Fulltext search failed: {e}", exc_info=True)
-            strategy_metadata['strategies_failed'].append(
-                {'strategy': 'fulltext', 'error': str(e)}
-            )
+            logger.info(f"  Fulltext search found {len(rows)} documents")
 
     # Update strategy metadata
     strategy_metadata['strategies_used'] = strategies_used

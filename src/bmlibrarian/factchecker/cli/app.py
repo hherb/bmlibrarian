@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 
 from .commands import create_agent
-from .formatters import print_result_summary, print_detailed_results
+from .formatters import print_result_summary, print_detailed_results, print_failed_checks
 
 
 def main():
@@ -155,20 +155,30 @@ Input file format:
         print("=" * 80)
         storage_failures = agent.storage_failures
         check_failures = agent.check_failures
+        print(f"\n✓ {agent.stored_results} verdict(s) stored in PostgreSQL (factcheck schema)")
         if storage_failures:
             print(f"\n✗ WARNING: {storage_failures} result(s) FAILED to store in PostgreSQL")
             print("  (see log output above for details - these results are NOT in the database)")
-        else:
-            print("\n✓ Results stored in PostgreSQL (factcheck schema)")
         if check_failures:
             print(f"\n✗ WARNING: {check_failures} statement(s) could not be checked "
                   f"(search, scoring, citation or LLM failure)")
             print("  No verdict was stored for them; fix the cause (see log above) and "
                   "re-run with --incremental to retry only these")
-        print(f"  Total statements processed: {len(results)}")
+            print_failed_checks(results)
+        if agent.degraded_results:
+            print(f"\n⚠ {agent.degraded_results} verdict(s) are based on partial evidence "
+                  f"(a search strategy, or some documents, could not be examined)")
+            print("  They are stored with degradation_notes; use --detailed to see them")
+        if agent.session_bookkeeping_failed:
+            print("\n✗ WARNING: the processing session record could not be written "
+                  "(see log above)")
+        print(f"  Total statements attempted: {len(results)}")
 
-        if args.output:
+        export_failed = bool(args.output) and agent.export_failed
+        if args.output and not export_failed:
             print(f"✓ JSON export saved to: {args.output}")
+        elif export_failed:
+            print(f"\n✗ JSON export FAILED: {args.output} was not written (see log above)")
 
         # Print summary
         print_result_summary(results)
@@ -178,7 +188,10 @@ Input file format:
             print_detailed_results(results, verbose=args.verbose)
 
         # Non-zero so scripted runs notice statements left without a verdict
-        return 1 if (check_failures or storage_failures) else 0
+        # or output that was not written
+        failed = (check_failures or storage_failures or export_failed
+                  or agent.session_bookkeeping_failed)
+        return 1 if failed else 0
 
     except KeyboardInterrupt:
         print("\n\n⚠ Interrupted by user")

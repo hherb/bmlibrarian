@@ -20,9 +20,45 @@ off new work. Longer-term structural items live in
   (retried like other validation failures), and only appends closing
   punctuation the model omitted. The prompt now demands complete sentences.
   On 500 random PubMed abstracts it accepted 0 of 6,768 fragments and
-  rejected 0.6% of naive sentences, mostly correctly. Docs:
+  rejected 0.6% of naive sentences, mostly correctly (first version of the
+  rules; not re-measured after the review changes below). Docs:
   `doc/llm/sentence_bounds.md`, `citation_system.md`, `citation_guide.md`.
   Candidate for upstreaming to bmlib.
+- **PR #298 review fixes** (2026-10-18, same branch):
+  - *Sentence rules*: only `.`/`!`/`?` end a sentence (no line-break or
+    end-of-text ends); a single line break starts one only after a sentence
+    end or a heading/label line; initials ("J.", "U.S.") and more
+    abbreviations are not ends; "ET AL." in any case; gene/molecule names
+    ("p53", "mRNA", "β-…") may start a sentence; label-only and one-word
+    spans are rejected; borrowed closing marks must balance.
+  - *Citation agent*: connection failures retried with backoff;
+    `errored_documents` stat; retry prompt names the rejection reason;
+    batch summary broken down by reason.
+  - *Fact-checker*: no citations with any errored **or rejected** document
+    is now a `STAGE_CITATIONS` failure (it was stored as "insufficient
+    evidence"); recoverable failures retried with exponential backoff
+    (`utils/transient_retry.py`, `doc/developers/transient_retry.md`);
+    partial failures stored as `degradation_notes` (**migration 034**,
+    nullable JSONB on `factcheck.ai_evaluations`; SQLite packages, JSON
+    export and review GUI show them); citation stances validated, not
+    coerced to neutral; `FactCheckStage` StrEnum, picklable
+    `FactCheckStageError`; `FactCheckResult` validates verdict/error shape,
+    `FactCheckResult.failed()`; storage refuses error results; JSON import
+    skips `"error"` evaluations; `max_citations` validated; malformed batch
+    items fail alone; session `failed` when nothing was stored.
+  - *search_hybrid*: per-strategy retry (`search_strategy.retry`), partial
+    rows of a failed strategy discarded, fulltext fallback only when nothing
+    is enabled (`fallback_used`). Behaviour change for every caller: when
+    the enabled strategies all fail, the result is now empty instead of a
+    silent fulltext search. `QueryAgent.find_abstracts` logs a warning and
+    fires a `search_strategies_failed` callback, but the Qt research tab,
+    search tab and systematic review do not show it yet (follow-up).
+  - *CLI*: failed statements listed with their stage; real stored count;
+    failed `-o` export or session write exits 1; partial-evidence verdicts
+    flagged.
+  - Not done (pre-existing, outside this PR): `DocumentScoringAgent`'s regex
+    score fallback for invalid JSON, HyDE logged as enabled but never run in
+    `search_hybrid`, a failed thesaurus expansion not recorded in metadata.
 - **76 fallback fact-check verdicts deleted from `knowledgebase`**
   (2026-10-17, owner-approved, #296): their evidence rows went with them via
   cascade; CSV backup in
@@ -47,10 +83,10 @@ off new work. Longer-term structural items live in
   (research tab, systematic review, search tab) could use the same signal
   but do not yet. Also fixed: the CLI summary crashed on zero results. Docs:
   `doc/developers/fact_checker_system.md` "Failure handling". **Follow-up
-  #296**: 76 of 1,000 production verdicts are such fallbacks (all with 17–50
-  citations, so evaluation probably fails on large evidence sets). Data
-  cleanup needs owner approval; the root cause needs fixing or those
-  statements will keep failing.
+  #296**: 76 of 1,000 production verdicts were such fallbacks (all with 17–50
+  citations, so evaluation probably fails on large evidence sets); they were
+  deleted (see above). The root cause needs fixing or those statements will
+  keep failing.
 - **bmlib 0.10 adopted** (2026-10-17, PR #295, merged): pin
   `bmlib[ollama,pdf]>=0.10.0,<0.11.0`; `json_repair`, `agents/text_chunking`
   (`boundary_aware=False`), `paper_reviewer/text_utils` and

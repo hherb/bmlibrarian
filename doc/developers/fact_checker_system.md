@@ -257,7 +257,8 @@ CREATE TABLE factcheck.ai_evaluations (
     model_version TEXT,
     agent_config JSONB,                   -- Configuration snapshot
     session_id TEXT,
-    version INTEGER DEFAULT 1             -- Version tracking
+    version INTEGER DEFAULT 1,            -- Version tracking
+    degradation_notes JSONB               -- Migration 034: evidence not examined (NULL = complete)
 );
 
 -- Literature evidence citations (NO DATA DUPLICATION!)
@@ -471,50 +472,44 @@ def check_statement(statement, expected_answer=None):
 
 ### Batch Processing with Incremental Mode
 
+`check_batch_from_file` loads the JSON file, imports the statements and, in
+incremental mode, keeps only those with no AI evaluation; it then delegates
+to `check_batch`, which runs the per-statement loop:
+
 ```python
 def check_batch_from_file(input_file, output_file=None):
-    # 1. Load statements from JSON file
-    with open(input_file, 'r') as f:
-        statements = json.load(f)
-
-    # 2. Initialize database (PostgreSQL factcheck schema)
-    if self.use_database and not self.db:
+    statements = json.load(open(input_file))           # must be a JSON array
+    if not self.db:
         self.db = FactCheckerDB()
+    if self.incremental:
+        # import only NEW statements, then keep those with no ai_evaluations row
+        texts_needing_eval = set(self.db.get_statements_needing_evaluation(texts))
+        statements = [s for s in statements if text_of(s) in texts_needing_eval]
+    else:
+        self.db.import_json_results(input_file, skip_existing=True)
+    return self.check_batch(statements, output_file, source_file=input_file)
 
-    # 3. Incremental mode: filter already-evaluated statements
-    if self.incremental and self.db:
-        # Extract statement texts
-        statement_texts = [s.get('statement') or s.get('question', '') for s in statements]
 
-        # Get statements needing evaluation
-        texts_needing_eval = set(self.db.get_statements_needing_evaluation(statement_texts))
-
-        # Filter statements list
-        statements = [s for s in statements
-                     if (s.get('statement') or s.get('question', '')) in texts_needing_eval]
-
-    # 4. Process statements
-    results = []
+def check_batch(statements, output_file=None, source_file=None):
+    # counters reset per batch: check_failures, storage_failures,
+    # degraded_results, stored_results, export_failed, session_bookkeeping_failed
     for item in statements:
         try:
-            result = self.check_statement(
-                statement=item.get('statement') or item.get('question', ''),
-                expected_answer=item.get('answer') or item.get('expected_answer')
-            )
-        except Exception as e:              # FactCheckStageError or a bug
+            statement, expected, item_id = self._parse_batch_item(item)  # ValueError if malformed
+            result = self.check_statement(statement=statement, expected_answer=expected)
+        except Exception as e:              # FactCheckStageError, a bad item, or a bug
             self.check_failures += 1
-            results.append(FactCheckResult(..., evaluation=EVALUATION_ERROR))
+            results.append(FactCheckResult.failed(statement, e, expected, item_id))
             continue                        # never stored, see "Failure handling"
         results.append(result)
+        if result.is_degraded:
+            self.degraded_results += 1
+        if self.db and self._store_result_in_database(result, source_file):
+            self.stored_results += 1
 
-        # Store incrementally in database
-        if self.db:
-            self._store_result_in_database(result, input_file)
-
-    # 5. Optional JSON export
-    if output_file:
-        self.db.export_to_json(output_file)
-
+    self._finalize_database_session(self.stored_results, len(statements))
+    if output_file and self.export_database_to_json(output_file) is None:
+        self.export_failed = True
     return results
 ```
 
@@ -529,34 +524,118 @@ stage of `check_statement` therefore distinguishes "found nothing" from
 |---|---|---|
 | `_search_documents` | every search strategy ran, no matches | query generation or search raised, or no matches **and** `search_hybrid` metadata lists `strategies_failed` (it logs and swallows per-strategy errors, so an outage would otherwise look like an empty result) |
 | `_score_documents` | every document scored, none ≥ threshold | none ≥ threshold **and** ≥ 1 document failed to score |
-| `_extract_citations` | every document examined, no verified passage | extraction raised, or no citation **and** the citation agent's `errors` statistic rose |
-| `_evaluate_statement` | n/a | LLM request failed, unparseable JSON after `EVALUATION_JSON_RETRIES`, or invalid verdict/reason in all `EVALUATION_VALIDATION_ATTEMPTS` responses |
+| `_extract_citations` | every document examined and judged to have no relevant passage | extraction raised, or no citation **and** ≥ 1 document failed with an error (`errored_documents`) or had every passage rejected (`failed_citations`, e.g. fragments instead of complete sentences) |
+| `_evaluate_statement` | n/a | LLM request failed, unparseable JSON after `EVALUATION_JSON_RETRIES`, or an invalid verdict, reason or citation stance in all `EVALUATION_VALIDATION_ATTEMPTS` requests (that many in total) |
 
-Partial failures (some documents failed, others produced evidence) are logged
-and the statement continues with the evidence obtained.
-`_validate_evaluation_response` rejects any verdict outside `VALID_VERDICTS`
-instead of coercing it to "maybe". The old `_fallback_evaluation` heuristic
-has been removed.
+Rejected passages count as a failure because a model that keeps returning
+unusable output says nothing about the evidence. The error message names the
+documents and the rejection reasons. A document that fails the same way on
+every run keeps its statement unevaluated; the message lets the operator
+find it.
 
-`FactCheckStageError` carries `stage` (one of the `STAGE_*` constants) and
-`detail`, and propagates out of `check_statement`. `check_batch` catches every
-exception per statement. It returns a `FactCheckResult` with
-`evaluation == EVALUATION_ERROR` (`result.is_error`), increments
+**Recoverable failures are retried first.** A call that fails with a
+recoverable error (`utils/transient_retry.is_transient_error`: an unreachable
+LLM or database, a timeout) is retried with exponential backoff before it
+counts as a failure: the search (`find_abstracts`), each document's scoring,
+the evaluation request, each `search_hybrid` strategy
+(`search_strategy.retry`), and the citation agent's connection check and LLM
+request. The fact-checker's settings are the `fact_checker` agent config keys
+`transient_retry_attempts` (attempts in total, default 3) and
+`transient_retry_base_delay` (seconds before the first retry, default 2;
+doubled for each further retry, capped at 30). The LLM client additionally
+retries each request on its own. See `doc/developers/transient_retry.md`.
+
+**Partial failures are flagged.** When a stage fails only in part and the
+check still reaches a verdict (a search strategy failed but others returned
+documents, some documents could not be scored or quoted), each stage appends
+a note to the statement's `degradation_notes`. The result (also an
+"Insufficient evidence" maybe) carries them as
+`FactCheckResult.degradation_notes` (`is_degraded`), they are stored in
+`factcheck.ai_evaluations.degradation_notes` (JSONB, migration 034; NULL for
+a complete check), exported in JSON (`degradation_notes`) and SQLite review
+packages, and shown under the AI rationale in the review GUI. The CLI counts
+them and lists them with `--detailed`. A verdict with notes is still a
+verdict: it is stored and does not change the exit code.
+
+`_validate_evaluation_response(data, citation_count)` rejects any verdict
+outside `VALID_VERDICTS` instead of coercing it to "maybe", and requires a
+stance in `VALID_STANCES` (case and whitespace ignored) for every citation
+shown to the model; a missing or unknown stance is re-requested, never
+stored as "neutral". The old `_fallback_evaluation` heuristic has been
+removed.
+
+`FactCheckStageError` carries `stage` (a `FactCheckStage` StrEnum; the
+`STAGE_*` names are its members) and `detail`, survives pickling, and
+propagates out of `check_statement`. `check_batch` catches every exception
+per statement, including a malformed input item. It returns
+`FactCheckResult.failed(...)` (`evaluation == EVALUATION_ERROR`,
+`result.is_error`, `error_stage` set for stage errors), increments
 `self.check_failures`, and **does not store it**. The statement therefore has
 no AI evaluation, and `get_statements_needing_evaluation` (incremental mode)
-picks it up again. The session's `processed_statements` counts verdicts only,
-and failures are noted in `processing_metadata.error_message`. The CLI exits 1
-when `check_failures` or `storage_failures` is non-zero.
+picks it up again.
+
+`FactCheckResult.__post_init__` enforces the shape of both kinds of result:
+a verdict needs a confidence in `CONFIDENCE_LEVELS`; a failed check cannot
+carry a confidence, evidence, citation counts, an expected-answer match or
+degradation notes. `_store_result_in_database` raises `ValueError` for a
+failed check, so an error cannot be stored as a verdict even if a caller
+skips `check_batch`'s guard. `FactCheckerDB.import_json_results` likewise
+never imports an `"error"` evaluation.
+
+The session's `processed_statements` counts stored verdicts; its `status` is
+`failed` when statements were submitted and none got a stored verdict, else
+`completed`; `processing_metadata.error_message` lists failed checks, storage
+failures and partial-evidence verdicts. The CLI exits 1 when `check_failures`
+or `storage_failures` is non-zero, a requested JSON export was not written
+(`export_failed`), or the session row could not be written
+(`session_bookkeeping_failed`). It lists every failed statement with its
+stage, without `--verbose`.
 
 `CitationFinderAgent.extract_citation_from_document` counts every failure in
-the `errors` statistic: no LLM connection, unparseable output, a
-connection/value error from the LLM, or an unexpected exception. Irrelevant
-documents and rejected passages are not counted.
+the `errors` statistic and lists the document in `errored_documents`: no LLM
+connection or an LLM request still failing after the backoff retries,
+unparseable output, a value error from the LLM, or an unexpected exception.
+Irrelevant documents and rejected passages are not counted there; rejected
+passages are in `failed_citations` with their reason.
+
+#### Verdicts written before these fixes
+
+Before October 2026 failures were stored as "maybe" verdicts, which
+incremental mode never re-checks. The removed fallback's rows are
+recognisable by their reason. To review them (read-only):
+
+```sql
+SELECT ae.evaluation_id, s.statement_id, s.statement_text, ae.reason, ae.evaluated_at
+FROM factcheck.ai_evaluations ae
+JOIN factcheck.statements s USING (statement_id)
+WHERE ae.evaluation = 'maybe'
+  AND ae.reason LIKE 'Found % relevant citations but unable to automatically determine%';
+```
+
+To make them unevaluated so `--incremental` re-checks them, back the rows up
+first, then delete them (evidence rows follow by `ON DELETE CASCADE`). This
+changes the database: on `knowledgebase` it needs the owner's approval, and
+it has already been done once for 76 rows (2026-10-17, #296).
+
+```sql
+BEGIN;
+DELETE FROM factcheck.ai_evaluations
+WHERE evaluation = 'maybe'
+  AND reason LIKE 'Found % relevant citations but unable to automatically determine%';
+-- check the row count, then COMMIT (or ROLLBACK)
+```
+
+A statement with an older evaluation version still counts as evaluated after
+its latest version is deleted. Older "Insufficient evidence" maybes cannot be
+told apart from search outages after the fact; re-check them if it matters.
 
 ### Database Storage Workflow
 
 ```python
-def _store_result_in_database(result: FactCheckResult, source_file: str):
+def _store_result_in_database(result: FactCheckResult, source_file: str) -> bool:
+    if result.is_error:                     # a failed check is never a verdict
+        raise ValueError("Refusing to store a failed fact-check as a verdict")
+
     # 1. Insert or get statement
     stmt = Statement(
         statement_text=result.statement,
@@ -579,7 +658,8 @@ def _store_result_in_database(result: FactCheckResult, source_file: str):
         matches_expected=result.matches_expected,
         model_used=self.model,
         session_id=self.current_session_id,
-        version=1
+        version=1,                          # assigned as MAX(version) + 1 by the insert
+        degradation_notes=result.degradation_notes or None   # JSONB, NULL = complete
     )
     eval_id = db.insert_ai_evaluation(ai_eval)
 

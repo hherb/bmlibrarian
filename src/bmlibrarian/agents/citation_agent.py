@@ -17,6 +17,11 @@ from .base import BaseAgent
 from .queue_manager import TaskPriority, TaskStatus
 from ..utils.passage_match import PassageMatch, find_passage
 from ..utils.sentence_bounds import complete_sentence_span
+from ..utils.transient_retry import (
+    DEFAULT_TRANSIENT_ATTEMPTS,
+    DEFAULT_TRANSIENT_BASE_SECONDS,
+    call_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +42,15 @@ REJECT_MISSING_SUMMARY = "summary is missing or not text"
 # mid-sentence); citations must be one or more complete sentences (#289).
 REJECT_INCOMPLETE_SENTENCE = "passage is not one or more complete sentences"
 
+# Rejections whose log line includes the passage similarity (for the other
+# reasons the similarity says nothing, or reads like a pass).
+SIMILARITY_REJECTIONS = frozenset({REJECT_BELOW_THRESHOLD})
+
 # Characters of a rejected LLM passage kept in failed_citations / in logs.
 FAILED_PASSAGE_STORED_CHARS = 200
 FAILED_PASSAGE_LOGGED_CHARS = 100
+# Characters of an error message kept in errored_documents.
+ERROR_MESSAGE_STORED_CHARS = 300
 
 
 def _as_relevance(value: Any) -> Optional[float]:
@@ -88,8 +99,10 @@ class _ResponseCheck:
 
     Exactly one of three cases: ``irrelevant`` (the LLM found nothing relevant
     enough; stop without retrying), ``failure`` set (reject and retry), or
-    accepted: ``passage`` holds the abstract's own text for the matched span,
-    with the response's ``summary`` and ``relevance_score``.
+    accepted: ``passage`` holds the abstract's own text for the complete
+    sentences around the matched span, with the response's ``summary`` and
+    ``relevance_score``. ``match`` keeps the raw match, whose offsets do not
+    include closing punctuation the sentence check took from the abstract.
     """
 
     irrelevant: bool = False
@@ -118,7 +131,9 @@ class CitationFinderAgent(BaseAgent):
                  orchestrator=None,
                  show_model_info: bool = True,
                  audit_conn: Optional[psycopg.Connection] = None,
-                 max_retries: int = 3):
+                 max_retries: int = 3,
+                 transient_retry_attempts: int = DEFAULT_TRANSIENT_ATTEMPTS,
+                 transient_retry_base_delay: float = DEFAULT_TRANSIENT_BASE_SECONDS):
         """
         Initialize the CitationFinderAgent.
 
@@ -132,11 +147,16 @@ class CitationFinderAgent(BaseAgent):
             show_model_info: Whether to display model information on initialization
             audit_conn: Optional PostgreSQL connection for audit tracking
             max_retries: Maximum number of retry attempts for failed citation extractions (default: 3)
+            transient_retry_attempts: Attempts in total when the LLM server
+                is unreachable or times out (exponential backoff between them).
+            transient_retry_base_delay: Seconds before the first such retry.
         """
         super().__init__(model=model, host=host, temperature=temperature, top_p=top_p,
                         callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "citation_finder_agent"
         self.max_retries = max_retries
+        self.transient_retry_attempts = transient_retry_attempts
+        self.transient_retry_base_delay = transient_retry_base_delay
 
         # Initialize audit tracking components if connection provided
         self._citation_tracker = None
@@ -165,7 +185,10 @@ class CitationFinderAgent(BaseAgent):
             'exact_matches': 0,
             'fuzzy_matches': 0,
             'errors': 0,
-            'failed_citations': []
+            'failed_citations': [],
+            # One entry per document counted in 'errors':
+            # {'document_id': ..., 'error': message}.
+            'errored_documents': []
         }
 
     def get_agent_type(self) -> str:
@@ -276,7 +299,7 @@ class CitationFinderAgent(BaseAgent):
         )
 
     def _extraction_summary(
-        self, extracted: int, documents: int, failed_before: int, errors_before: int
+        self, extracted: int, documents: int, rejections_before: int, errors_before: int
     ) -> str:
         """
         Describe a batch extraction, including rejected passages and errors.
@@ -284,21 +307,81 @@ class CitationFinderAgent(BaseAgent):
         Args:
             extracted: Citations extracted in this batch.
             documents: Documents processed in this batch.
-            failed_before: ``validations_failed`` before the batch started.
+            rejections_before: Length of ``failed_citations`` before the batch.
             errors_before: ``errors`` before the batch started.
 
         Returns:
-            A one-line summary for logs and progress callbacks.
+            A one-line summary for logs and progress callbacks, with the
+            rejections broken down by reason (``REJECT_*``).
         """
         summary = f"Extracted {extracted} citations from {documents} documents"
-        rejected = self._validation_stats['validations_failed'] - failed_before
+        rejections = self._validation_stats['failed_citations'][rejections_before:]
         errors = self._validation_stats['errors'] - errors_before
         notes = []
-        if rejected:
-            notes.append(f"{rejected} rejected: passage could not be verified in the abstract")
+        if rejections:
+            counts: Dict[str, int] = {}
+            for entry in rejections:
+                counts[entry['reason']] = counts.get(entry['reason'], 0) + 1
+            breakdown = ", ".join(f"{reason} ×{count}" for reason, count in counts.items())
+            notes.append(f"{len(rejections)} rejected: {breakdown}")
         if errors:
             notes.append(f"{errors} failed with an error, see log")
         return f"{summary} ({'; '.join(notes)})" if notes else summary
+
+    def _record_error(self, document_id: Any, error: str) -> None:
+        """
+        Count a document whose extraction failed (not a judgement about it).
+
+        Args:
+            document_id: The document's ID.
+            error: What went wrong.
+        """
+        self._validation_stats['errors'] += 1
+        self._validation_stats['errored_documents'].append({
+            'document_id': document_id,
+            'error': error[:ERROR_MESSAGE_STORED_CHARS],
+        })
+
+    def _ensure_connection(self, document_id: Any) -> None:
+        """
+        Check the LLM server is reachable, retrying with backoff.
+
+        Args:
+            document_id: The document about to be processed, for log messages.
+
+        Raises:
+            ConnectionError: If the server stayed unreachable.
+        """
+        def check() -> None:
+            """Raise ConnectionError if the server does not answer."""
+            if not self.test_connection():
+                raise ConnectionError("cannot connect to the LLM server")
+
+        call_with_backoff(
+            check,
+            description=f"LLM connection check (citation extraction, doc {document_id})",
+            max_attempts=self.transient_retry_attempts,
+            base_delay=self.transient_retry_base_delay,
+        )
+
+    @staticmethod
+    def _retry_note(previous_failure: Optional[str]) -> str:
+        """
+        Tell the model why its previous answer was rejected.
+
+        Args:
+            previous_failure: The ``REJECT_*`` reason of the previous attempt,
+                or None on the first attempt.
+
+        Returns:
+            A prompt line naming the rejection, or "" on the first attempt.
+        """
+        if previous_failure is None:
+            return ""
+        return (
+            f"- Your previous answer was REJECTED because: {previous_failure}. "
+            f"Correct this and follow every requirement above exactly"
+        )
 
     def get_validation_stats(self) -> Dict[str, Any]:
         """Get citation validation statistics."""
@@ -328,13 +411,10 @@ class CitationFinderAgent(BaseAgent):
             Citation object if relevant passage found, None otherwise. When
             ``None`` is due to a failure (no LLM connection, unusable LLM
             output, an unexpected exception) rather than a judgement about the
-            document, the ``errors`` validation statistic is incremented.
+            document, the ``errors`` validation statistic is incremented and
+            the document is listed in ``errored_documents``. An unreachable or
+            timed-out LLM server is retried with exponential backoff first.
         """
-        if not self.test_connection():
-            self._validation_stats['errors'] += 1
-            logger.error("Cannot connect to Ollama - citation extraction unavailable")
-            return None
-
         # Get document metadata for logging
         doc_id = document.get('id', 'unknown')
         abstract = document.get('abstract', '')
@@ -344,7 +424,18 @@ class CitationFinderAgent(BaseAgent):
             logger.warning(f"No abstract text found for document {doc_id}")
             return None
 
+        try:
+            self._ensure_connection(doc_id)
+        except ConnectionError as e:
+            self._record_error(doc_id, str(e))
+            logger.error(f"Cannot connect to the LLM server - citation extraction "
+                         f"unavailable for document {doc_id}: {e}")
+            return None
+
         min_similarity = CITATION_MIN_SIMILARITY
+        # Reason the previous attempt's passage was rejected, told to the
+        # model on the retry so it is not sent the identical prompt.
+        previous_failure: Optional[str] = None
 
         # Retry loop: initial attempt + retries
         for attempt in range(self.max_retries + 1):
@@ -380,6 +471,7 @@ Your task:
 - Do NOT add interpretations or explanations to the extracted text
 - If no single exact passage is sufficiently relevant, respond with has_relevant_content: false
 - The passage MUST be one or more COMPLETE sentences: start at the first word of a sentence and end at its closing punctuation. Never extract a single word, a phrase or part of a sentence; such passages are rejected
+{self._retry_note(previous_failure)}
 
 Response format (JSON):
 {{
@@ -397,19 +489,25 @@ If no sufficiently relevant content is found, respond with:
 
 Respond only with valid JSON."""
 
-                # Make request to Ollama and parse JSON (with automatic retry on parse failures)
+                # Request and parse JSON (retrying parse failures with a new
+                # generation, and an unreachable server with backoff)
                 try:
-                    citation_data = self._generate_and_parse_json(
-                        prompt,
-                        max_retries=self.max_retries,
-                        retry_context=f"citation extraction (doc {doc_id})"
+                    citation_data = call_with_backoff(
+                        lambda: self._generate_and_parse_json(
+                            prompt,
+                            max_retries=self.max_retries,
+                            retry_context=f"citation extraction (doc {doc_id})"
+                        ),
+                        description=f"citation extraction LLM request (doc {doc_id})",
+                        max_attempts=self.transient_retry_attempts,
+                        base_delay=self.transient_retry_base_delay,
                     )
                 except json.JSONDecodeError as e:
-                    self._validation_stats['errors'] += 1
+                    self._record_error(doc_id, f"unparseable LLM output: {e}")
                     logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
                     return None
                 except (ConnectionError, ValueError) as e:
-                    self._validation_stats['errors'] += 1
+                    self._record_error(doc_id, str(e))
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 
@@ -422,10 +520,13 @@ Respond only with valid JSON."""
                 if check.failure is not None:
                     # Validation failed - check if we should retry
                     is_final_attempt = (attempt == self.max_retries)
-                    detail = (
-                        f"{check.failure} (similarity={check.match.similarity:.3f}, "
-                        f"threshold={min_similarity})"
-                    )
+                    previous_failure = check.failure
+                    detail = check.failure
+                    if check.failure in SIMILARITY_REJECTIONS:
+                        detail += (
+                            f" (similarity={check.match.similarity:.3f}, "
+                            f"threshold={min_similarity})"
+                        )
 
                     if is_final_attempt:
                         # Final attempt failed - track statistics and reject
@@ -463,11 +564,12 @@ Respond only with valid JSON."""
                     self._validation_stats['exact_matches'] += 1
                 else:
                     self._validation_stats['fuzzy_matches'] += 1
-                if match.text != check.llm_passage:
+                if check.passage != check.llm_passage:
                     logger.info(
                         f"✓ Citation {'exact' if match.exact else 'fuzzy'}-matched "
                         f"(similarity={match.similarity:.3f}). "
-                        f"Replaced LLM text with exact abstract text (doc {doc_id})"
+                        f"Stored the abstract's own text for the complete "
+                        f"sentence(s) instead of the LLM text (doc {doc_id})"
                     )
 
                 # Log successful retry if this wasn't the first attempt
@@ -494,8 +596,8 @@ Respond only with valid JSON."""
 
                 return citation
 
-            except Exception:
-                self._validation_stats['errors'] += 1
+            except Exception as e:
+                self._record_error(doc_id, f"unexpected error: {e}")
                 logger.exception(
                     f"Unexpected error extracting citation from document {doc_id} "
                     f"(attempt {attempt + 1})"
@@ -538,7 +640,7 @@ Respond only with valid JSON."""
             return citations
 
         logger.info(f"Processing {len(qualifying_docs)} documents at or above threshold {score_threshold}")
-        failed_before = self._validation_stats['validations_failed']
+        rejections_before = len(self._validation_stats['failed_citations'])
         errors_before = self._validation_stats['errors']
 
         for i, (document, score_result) in enumerate(qualifying_docs):
@@ -558,7 +660,7 @@ Respond only with valid JSON."""
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
 
         summary = self._extraction_summary(
-            len(citations), len(qualifying_docs), failed_before, errors_before
+            len(citations), len(qualifying_docs), rejections_before, errors_before
         )
         logger.info(summary)
         self._call_callback("citation_extraction_completed", summary)

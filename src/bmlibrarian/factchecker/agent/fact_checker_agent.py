@@ -9,9 +9,16 @@ Takes biomedical statements and evaluates their veracity (yes/no/maybe) by:
 
 A "maybe" verdict means the literature was examined and found insufficient.
 A stage that fails for any other reason (database or LLM outage, a model that
-keeps returning unusable output, a code bug) raises ``FactCheckStageError``
-instead, and ``check_batch`` reports that statement as failed without storing
-a verdict, so incremental mode retries it on the next run.
+keeps returning unusable output) raises ``FactCheckStageError`` instead;
+``check_batch`` reports such a statement, or one whose check raised any other
+exception (a bug), as failed without storing a verdict, so incremental mode
+retries it on the next run.
+
+Recoverable failures (an unreachable LLM or database, a timeout) are retried
+with exponential backoff before they count as failures. A verdict reached
+although part of the evidence could not be examined (a failed search
+strategy, documents that could not be scored or quoted) is stored with
+``degradation_notes`` describing what is missing.
 """
 
 import json
@@ -19,37 +26,91 @@ import logging
 import os
 import tempfile
 import uuid
+from enum import StrEnum
 from typing import Dict, List, Optional, Any, Callable, TypeVar, cast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from bmlibrarian.agents.base import BaseAgent
 from bmlibrarian.agents.query_agent import QueryAgent
 from bmlibrarian.agents.scoring_agent import DocumentScoringAgent
 from bmlibrarian.agents.citation_agent import CitationFinderAgent, Citation
+from ...utils.transient_retry import (
+    DEFAULT_TRANSIENT_ATTEMPTS,
+    DEFAULT_TRANSIENT_BASE_SECONDS,
+    call_with_backoff,
+)
 from ..db.database import (
     FactCheckerDB, Statement, AIEvaluation, Evidence
 )
 
 logger = logging.getLogger(__name__)
 
-_SubAgent = TypeVar("_SubAgent")
+_SubAgent = TypeVar("_SubAgent", bound=BaseAgent)
 
 # Verdicts the evaluation LLM may return; anything else is an invalid response.
 VALID_VERDICTS = ("yes", "no", "maybe")
 # Marks a statement whose fact-check failed. Never stored as a verdict.
 EVALUATION_ERROR = "error"
+# Confidence levels a verdict carries (a failed check has none).
+CONFIDENCE_LEVELS = ("high", "medium", "low")
+# Stances the evaluation LLM may give each citation.
+VALID_STANCES = ("supports", "contradicts", "neutral")
 # JSON-parse retries inside one evaluation request (BaseAgent._chat_and_parse_json).
 EVALUATION_JSON_RETRIES = 3
-# Evaluation requests made when the LLM returns valid JSON with an invalid
-# verdict or missing fields, before the statement is reported as failed.
+# Evaluation requests made in total (the first plus retries) when the LLM
+# returns valid JSON with an invalid verdict, stance or missing fields, before
+# the statement is reported as failed.
 EVALUATION_VALIDATION_ATTEMPTS = 2
+# Document IDs listed in a failure message or degradation note.
+MAX_LISTED_DOCUMENT_IDS = 10
 
-# Pipeline stage names, used in FactCheckStageError messages.
-STAGE_SEARCH = "literature search"
-STAGE_SCORING = "relevance scoring"
-STAGE_CITATIONS = "citation extraction"
-STAGE_EVALUATION = "statement evaluation"
+
+class FactCheckStage(StrEnum):
+    """Pipeline stages, named in ``FactCheckStageError`` messages."""
+
+    SEARCH = "literature search"
+    SCORING = "relevance scoring"
+    CITATIONS = "citation extraction"
+    EVALUATION = "statement evaluation"
+
+
+STAGE_SEARCH = FactCheckStage.SEARCH
+STAGE_SCORING = FactCheckStage.SCORING
+STAGE_CITATIONS = FactCheckStage.CITATIONS
+STAGE_EVALUATION = FactCheckStage.EVALUATION
+
+
+def _list_ids(document_ids: List[Any]) -> str:
+    """
+    Format document IDs for a message, shortened past ``MAX_LISTED_DOCUMENT_IDS``.
+
+    Args:
+        document_ids: The IDs.
+
+    Returns:
+        e.g. ``"101, 102"`` or ``"101, 102, ... (+5 more)"``.
+    """
+    shown = ", ".join(str(doc_id) for doc_id in document_ids[:MAX_LISTED_DOCUMENT_IDS])
+    hidden = len(document_ids) - MAX_LISTED_DOCUMENT_IDS
+    return f"{shown}, ... (+{hidden} more)" if hidden > 0 else shown
+
+
+def _count_reasons(rejections: List[Dict[str, Any]]) -> str:
+    """
+    Summarise citation rejections by reason.
+
+    Args:
+        rejections: ``failed_citations`` entries of the citation agent.
+
+    Returns:
+        e.g. ``"passage is not one or more complete sentences ×2"``.
+    """
+    counts: Dict[str, int] = {}
+    for entry in rejections:
+        reason = str(entry.get('reason', 'unknown reason'))
+        counts[reason] = counts.get(reason, 0) + 1
+    return ", ".join(f"{reason} ×{count}" for reason, count in counts.items())
 
 
 def _require_sub_agent(agent: Optional[_SubAgent], name: str) -> _SubAgent:
@@ -102,11 +163,11 @@ class FactCheckStageError(RuntimeError):
     model failure is never recorded as "insufficient evidence".
 
     Attributes:
-        stage: The pipeline stage that failed (one of the ``STAGE_*`` names).
+        stage: The pipeline stage that failed.
         detail: What went wrong.
     """
 
-    def __init__(self, stage: str, detail: str) -> None:
+    def __init__(self, stage: FactCheckStage, detail: str) -> None:
         """
         Create the error.
 
@@ -114,9 +175,14 @@ class FactCheckStageError(RuntimeError):
             stage: The pipeline stage that failed.
             detail: What went wrong.
         """
-        self.stage = stage
+        self.stage = FactCheckStage(stage)
         self.detail = detail
-        super().__init__(f"{stage} failed: {detail}")
+        # Both arguments go to args so the error can be pickled and rebuilt.
+        super().__init__(self.stage, detail)
+
+    def __str__(self) -> str:
+        """Describe the failure as "<stage> failed: <detail>"."""
+        return f"{self.stage} failed: {self.detail}"
 
 
 @dataclass
@@ -149,12 +215,20 @@ class EvidenceReference:
 
 @dataclass
 class FactCheckResult:
-    """Result of a fact-check evaluation."""
+    """Result of a fact-check: a verdict, or a failed check (``is_error``).
+
+    A verdict has ``evaluation`` in ``VALID_VERDICTS`` and a confidence in
+    ``CONFIDENCE_LEVELS``; ``degradation_notes`` lists evidence that could not
+    be examined (empty for a complete check). A failed check has
+    ``evaluation == EVALUATION_ERROR``, no confidence, evidence, citation
+    counts, expected-answer match or notes, and ``error_stage`` names the
+    failing stage when known. Use ``FactCheckResult.failed`` to build one.
+    """
     statement: str
     evaluation: str  # "yes", "no", "maybe", or EVALUATION_ERROR (check failed)
     reason: str
     evidence_list: List[EvidenceReference]
-    confidence: Optional[str] = "medium"  # "high", "medium", "low"
+    confidence: Optional[str] = "medium"  # "high", "medium", "low"; None for a failed check
     documents_reviewed: int = 0
     supporting_citations: int = 0
     contradicting_citations: int = 0
@@ -162,17 +236,89 @@ class FactCheckResult:
     expected_answer: Optional[str] = None
     matches_expected: Optional[bool] = None
     input_statement_id: Optional[str] = None  # Original ID from input file (e.g., PMID)
-    timestamp: str = None
+    timestamp: Optional[str] = None
+    # Evidence that could not be examined although a verdict was reached.
+    degradation_notes: List[str] = field(default_factory=list)
+    # Stage that failed, for a failed check (None if unknown or a bug).
+    error_stage: Optional[FactCheckStage] = None
 
-    def __post_init__(self):
-        """Set timestamp if not provided."""
+    def __post_init__(self) -> None:
+        """Validate the verdict/error invariants and set the timestamp.
+
+        Raises:
+            ValueError: If ``evaluation`` is not a verdict or the error
+                marker, a verdict lacks a valid confidence or names an error
+                stage, or a failed check carries a verdict's payload.
+        """
+        if self.evaluation == EVALUATION_ERROR:
+            payload = {
+                'confidence': self.confidence,
+                'evidence_list': self.evidence_list,
+                'matches_expected': self.matches_expected,
+                'citation counts': (
+                    self.supporting_citations or self.contradicting_citations
+                    or self.neutral_citations or None
+                ),
+                'degradation_notes': self.degradation_notes,
+            }
+            present = [name for name, value in payload.items() if value not in (None, [])]
+            if present:
+                raise ValueError(f"A failed fact-check cannot carry {', '.join(present)}")
+        elif self.evaluation in VALID_VERDICTS:
+            if self.confidence not in CONFIDENCE_LEVELS:
+                raise ValueError(
+                    f"A verdict needs a confidence in {CONFIDENCE_LEVELS}, got {self.confidence!r}"
+                )
+            if self.error_stage is not None:
+                raise ValueError("A verdict cannot name a failed stage")
+        else:
+            raise ValueError(
+                f"Invalid evaluation {self.evaluation!r} "
+                f"(expected one of {VALID_VERDICTS} or {EVALUATION_ERROR!r})"
+            )
         if self.timestamp is None:
             self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    @classmethod
+    def failed(
+        cls,
+        statement: str,
+        error: BaseException,
+        expected_answer: Optional[str] = None,
+        input_statement_id: Optional[str] = None,
+    ) -> "FactCheckResult":
+        """
+        Build the result of a fact-check that failed.
+
+        Args:
+            statement: The statement that could not be checked.
+            error: Why (a ``FactCheckStageError`` names the stage).
+            expected_answer: The expected answer from the input, if any.
+            input_statement_id: The statement's ID in the input file, if any.
+
+        Returns:
+            A result with ``is_error`` True.
+        """
+        return cls(
+            statement=statement,
+            evaluation=EVALUATION_ERROR,
+            reason=f"Error during fact-checking: {error}",
+            evidence_list=[],
+            confidence=None,
+            expected_answer=expected_answer,
+            input_statement_id=input_statement_id,
+            error_stage=error.stage if isinstance(error, FactCheckStageError) else None,
+        )
 
     @property
     def is_error(self) -> bool:
         """True if the fact-check failed and ``evaluation`` is not a verdict."""
         return self.evaluation == EVALUATION_ERROR
+
+    @property
+    def is_degraded(self) -> bool:
+        """True for a verdict reached although some evidence was not examined."""
+        return bool(self.degradation_notes)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -193,6 +339,12 @@ class FactCheckResult:
 
         if self.input_statement_id is not None:
             result["input_statement_id"] = self.input_statement_id
+
+        if self.degradation_notes:
+            result["degradation_notes"] = list(self.degradation_notes)
+
+        if self.error_stage is not None:
+            result["error_stage"] = str(self.error_stage)
 
         if self.expected_answer is not None:
             result["expected_answer"] = self.expected_answer
@@ -225,7 +377,9 @@ class FactCheckerAgent(BaseAgent):
         score_threshold: float = 2.5,
         max_search_results: int = 50,
         max_citations: Optional[int] = None,
-        incremental: bool = False
+        incremental: bool = False,
+        transient_retry_attempts: int = DEFAULT_TRANSIENT_ATTEMPTS,
+        transient_retry_base_delay: float = DEFAULT_TRANSIENT_BASE_SECONDS
     ):
         """
         Initialize the FactCheckerAgent.
@@ -243,7 +397,25 @@ class FactCheckerAgent(BaseAgent):
             max_search_results: Maximum number of documents to retrieve
             max_citations: Maximum number of citations to extract (None = no limit, use all scored documents)
             incremental: If True, skip statements that already have AI evaluations
+            transient_retry_attempts: Attempts in total for a call that fails
+                with a recoverable error (LLM or database unreachable,
+                timeout), with exponential backoff between them.
+            transient_retry_base_delay: Seconds before the first such retry.
+
+        Raises:
+            TypeError: If ``max_citations`` is neither None nor an int.
+            ValueError: If ``max_citations`` is less than 1.
         """
+        if max_citations is not None:
+            if not isinstance(max_citations, int) or isinstance(max_citations, bool):
+                raise TypeError(
+                    f"max_citations must be an int or None, got {type(max_citations).__name__}"
+                )
+            if max_citations < 1:
+                raise ValueError(
+                    f"max_citations must be >= 1 (None = no limit), got {max_citations}"
+                )
+
         super().__init__(
             model=model,
             host=host,
@@ -258,6 +430,8 @@ class FactCheckerAgent(BaseAgent):
         self.score_threshold = score_threshold
         self.max_search_results = max_search_results
         self.max_citations = max_citations
+        self.transient_retry_attempts = transient_retry_attempts
+        self.transient_retry_base_delay = transient_retry_base_delay
         self.db: Optional[FactCheckerDB] = None
         self.current_session_id: Optional[str] = None
         self.incremental = incremental
@@ -269,6 +443,14 @@ class FactCheckerAgent(BaseAgent):
         # any other exception); reset per batch. Their results carry
         # EVALUATION_ERROR and are never stored as verdicts.
         self.check_failures: int = 0
+        # Verdicts of the current batch that carry degradation_notes.
+        self.degraded_results: int = 0
+        # Verdicts of the current batch stored in the database.
+        self.stored_results: int = 0
+        # Set when the batch's JSON export was requested but not written.
+        self.export_failed: bool = False
+        # Set when the processing-session row could not be written/updated.
+        self.session_bookkeeping_failed: bool = False
 
         # Initialize sub-agents (will be set up during fact-checking)
         self.query_agent: Optional[QueryAgent] = None
@@ -314,6 +496,8 @@ class FactCheckerAgent(BaseAgent):
                 model=citation_model,
                 host=self.host,
                 show_model_info=False,
+                transient_retry_attempts=self.transient_retry_attempts,
+                transient_retry_base_delay=self.transient_retry_base_delay,
                 **self._filter_agent_params(citation_config)
             )
 
@@ -326,6 +510,24 @@ class FactCheckerAgent(BaseAgent):
         """
         supported_params = {'temperature', 'top_p'}
         return {k: v for k, v in config.items() if k in supported_params}
+
+    def _with_backoff(self, operation: Callable[[], Any], description: str) -> Any:
+        """
+        Run ``operation``, retrying recoverable failures with exponential backoff.
+
+        Args:
+            operation: The call to make; it must be safe to repeat.
+            description: What it is, for log messages.
+
+        Returns:
+            What ``operation`` returned.
+        """
+        return call_with_backoff(
+            operation,
+            description=description,
+            max_attempts=self.transient_retry_attempts,
+            base_delay=self.transient_retry_base_delay,
+        )
 
     def check_statement(
         self,
@@ -349,14 +551,16 @@ class FactCheckerAgent(BaseAgent):
 
         Returns:
             FactCheckResult with evaluation, reason, and evidence. A "maybe"
-            with low confidence and an "Insufficient evidence" reason means
-            every stage ran and found too little evidence.
+            with low confidence and an "Insufficient evidence" reason means no
+            stage failed: the stages that ran found too little evidence. If a
+            stage failed only in part (a search strategy, some documents),
+            ``degradation_notes`` says what was not examined.
 
         Raises:
             ValueError: If ``max_documents`` is negative.
             FactCheckStageError: If a stage failed for a reason other than
                 missing evidence (search error, documents that could not be
-                scored or have citations extracted, no usable LLM verdict).
+                scored or quoted while none succeeded, no usable LLM verdict).
         """
         if max_documents is not None and max_documents < 0:
             raise ValueError(f"max_documents must be >= 0 (0 = no limit), got {max_documents}")
@@ -369,57 +573,44 @@ class FactCheckerAgent(BaseAgent):
         threshold = self.score_threshold if score_threshold is None else score_threshold
 
         self._call_callback("search", f"Searching literature for: {statement}")
+        # Evidence that could not be examined, collected by every stage.
+        notes: List[str] = []
 
         # Step 1: Search for relevant documents
-        documents = self._search_documents(statement, max_docs)
+        documents = self._search_documents(statement, max_docs, notes)
 
         if not documents:
             self._call_callback("warning", "No relevant documents found")
-            return FactCheckResult(
-                statement=statement,
-                evaluation="maybe",
-                reason="Insufficient evidence: No relevant documents found in the literature database.",
-                evidence_list=[],
-                confidence="low",
-                documents_reviewed=0,
-                expected_answer=expected_answer,
-                matches_expected=(expected_answer == "maybe") if expected_answer else None
+            return self._insufficient_evidence(
+                statement,
+                "No relevant documents found in the literature database.",
+                0, expected_answer, notes,
             )
 
         self._call_callback("scoring", f"Scoring {len(documents)} documents...")
 
         # Step 2: Score documents for relevance
-        scored_documents = self._score_documents(statement, documents, threshold)
+        scored_documents = self._score_documents(statement, documents, threshold, notes)
 
         if not scored_documents:
             self._call_callback("warning", f"No documents above threshold {threshold}")
-            return FactCheckResult(
-                statement=statement,
-                evaluation="maybe",
-                reason=f"Insufficient evidence: No documents scored above relevance threshold ({threshold}/5.0).",
-                evidence_list=[],
-                confidence="low",
-                documents_reviewed=len(documents),
-                expected_answer=expected_answer,
-                matches_expected=(expected_answer == "maybe") if expected_answer else None
+            return self._insufficient_evidence(
+                statement,
+                f"No documents scored above relevance threshold ({threshold}/5.0).",
+                len(documents), expected_answer, notes,
             )
 
         self._call_callback("extraction", f"Extracting evidence from {len(scored_documents)} documents...")
 
         # Step 3: Extract citations
-        citations = self._extract_citations(statement, scored_documents, threshold)
+        citations = self._extract_citations(statement, scored_documents, threshold, notes)
 
         if not citations:
             self._call_callback("warning", "No citations could be extracted")
-            return FactCheckResult(
-                statement=statement,
-                evaluation="maybe",
-                reason="Insufficient evidence: Documents found but no relevant citations could be extracted.",
-                evidence_list=[],
-                confidence="low",
-                documents_reviewed=len(scored_documents),
-                expected_answer=expected_answer,
-                matches_expected=(expected_answer == "maybe") if expected_answer else None
+            return self._insufficient_evidence(
+                statement,
+                "Documents found but no relevant citations could be extracted.",
+                len(scored_documents), expected_answer, notes,
             )
 
         self._call_callback("evaluation", f"Evaluating statement based on {len(citations)} citations...")
@@ -431,18 +622,63 @@ class FactCheckerAgent(BaseAgent):
             scored_documents=scored_documents,
             expected_answer=expected_answer
         )
+        result.degradation_notes = notes
 
+        if notes:
+            self._call_callback(
+                "warning", f"Verdict based on partial evidence: {'; '.join(notes)}"
+            )
         self._call_callback("complete", f"Fact-check complete: {result.evaluation}")
 
         return result
 
-    def _search_documents(self, statement: str, max_results: int) -> List[Dict[str, Any]]:
+    def _insufficient_evidence(
+        self,
+        statement: str,
+        why: str,
+        documents_reviewed: int,
+        expected_answer: Optional[str],
+        notes: List[str],
+    ) -> FactCheckResult:
+        """
+        Build the low-confidence "maybe" for a statement with too little evidence.
+
+        Args:
+            statement: The statement checked.
+            why: What was missing, appended to "Insufficient evidence: ".
+            documents_reviewed: Documents examined.
+            expected_answer: The expected answer, if any.
+            notes: Evidence that could not be examined (degradation notes).
+
+        Returns:
+            The "maybe" result.
+        """
+        return FactCheckResult(
+            statement=statement,
+            evaluation="maybe",
+            reason=f"Insufficient evidence: {why}",
+            evidence_list=[],
+            confidence="low",
+            documents_reviewed=documents_reviewed,
+            expected_answer=expected_answer,
+            matches_expected=(expected_answer == "maybe") if expected_answer else None,
+            degradation_notes=notes,
+        )
+
+    def _search_documents(
+        self, statement: str, max_results: int, notes: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Search for documents relevant to the statement.
+
+        A recoverable failure (unreachable LLM or database, timeout) is
+        retried with exponential backoff.
 
         Args:
             statement: The statement to fact-check.
             max_results: Maximum number of documents (0 = no limit).
+            notes: Degradation notes; a failed search strategy whose results
+                are missing is appended here.
 
         Returns:
             The documents found; empty only if every search strategy ran and
@@ -454,20 +690,19 @@ class FactCheckerAgent(BaseAgent):
                 (``search_hybrid`` logs strategy errors and carries on, so a
                 database outage otherwise looks like an empty result).
         """
+        query_agent = _require_sub_agent(self.query_agent, "QueryAgent")
+        # Convert statement to a question format for better query generation
+        search_question = self._statement_to_question(statement)
+        self._call_callback("query", f"Query: {search_question}")
         try:
-            # Convert statement to a question format for better query generation
-            search_question = self._statement_to_question(statement)
-            self._call_callback("query", f"Query: {search_question}")
-
-            # Use QueryAgent to search (find_abstracts returns a generator)
-            query_agent = _require_sub_agent(self.query_agent, "QueryAgent")
-            documents_generator = query_agent.find_abstracts(
-                question=search_question,
-                max_rows=max_results
+            # find_abstracts returns a generator; list() runs the search.
+            documents = self._with_backoff(
+                lambda: list(query_agent.find_abstracts(
+                    question=search_question,
+                    max_rows=max_results
+                )),
+                "literature search",
             )
-
-            # Convert generator to list
-            documents = list(documents_generator)
         except Exception as e:
             logger.error(f"Error searching documents: {e}", exc_info=True)
             raise FactCheckStageError(STAGE_SEARCH, str(e)) from e
@@ -483,6 +718,11 @@ class FactCheckerAgent(BaseAgent):
                 f"Search strategies failed ({'; '.join(failed)}); continuing with "
                 f"{len(documents)} documents from the others"
             )
+            if notes is not None:
+                notes.extend(
+                    f"search strategy failed, its results are missing: {failure}"
+                    for failure in failed
+                )
         return documents
 
     def _statement_to_question(self, statement: str) -> str:
@@ -516,18 +756,23 @@ class FactCheckerAgent(BaseAgent):
         self,
         statement: str,
         documents: List[Dict[str, Any]],
-        threshold: float
+        threshold: float,
+        notes: Optional[List[str]] = None,
     ) -> List[tuple[Dict[str, Any], Dict[str, Any]]]:
         """Score documents for relevance to the statement.
 
-        A document that fails to score is skipped, but an empty result is only
-        returned when every document was actually scored: if none reached the
-        threshold and some failed, the evidence was not fully examined.
+        A recoverable failure (unreachable LLM, timeout) is retried with
+        exponential backoff. A document that still fails to score is skipped,
+        but an empty result is only returned when every document was actually
+        scored: if none reached the threshold and some failed, the evidence
+        was not fully examined.
 
         Args:
             statement: The statement to fact-check.
             documents: Documents returned by the search.
             threshold: Minimum relevance score to keep a document.
+            notes: Degradation notes; documents that could not be scored are
+                appended here when others reached the threshold.
 
         Returns:
             List of (document, scoring_result) tuples where scoring_result is a dict
@@ -539,14 +784,15 @@ class FactCheckerAgent(BaseAgent):
         """
         scoring_agent = _require_sub_agent(self.scoring_agent, "DocumentScoringAgent")
         scored_docs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
-        failures = 0
+        failed_ids: List[Any] = []
         last_error = ""
 
         for doc in documents:
+            doc_id = doc.get('id', 'unknown')
             try:
-                scoring_result = scoring_agent.evaluate_document(
-                    user_question=statement,
-                    document=doc
+                scoring_result = self._with_backoff(
+                    lambda: scoring_agent.evaluate_document(user_question=statement, document=doc),
+                    f"relevance scoring of document {doc_id}",
                 )
 
                 # Extract numeric score for threshold check
@@ -556,22 +802,28 @@ class FactCheckerAgent(BaseAgent):
                     # Store the full scoring_result dict, not just the score
                     scored_docs.append((doc, cast(Dict[str, Any], scoring_result)))
             except Exception as e:
-                failures += 1
+                failed_ids.append(doc_id)
                 last_error = str(e)
-                logger.warning(f"Error scoring document {doc.get('id', 'unknown')}: {e}")
+                logger.warning(f"Error scoring document {doc_id}: {e}", exc_info=True)
                 continue
 
-        if failures and not scored_docs:
+        if failed_ids and not scored_docs:
             raise FactCheckStageError(
                 STAGE_SCORING,
-                f"{failures} of {len(documents)} documents could not be scored and "
-                f"none of the others reached the threshold (last error: {last_error})",
+                f"{len(failed_ids)} of {len(documents)} documents could not be scored "
+                f"(IDs {_list_ids(failed_ids)}) and none of the others reached the "
+                f"threshold (last error: {last_error})",
             )
-        if failures:
+        if failed_ids:
             logger.warning(
-                f"{failures} of {len(documents)} documents could not be scored; "
+                f"{len(failed_ids)} of {len(documents)} documents could not be scored; "
                 f"continuing with {len(scored_docs)} above the threshold"
             )
+            if notes is not None:
+                notes.append(
+                    f"{len(failed_ids)} of {len(documents)} documents could not be scored "
+                    f"(IDs {_list_ids(failed_ids)}; last error: {last_error})"
+                )
 
         # Sort by score descending (access score from dict)
         scored_docs.sort(key=lambda x: x[1]['score'], reverse=True)
@@ -583,6 +835,7 @@ class FactCheckerAgent(BaseAgent):
         statement: str,
         scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]],
         score_threshold: Optional[float] = None,
+        notes: Optional[List[str]] = None,
     ) -> List[Citation]:
         """Extract relevant citations from scored documents.
 
@@ -596,15 +849,19 @@ class FactCheckerAgent(BaseAgent):
             score_threshold: Minimum relevance score; ``None`` uses the
                 agent default. Must match the threshold used for scoring so a
                 per-call override is not undone here.
+            notes: Degradation notes; documents that failed or whose passages
+                were rejected are appended here when others yielded citations.
 
         Returns:
             The extracted citations; empty only if every document was examined
-            and none yielded a verified passage.
+            and judged to have no relevant passage.
 
         Raises:
             FactCheckStageError: If extraction raised, or no citation was
-                extracted and at least one document failed with an error
-                (counted in the citation agent's ``errors`` statistic).
+                extracted and at least one document failed with an error or
+                had every passage rejected (unusable model output, e.g. a
+                fragment instead of complete sentences): that is a model
+                failure, not missing evidence.
         """
         threshold = self.score_threshold if score_threshold is None else score_threshold
 
@@ -638,31 +895,50 @@ class FactCheckerAgent(BaseAgent):
             return []
 
         # Step 3: Extract citations (with new validation)
+        citation_agent = _require_sub_agent(self.citation_agent, "CitationFinderAgent")
         try:
-            citation_agent = _require_sub_agent(self.citation_agent, "CitationFinderAgent")
-            errors_before = citation_agent.get_validation_stats()['errors']
+            # Snapshot sizes, not the lists: the agent's stats are live.
+            stats = citation_agent.get_validation_stats()
+            errors_before = len(stats.get('errored_documents', []))
+            rejections_before = len(stats.get('failed_citations', []))
             citations = citation_agent.process_scored_documents_for_citations(
                 user_question=statement,
                 scored_documents=top_docs,
                 score_threshold=threshold
             )
-            errors = citation_agent.get_validation_stats()['errors'] - errors_before
+            stats = citation_agent.get_validation_stats()
+            errored = list(stats.get('errored_documents', []))[errors_before:]
+            rejected = list(stats.get('failed_citations', []))[rejections_before:]
         except Exception as e:
             logger.error(f"Error extracting citations: {e}", exc_info=True)
             raise FactCheckStageError(STAGE_CITATIONS, str(e)) from e
 
-        if errors and not citations:
+        problems = []
+        if errored:
+            problems.append(
+                f"{len(errored)} of {len(top_docs)} documents failed with an error "
+                f"(IDs {_list_ids([e.get('document_id') for e in errored])}; "
+                f"last error: {errored[-1].get('error', 'unknown')})"
+            )
+        if rejected:
+            problems.append(
+                f"{len(rejected)} of {len(top_docs)} documents had every passage "
+                f"rejected (IDs {_list_ids([r.get('document_id') for r in rejected])}; "
+                f"{_count_reasons(rejected)})"
+            )
+
+        if problems and not citations:
             raise FactCheckStageError(
-                STAGE_CITATIONS,
-                f"no citation extracted and {errors} of {len(top_docs)} documents "
-                f"failed with an error (see log)",
+                STAGE_CITATIONS, "no citation extracted: " + "; ".join(problems)
             )
 
         logger.info(
             f"Extracted {len(citations)} validated citations from "
             f"{len(top_docs)} documents"
-            + (f" ({errors} failed with an error)" if errors else "")
+            + (f" ({'; '.join(problems)})" if problems else "")
         )
+        if problems and notes is not None:
+            notes.extend(f"citation extraction: {problem}" for problem in problems)
 
         return citations
 
@@ -694,7 +970,7 @@ class FactCheckerAgent(BaseAgent):
         # Create evaluation prompt
         prompt = self._create_evaluation_prompt(statement, evidence_summary)
 
-        evaluation_data = self._request_evaluation(prompt)
+        evaluation_data = self._request_evaluation(prompt, len(citations))
 
         # Convert citations to evidence references
         evidence_refs = self._citations_to_evidence_refs(
@@ -783,16 +1059,20 @@ RESPONSE FORMAT (JSON):
 
 Respond ONLY with the JSON object, no additional text."""
 
-    def _request_evaluation(self, prompt: str) -> Dict[str, Any]:
+    def _request_evaluation(self, prompt: str, citation_count: int) -> Dict[str, Any]:
         """
         Ask the LLM for a verdict and validate it.
 
-        A response with an invalid verdict or missing fields is requested
-        again, up to ``EVALUATION_VALIDATION_ATTEMPTS`` times; it is never
-        coerced into a "maybe".
+        An unreachable or timed-out LLM is retried with exponential backoff.
+        A response with an invalid verdict, invalid citation stances or
+        missing fields is requested again; at most
+        ``EVALUATION_VALIDATION_ATTEMPTS`` requests are made in total. An
+        invalid response is never coerced into a "maybe" or a "neutral".
 
         Args:
             prompt: The evaluation prompt.
+            citation_count: Number of citations in the prompt; each needs a
+                stance.
 
         Returns:
             The validated evaluation (see ``_validate_evaluation_response``).
@@ -804,20 +1084,28 @@ Respond ONLY with the JSON object, no additional text."""
         last_problem = ""
         for attempt in range(1, EVALUATION_VALIDATION_ATTEMPTS + 1):
             try:
-                response_data = self._chat_and_parse_json(
-                    messages=[{'role': 'user', 'content': prompt}],
-                    max_retries=EVALUATION_JSON_RETRIES,
-                    retry_context="statement evaluation",
-                    num_predict=self.max_tokens
+                response_data = self._with_backoff(
+                    lambda: self._chat_and_parse_json(
+                        messages=[{'role': 'user', 'content': prompt}],
+                        max_retries=EVALUATION_JSON_RETRIES,
+                        retry_context="statement evaluation",
+                        num_predict=self.max_tokens
+                    ),
+                    "statement evaluation LLM request",
                 )
+            except json.JSONDecodeError as e:
+                logger.error(f"Unparseable LLM evaluation: {e}", exc_info=True)
+                raise FactCheckStageError(
+                    STAGE_EVALUATION, f"LLM output could not be parsed as JSON: {e}"
+                ) from e
             except Exception as e:
                 logger.error(f"Error getting LLM evaluation: {e}", exc_info=True)
                 raise FactCheckStageError(
-                    STAGE_EVALUATION, f"no usable LLM response: {e}"
+                    STAGE_EVALUATION, f"LLM request failed ({type(e).__name__}): {e}"
                 ) from e
 
             try:
-                return self._validate_evaluation_response(response_data)
+                return self._validate_evaluation_response(response_data, citation_count)
             except ValueError as e:
                 last_problem = str(e)
                 logger.warning(
@@ -831,22 +1119,25 @@ Respond ONLY with the JSON object, no additional text."""
             f"{last_problem}",
         )
 
-    def _validate_evaluation_response(self, data: Any) -> Dict[str, Any]:
+    def _validate_evaluation_response(self, data: Any, citation_count: int) -> Dict[str, Any]:
         """
         Validate and normalize the LLM's evaluation response.
 
         Args:
             data: The parsed JSON response.
+            citation_count: Number of citations the model was shown; each
+                (``"1"`` .. ``str(citation_count)``) needs a stance.
 
         Returns:
             A copy of ``data`` with ``evaluation`` lower-cased and stripped,
-            ``reason`` stripped, and ``citation_stances`` a dict (empty if the
-            model omitted it or returned something else).
+            ``reason`` stripped, and ``citation_stances`` mapping each
+            citation number to a lower-cased stance in ``VALID_STANCES``.
 
         Raises:
             ValueError: If the response is not an object, lacks ``evaluation``
                 or ``reason``, the verdict is not one of ``VALID_VERDICTS``,
-                or the reason is empty.
+                the reason is empty, or a citation's stance is missing or not
+                one of ``VALID_STANCES``.
         """
         if not isinstance(data, dict):
             raise ValueError(
@@ -865,13 +1156,51 @@ Respond ONLY with the JSON object, no additional text."""
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("Evaluation reason must be a non-empty string")
 
-        stances = data.get('citation_stances')
         return {
             **data,
             'evaluation': verdict.lower().strip(),
             'reason': reason.strip(),
-            'citation_stances': stances if isinstance(stances, dict) else {},
+            'citation_stances': self._validate_stances(
+                data.get('citation_stances'), citation_count
+            ),
         }
+
+    @staticmethod
+    def _validate_stances(stances: Any, citation_count: int) -> Dict[str, str]:
+        """
+        Validate the per-citation stances of an evaluation response.
+
+        Args:
+            stances: The response's ``citation_stances``.
+            citation_count: Number of citations the model was shown.
+
+        Returns:
+            ``{"1": stance, ...}`` with every stance lower-cased and stripped.
+
+        Raises:
+            ValueError: If citations were shown and ``stances`` is not an
+                object, or a citation's stance is missing or invalid.
+        """
+        if citation_count == 0:
+            return {}
+        if not isinstance(stances, dict):
+            raise ValueError(
+                f"citation_stances must be an object, got {type(stances).__name__}"
+            )
+        validated: Dict[str, str] = {}
+        for number in range(1, citation_count + 1):
+            stance = stances.get(str(number))
+            normalized = stance.lower().strip() if isinstance(stance, str) else None
+            if normalized not in VALID_STANCES:
+                raise ValueError(
+                    f"Invalid stance {stance!r} for citation {number} "
+                    f"(expected one of {VALID_STANCES})"
+                )
+            validated[str(number)] = normalized
+        extra = set(stances) - set(validated)
+        if extra:
+            logger.warning(f"Ignoring stances for citations that do not exist: {sorted(extra)}")
+        return validated
 
     def _citations_to_evidence_refs(
         self,
@@ -884,7 +1213,8 @@ Respond ONLY with the JSON object, no additional text."""
         Args:
             citations: List of Citation objects
             scored_documents: List of (document, scoring_result) tuples
-            citation_stances: Dict mapping citation index to stance
+            citation_stances: Validated stances, citation number -> stance
+                (see ``_validate_stances``)
         """
         evidence_refs = []
 
@@ -899,7 +1229,7 @@ Respond ONLY with the JSON object, no additional text."""
 
         for i, citation in enumerate(citations, 1):
             # Get stance from LLM evaluation
-            stance_str = citation_stances.get(str(i), 'neutral')
+            stance_str = citation_stances[str(i)]
             supports = None
             if stance_str == 'supports':
                 supports = True
@@ -965,9 +1295,12 @@ Respond ONLY with the JSON object, no additional text."""
 
         Results are stored in the database after each statement is processed
         to prevent data loss in case of interruption. A statement whose check
-        fails is returned with ``evaluation == EVALUATION_ERROR``, counted in
+        fails (or an input item that is not a statement object) is returned
+        with ``evaluation == EVALUATION_ERROR``, counted in
         ``self.check_failures`` and not stored, so it stays unevaluated and
-        incremental mode retries it.
+        incremental mode retries it. Verdicts with degradation notes are
+        counted in ``self.degraded_results``; a requested JSON export that was
+        not written sets ``self.export_failed``.
 
         Args:
             statements: List of dicts with either:
@@ -983,6 +1316,10 @@ Respond ONLY with the JSON object, no additional text."""
         total = len(statements)
         self.storage_failures = 0
         self.check_failures = 0
+        self.degraded_results = 0
+        self.export_failed = False
+        self.session_bookkeeping_failed = False
+        self.stored_results = 0
 
         self._call_callback("batch_start", f"Processing {total} statements...")
 
@@ -991,21 +1328,10 @@ Respond ONLY with the JSON object, no additional text."""
         self._initialize_database_session(total, source_file or output_file)
 
         for i, item in enumerate(statements, 1):
-            # Support both formats: legacy ('statement'/'answer') and new ('id'/'question'/'answer')
-            if 'question' in item:
-                # New format from extract_qa.py
-                statement = item.get('question', '')
-                expected = item.get('answer')
-                item_id = item.get('id')
-            else:
-                # Legacy format
-                statement = item.get('statement', '')
-                expected = item.get('answer')
-                item_id = None
-
-            self._call_callback("batch_progress", f"Processing {i}/{total}: {statement[:60]}...")
-
+            statement, expected, item_id = "", None, None
             try:
+                statement, expected, item_id = self._parse_batch_item(item)
+                self._call_callback("batch_progress", f"Processing {i}/{total}: {statement[:60]}...")
                 result = self.check_statement(
                     statement=statement,
                     expected_answer=expected
@@ -1021,33 +1347,34 @@ Respond ONLY with the JSON object, no additional text."""
                 logger.error(f"Error checking statement '{statement}': {e}", exc_info=True)
                 self._call_callback(
                     "statement_failed",
-                    f"Fact-check failed, not stored: {e}"
+                    f"Fact-check failed, not stored: {statement[:60]!r}: {e}"
                 )
-                results.append(FactCheckResult(
+                results.append(FactCheckResult.failed(
                     statement=statement,
-                    evaluation=EVALUATION_ERROR,
-                    reason=f"Error during fact-checking: {e}",
-                    evidence_list=[],
-                    confidence=None,
+                    error=e,
                     expected_answer=expected,
-                    input_statement_id=item_id
+                    input_statement_id=item_id,
                 ))
                 # Not stored: an error is not a verdict, and leaving the
                 # statement unevaluated lets incremental mode retry it.
                 continue
 
+            if result.is_degraded:
+                self.degraded_results += 1
+
             # Store result incrementally in database
-            if self.db:
-                self._store_result_in_database(results[-1], source_file)
+            if self.db and self._store_result_in_database(result, source_file):
+                self.stored_results += 1
 
         # Finalize database session
         if self.db:
-            self._finalize_database_session(len(results) - self.check_failures)
+            self._finalize_database_session(self.stored_results, total)
 
         # Export to JSON if requested
         if output_file:
             self._call_callback("export", f"Exporting results to {output_file}...")
-            self.export_database_to_json(output_file, export_type="full")
+            if self.export_database_to_json(output_file, export_type="full") is None:
+                self.export_failed = True
 
         # Report citation validation statistics
         if self.citation_agent is not None:
@@ -1063,14 +1390,42 @@ Respond ONLY with the JSON object, no additional text."""
 
                 if stats['validations_failed'] > 0:
                     logger.warning(
-                        f"⚠️  {stats['validations_failed']} citations were REJECTED due to validation failures. "
-                        f"This suggests LLM hallucination or paraphrasing. "
+                        f"⚠️  {stats['validations_failed']} citations were REJECTED "
+                        f"({_count_reasons(stats.get('failed_citations', []))}). "
                         f"See detailed logs for rejected citation text."
                     )
 
         self._call_callback("batch_complete", f"Completed {total} statements")
 
         return results
+
+    @staticmethod
+    def _parse_batch_item(item: Any) -> tuple[str, Optional[str], Optional[str]]:
+        """
+        Read one input item of a batch.
+
+        Supports the legacy format (``statement``/``answer``) and the
+        extracted format (``id``/``question``/``answer``).
+
+        Args:
+            item: One element of the input list.
+
+        Returns:
+            ``(statement, expected_answer, input_statement_id)``.
+
+        Raises:
+            ValueError: If the item is not an object or has no statement text.
+        """
+        if not isinstance(item, dict):
+            raise ValueError(f"Input item is not a statement object: {item!r}")
+        if 'question' in item:
+            statement, item_id = item.get('question'), item.get('id')
+        else:
+            statement, item_id = item.get('statement'), None
+        if not isinstance(statement, str) or not statement.strip():
+            raise ValueError(f"Input item has no statement text: {item!r}")
+        expected = item.get('answer')
+        return statement, expected, None if item_id is None else str(item_id)
 
     def check_batch_from_file(
         self,
@@ -1214,16 +1569,30 @@ Respond ONLY with the JSON object, no additional text."""
             self.db.insert_processing_session(session_data)
             logger.info(f"Started session {self.current_session_id}")
         except Exception as e:
-            logger.error(f"Error initializing database session: {e}")
+            self.session_bookkeeping_failed = True
+            logger.error(f"Error initializing database session: {e}", exc_info=True)
 
     def _store_result_in_database(self, result: FactCheckResult, source_file: Optional[str]) -> bool:
-        """Store a FactCheckResult in the database.
+        """Store a FactCheckResult (a verdict) in the database.
+
+        Args:
+            result: The verdict to store.
+            source_file: Input file name, recorded with the statement.
 
         Returns:
             True if the result was persisted, False on any storage error.
             Failures are also counted in ``self.storage_failures`` so batch
             callers (and the CLI) can report them instead of claiming success.
+
+        Raises:
+            ValueError: If ``result`` is a failed check: an error is never
+                stored as a verdict (it would stop incremental mode from
+                retrying the statement).
         """
+        if result.is_error:
+            raise ValueError(
+                f"Refusing to store a failed fact-check as a verdict: {result.statement[:60]!r}"
+            )
         if not self.db:
             return False
 
@@ -1251,7 +1620,8 @@ Respond ONLY with the JSON object, no additional text."""
                 matches_expected=result.matches_expected,
                 model_used=self.model,
                 session_id=self.current_session_id,
-                version=1
+                version=1,
+                degradation_notes=list(result.degradation_notes) or None
             )
             eval_id = self.db.insert_ai_evaluation(ai_eval)
 
@@ -1278,32 +1648,48 @@ Respond ONLY with the JSON object, no additional text."""
             self.storage_failures += 1
             return False
 
-    def _finalize_database_session(self, processed_count: int) -> None:
+    def _finalize_database_session(self, stored_count: int, total: int) -> None:
         """Finalize the processing session in the database.
 
+        The session is ``failed`` if statements were submitted and none got
+        a stored verdict, else ``completed``. Failed checks, storage failures
+        and verdicts based on partial evidence are described in the session's
+        ``error_message``.
+
         Args:
-            processed_count: Statements that received a verdict. Failed
-                checks (``self.check_failures``) are recorded in the
-                session's ``error_message``.
+            stored_count: Verdicts stored in this batch.
+            total: Statements submitted in this batch.
         """
         if not self.db or not self.current_session_id:
             return
 
+        problems = []
+        if self.check_failures:
+            problems.append(
+                f"{self.check_failures} statement(s) failed to check and were not "
+                f"stored; re-run with --incremental to retry them"
+            )
+        if self.storage_failures:
+            problems.append(f"{self.storage_failures} verdict(s) failed to store")
+        if self.degraded_results:
+            problems.append(
+                f"{self.degraded_results} verdict(s) are based on partial evidence "
+                f"(see ai_evaluations.degradation_notes)"
+            )
+        updates: Dict[str, Any] = {
+            'processed_statements': stored_count,
+            'end_time': datetime.now(timezone.utc).isoformat(),
+            'status': 'failed' if total and not stored_count else 'completed',
+        }
+        if problems:
+            updates['error_message'] = "; ".join(problems)
+
         try:
-            updates = {
-                'processed_statements': processed_count,
-                'end_time': datetime.now(timezone.utc).isoformat(),
-                'status': 'completed'
-            }
-            if self.check_failures:
-                updates['error_message'] = (
-                    f"{self.check_failures} statement(s) failed to check and were "
-                    f"not stored; re-run with --incremental to retry them"
-                )
             self.db.update_processing_session(self.current_session_id, updates)
             logger.info(f"Finalized session {self.current_session_id}")
         except Exception as e:
-            logger.error(f"Error finalizing database session: {e}")
+            self.session_bookkeeping_failed = True
+            logger.error(f"Error finalizing database session: {e}", exc_info=True)
 
     def export_database_to_json(self, output_file: str, export_type: str = "full",
                                 requested_by: str = "system") -> Optional[str]:
@@ -1316,7 +1702,9 @@ Respond ONLY with the JSON object, no additional text."""
             requested_by: Username of requester
 
         Returns:
-            Path to exported file or None if database not initialized
+            Path to exported file, or None if the database is not initialized
+            or the export failed (logged; ``check_batch`` reports it through
+            ``self.export_failed``).
         """
         if not self.db:
             logger.error("Database not initialized, cannot export")
@@ -1327,6 +1715,6 @@ Respond ONLY with the JSON object, no additional text."""
             self._call_callback("export", f"Exported to {export_path}")
             return export_path
         except Exception as e:
-            logger.error(f"Error exporting database to JSON: {e}")
+            logger.error(f"Error exporting database to JSON: {e}", exc_info=True)
             return None
 

@@ -70,6 +70,13 @@ def run_fact_check(input_file: str, output_file: str, max_statements: Optional[i
 
     # Print summary
     print_summary(results)
+    if agent.check_failures or agent.storage_failures:
+        print(f"\n⚠️  {agent.check_failures} statement(s) could not be checked and "
+              f"{agent.storage_failures} verdict(s) failed to store; no verdict was "
+              f"stored for them (see log). Re-run with incremental mode to retry.")
+    if agent.degraded_results:
+        print(f"⚠️  {agent.degraded_results} verdict(s) are based on partial evidence "
+              f"(see degradation_notes)")
 
     return results
 

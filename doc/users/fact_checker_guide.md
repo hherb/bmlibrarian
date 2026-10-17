@@ -356,30 +356,81 @@ step fails (database or Ollama unreachable, documents that could not be
 scored, a model that keeps returning unusable output), the statement is
 reported as **failed** instead; see [Failed statements](#failed-statements).
 
+### Temporary outages are retried
+
+If Ollama or the database cannot be reached, or a request times out, the
+fact-checker waits and tries again a few times, with longer waits each time
+(about 2, then 4 seconds by default), before it counts the step as failed. A
+brief Ollama restart or a dropped database connection therefore does not
+fail your statements. The settings are in `~/.bmlibrarian/config.json`:
+
+```json
+{
+  "agents": {
+    "fact_checker": {
+      "transient_retry_attempts": 3,
+      "transient_retry_base_delay": 2.0
+    }
+  },
+  "search_strategy": {
+    "retry": {"max_attempts": 3, "base_delay": 2.0, "max_delay": 30.0}
+  }
+}
+```
+
+`transient_retry_attempts` is the number of attempts in total (1 turns
+retrying off). Errors that a retry cannot fix, such as unusable model output
+or a bug, are not retried this way.
+
+### Verdicts based on partial evidence
+
+Sometimes a step fails only in part: one search strategy fails while another
+still finds documents, or a few documents cannot be scored or quoted while
+the rest can. The fact-checker then still gives a verdict, but **flags** it
+as based on partial evidence and records what was missing, for example:
+
+- `search strategy failed, its results are missing: semantic: no embedder`
+- `2 of 9 documents could not be scored (IDs 101, 102; last error: …)`
+- `citation extraction: 1 of 4 documents had every passage rejected (…)`
+
+These notes are stored with the verdict (`degradation_notes`), included in
+JSON exports and review packages, and shown below the AI rationale in the
+review GUI. The CLI says how many verdicts are flagged; `--detailed` lists
+the notes. A flagged verdict is still a verdict: it is stored, counted in
+the summary and does not make the CLI exit with an error. Decide for your
+use whether to trust it, or fix the cause and re-check the statement.
+
 ### Failed statements
 
 A statement whose check fails gets no verdict: nothing is stored for it in the
 database, and the summary lists it as `⚠ Error ... check failed, no verdict
-stored`. The CLI prints how many statements failed and **exits with status
-1** (it also exits 1 if any result could not be saved). The log shows
-which step failed: literature search, relevance scoring, citation extraction,
-or statement evaluation.
+stored`. The CLI lists every failed statement with the step that failed
+(literature search, relevance scoring, citation extraction, or statement
+evaluation), even without `--verbose`, and **exits with status 1**. It also
+exits 1 if any result could not be saved, if a requested `-o` JSON export
+could not be written, or if the processing-session record could not be
+saved. The log has the details.
 
-Fix the cause, then re-run the same file with `--incremental`. Failed
-statements have no AI evaluation, so only they are checked again.
+Fix the cause, then re-run the same file with `--incremental`. Statements
+that have no AI evaluation (those that failed, those whose verdict failed to
+store, and any never processed) are checked again; the others are skipped.
 
 A failed document inside a step does not fail the statement if other
-documents produced evidence. The statement fails only if the step came up
-empty *and* some documents failed, because then the evidence was not fully
-examined.
+documents produced evidence; the verdict is then flagged as based on
+partial evidence (see above). The statement fails only if the step came up
+empty *and* some documents failed or had every quoted passage rejected,
+because then the evidence was not fully examined. A document that fails the
+same way every time keeps its statement failing; the message names the
+document IDs so you can investigate.
 
 Before October 2026, these failures were stored as "maybe" verdicts. Older
 rows whose reason begins "Found N relevant citations but unable to
 automatically determine…" are certainly failures and should be treated as
-unevaluated. Older "maybe" rows whose reason begins "Insufficient evidence:"
-may be genuine, or may be failures (for example a database outage during the
-search). The old version did not record which, so re-check them if it
-matters.
+unevaluated (the developer guide `doc/developers/fact_checker_system.md`,
+"Verdicts written before these fixes", has the query to find them). Older
+"maybe" rows whose reason begins "Insufficient evidence:" may be genuine, or
+may be failures (for example a database outage during the search). The old
+version did not record which, so re-check them if it matters.
 
 ## Best Practices
 
@@ -555,7 +606,11 @@ See [Fact-Checker Review Guide](fact_checker_review_guide.md) for detailed revie
 - `max_tokens`: Maximum response length
 - `score_threshold`: Minimum document relevance score
 - `max_search_results`: Maximum documents to retrieve
-- `max_citations`: Maximum citations to extract
+- `max_citations`: Maximum citations to extract (at least 1; `null` = no limit)
+- `transient_retry_attempts`: Attempts in total when Ollama or the database
+  is unreachable or times out (default 3; 1 = no retries)
+- `transient_retry_base_delay`: Seconds before the first retry (default 2,
+  doubled for each further retry)
 
 ## Performance Considerations
 

@@ -16,7 +16,8 @@ from datetime import datetime
 from bmlibrarian.database import extract_pmid
 
 from .abstract_db import (
-    AbstractFactCheckerDB, Statement, Annotator, HumanAnnotation
+    AbstractFactCheckerDB, Statement, Annotator, HumanAnnotation,
+    parse_degradation_notes as _as_notes,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,9 +113,12 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             List of dictionaries containing complete statement data
         """
         cursor = self.conn.cursor()
+        # Packages exported before migration 034 have no degradation_notes.
+        has_notes = self._has_column("ai_evaluations", "degradation_notes")
+        notes_column = "ae.degradation_notes" if has_notes else "NULL"
 
         # Query statements with their latest AI evaluations
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 s.statement_id as id,
                 s.statement_text,
@@ -134,7 +138,8 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
                 ae.contradicting_citations,
                 ae.neutral_citations,
                 ae.matches_expected,
-                ae.model_used
+                ae.model_used,
+                {notes_column} AS degradation_notes
             FROM statements s
             LEFT JOIN ai_evaluations ae
                 ON ae.statement_id = s.statement_id
@@ -166,7 +171,8 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
                 'contradicting_citations': row['contradicting_citations'],
                 'neutral_citations': row['neutral_citations'],
                 'matches_expected': bool(row['matches_expected']) if row['matches_expected'] is not None else None,
-                'model_used': row['model_used']
+                'model_used': row['model_used'],
+                'degradation_notes': _as_notes(row['degradation_notes']) or []
             }
 
             # Get evidence if evaluation exists
@@ -181,6 +187,20 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             results.append(row_dict)
 
         return results
+
+    def _has_column(self, table: str, column: str) -> bool:
+        """
+        Whether ``table`` has ``column`` (packages from older exports may not).
+
+        Args:
+            table: A table name from the shipped schema (not user input).
+            column: The column name.
+
+        Returns:
+            True if the column exists.
+        """
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(row[1] == column for row in rows)
 
     def _get_evidence_for_evaluation(self, evaluation_id: int) -> List[Dict[str, Any]]:
         """Get evidence for an AI evaluation."""

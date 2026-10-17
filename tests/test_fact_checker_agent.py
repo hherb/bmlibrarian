@@ -48,7 +48,11 @@ class TestFactCheckerAgent(unittest.TestCase):
                 show_model_info=False,
                 score_threshold=2.5,
                 max_search_results=50,
-                max_citations=None  # None = no limit, use all scored documents
+                max_citations=None,  # None = no limit, use all scored documents
+                # One attempt: these tests drive the stage logic with failing
+                # mocks; backoff retries are tested in
+                # test_fact_checker_failure_handling.py.
+                transient_retry_attempts=1
             )
 
         # Sample documents for testing
@@ -260,7 +264,7 @@ class TestFactCheckerAgent(unittest.TestCase):
             }
         }
 
-        result = self.agent._validate_evaluation_response(response)
+        result = self.agent._validate_evaluation_response(response, citation_count=2)
 
         self.assertEqual(result['evaluation'], 'no')
         self.assertIn('reason', result)
@@ -268,11 +272,11 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.assertEqual(result['citation_stances']['1'], 'contradicts')
 
     def test_validate_evaluation_response_normalizes(self):
-        """Evaluation is lower-cased/stripped and citation_stances defaulted."""
+        """Evaluation is lower-cased/stripped; no citations need no stances."""
         result = self.agent._validate_evaluation_response({
             "evaluation": "  YES ",
             "reason": "Evidence supports the statement",
-        })
+        }, citation_count=0)
 
         self.assertEqual(result['evaluation'], 'yes')
         self.assertEqual(result['citation_stances'], {})
@@ -280,13 +284,13 @@ class TestFactCheckerAgent(unittest.TestCase):
     def test_validate_evaluation_response_missing_fields(self):
         """A response without evaluation/reason is rejected."""
         with self.assertRaises(ValueError):
-            self.agent._validate_evaluation_response({"evaluation": "yes"})
+            self.agent._validate_evaluation_response({"evaluation": "yes"}, citation_count=0)
 
     def test_validate_evaluation_response_invalid_value(self):
         """An invalid verdict is rejected, never coerced to 'maybe'."""
         with self.assertRaises(ValueError):
             self.agent._validate_evaluation_response(
-                {"evaluation": "unknown", "reason": "Test reason"}
+                {"evaluation": "unknown", "reason": "Test reason"}, citation_count=0
             )
 
     def test_validate_evaluation_response_rejects_malformed_responses(self):
@@ -299,15 +303,15 @@ class TestFactCheckerAgent(unittest.TestCase):
             {"evaluation": "yes", "reason": None},
         ):
             with self.subTest(response=response), self.assertRaises(ValueError):
-                self.agent._validate_evaluation_response(response)
+                self.agent._validate_evaluation_response(response, citation_count=0)
 
-    def test_validate_evaluation_response_non_dict_stances_become_empty(self):
-        """A non-object citation_stances is replaced by an empty dict."""
-        result = self.agent._validate_evaluation_response(
-            {"evaluation": "no", "reason": "r", "citation_stances": ["supports"]}
-        )
-
-        self.assertEqual(result['citation_stances'], {})
+    def test_validate_evaluation_response_rejects_non_dict_stances(self):
+        """A non-object citation_stances is invalid, never replaced by {} (neutral)."""
+        with self.assertRaises(ValueError):
+            self.agent._validate_evaluation_response(
+                {"evaluation": "no", "reason": "r", "citation_stances": ["supports"]},
+                citation_count=1,
+            )
 
     def test_request_evaluation_retries_an_invalid_verdict(self):
         """An invalid verdict is requested again; a valid retry is used."""
@@ -315,7 +319,7 @@ class TestFactCheckerAgent(unittest.TestCase):
             {"evaluation": "unknown", "reason": "r"},
             {"evaluation": "No", "reason": "Contradicted"},
         ]) as chat:
-            result = self.agent._request_evaluation("prompt")
+            result = self.agent._request_evaluation("prompt", citation_count=0)
 
         self.assertEqual(chat.call_count, 2)
         self.assertEqual(result['evaluation'], 'no')
@@ -327,7 +331,7 @@ class TestFactCheckerAgent(unittest.TestCase):
             return_value={"evaluation": "probably", "reason": "r"},
         ) as chat:
             with self.assertRaises(FactCheckStageError) as ctx:
-                self.agent._request_evaluation("prompt")
+                self.agent._request_evaluation("prompt", citation_count=0)
 
         self.assertEqual(chat.call_count, EVALUATION_VALIDATION_ATTEMPTS)
         self.assertEqual(ctx.exception.stage, STAGE_EVALUATION)
@@ -343,7 +347,7 @@ class TestFactCheckerAgent(unittest.TestCase):
                 self.agent, '_chat_and_parse_json', side_effect=error
             ):
                 with self.assertRaises(FactCheckStageError) as ctx:
-                    self.agent._request_evaluation("prompt")
+                    self.agent._request_evaluation("prompt", citation_count=0)
                 self.assertEqual(ctx.exception.stage, STAGE_EVALUATION)
                 self.assertIs(ctx.exception.__cause__, error)
 
@@ -438,7 +442,7 @@ class TestFactCheckerAgent(unittest.TestCase):
             statement=self.test_statement, max_documents=0, score_threshold=0.0
         )
 
-        mock_search.assert_called_once_with(self.test_statement, 0)
+        self.assertEqual(mock_search.call_args.args[:2], (self.test_statement, 0))
         self.assertEqual(mock_score.call_args.args[2], 0.0)
 
     @patch.object(FactCheckerAgent, '_initialize_agents')
@@ -478,7 +482,7 @@ class TestFactCheckerAgent(unittest.TestCase):
 
         self.agent.check_statement(statement=self.test_statement)
 
-        mock_search.assert_called_once_with(self.test_statement, 50)
+        self.assertEqual(mock_search.call_args.args[:2], (self.test_statement, 50))
         self.assertEqual(mock_score.call_args.args[2], 2.5)
 
     @patch.object(FactCheckerAgent, '_initialize_agents')
@@ -709,10 +713,26 @@ class TestFactCheckerAgent(unittest.TestCase):
         )
 
     def _citation_agent(self, citations: list, new_errors: int) -> Mock:
-        """A citation agent whose extraction adds ``new_errors`` to its stats."""
+        """A citation agent whose extraction records ``new_errors`` failed documents.
+
+        Its statistics change when extraction runs, like the real agent's, so
+        the test does not depend on how often they are read.
+        """
+        stats = {'errors': 3, 'failed_citations': [], 'errored_documents': [
+            {'document_id': 0, 'error': 'earlier batch'}] * 3}
+
+        def extract(**_kwargs):
+            """Record the errors and return the citations."""
+            stats['errors'] += new_errors
+            stats['errored_documents'] += [
+                {'document_id': doc['id'], 'error': 'ollama down'}
+                for doc in self.sample_documents[:new_errors]
+            ]
+            return citations
+
         agent = Mock()
-        agent.process_scored_documents_for_citations.return_value = citations
-        agent.get_validation_stats.side_effect = [{'errors': 3}, {'errors': 3 + new_errors}]
+        agent.get_validation_stats.side_effect = lambda: stats
+        agent.process_scored_documents_for_citations.side_effect = extract
         return agent
 
     def _qualifying(self) -> list:

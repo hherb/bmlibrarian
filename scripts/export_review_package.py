@@ -105,7 +105,8 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                     ae.model_version,
                     ae.agent_config,
                     ae.session_id,
-                    ae.version
+                    ae.version,
+                    ae.degradation_notes
                 FROM factcheck.statements s
                 LEFT JOIN factcheck.ai_evaluations ae
                     ON ae.statement_id = s.statement_id
@@ -137,7 +138,7 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                 (stmt_id, stmt_text, input_id, expected_ans, context, long_answer, created_at, source_file, review_status,
                  eval_id, evaluation, reason, confidence, docs_reviewed, supp_citations, contra_citations,
                  neutral_citations, matches_expected, evaluated_at, model_used, model_version,
-                 agent_config, eval_session_id, version) = row
+                 agent_config, eval_session_id, version, degradation_notes) = row
 
                 # Insert statement
                 sqlite_cursor.execute("""
@@ -164,14 +165,15 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                             evaluation_id, statement_id, evaluation, reason, confidence,
                             documents_reviewed, supporting_citations, contradicting_citations,
                             neutral_citations, matches_expected, evaluated_at, model_used,
-                            model_version, agent_config, session_id, version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            model_version, agent_config, session_id, version, degradation_notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         eval_id, stmt_id, evaluation, reason, confidence,
                         docs_reviewed, supp_citations, contra_citations, neutral_citations,
                         1 if matches_expected else 0 if matches_expected is not None else None,
                         evaluated_at.isoformat() if evaluated_at else None,
-                        model_used, model_version, agent_config_str, eval_session_id, version
+                        model_used, model_version, agent_config_str, eval_session_id, version,
+                        json.dumps(degradation_notes) if degradation_notes else None
                     ))
 
                     if sqlite_cursor.rowcount > 0:

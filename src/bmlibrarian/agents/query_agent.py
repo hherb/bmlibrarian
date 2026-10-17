@@ -496,6 +496,19 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             # Store metadata for audit trail
             self.last_search_metadata = strategy_metadata
 
+            # search_hybrid logs and swallows a failed strategy, so its
+            # results are silently missing; tell the caller.
+            failed = [
+                f"{failure.get('strategy', 'unknown')}: {failure.get('error', 'unknown error')}"
+                for failure in strategy_metadata.get('strategies_failed', [])
+                if isinstance(failure, dict)
+            ]
+            if failed:
+                logger.warning(
+                    f"Search strategies failed, their results are missing: {'; '.join(failed)}"
+                )
+                self._call_callback("search_strategies_failed", "; ".join(failed))
+
             # Apply offset first, then the max_rows limit, so that
             # (offset=N, max_rows=M) returns page documents[N:N+M].
             # (Applying max_rows first returned an empty page whenever

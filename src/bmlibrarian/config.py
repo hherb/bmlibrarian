@@ -12,6 +12,12 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
+from .utils.transient_retry import (
+    DEFAULT_TRANSIENT_ATTEMPTS,
+    DEFAULT_TRANSIENT_BASE_SECONDS,
+    DEFAULT_TRANSIENT_CAP_SECONDS,
+)
+
 # Type checking imports to avoid circular dependencies
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -367,7 +373,11 @@ DEFAULT_CONFIG = {
             "max_tokens": 2000,
             "score_threshold": 2.5,
             "max_search_results": 50,
-            "max_citations": None  # None = no limit, use all scored documents
+            "max_citations": None,  # None = no limit, use all scored documents
+            # Recoverable failures (LLM/database unreachable, timeouts) are
+            # retried with exponential backoff: attempts in total, first wait.
+            "transient_retry_attempts": DEFAULT_TRANSIENT_ATTEMPTS,
+            "transient_retry_base_delay": DEFAULT_TRANSIENT_BASE_SECONDS
         },
         "document_interrogation": {
             "temperature": 0.1,
@@ -574,6 +584,13 @@ DEFAULT_CONFIG = {
             "embedding_model": "nomic-embed-text:latest",
             "num_hypothetical_docs": 3,  # Number of hypothetical documents to generate
             "similarity_threshold": 0.7   # Cosine similarity threshold (0-1)
+        },
+        "retry": {
+            # A strategy failing with a recoverable error (dropped database
+            # connection, timeout) is retried with exponential backoff.
+            "max_attempts": DEFAULT_TRANSIENT_ATTEMPTS,  # attempts in total
+            "base_delay": DEFAULT_TRANSIENT_BASE_SECONDS,  # first wait, seconds
+            "max_delay": DEFAULT_TRANSIENT_CAP_SECONDS  # longest wait, seconds
         },
         "reranking": {
             # Re-ranking method for combining results from multiple strategies

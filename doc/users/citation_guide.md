@@ -152,21 +152,29 @@ So is a response with a missing or empty passage or summary.
 A citation must also be **at least one complete sentence**, from the
 sentence's first word to its closing punctuation. A single term, a phrase, or
 a quote that starts or stops mid-sentence (even mid-word) is rejected,
-because a fragment can easily misrepresent the source out of context. The
-only repair made is adding a closing full stop (or bracket) that the model
-left off. When it is unclear whether a full stop ends a sentence (for example
-"et al. The…"), the passage is rejected rather than accepted. In those
-cases, and for a sentence that starts with a lowercase word after a full stop
-("…was measured. mRNA levels rose."), the model has to quote a longer
-stretch that starts at an unambiguous sentence start.
+because a fragment can easily misrepresent the source out of context. A
+single word ("Aspirin."), a section label on its own, and text without
+closing punctuation (a line-wrapped half sentence, a keyword list) are
+rejected too. The only repair made is adding closing punctuation the model
+left off: a full stop, question or exclamation mark, a closing bracket or
+quote, or Markdown emphasis (`**`), and only as far as it is balanced
+within the passage. When it is unclear whether a full stop ends a sentence
+(for example "et al. The…", or an initial as in "J. Smith" or "U.S. Army"),
+the passage is rejected rather than accepted, and the model has to quote a
+longer stretch that starts at an unambiguous sentence start. Sentences that
+start with a gene or molecule name such as "p53" or "mRNA" are accepted.
 
 In every case above, the model is asked again, up to `max_retries` times,
-before the document is skipped.
+before the document is skipped; the retry tells the model why its previous
+passage was rejected. If the language model server cannot be reached or
+times out, the request is retried a few times with increasing waits before
+the document counts as an error.
 
 When a batch finishes, the log (and the agent's
 `citation_extraction_completed` progress callback) says how many documents
-were skipped this way, for example "Extracted 12 citations from 20 documents (3
-rejected: passage could not be verified in the abstract)". From Python,
+were skipped this way and why, for example "Extracted 12 citations from 20
+documents (3 rejected: passage not found in abstract ×1, passage is not one
+or more complete sentences ×2)". From Python,
 `agent.get_validation_stats()['failed_citations']` lists one entry per
 skipped document: the reason, the similarity score, and the first 200
 characters of the model's last rejected passage. Earlier failed attempts for
