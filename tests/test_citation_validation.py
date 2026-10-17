@@ -5,6 +5,7 @@ Tests that the CitationFinderAgent properly validates citation passages
 against source abstracts and auto-corrects fuzzy matches.
 """
 
+import json
 import logging
 from unittest.mock import patch
 
@@ -315,6 +316,44 @@ def test_unexpected_error_is_counted_and_logged_with_traceback(
     assert citation is None
     assert agent.get_validation_stats()["errors"] == 1
     assert any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("connected", "llm_error"),
+    [
+        (False, None),
+        (True, ConnectionError("Ollama unreachable")),
+        (True, ValueError("model not found")),
+        (True, json.JSONDecodeError("Expecting value", "", 0)),
+    ],
+)
+def test_llm_failures_are_counted_as_errors(
+    connected: bool, llm_error: Exception | None
+) -> None:
+    """No connection or no usable LLM output is an error, not 'no passage'.
+
+    Callers such as the fact-checker use the ``errors`` statistic to tell a
+    failure from a document without relevant content.
+    """
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False)
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=connected), patch.object(
+        agent, "_generate_and_parse_json", side_effect=llm_error
+    ):
+        citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is None
+    assert agent.get_validation_stats()["errors"] == 1
+
+
+def test_irrelevant_document_is_not_an_error() -> None:
+    """A document judged irrelevant is a normal outcome, not an error."""
+    agent, citation, _ = _extract_with_llm_responses(
+        [{"has_relevant_content": False, "relevance_score": 0.0}]
+    )
+
+    assert citation is None
+    assert agent.get_validation_stats()["errors"] == 0
 
 
 def test_batch_summary_reports_rejections() -> None:

@@ -1249,7 +1249,9 @@ def search_hybrid(
     Returns:
         Tuple of (documents, strategy_metadata):
             - documents: List of unique documents with scores from each strategy
-            - strategy_metadata: Dict containing strategies used and their parameters
+            - strategy_metadata: Dict containing strategies used and their parameters;
+              ``strategies_failed`` lists each strategy that raised
+              (``{'strategy', 'error'}``), whose results are therefore missing
     """
     from .config import get_config
 
@@ -1262,6 +1264,9 @@ def search_hybrid(
     strategies_used = []
     strategy_metadata = {
         'strategies_used': [],
+        # Strategies that raised: [{'strategy': name, 'error': message}].
+        # Callers use this to tell "found nothing" from "could not search".
+        'strategies_failed': [],
         'semantic_search_params': None,
         'bm25_search_params': None,
         'fulltext_search_params': None
@@ -1321,6 +1326,9 @@ def search_hybrid(
 
         except Exception as e:
             logger.error(f"Semantic search failed: {e}", exc_info=True)
+            strategy_metadata['strategies_failed'].append(
+                {'strategy': 'semantic', 'error': str(e)}
+            )
 
     # 2. BM25 Search (if enabled)
     bm25_config = search_config.get('bm25', {})
@@ -1355,6 +1363,9 @@ def search_hybrid(
 
         except Exception as e:
             logger.error(f"BM25 search failed: {e}", exc_info=True)
+            strategy_metadata['strategies_failed'].append(
+                {'strategy': 'bm25', 'error': str(e)}
+            )
 
     # 3. Fulltext Search (if enabled) - fallback to keyword if neither semantic nor BM25
     # Try 'fulltext' first, fall back to 'keyword' for backward compatibility
@@ -1393,6 +1404,9 @@ def search_hybrid(
 
         except Exception as e:
             logger.error(f"Fulltext search failed: {e}", exc_info=True)
+            strategy_metadata['strategies_failed'].append(
+                {'strategy': 'fulltext', 'error': str(e)}
+            )
 
     # Update strategy metadata
     strategy_metadata['strategies_used'] = strategies_used

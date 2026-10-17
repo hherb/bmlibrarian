@@ -349,7 +349,11 @@ A response with `has_relevant_content: false`, or a relevance score below
 document whose abstract is missing or only whitespace is skipped before any
 LLM call. Unexpected exceptions are logged with their traceback
 (`logger.exception`), counted in `get_validation_stats()['errors']`, and not
-retried. Both batch methods (`process_scored_documents_for_citations` and
+retried. The `errors` count also includes a failed connection check, an LLM
+request that raised `ConnectionError`/`ValueError`, and output that could not
+be parsed as JSON after the retries. Callers use it to tell "this document
+has no relevant passage" from "this document could not be examined" (the
+fact-checker treats the second as a failure, not as missing evidence). Both batch methods (`process_scored_documents_for_citations` and
 `extract_citations_with_audit`) end with a `citation_extraction_completed`
 callback whose message includes the number of rejected passages and errors.
 

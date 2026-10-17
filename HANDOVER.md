@@ -10,6 +10,33 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Fact-checker no longer records failures as `maybe`** (2026-10-17, branch
+  `fix/factchecker-infra-failures`, closes #273): each stage of
+  `FactCheckerAgent.check_statement` now raises `FactCheckStageError`
+  (`stage`, `detail`) instead of returning an "Insufficient evidence" maybe
+  when it could not look. That covers search errors, scoring or citation
+  stages that came up empty while some documents failed, LLM/JSON failures,
+  and invalid verdicts (re-requested, never coerced). `_fallback_evaluation`
+  is gone. `check_batch` returns `EVALUATION_ERROR` results
+  (`result.is_error`), counts `check_failures`, **does not store them** (so
+  `--incremental` retries them), and notes them in the session's
+  `error_message`. The CLI exits 1 on check or storage failures. The
+  `CitationFinderAgent` `errors` stat now also counts connection/LLM/JSON
+  failures. `search_hybrid` swallows per-strategy errors, so its metadata
+  now carries `strategies_failed` (`{'strategy', 'error'}`); an empty search
+  with failed strategies is a stage error. Other `search_hybrid` callers
+  (research tab, systematic review, search tab) could use the same signal
+  but do not yet. Also fixed: the CLI summary crashed on zero results. Docs:
+  `doc/developers/fact_checker_system.md` "Failure handling". **Follow-up
+  #296**: 76 of 1,000 production verdicts are such fallbacks (all with 17–50
+  citations, so evaluation probably fails on large evidence sets). Data
+  cleanup needs owner approval; the root cause needs fixing or those
+  statements will keep failing.
+- **bmlib 0.10 adopted** (2026-10-17, PR #295, merged): pin
+  `bmlib[ollama,pdf]>=0.10.0,<0.11.0`; `json_repair`, `agents/text_chunking`
+  (`boundary_aware=False`), `paper_reviewer/text_utils` and
+  `importers/pdf_converter` are re-export shims over bmlib. Plan and next
+  steps: `doc/planning/bmlib_alignment_2026-09.md` (*Progress* table).
 - **Legacy orchestrator `Workflow` fixed** (2026-10-17, branch
   `fix/orchestrator-workflow-wedge`): `AgentOrchestrator.execute_workflow`
   looped forever when a step failed (its dependents never became ready),
@@ -185,10 +212,14 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
+- #296: fact-checker evaluation fails on large evidence sets (root cause),
+  plus the decision on the 76 contaminated production verdicts.
 - Open bugs from recent slices: #289 (short/mid-word citation passages
-  accepted as verified), #273 (fact-checker records infrastructure
-  failures as `maybe`), #279 / #278 (Find PDF / FETCH paths), #285–#287
-  (systematic review follow-ups).
+  accepted as verified; **needs a policy decision from the owner** on
+  minimum length and word-boundary snapping), #279 / #278 (Find PDF / FETCH
+  paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
+  "failure looks like no result" pattern in TransparencyAgent and
+  `paper_weight/db.py`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 

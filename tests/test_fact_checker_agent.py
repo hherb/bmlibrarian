@@ -5,17 +5,25 @@ Tests fact-checking workflow, statement evaluation, and evidence synthesis.
 """
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock, call
-from datetime import datetime, timezone
-from typing import Dict, Any, List
+from unittest.mock import Mock, patch
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+import json
+
 from bmlibrarian.factchecker.agent.fact_checker_agent import (
+    EVALUATION_ERROR,
+    EVALUATION_VALIDATION_ATTEMPTS,
+    STAGE_CITATIONS,
+    STAGE_EVALUATION,
+    STAGE_SCORING,
+    STAGE_SEARCH,
     FactCheckerAgent,
     FactCheckResult,
+    FactCheckStageError,
+    failed_search_strategies,
     EvidenceReference
 )
 from bmlibrarian.agents.citation_agent import Citation
@@ -275,27 +283,69 @@ class TestFactCheckerAgent(unittest.TestCase):
             self.agent._validate_evaluation_response({"evaluation": "yes"})
 
     def test_validate_evaluation_response_invalid_value(self):
-        """Test validation with an invalid evaluation value."""
-        response = {
-            "evaluation": "unknown",
-            "reason": "Test reason"
-        }
+        """An invalid verdict is rejected, never coerced to 'maybe'."""
+        with self.assertRaises(ValueError):
+            self.agent._validate_evaluation_response(
+                {"evaluation": "unknown", "reason": "Test reason"}
+            )
 
-        result = self.agent._validate_evaluation_response(response)
+    def test_validate_evaluation_response_rejects_malformed_responses(self):
+        """Non-object responses, non-string verdicts and empty reasons are invalid."""
+        for response in (
+            ["yes", "reason"],
+            {"evaluation": None, "reason": "r"},
+            {"evaluation": ["yes"], "reason": "r"},
+            {"evaluation": "yes", "reason": "   "},
+            {"evaluation": "yes", "reason": None},
+        ):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                self.agent._validate_evaluation_response(response)
 
-        # Should default to "maybe" for invalid values
-        self.assertEqual(result['evaluation'], 'maybe')
-
-    def test_fallback_evaluation(self):
-        """Test fallback evaluation when LLM fails."""
-        result = self.agent._fallback_evaluation(
-            self.test_statement,
-            self.sample_citations
+    def test_validate_evaluation_response_non_dict_stances_become_empty(self):
+        """A non-object citation_stances is replaced by an empty dict."""
+        result = self.agent._validate_evaluation_response(
+            {"evaluation": "no", "reason": "r", "citation_stances": ["supports"]}
         )
 
-        self.assertEqual(result['evaluation'], 'maybe')
-        self.assertIn('reason', result)
-        self.assertIn('citation_stances', result)
+        self.assertEqual(result['citation_stances'], {})
+
+    def test_request_evaluation_retries_an_invalid_verdict(self):
+        """An invalid verdict is requested again; a valid retry is used."""
+        with patch.object(self.agent, '_chat_and_parse_json', side_effect=[
+            {"evaluation": "unknown", "reason": "r"},
+            {"evaluation": "No", "reason": "Contradicted"},
+        ]) as chat:
+            result = self.agent._request_evaluation("prompt")
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(result['evaluation'], 'no')
+
+    def test_request_evaluation_fails_after_repeated_invalid_verdicts(self):
+        """Repeatedly invalid responses fail the stage instead of becoming 'maybe'."""
+        with patch.object(
+            self.agent, '_chat_and_parse_json',
+            return_value={"evaluation": "probably", "reason": "r"},
+        ) as chat:
+            with self.assertRaises(FactCheckStageError) as ctx:
+                self.agent._request_evaluation("prompt")
+
+        self.assertEqual(chat.call_count, EVALUATION_VALIDATION_ATTEMPTS)
+        self.assertEqual(ctx.exception.stage, STAGE_EVALUATION)
+        self.assertIn("probably", str(ctx.exception))
+
+    def test_request_evaluation_llm_failure_is_a_stage_error(self):
+        """A connection error or unparseable output is not a 'maybe' verdict."""
+        for error in (
+            ConnectionError("Ollama unreachable"),
+            json.JSONDecodeError("Expecting value", "", 0),
+        ):
+            with self.subTest(error=type(error).__name__), patch.object(
+                self.agent, '_chat_and_parse_json', side_effect=error
+            ):
+                with self.assertRaises(FactCheckStageError) as ctx:
+                    self.agent._request_evaluation("prompt")
+                self.assertEqual(ctx.exception.stage, STAGE_EVALUATION)
+                self.assertIs(ctx.exception.__cause__, error)
 
     def test_citations_to_evidence_refs(self):
         """Test conversion of Citations to EvidenceReferences."""
@@ -403,6 +453,7 @@ class TestFactCheckerAgent(unittest.TestCase):
         mock_score.return_value = [low_scored]
         self.agent.citation_agent = Mock()
         self.agent.citation_agent.process_scored_documents_for_citations.return_value = []
+        self.agent.citation_agent.get_validation_stats.return_value = {'errors': 0}
 
         self.agent.check_statement(statement=self.test_statement, score_threshold=0.0)
 
@@ -556,6 +607,208 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(mock_check.call_count, 2)
         mock_export.assert_called_once_with("test_output.json", export_type="full")
+
+    # ---- Failures are stage errors, not "insufficient evidence" (#273) ----
+
+    def test_search_failure_is_a_stage_error(self):
+        """A search outage raises instead of reporting 'no documents found'."""
+        self.agent.query_agent = Mock()
+        self.agent.query_agent.find_abstracts.side_effect = ConnectionError("db down")
+
+        with self.assertRaises(FactCheckStageError) as ctx:
+            self.agent._search_documents(self.test_statement, 10)
+
+        self.assertEqual(ctx.exception.stage, STAGE_SEARCH)
+        self.assertIn("db down", str(ctx.exception))
+
+    def _query_agent(self, documents: list, failed: list) -> Mock:
+        """A query agent returning ``documents`` with ``failed`` strategies."""
+        agent = Mock()
+        agent.find_abstracts.return_value = iter(documents)
+        agent.last_search_metadata = {'strategies_used': [], 'strategies_failed': failed}
+        return agent
+
+    def test_empty_search_with_failed_strategies_is_a_stage_error(self):
+        """search_hybrid swallows strategy errors; an outage is not 'no documents'."""
+        self.agent.query_agent = self._query_agent(
+            [], [{'strategy': 'bm25', 'error': 'connection refused'}]
+        )
+
+        with self.assertRaises(FactCheckStageError) as ctx:
+            self.agent._search_documents(self.test_statement, 10)
+
+        self.assertEqual(ctx.exception.stage, STAGE_SEARCH)
+        self.assertIn("bm25: connection refused", str(ctx.exception))
+
+    def test_failed_strategy_alongside_documents_keeps_the_documents(self):
+        """Documents from the strategies that worked are still used."""
+        self.agent.query_agent = self._query_agent(
+            self.sample_documents, [{'strategy': 'semantic', 'error': 'no embedder'}]
+        )
+
+        documents = self.agent._search_documents(self.test_statement, 10)
+
+        self.assertEqual(documents, self.sample_documents)
+
+    def test_empty_search_without_failures_is_insufficient_evidence(self):
+        """Every strategy ran and matched nothing: an empty result."""
+        self.agent.query_agent = self._query_agent([], [])
+
+        self.assertEqual(self.agent._search_documents(self.test_statement, 10), [])
+
+    def test_failed_search_strategies_tolerates_missing_or_odd_metadata(self):
+        """Metadata without failure information means no recorded failures."""
+        for metadata in (None, {}, {'strategies_failed': None}, "text"):
+            with self.subTest(metadata=metadata):
+                self.assertEqual(failed_search_strategies(metadata), [])
+        self.assertEqual(
+            failed_search_strategies({'strategies_failed': [{'strategy': 'bm25'}, 'odd']}),
+            ['bm25: unknown error', 'odd'],
+        )
+
+    def _scoring_agent(self, outcomes: list) -> Mock:
+        """A scoring agent returning or raising each outcome in turn."""
+        agent = Mock()
+        agent.evaluate_document.side_effect = outcomes
+        return agent
+
+    def test_scoring_failures_with_nothing_above_threshold_are_a_stage_error(self):
+        """If any document failed and none passed, the evidence was not examined."""
+        for outcomes, expected in (
+            ([ConnectionError("ollama down"), ConnectionError("ollama down")], "2 of 2"),
+            ([ConnectionError("ollama down"), {'score': 1, 'reasoning': 'weak'}], "1 of 2"),
+        ):
+            with self.subTest(expected=expected):
+                self.agent.scoring_agent = self._scoring_agent(outcomes)
+                with self.assertRaises(FactCheckStageError) as ctx:
+                    self.agent._score_documents(
+                        self.test_statement, self.sample_documents, 2.5
+                    )
+                self.assertEqual(ctx.exception.stage, STAGE_SCORING)
+                self.assertIn(expected, str(ctx.exception))
+                self.assertIn("ollama down", str(ctx.exception))
+
+    def test_scoring_partial_failure_keeps_the_documents_that_passed(self):
+        """A failed document is skipped when others reached the threshold."""
+        self.agent.scoring_agent = self._scoring_agent(
+            [ConnectionError("timeout"), {'score': 4, 'reasoning': 'relevant'}]
+        )
+
+        scored = self.agent._score_documents(self.test_statement, self.sample_documents, 2.5)
+
+        self.assertEqual([doc['id'] for doc, _ in scored], [self.sample_documents[1]['id']])
+
+    def test_scoring_without_failures_can_be_empty(self):
+        """Every document scored below the threshold: genuinely no evidence."""
+        self.agent.scoring_agent = self._scoring_agent(
+            [{'score': 1, 'reasoning': 'weak'}, {'score': 2, 'reasoning': 'weak'}]
+        )
+
+        self.assertEqual(
+            self.agent._score_documents(self.test_statement, self.sample_documents, 2.5), []
+        )
+
+    def _citation_agent(self, citations: list, new_errors: int) -> Mock:
+        """A citation agent whose extraction adds ``new_errors`` to its stats."""
+        agent = Mock()
+        agent.process_scored_documents_for_citations.return_value = citations
+        agent.get_validation_stats.side_effect = [{'errors': 3}, {'errors': 3 + new_errors}]
+        return agent
+
+    def _qualifying(self) -> list:
+        """Two scored documents above the default threshold."""
+        return [(doc, {'score': 4, 'reasoning': 'r'}) for doc in self.sample_documents]
+
+    def test_citation_errors_with_no_citations_are_a_stage_error(self):
+        """No citation because extraction failed is not 'no relevant citations'."""
+        self.agent.citation_agent = self._citation_agent([], new_errors=2)
+
+        with self.assertRaises(FactCheckStageError) as ctx:
+            self.agent._extract_citations(self.test_statement, self._qualifying())
+
+        self.assertEqual(ctx.exception.stage, STAGE_CITATIONS)
+        self.assertIn("2 of 2", str(ctx.exception))
+
+    def test_citation_errors_alongside_citations_keep_the_citations(self):
+        """A partial extraction failure still uses the citations obtained."""
+        self.agent.citation_agent = self._citation_agent(self.sample_citations[:1], new_errors=1)
+
+        citations = self.agent._extract_citations(self.test_statement, self._qualifying())
+
+        self.assertEqual(citations, self.sample_citations[:1])
+
+    def test_no_citations_without_errors_is_insufficient_evidence(self):
+        """Documents examined, nothing relevant extracted: an empty result."""
+        self.agent.citation_agent = self._citation_agent([], new_errors=0)
+
+        self.assertEqual(
+            self.agent._extract_citations(self.test_statement, self._qualifying()), []
+        )
+
+    def test_citation_extraction_exception_is_a_stage_error(self):
+        """An exception from the citation agent is not swallowed into []."""
+        self.agent.citation_agent = Mock()
+        self.agent.citation_agent.get_validation_stats.return_value = {'errors': 0}
+        self.agent.citation_agent.process_scored_documents_for_citations.side_effect = (
+            RuntimeError("boom")
+        )
+
+        with self.assertRaises(FactCheckStageError) as ctx:
+            self.agent._extract_citations(self.test_statement, self._qualifying())
+
+        self.assertEqual(ctx.exception.stage, STAGE_CITATIONS)
+
+    @patch.object(FactCheckerAgent, '_initialize_agents')
+    @patch.object(FactCheckerAgent, '_search_documents')
+    def test_check_statement_propagates_stage_errors(self, mock_search, mock_init):
+        """check_statement does not turn a stage failure into a verdict."""
+        mock_search.side_effect = FactCheckStageError(STAGE_SEARCH, "db down")
+
+        with self.assertRaises(FactCheckStageError):
+            self.agent.check_statement(statement=self.test_statement)
+
+    @patch.object(FactCheckerAgent, 'check_statement')
+    def test_check_batch_does_not_store_failed_checks(self, mock_check):
+        """A failed statement is reported as an error, counted and not stored."""
+        ok = FactCheckResult(
+            statement="Statement 1", evaluation="yes", reason="Supported",
+            evidence_list=[], confidence="high", documents_reviewed=5,
+        )
+        mock_check.side_effect = [ok, FactCheckStageError(STAGE_SCORING, "ollama down")]
+        self.agent.db = Mock()
+        statements = [
+            {"id": "1", "question": "Statement 1", "answer": "yes"},
+            {"id": "2", "question": "Statement 2", "answer": "no"},
+        ]
+
+        with patch.object(self.agent, '_store_result_in_database') as store:
+            results = self.agent.check_batch(statements)
+
+        self.assertEqual([r.evaluation for r in results], ["yes", EVALUATION_ERROR])
+        failed = results[1]
+        self.assertTrue(failed.is_error)
+        self.assertFalse(results[0].is_error)
+        self.assertIsNone(failed.matches_expected)
+        self.assertEqual(failed.input_statement_id, "2")
+        self.assertIn("ollama down", failed.reason)
+        self.assertEqual(self.agent.check_failures, 1)
+        store.assert_called_once_with(ok, None)
+
+        session_update = self.agent.db.update_processing_session.call_args.args[1]
+        self.assertEqual(session_update['processed_statements'], 1)
+        self.assertIn("1 statement(s) failed", session_update['error_message'])
+
+    @patch.object(FactCheckerAgent, 'check_statement')
+    def test_check_batch_resets_failure_count(self, mock_check):
+        """check_failures counts the current batch only."""
+        mock_check.side_effect = [RuntimeError("bug"), FactCheckResult(
+            statement="s", evaluation="no", reason="r", evidence_list=[],
+        )]
+
+        self.agent.check_batch([{"statement": "a"}])
+        self.assertEqual(self.agent.check_failures, 1)
+        self.agent.check_batch([{"statement": "b"}])
+        self.assertEqual(self.agent.check_failures, 0)
 
     def test_filter_agent_params(self):
         """Test filtering of agent configuration parameters."""
