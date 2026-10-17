@@ -313,9 +313,13 @@ class CitationFinderAgent(BaseAgent):
             min_relevance: Minimum relevance score to accept citation
 
         Returns:
-            Citation object if relevant passage found, None otherwise
+            Citation object if relevant passage found, None otherwise. When
+            ``None`` is due to a failure (no LLM connection, unusable LLM
+            output, an unexpected exception) rather than a judgement about the
+            document, the ``errors`` validation statistic is incremented.
         """
         if not self.test_connection():
+            self._validation_stats['errors'] += 1
             logger.error("Cannot connect to Ollama - citation extraction unavailable")
             return None
 
@@ -389,9 +393,11 @@ Respond only with valid JSON."""
                         retry_context=f"citation extraction (doc {doc_id})"
                     )
                 except json.JSONDecodeError as e:
+                    self._validation_stats['errors'] += 1
                     logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
                     return None
                 except (ConnectionError, ValueError) as e:
+                    self._validation_stats['errors'] += 1
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 

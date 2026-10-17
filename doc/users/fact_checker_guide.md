@@ -351,6 +351,36 @@ Insufficient or mixed evidence when:
 - "Mixed evidence: Both supporting and contradicting studies found"
 - "Limited evidence: Few high-quality sources available"
 
+A "maybe" is only recorded when the literature was actually examined. If a
+step fails (database or Ollama unreachable, documents that could not be
+scored, a model that keeps returning unusable output), the statement is
+reported as **failed** instead; see [Failed statements](#failed-statements).
+
+### Failed statements
+
+A statement whose check fails gets no verdict: nothing is stored for it in the
+database, and the summary lists it as `⚠ Error ... check failed, no verdict
+stored`. The CLI prints how many statements failed and **exits with status
+1** (it also exits 1 if any result could not be saved). The log shows
+which step failed: literature search, relevance scoring, citation extraction,
+or statement evaluation.
+
+Fix the cause, then re-run the same file with `--incremental`. Failed
+statements have no AI evaluation, so only they are checked again.
+
+A failed document inside a step does not fail the statement if other
+documents produced evidence. The statement fails only if the step came up
+empty *and* some documents failed, because then the evidence was not fully
+examined.
+
+Before October 2026, these failures were stored as "maybe" verdicts. Older
+rows whose reason begins "Found N relevant citations but unable to
+automatically determine…" are certainly failures and should be treated as
+unevaluated. Older "maybe" rows whose reason begins "Insufficient evidence:"
+may be genuine, or may be failures (for example a database outage during the
+search). The old version did not record which, so re-check them if it
+matters.
+
 ## Best Practices
 
 ### Statement Formulation
