@@ -5,6 +5,7 @@ Tests that the CitationFinderAgent properly validates citation passages
 against source abstracts and auto-corrects fuzzy matches.
 """
 
+import json
 import logging
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ import pytest
 from bmlibrarian.agents.citation_agent import (
     REJECT_BAD_RELEVANCE,
     REJECT_BELOW_THRESHOLD,
+    REJECT_INCOMPLETE_SENTENCE,
     REJECT_MISSING_SUMMARY,
     REJECT_NOT_JSON_OBJECT,
     REJECT_PASSAGE_EMPTY,
@@ -26,7 +28,10 @@ ABSTRACT = (
     "of heart attack in patients with cardiovascular disease, however it may "
     "increase bleeding risk. Conclusions: weigh benefits and harms."
 )
-GOOD_PASSAGE = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease"
+GOOD_PASSAGE = (
+    "Aspirin reduces the risk of heart attack in patients with cardiovascular "
+    "disease, however it may increase bleeding risk."
+)
 
 
 def test_exact_match():
@@ -213,6 +218,44 @@ def test_extraction_stores_source_text_for_fuzzy_passage():
     assert agent.get_validation_stats()["fuzzy_matches"] == 1
 
 
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "Aspirin",  # a bare key term
+        "spirin reduces the risk of heart attack",  # starts mid-word
+        "Aspirin reduces the risk of heart attack in patients with cardiovascular disease",
+        "however it may increase bleeding risk.",  # starts mid-sentence
+    ],
+)
+def test_fragments_are_rejected_as_incomplete_sentences(fragment: str) -> None:
+    """Verbatim fragments are never verified citations (#289); they are retried."""
+    agent, citation, llm = _extract_with_llm_responses([_llm_response(fragment)] * 3)
+
+    assert citation is None
+    assert llm.call_count == 3
+    failed = agent.get_validation_stats()["failed_citations"]
+    assert [entry["reason"] for entry in failed] == [REJECT_INCOMPLETE_SENTENCE]
+
+
+def test_fragment_then_complete_sentence_succeeds() -> None:
+    """A retry that quotes the whole sentence is accepted."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [_llm_response("Aspirin reduces the risk of heart attack"), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert llm.call_count == 2
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+
+
+def test_missing_final_period_is_taken_from_the_abstract() -> None:
+    """A sentence quoted without its full stop is stored with the source's full stop."""
+    _, citation, _ = _extract_with_llm_responses([_llm_response(GOOD_PASSAGE[:-1])])
+
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+
+
 def test_extraction_retries_non_string_passage():
     """A missing/non-text passage is a validation failure that is retried."""
     agent, citation, llm = _extract_with_llm_responses(
@@ -315,6 +358,44 @@ def test_unexpected_error_is_counted_and_logged_with_traceback(
     assert citation is None
     assert agent.get_validation_stats()["errors"] == 1
     assert any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("connected", "llm_error"),
+    [
+        (False, None),
+        (True, ConnectionError("Ollama unreachable")),
+        (True, ValueError("model not found")),
+        (True, json.JSONDecodeError("Expecting value", "", 0)),
+    ],
+)
+def test_llm_failures_are_counted_as_errors(
+    connected: bool, llm_error: Exception | None
+) -> None:
+    """No connection or no usable LLM output is an error, not 'no passage'.
+
+    Callers such as the fact-checker use the ``errors`` statistic to tell a
+    failure from a document without relevant content.
+    """
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False)
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=connected), patch.object(
+        agent, "_generate_and_parse_json", side_effect=llm_error
+    ):
+        citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is None
+    assert agent.get_validation_stats()["errors"] == 1
+
+
+def test_irrelevant_document_is_not_an_error() -> None:
+    """A document judged irrelevant is a normal outcome, not an error."""
+    agent, citation, _ = _extract_with_llm_responses(
+        [{"has_relevant_content": False, "relevance_score": 0.0}]
+    )
+
+    assert citation is None
+    assert agent.get_validation_stats()["errors"] == 0
 
 
 def test_batch_summary_reports_rejections() -> None:

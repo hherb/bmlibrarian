@@ -87,7 +87,9 @@ class TestCitationFinderAgent(unittest.TestCase):
         # Model response with EXACT text from abstract
         # Abstract: 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease. We studied 10,000 participants over 6 months.'
         response = json.dumps({
-            'relevant_passage': 'COVID-19 vaccines are 95% effective in preventing severe disease.',
+            # A complete sentence: quoting it from "COVID-19 vaccines" onwards
+            # would start mid-sentence and be rejected (#289).
+            'relevant_passage': 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease.',
             'summary': 'Study demonstrates high vaccine effectiveness',
             'relevance_score': 0.9,
             'has_relevant_content': True

@@ -16,6 +16,7 @@ import psycopg
 from .base import BaseAgent
 from .queue_manager import TaskPriority, TaskStatus
 from ..utils.passage_match import PassageMatch, find_passage
+from ..utils.sentence_bounds import complete_sentence_span
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ REJECT_PASSAGE_EMPTY = "passage is empty"
 REJECT_PASSAGE_NOT_FOUND = "passage not found in abstract"
 REJECT_BELOW_THRESHOLD = "passage similarity below threshold"
 REJECT_MISSING_SUMMARY = "summary is missing or not text"
+# The matched span is a fragment (a term, a clause, or it starts/ends
+# mid-sentence); citations must be one or more complete sentences (#289).
+REJECT_INCOMPLETE_SENTENCE = "passage is not one or more complete sentences"
 
 # Characters of a rejected LLM passage kept in failed_citations / in logs.
 FAILED_PASSAGE_STORED_CHARS = 200
@@ -245,10 +249,18 @@ class CitationFinderAgent(BaseAgent):
             return _ResponseCheck(failure=REJECT_PASSAGE_EMPTY, llm_passage=llm_passage)
 
         match = self._validate_and_extract_exact_match(raw_passage, abstract, min_similarity)
-        if match.text is None:
+        # PassageMatch sets text, start and end together; checking all three
+        # also narrows the offsets for the sentence check below.
+        if match.text is None or match.start is None or match.end is None:
             # 0.0 means no candidate span at all, not a near miss.
             reason = REJECT_PASSAGE_NOT_FOUND if match.similarity == 0.0 else REJECT_BELOW_THRESHOLD
             return _ResponseCheck(failure=reason, match=match, llm_passage=llm_passage)
+
+        sentences = complete_sentence_span(abstract, match.start, match.end)
+        if sentences is None:
+            return _ResponseCheck(
+                failure=REJECT_INCOMPLETE_SENTENCE, match=match, llm_passage=llm_passage
+            )
 
         summary = citation_data.get('summary')
         if not isinstance(summary, str):
@@ -258,7 +270,7 @@ class CitationFinderAgent(BaseAgent):
         return _ResponseCheck(
             match=match,
             llm_passage=llm_passage,
-            passage=match.text,
+            passage=abstract[sentences[0]:sentences[1]],
             relevance_score=relevance_score,
             summary=summary,
         )
@@ -313,9 +325,13 @@ class CitationFinderAgent(BaseAgent):
             min_relevance: Minimum relevance score to accept citation
 
         Returns:
-            Citation object if relevant passage found, None otherwise
+            Citation object if relevant passage found, None otherwise. When
+            ``None`` is due to a failure (no LLM connection, unusable LLM
+            output, an unexpected exception) rather than a judgement about the
+            document, the ``errors`` validation statistic is incremented.
         """
         if not self.test_connection():
+            self._validation_stats['errors'] += 1
             logger.error("Cannot connect to Ollama - citation extraction unavailable")
             return None
 
@@ -351,7 +367,7 @@ Document Title: {title}
 Abstract: {abstract}
 
 Your task:
-1. Identify the most relevant passage from the abstract that answers the question
+1. Identify the most relevant passage (one or more complete sentences) from the abstract that answers the question
 2. Create a brief 1-2 sentence summary of how this passage relates to the question
 3. Rate the relevance on a scale of 0.0 to 1.0 (where 1.0 is perfectly relevant)
 4. Only extract passages with relevance >= 0.7
@@ -363,7 +379,7 @@ Your task:
 - Do NOT combine fragments from different parts of the abstract
 - Do NOT add interpretations or explanations to the extracted text
 - If no single exact passage is sufficiently relevant, respond with has_relevant_content: false
-- Extract complete sentences when possible (don't cut off mid-sentence)
+- The passage MUST be one or more COMPLETE sentences: start at the first word of a sentence and end at its closing punctuation. Never extract a single word, a phrase or part of a sentence; such passages are rejected
 
 Response format (JSON):
 {{
@@ -389,9 +405,11 @@ Respond only with valid JSON."""
                         retry_context=f"citation extraction (doc {doc_id})"
                     )
                 except json.JSONDecodeError as e:
+                    self._validation_stats['errors'] += 1
                     logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
                     return None
                 except (ConnectionError, ValueError) as e:
+                    self._validation_stats['errors'] += 1
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 

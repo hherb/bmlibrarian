@@ -147,8 +147,21 @@ capitalisation or the spacing when asked to quote. The Citation Finder
 locates the passage in the abstract and stores the abstract's original text
 for that span. A passage whose similarity to the closest span of the
 abstract is below 95% (a paraphrase or an invented sentence) is rejected.
-So is a response with a missing or empty passage or summary. The model is
-then asked again, up to `max_retries` times, before the document is skipped.
+So is a response with a missing or empty passage or summary.
+
+A citation must also be **at least one complete sentence**, from the
+sentence's first word to its closing punctuation. A single term, a phrase, or
+a quote that starts or stops mid-sentence (even mid-word) is rejected,
+because a fragment can easily misrepresent the source out of context. The
+only repair made is adding a closing full stop (or bracket) that the model
+left off. When it is unclear whether a full stop ends a sentence (for example
+"et al. The…"), the passage is rejected rather than accepted. In those
+cases, and for a sentence that starts with a lowercase word after a full stop
+("…was measured. mRNA levels rose."), the model has to quote a longer
+stretch that starts at an unambiguous sentence start.
+
+In every case above, the model is asked again, up to `max_retries` times,
+before the document is skipped.
 
 When a batch finishes, the log (and the agent's
 `citation_extraction_completed` progress callback) says how many documents
