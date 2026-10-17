@@ -1,12 +1,29 @@
 """
 Text Processing Utilities for Paper Reviewer
 
-Provides utilities for handling long texts without truncation.
-Implements chunking and map-reduce strategies to process all content.
+Utilities for handling long texts without truncation: chunking and
+map-reduce strategies that process all content.
+
+The chunking implementation lives in ``bmlib.llm.text_utils``, which was
+consolidated from this module and ``agents/text_chunking.py``. This module
+keeps the paper reviewer's own geometry: chunks of ``MAX_TEXT_LENGTH``
+characters with a 200-character overlap, returned as strings. The
+paragraph/sentence-aware splitting is bmlib's, and is the same rule this
+module always used. ``process_with_map_reduce`` and
+``process_with_rolling_summary`` are kept here (not re-exported from bmlib)
+so that they chunk with this geometry too; bmlib's versions use its own
+defaults (250-character overlap, ``DEFAULT_CHUNK_SIZE``).
 """
 
 import logging
-from typing import List, Tuple, Optional, Callable, Any
+from typing import Any, Callable, List, Optional, Tuple
+
+from bmlib.llm.text_utils import (
+    DEFAULT_MIN_CHUNK_SIZE,
+    combine_title_and_text,
+    get_text_with_priority,
+)
+from bmlib.llm.text_utils import chunk_text as _bmlib_chunk_text
 
 from .constants import MAX_TEXT_LENGTH
 
@@ -15,7 +32,11 @@ logger = logging.getLogger(__name__)
 
 # Chunk processing constants
 CHUNK_OVERLAP = 200  # Characters of overlap between chunks
-MIN_CHUNK_SIZE = 500  # Minimum chunk size to avoid tiny chunks
+# A paragraph/sentence break ends a chunk only if it lies more than this many
+# characters into the chunk window; otherwise the chunk is cut at
+# max_chunk_size.
+MIN_CHUNK_SIZE = DEFAULT_MIN_CHUNK_SIZE
+ROLLING_SUMMARY_MAX_LENGTH = 500  # Characters of rolling summary carried forward
 
 
 def chunk_text(
@@ -26,8 +47,10 @@ def chunk_text(
     """
     Split text into overlapping chunks for processing.
 
-    Uses paragraph-aware splitting to avoid breaking sentences.
-    Never discards any text - all content is preserved across chunks.
+    Ends each chunk at a paragraph break, else a sentence break, if one lies
+    beyond ``MIN_CHUNK_SIZE`` in the window; otherwise cuts at
+    ``max_chunk_size``. Never discards any text - all content is preserved
+    across chunks.
 
     Args:
         text: The full text to chunk
@@ -35,51 +58,26 @@ def chunk_text(
         overlap: Number of overlapping characters between chunks
 
     Returns:
-        List of text chunks covering the entire input
+        List of text chunks covering the entire input (``[text]`` when the
+        text fits in one chunk, including empty text)
+
+    Raises:
+        ValueError: If the text needs chunking and ``max_chunk_size <= 0``,
+            ``overlap < 0`` or ``overlap >= max_chunk_size``
     """
     if len(text) <= max_chunk_size:
         return [text]
 
-    chunks = []
-    start = 0
-
-    while start < len(text):
-        # Calculate end position
-        end = start + max_chunk_size
-
-        if end >= len(text):
-            # Last chunk - take everything remaining
-            chunks.append(text[start:])
-            break
-
-        # Try to find a good break point (paragraph or sentence)
-        chunk = text[start:end]
-
-        # Look for paragraph break first
-        para_break = chunk.rfind('\n\n')
-        if para_break > MIN_CHUNK_SIZE:
-            end = start + para_break + 2  # Include the double newline
-        else:
-            # Look for sentence break
-            sentence_breaks = [
-                chunk.rfind('. '),
-                chunk.rfind('.\n'),
-                chunk.rfind('? '),
-                chunk.rfind('! '),
-            ]
-            best_break = max(b for b in sentence_breaks if b > MIN_CHUNK_SIZE) if any(b > MIN_CHUNK_SIZE for b in sentence_breaks) else -1
-            if best_break > 0:
-                end = start + best_break + 2  # Include the period and space
-
-        chunks.append(text[start:end])
-
-        # Move start position, accounting for overlap
-        start = end - overlap if end - overlap > start else end
-
-        # Prevent infinite loop
-        if start >= len(text):
-            break
-
+    chunks = [
+        chunk.content
+        for chunk in _bmlib_chunk_text(
+            text,
+            chunk_size=max_chunk_size,
+            overlap=overlap,
+            boundary_aware=True,
+            min_chunk_size=MIN_CHUNK_SIZE,
+        )
+    ]
     logger.info(f"Split {len(text):,} characters into {len(chunks)} chunks")
     return chunks
 
@@ -93,8 +91,8 @@ def process_with_map_reduce(
     """
     Process long text using map-reduce pattern.
 
-    First maps each chunk to intermediate results, then reduces
-    all intermediate results into a final result.
+    First maps each chunk (from :func:`chunk_text`) to intermediate results,
+    then reduces all intermediate results into a final result.
 
     Args:
         text: The full text to process
@@ -103,37 +101,32 @@ def process_with_map_reduce(
         max_chunk_size: Maximum chunk size
 
     Returns:
-        Final reduced result
+        Final reduced result (or ``map_fn(text)`` when the text fits in one
+        chunk)
     """
     if len(text) <= max_chunk_size:
         return map_fn(text)
 
     chunks = chunk_text(text, max_chunk_size)
-
-    # Map phase: process each chunk
     intermediate_results = []
     for i, chunk in enumerate(chunks):
         logger.debug(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)")
-        result = map_fn(chunk)
-        intermediate_results.append(result)
+        intermediate_results.append(map_fn(chunk))
 
-    # Reduce phase: combine results
-    final_result = reduce_fn(intermediate_results)
-
-    return final_result
+    return reduce_fn(intermediate_results)
 
 
 def process_with_rolling_summary(
     text: str,
     process_fn: Callable[[str, Optional[str]], Tuple[Any, str]],
     max_chunk_size: int = MAX_TEXT_LENGTH,
-    summary_max_length: int = 500,
+    summary_max_length: int = ROLLING_SUMMARY_MAX_LENGTH,
 ) -> Any:
     """
     Process long text using rolling summaries.
 
-    Each chunk is processed with context from previous chunk's summary.
-    The final result includes all accumulated information.
+    Each chunk (from :func:`chunk_text`) is processed with context from the
+    previous chunk's summary, which is truncated to ``summary_max_length``.
 
     Args:
         text: The full text to process
@@ -149,82 +142,16 @@ def process_with_rolling_summary(
         return result
 
     chunks = chunk_text(text, max_chunk_size)
-
-    rolling_summary = None
+    rolling_summary: Optional[str] = None
     result = None
-
     for i, chunk in enumerate(chunks):
         logger.debug(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)")
         result, rolling_summary = process_fn(chunk, rolling_summary)
-
         # Ensure summary doesn't grow unbounded
         if rolling_summary and len(rolling_summary) > summary_max_length:
             rolling_summary = rolling_summary[:summary_max_length] + "..."
 
     return result
-
-
-def get_text_with_priority(
-    document: dict,
-    prefer_full_text: bool = True,
-) -> Tuple[str, str]:
-    """
-    Get the best available text from a document.
-
-    Returns the full text available, never truncates.
-
-    Args:
-        document: Document dictionary with various text fields
-        prefer_full_text: Whether to prefer full_text over abstract
-
-    Returns:
-        Tuple of (text, source_field_name)
-    """
-    full_text = document.get('full_text', '') or ''
-    abstract = document.get('abstract', '') or ''
-    content = document.get('content', '') or ''
-    text_field = document.get('text', '') or ''
-
-    if prefer_full_text and full_text:
-        return full_text, 'full_text'
-    elif abstract:
-        return abstract, 'abstract'
-    elif full_text:
-        return full_text, 'full_text'
-    elif content:
-        return content, 'content'
-    elif text_field:
-        return text_field, 'text'
-    else:
-        return '', 'none'
-
-
-def combine_title_and_text(
-    title: str,
-    text: str,
-    max_title_length: int = 500,
-) -> str:
-    """
-    Combine title and text for analysis.
-
-    Args:
-        title: Document title
-        text: Document text (abstract or full text)
-        max_title_length: Maximum title length (titles are rarely long)
-
-    Returns:
-        Combined text with title prefix
-    """
-    if title and len(title) > max_title_length:
-        # Titles should never be this long, but handle edge case
-        title = title[:max_title_length]
-
-    if title and text:
-        return f"Title: {title}\n\n{text}"
-    elif title:
-        return f"Title: {title}"
-    else:
-        return text
 
 
 __all__ = [
@@ -235,4 +162,5 @@ __all__ = [
     'combine_title_and_text',
     'CHUNK_OVERLAP',
     'MIN_CHUNK_SIZE',
+    'ROLLING_SUMMARY_MAX_LENGTH',
 ]

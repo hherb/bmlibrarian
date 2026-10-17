@@ -13,7 +13,13 @@ dependencies = [
     # ollama.show() per model, which 0.5.1 fixed by making context_window
     # lazy. On 0.5.0 that listing cost 3.53s against 139 models instead of
     # 0.08s, on every model picker.
-    "bmlib[ollama]>=0.5.1,<0.6.0",
+    #
+    # Raised to 0.10.0 so bmlibrarian can use the modules bmlib took over
+    # from it (json_repair, text_utils, fulltext.pdf_converter, citations,
+    # quality, context_processor). bmlib/llm/'s public signatures changed
+    # only additively between 0.5.1 and 0.10.0; json_repair and utils were
+    # behaviourally hardened (doc/planning/bmlib_alignment_2026-09.md §1).
+    "bmlib[ollama,pdf]>=0.10.0,<0.11.0",
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
     "python-dotenv>=1.2.2",

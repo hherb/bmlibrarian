@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import traceback
 
+# bmlib (the LLM layer, json_repair, text chunking, PDF conversion) logs under
+# its own top-level namespace, outside the 'bmlibrarian' logger tree.
+BMLIB_LOGGER_NAME = 'bmlib'
+BMLIB_LOG_LEVEL = logging.WARNING
+# Marks handlers this module attached to the bmlib logger, so re-creating a
+# WorkflowLogger replaces them instead of stacking duplicates.
+_CLI_HANDLER_ATTR = '_bmlibrarian_cli_handler'
+
 
 class BMLibrarianFormatter(logging.Formatter):
     """Custom formatter for BMLibrarian logs with structured data support."""
@@ -50,6 +58,25 @@ class BMLibrarianFormatter(logging.Formatter):
         return base_message
 
 
+class _LevelFilteredHandler(logging.Handler):
+    """Forward records at or above a level to another handler."""
+
+    def __init__(self, target: logging.Handler, level: int) -> None:
+        """
+        Wrap *target* so only records at *level* or above reach it.
+
+        Args:
+            target: Handler that formats and writes the records.
+            level: Minimum level forwarded.
+        """
+        super().__init__(level)
+        self.target = target
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Pass the record to the target handler (honouring its own level)."""
+        self.target.handle(record)
+
+
 class WorkflowLogger:
     """Centralized logger for workflow orchestration with structured logging."""
     
@@ -75,6 +102,7 @@ class WorkflowLogger:
         
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
+        self._route_bmlib_warnings(file_handler, console_handler)
         
         # Create specialized loggers for different components
         self.workflow_logger = logging.getLogger('bmlibrarian.workflow')
@@ -85,6 +113,26 @@ class WorkflowLogger:
         # Log session start
         self.log_session_start()
     
+    @staticmethod
+    def _route_bmlib_warnings(*handlers: logging.Handler) -> None:
+        """Send bmlib's warnings and errors to this session's log handlers.
+
+        Without this, bmlib records skip the session log file entirely and
+        reach only Python's last-resort stderr handler.
+
+        Args:
+            handlers: The session's handlers; each is wrapped in a new handler
+                at ``BMLIB_LOG_LEVEL`` sharing its stream/file and formatter.
+        """
+        bmlib_logger = logging.getLogger(BMLIB_LOGGER_NAME)
+        for existing in list(bmlib_logger.handlers):
+            if getattr(existing, _CLI_HANDLER_ATTR, False):
+                bmlib_logger.removeHandler(existing)
+        for handler in handlers:
+            bmlib_handler = _LevelFilteredHandler(handler, BMLIB_LOG_LEVEL)
+            setattr(bmlib_handler, _CLI_HANDLER_ATTR, True)
+            bmlib_logger.addHandler(bmlib_handler)
+
     def log_session_start(self):
         """Log the start of a new CLI session."""
         self.workflow_logger.info(

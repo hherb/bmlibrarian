@@ -443,21 +443,31 @@ class PDFIngestor:
                 result.success = False
                 result.error_message = error_msg
 
-        # Step 3: Store full_text in database
+        # Step 3: Store full_text in database. A successful conversion can
+        # still yield no text (image-only/scanned PDF, every page unreadable);
+        # writing that would wipe any full_text the document already has.
         if store_full_text and conversion_result and conversion_result.success:
-            # Determine pdf_filename for database
-            pdf_filename = ""
-            if stored_path:
-                pdf_filename = self._get_relative_pdf_path(stored_path)
-            elif document.get("pdf_filename"):
-                pdf_filename = document["pdf_filename"]
-
-            if self._update_document_full_text(
-                document_id, conversion_result.text, pdf_filename
-            ):
-                result.full_text_stored = True
+            if not conversion_result.text.strip():
+                message = (
+                    f"No extractable text in {pdf_path.name} "
+                    "(scanned or image-only PDF?); existing full_text left unchanged"
+                )
+                logger.warning(f"Document {document_id}: {message}")
+                warnings.append(message)
             else:
-                warnings.append("Failed to store full_text in database")
+                # Determine pdf_filename for database
+                pdf_filename = ""
+                if stored_path:
+                    pdf_filename = self._get_relative_pdf_path(stored_path)
+                elif document.get("pdf_filename"):
+                    pdf_filename = document["pdf_filename"]
+
+                if self._update_document_full_text(
+                    document_id, conversion_result.text, pdf_filename
+                ):
+                    result.full_text_stored = True
+                else:
+                    warnings.append("Failed to store full_text in database")
 
         result.warnings = warnings
         return result
