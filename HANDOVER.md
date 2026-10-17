@@ -10,6 +10,25 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Citations must be complete sentences** (2026-10-17, branch
+  `fix/citation-complete-sentences`, stacked on #297, closes #289; owner
+  policy: fragments risk out-of-context quoting). The new pure module
+  `utils/sentence_bounds.py` (`complete_sentence_span`, `is_sentence_start`,
+  `is_sentence_end`) knows biomedical abbreviations, decimals, "et al." and
+  structured-abstract labels. `CitationFinderAgent._check_response` rejects
+  spans that aren't complete sentences with `REJECT_INCOMPLETE_SENTENCE`
+  (retried like other validation failures), and only appends closing
+  punctuation the model omitted. The prompt now demands complete sentences.
+  On 500 random PubMed abstracts it accepted 0 of 6,768 fragments and
+  rejected 0.6% of naive sentences, mostly correctly. Docs:
+  `doc/llm/sentence_bounds.md`, `citation_system.md`, `citation_guide.md`.
+  Candidate for upstreaming to bmlib.
+- **76 fallback fact-check verdicts deleted from `knowledgebase`**
+  (2026-10-17, owner-approved, #296): their evidence rows went with them via
+  cascade; CSV backup in
+  `~/.bmlibrarian/backups/factcheck_fallback_verdicts_2026-10-17/`. The 76
+  statements are unevaluated again (`--incremental` re-checks them), but
+  will fail until the #296 root cause is fixed.
 - **Fact-checker no longer records failures as `maybe`** (2026-10-17, branch
   `fix/factchecker-infra-failures`, closes #273): each stage of
   `FactCheckerAgent.check_statement` now raises `FactCheckStageError`
@@ -212,11 +231,13 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- #296: fact-checker evaluation fails on large evidence sets (root cause),
-  plus the decision on the 76 contaminated production verdicts.
-- Open bugs from recent slices: #289 (short/mid-word citation passages
-  accepted as verified; **needs a policy decision from the owner** on
-  minimum length and word-boundary snapping), #279 / #278 (Find PDF / FETCH
+- #296: fact-checker evaluation fails on large evidence sets (root cause;
+  the contaminated rows are already deleted). Then re-run
+  `fact_checker_cli.py --incremental` for the 76 statements.
+- Citation follow-ups: #290 (retry prompt should say *why* the last passage
+  was rejected, now including "not a complete sentence"), #291 (Unicode
+  folding), #292 (rejection counts in Qt/CLI).
+- Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
   paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and
   `paper_weight/db.py`).

@@ -298,7 +298,8 @@ The citation stores only `PassageMatch.text`, the matched span of the
    `normalize_with_offsets()`, which keeps an index map back to the original.
 2. Exact substring of the normalised passage → similarity 1.0 and
    `PassageMatch.exact` (counted in `exact_matches`). The span may start or
-   end mid-word.
+   end mid-word; the citation agent then rejects it unless it is complete
+   sentences (see "Rejections and errors").
 3. A passage longer than `len(text) * (2-s)/s` cannot reach threshold `s`
    against any window (`fits_text()`), so it is rejected without a search.
 4. Otherwise **seed voting**: the passage is cut into seeds of length
@@ -342,7 +343,22 @@ recorded in `get_validation_stats()['failed_citations']` with a `reason`
 | `passage is empty` | Only whitespace |
 | `passage not found in abstract` | No candidate span at all (similarity 0.0), including a passage too long for the abstract |
 | `passage similarity below threshold` | A paraphrase or near miss |
+| `passage is not one or more complete sentences` | The matched span is a term, a clause, or starts/ends mid-sentence (see below) |
 | `summary is missing or not text` | The passage matched but `summary` is unusable |
+
+**Complete sentences (#289).** After `find_passage()` locates the span,
+`utils/sentence_bounds.complete_sentence_span(abstract, start, end)` must
+confirm that the span runs from a sentence start to a sentence end. Without
+that check, verbatim matches such as `"a"`, `"Aspirin"` or `"spirin reduces"`
+(exact matches may start mid-word) were stored as verified citations. Only
+whitespace trimming and the closing punctuation the model omitted (`.`, `)`,
+quotes) are added. The stored passage is that span of the abstract, so it can
+be one character longer than `PassageMatch.text`. Ambiguous boundaries count
+as non-boundaries, so a doubtful passage is rejected rather than accepted.
+The rules are in `doc/llm/sentence_bounds.md`. Measured on 500 random
+PubMed abstracts: 0 of 6,768 mid-sentence fragments were accepted, and 0.6%
+of naively split sentences were rejected, most of them correctly (splits at
+"vs." or "i.e.").
 
 A response with `has_relevant_content: false`, or a relevance score below
 `min_relevance`, ends extraction for that document without a retry. A
