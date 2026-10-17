@@ -329,8 +329,8 @@ class TestFixedWidthContract:
     """The shim over bmlib must keep bmlibrarian's fixed-width cuts.
 
     bmlib's chunker defaults to boundary-aware cuts; the document
-    interrogation agent's retrieval depends on fixed offsets, so a
-    paragraph or sentence break must never move a chunk's end.
+    interrogation agent's retrieval depends on fixed chunk boundaries, so
+    a paragraph or sentence break must never move a chunk's end.
     """
 
     def test_paragraph_and_sentence_breaks_do_not_move_chunk_ends(self):
@@ -354,3 +354,39 @@ class TestFixedWidthContract:
             c.end_pos for c in TextChunker(1000, 50).chunk_text(text)
         ]
         assert all(c.size == 1000 for c in chunk_text(text, 1000, 50)[:-1])
+
+    def test_default_geometry_pinned_by_literal(self):
+        """The defaults now come from bmlib; an upstream change must fail here.
+
+        The document interrogation agent chunks raw text with these defaults,
+        so changing them re-chunks (and re-ranks) its retrieval.
+        """
+        assert DEFAULT_CHUNK_SIZE == 10000
+        assert DEFAULT_CHUNK_OVERLAP == 250
+
+
+class TestShimReExports:
+    """The shims re-export bmlib's own objects, not copies."""
+
+    def test_text_chunking_names_are_bmlibs(self):
+        """TextChunk is bmlib's class; TextChunker subclasses bmlib's."""
+        from bmlib.llm import text_utils
+
+        assert TextChunk is text_utils.TextChunk
+        assert issubclass(TextChunker, text_utils.TextChunker)
+
+    def test_json_repair_names_are_bmlibs(self):
+        """`except JSONRepairError` must catch what bmlib raises."""
+        from bmlib.llm import json_repair as upstream
+        from bmlibrarian.utils import json_repair as shim
+
+        for name in shim.__all__:
+            assert getattr(shim, name) is getattr(upstream, name), name
+
+    def test_pdf_converter_names_are_bmlibs(self):
+        """ConversionResult & co. are bmlib's objects."""
+        from bmlib.fulltext import pdf_converter as upstream
+        from bmlibrarian.importers import pdf_converter as shim
+
+        for name in shim.__all__:
+            assert getattr(shim, name) is getattr(upstream, name), name

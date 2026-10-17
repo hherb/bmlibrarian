@@ -7,7 +7,7 @@ Status: analysis / proposal, being executed (see *Progress* below).
 | Step (§4) | State |
 |---|---|
 | 1. Bump the pin | ✅ `bmlib[ollama,pdf]>=0.10.0,<0.11.0` (branch `feat/bmlib-0.10-adoption`) |
-| 2. Tier 1 swaps | ✅ `utils/json_repair.py`, `agents/text_chunking.py`, `agents/paper_reviewer/text_utils.py`, `importers/pdf_converter.py` are re-export shims over bmlib. `text_chunking` pins `boundary_aware=False` (contract test in `tests/test_text_chunking.py`); both chunkers verified identical to the old code on 3,000 random inputs. Dropped: the local 1 MB `MAX_JSON_LENGTH` guard in `repair_json` (no caller relied on it). Gained: a password-protected PDF is now a failed conversion instead of an empty success. |
+| 2. Tier 1 swaps | ✅ `utils/json_repair.py`, `agents/text_chunking.py`, `agents/paper_reviewer/text_utils.py`, `importers/pdf_converter.py` are re-export shims over bmlib. `text_chunking` pins `boundary_aware=False` (contract test in `tests/test_text_chunking.py`); both `chunk_text` functions and `TextChunker` verified identical to the old code on thousands of random inputs, and a golden test pins the paper reviewer's chunking (`tests/test_paper_reviewer_text_utils.py`). The paper reviewer's `process_with_map_reduce`/`process_with_rolling_summary` stay local so they keep its 200-character overlap. `repair_json`/`safe_json_loads` unchanged (the 1 MB `MAX_JSON_LENGTH` guard is still enforced upstream); `extract_and_repair_json` now tries later JSON spans and closes truncated JSON (no in-repo callers; contract in the shim's docstring). Gained: a password-protected PDF is now a failed conversion instead of an empty success. |
 | 3–8 | not started |
 
 Found since this analysis was written (not in §2/§3 below):
@@ -36,7 +36,8 @@ Found since this analysis was written (not in §2/§3 below):
 
 ## TL;DR
 
-bmlibrarian pins `bmlib[ollama]>=0.5.1,<0.6.0` and uses bmlib for **one thing
+*(Pre-adoption state; superseded by Progress above.)* bmlibrarian pinned
+`bmlib[ollama]>=0.5.1,<0.6.0` and used bmlib for **one thing
 only**: the LLM abstraction layer (`src/bmlibrarian/llm/` wraps
 `bmlib.llm.LLMClient`). Nothing else in `src/` imports bmlib.
 
@@ -56,7 +57,9 @@ sibling projects (BioMedicalNews, bmlibrarian_lite) would plausibly use.
 pre-1.0, so a minor bump may change the API this package delegates its whole
 LLM layer to"). Checked against the actual releases:
 
-- The diff of `bmlib/llm/` between 0.5.1 and 0.10.0 is **purely additive**:
+- The diff of `bmlib/llm/` between 0.5.1 and 0.10.0 is **additive in its
+  public signatures** (behaviour of `json_repair.extract_and_repair_json` and
+  `utils.extract_json` did change; bmlibrarian used neither before adoption):
   `**kwargs: object` → `**kwargs: Any` on `generate()`/`embed_batch()`, plus
   two new exports (`salvage_json_fields`, `iter_json_spans`) and internal
   hardening of `json_repair`/`utils`.
@@ -75,7 +78,8 @@ LLM layer to"). Checked against the actual releases:
   analysis is used to justify taking on more AGPL code — tracked in
   [#265](https://github.com/hherb/bmlibrarian/issues/265).
 
-**Action:** bump to `bmlib[ollama]>=0.10.0,<0.11.0` and re-run
+**Action:** bump to `bmlib[ollama]>=0.10.0,<0.11.0` (done as
+`bmlib[ollama,pdf]`, see Progress) and re-run
 `tests/test_llm_module.py`, `tests/test_llm_layer_boundary.py`,
 `tests/llm_test_support.py`. Note bmlib requires Python >=3.11 while
 bmlibrarian requires >=3.12, so no floor conflict.
@@ -95,9 +99,11 @@ become deletable or reduce to thin adapters.
 | `agents/text_chunking.py` | 220 | `bmlib.llm.text_utils` (superset: adds `process_with_map_reduce`, `process_with_rolling_summary`, `get_text_with_priority`, `combine_title_and_text`; **but see the boundary-awareness caveat below — not a drop-in**) | 2 (`agents/__init__.py`, `document_interrogation_agent.py`) |
 | `importers/pdf_converter.py` | 317 | `bmlib.fulltext.pdf_converter` (superset: adds `extract_blocks()`, `LayoutExtractor`, `ConversionResult.title`, password-protected-PDF handling, `pymupdf>=1.28.2`) | 2 (`importers/__init__.py`, `importers/pdf_ingestor.py`) |
 
-`json_repair` is function-for-function identical to the bmlib version (the
-only difference is the added `salvage_json_fields`), so that swap really is a
-drop-in. Keep `bmlibrarian.utils.json_repair` and
+`repair_json` and `safe_json_loads` behave as the local versions did, so for
+the repo's callers that swap is a drop-in. (Correction, 2026-10-17: the module
+is *not* function-for-function identical — bmlib 0.10's
+`extract_and_repair_json` tries later JSON spans and closes truncated JSON
+where the local one raised; see the shim's docstring.) Keep `bmlibrarian.utils.json_repair` and
 `bmlibrarian.agents.text_chunking` as re-export shims for one release so the
 `utils/__init__.py` and `agents/__init__.py` public surfaces don't churn.
 

@@ -192,6 +192,10 @@ for warning in result.warnings:
     print(warning)
 ```
 
+A password-protected PDF fails with `error_message == "PDF is password-protected"`.
+A scanned (image-only) PDF converts without text: it is stored, but you get a
+"No extractable text" warning and the document's existing full text is kept.
+
 ### Queue Processing Failures
 
 Check failed items in the queue:

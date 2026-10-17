@@ -424,7 +424,7 @@ Respond ONLY with valid JSON."""
             )
             return result.get('summary', ''), float(result.get('confidence', 0.7))
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to summarize chunk: {e}")
+            logger.error(f"Failed to summarize chunk ({len(chunk):,} chars): {e}")
             return "", 0.0
 
     def _merge_summaries(
@@ -513,7 +513,9 @@ Respond ONLY with valid JSON."""
             title: Document title
 
         Returns:
-            Tuple of (summary, confidence)
+            Tuple of (summary, confidence). If some chunks could not be
+            summarized, the merged confidence is scaled by the fraction of
+            chunks that were, and the failures are logged and reported.
         """
         self._call_callback("summary_progress", f"Processing {len(text):,} chars in chunks")
 
@@ -523,6 +525,7 @@ Respond ONLY with valid JSON."""
 
         # Summarize each chunk
         chunk_summaries = []
+        failed_chunks = []  # 1-based chunk numbers
         for i, chunk in enumerate(chunks):
             self._call_callback(
                 "summary_progress",
@@ -531,6 +534,8 @@ Respond ONLY with valid JSON."""
             summary, confidence = self._summarize_chunk(chunk, title)
             if summary:
                 chunk_summaries.append((summary, confidence))
+            else:
+                failed_chunks.append(i + 1)
 
         if not chunk_summaries:
             return "Failed to generate summaries from document chunks.", 0.0
@@ -539,9 +544,23 @@ Respond ONLY with valid JSON."""
         self._call_callback("summary_progress", "Merging chunk summaries")
         final_summary, final_confidence = self._merge_summaries(chunk_summaries, title)
 
+        coverage = f"{len(chunks)} chunks"
+        if failed_chunks:
+            # The summary omits part of the document: say so, and don't let
+            # its confidence read as if it covered everything.
+            final_confidence *= len(chunk_summaries) / len(chunks)
+            logger.warning(
+                f"Summary of '{title}' omits chunk(s) {failed_chunks} of "
+                f"{len(chunks)}: they could not be summarized"
+            )
+            coverage = (
+                f"{len(chunk_summaries)} of {len(chunks)} chunks "
+                f"(chunk(s) {failed_chunks} failed)"
+            )
+
         self._call_callback(
             "summary_completed",
-            f"Generated summary from {len(chunks)} chunks (confidence: {final_confidence:.0%})"
+            f"Generated summary from {coverage} (confidence: {final_confidence:.0%})"
         )
 
         return final_summary, final_confidence

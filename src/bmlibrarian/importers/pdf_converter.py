@@ -7,9 +7,12 @@ over formatting aesthetics.
 This module is a re-export shim: the implementation lives in
 ``bmlib.fulltext.pdf_converter``, which was ported from this file. The
 extracted ``text`` is unchanged; upstream adds a failed result for a
-password-protected PDF (previously a success with no text), per-page text
-(``ConversionResult.page_texts``), a corroborated ``ConversionResult.title``,
-layout-aware ``extract_blocks()`` and ``render_html()``.
+password-protected PDF (previously a success with no text), the text of each
+page that yielded any (``ConversionResult.page_texts``; pages without text are
+omitted, so it is not indexable by page number), a corroborated
+``ConversionResult.title``, line-level ``extract_blocks()`` (``TextBlock``s
+with font and position metadata; raises on encrypted or corrupt files where
+``convert()`` returns a failed result) and ``render_html()``.
 
 Example usage:
     from bmlibrarian.importers.pdf_converter import get_converter, ConversionResult

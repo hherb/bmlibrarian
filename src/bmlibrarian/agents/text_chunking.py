@@ -5,8 +5,9 @@ Sliding-window text chunking for documents that exceed LLM context limits.
 
 The implementation lives in ``bmlib.llm.text_utils``. bmlib's chunker is
 boundary-aware by default (it pulls a chunk's end back to a paragraph or
-sentence break); bmlibrarian's has always cut at fixed widths, and the
-document interrogation agent's retrieval depends on those offsets. This module
+sentence break); bmlibrarian's has always cut at fixed widths. The document
+interrogation agent embeds and scores these chunks when given raw text, so
+moving a chunk boundary changes which passages it returns. This module
 therefore pins ``boundary_aware=False`` so existing callers keep exactly the
 chunks they had. Adopting boundary-aware chunking is a separate, deliberate
 change that must re-baseline anything downstream of the chunk boundaries.
@@ -56,7 +57,10 @@ class TextChunker(_BmlibTextChunker):
 
     def get_chunk_info(self, text: str) -> Dict[str, Any]:
         """
-        Summarise how the text is chunked (count, sizes, stride).
+        Chunk the text and summarise the result (count, sizes, stride).
+
+        This chunks the whole text, so a caller that already holds the chunks
+        pays for chunking twice (cheap next to any LLM call on them).
 
         Args:
             text: The text to analyze

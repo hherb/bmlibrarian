@@ -153,6 +153,13 @@ class PDFIngestor:
 - **Two paths**: `ingest_pdf()` for queue-based, `ingest_pdf_immediate()` for GUI
 - **Storage conventions**: Uses year-based directory structure
 - **Composable**: Uses `PDFConverter` and `ChunkEmbedder` internally
+- **Never blanks `full_text`**: a failed conversion (including a
+  password-protected PDF, which `bmlib.fulltext.pdf_converter` reports as
+  `success=False`) or a successful one with no text (scanned/image-only PDF)
+  leaves `document.full_text` untouched — overwriting it would also fire the
+  re-chunk trigger and orphan the chunk offsets. The empty case adds a
+  "No extractable text" warning and `full_text_stored=False`, so
+  `ingest_pdf_immediate()` stops before embedding.
 
 ### 4. Database Schema (`semantic` schema)
 
