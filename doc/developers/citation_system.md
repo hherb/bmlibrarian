@@ -351,27 +351,53 @@ recorded in `get_validation_stats()['failed_citations']` with a `reason`
 confirm that the span runs from a sentence start to a sentence end. Without
 that check, verbatim matches such as `"a"`, `"Aspirin"` or `"spirin reduces"`
 (exact matches may start mid-word) were stored as verified citations. Only
-whitespace trimming and the closing punctuation the model omitted (`.`, `)`,
-quotes) are added. The stored passage is that span of the abstract, so it can
-be one character longer than `PassageMatch.text`. Ambiguous boundaries count
-as non-boundaries, so a doubtful passage is rejected rather than accepted.
-The rules are in `doc/llm/sentence_bounds.md`. Measured on 500 random
-PubMed abstracts: 0 of 6,768 mid-sentence fragments were accepted, and 0.6%
-of naively split sentences were rejected, most of them correctly (splits at
-"vs." or "i.e.").
+surrounding whitespace is trimmed and closing punctuation the model omitted
+is appended from the abstract: closing brackets and quotes, `.`/`!`/`?`, and
+Markdown `*`. A trailing closing mark without its opening mark inside the
+span is dropped again, so no unbalanced bracket, quote or `**` is stored.
+The stored passage is that span of the abstract, so it can be a few
+characters longer than `PassageMatch.text` (whose offsets `_ResponseCheck`
+keeps unchanged in `match`). Ambiguous boundaries count as non-boundaries,
+so a doubtful passage is rejected rather than accepted: a line break or the
+end of the text without punctuation never ends a sentence, a full stop after
+an initial ("J. Smith", "U.S.") is not an end, and label-only or one-word
+spans are rejected. The rules are in `doc/llm/sentence_bounds.md`. Measured
+on 500 random PubMed abstracts with the first version of the rules: 0 of
+6,768 mid-sentence fragments were accepted, and 0.6% of naively split
+sentences were rejected, most of them correctly (splits at "vs." or "i.e.").
+The PR #298 review tightened the rules (line breaks, initials, single words)
+and relaxed one (gene/molecule names such as "p53" or "mRNA" may start a
+sentence); the figures were not re-measured.
+
+On a retry after a rejection, the prompt names the reason (`_retry_note`),
+so the model is not sent the identical request again.
 
 A response with `has_relevant_content: false`, or a relevance score below
 `min_relevance`, ends extraction for that document without a retry. A
 document whose abstract is missing or only whitespace is skipped before any
-LLM call. Unexpected exceptions are logged with their traceback
-(`logger.exception`), counted in `get_validation_stats()['errors']`, and not
-retried. The `errors` count also includes a failed connection check, an LLM
-request that raised `ConnectionError`/`ValueError`, and output that could not
-be parsed as JSON after the retries. Callers use it to tell "this document
-has no relevant passage" from "this document could not be examined" (the
-fact-checker treats the second as a failure, not as missing evidence). Both batch methods (`process_scored_documents_for_citations` and
+LLM call. An unreachable or timed-out LLM server (the connection check, or a
+request raising `ConnectionError`/`TimeoutError`) is retried with
+exponential backoff (`transient_retry_attempts`, `transient_retry_base_delay`;
+see `doc/developers/transient_retry.md`) before it counts as an error.
+
+Unexpected exceptions are logged with their traceback (`logger.exception`),
+counted in `get_validation_stats()['errors']`, and not retried. The `errors`
+count also includes a connection check or LLM request that still failed
+after the backoff retries, a request that raised `ValueError`, and output
+that could not be parsed as JSON after the retries. Each counted document is
+also listed in `get_validation_stats()['errored_documents']`
+(`{'document_id', 'error'}`). Callers use these to tell "this document has
+no relevant passage" from "this document could not be examined". The
+fact-checker treats a document that errored, or whose passages were all
+rejected, as a failure rather than as missing evidence (see
+`fact_checker_system.md`, "Failure handling").
+
+Both batch methods (`process_scored_documents_for_citations` and
 `extract_citations_with_audit`) end with a `citation_extraction_completed`
-callback whose message includes the number of rejected passages and errors.
+callback whose message gives the rejections broken down by reason and the
+number of errors, e.g. `Extracted 0 citations from 3 documents (3 rejected:
+passage not found in abstract ×1, passage is not one or more complete
+sentences ×2)`.
 
 Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`.
 

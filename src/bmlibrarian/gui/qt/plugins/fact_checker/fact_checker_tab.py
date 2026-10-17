@@ -39,6 +39,31 @@ from ...resources.constants import ScoreColors
 logger = logging.getLogger(__name__)
 
 
+# Shown when an evaluation has no rationale text.
+NO_RATIONALE_TEXT = 'No rationale provided'
+
+
+def format_ai_rationale(reason: Optional[str], degradation_notes: Optional[List[str]]) -> str:
+    """
+    Text for the AI rationale panel, flagging a verdict based on partial evidence.
+
+    Args:
+        reason: The AI evaluation's rationale.
+        degradation_notes: Evidence the fact-checker could not examine for
+            this verdict (empty or None for a complete check).
+
+    Returns:
+        The rationale, followed by the notes when there are any.
+    """
+    text = reason if reason else NO_RATIONALE_TEXT
+    if not degradation_notes:
+        return text
+    lines = "\n".join(f"- {note}" for note in degradation_notes)
+    return (
+        f"{text}\n\n⚠ Based on partial evidence; not examined:\n{lines}"
+    )
+
+
 def reviews_for_annotator(
     results: List[Dict[str, Any]],
     annotator_id: Optional[int],
@@ -938,6 +963,7 @@ class FactCheckerTabWidget(QWidget):
                     'input_statement_id': row.get('input_statement_id'),
                     'evaluation': row.get('evaluation'),
                     'reason': row.get('reason'),
+                    'degradation_notes': row.get('degradation_notes') or [],
                     'confidence': row.get('confidence'),
                     'evidence_list': [],
                     'human_annotations': row.get('human_annotations', []),
@@ -1079,7 +1105,9 @@ class FactCheckerTabWidget(QWidget):
 
             ai_evaluation = result.get('evaluation', 'N/A')
             self._update_tag(self.ai_tag, ai_evaluation)
-            self.ai_text.setPlainText(result.get('reason', 'No rationale provided'))
+            self.ai_text.setPlainText(format_ai_rationale(
+                result.get('reason'), result.get('degradation_notes')
+            ))
 
         # Update human evaluation column
         saved_review = self.reviews[self.current_index]

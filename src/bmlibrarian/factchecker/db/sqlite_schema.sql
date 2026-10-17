@@ -86,6 +86,7 @@ CREATE TABLE ai_evaluations (
     model_version TEXT,
     agent_config TEXT,  -- JSON as TEXT
     session_id TEXT,
+    degradation_notes TEXT,  -- JSON list of strings
     version INTEGER NOT NULL DEFAULT 1,
     UNIQUE (statement_id, version)
 );

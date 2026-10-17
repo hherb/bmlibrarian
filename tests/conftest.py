@@ -184,3 +184,17 @@ def isolate_tests():
     """Automatically isolate tests by cleaning up any state."""
     yield
     # Any cleanup code can go here if needed
+
+@pytest.fixture(autouse=True)
+def _no_backoff_waits(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Make retries with exponential backoff return at once.
+
+    ``call_with_backoff`` waits through ``transient_retry._sleep``; tests that
+    exercise a recoverable failure would otherwise sleep for seconds. The
+    requested delays are recorded and returned for tests that check them.
+    """
+    from bmlibrarian.utils import transient_retry
+
+    delays: list = []
+    monkeypatch.setattr(transient_retry, "_sleep", delays.append)
+    return delays

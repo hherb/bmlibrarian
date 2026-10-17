@@ -30,9 +30,16 @@ def _span(text: str, passage: str) -> tuple[int, int]:
     return start, start + len(passage)
 
 
-def _complete(text: str, passage: str) -> str | None:
-    """The complete-sentence text for ``passage``, or None if rejected."""
-    span = complete_sentence_span(text, *_span(text, passage))
+def _complete(text: str, passage: str, last: bool = False) -> str | None:
+    """The complete-sentence text for ``passage``, or None if rejected.
+
+    Args:
+        text: The source text.
+        passage: The quoted span.
+        last: Use the last occurrence of ``passage`` instead of the first.
+    """
+    start = text.rindex(passage) if last else text.index(passage)
+    span = complete_sentence_span(text, start, start + len(passage))
     return None if span is None else text[span[0]:span[1]]
 
 
@@ -115,15 +122,50 @@ def test_sentences_after_section_labels_are_accepted(text: str, passage: str) ->
         # Quotes and brackets around a sentence.
         ('Intro. "The drug works." End.', '"The drug works."'),
         ("Intro. (Data not shown.) End.", "(Data not shown.)"),
-        # A line break ends a unit even without punctuation (title lines).
-        ("A title without a full stop\nThe body starts here.", "The body starts here."),
-        # The last sentence of a text that lacks a final full stop.
-        ("Intro. The abstract ends without punctuation", "The abstract ends without punctuation"),
+        # A blank line starts a new paragraph, whatever came before it.
+        ("A title without a full stop\n\nThe body starts here.", "The body starts here."),
+        # A single line break after a finished sentence, a label or a heading.
+        ("Patients were enrolled.\nAspirin reduced the risk.", "Aspirin reduced the risk."),
+        ("BACKGROUND\nAspirin reduced the risk of stroke.", "Aspirin reduced the risk of stroke."),
+        ("## Results\nAspirin reduced the risk of stroke.", "Aspirin reduced the risk of stroke."),
+        # Gene, molecule and unit names that start lowercase begin a sentence.
+        ("The rate was measured. mRNA levels rose. End.", "mRNA levels rose."),
+        ("Aspirin reduced the risk of stroke. p53 was mutated in most tumours.",
+         "Aspirin reduced the risk of stroke."),
+        ("Aspirin reduced the risk of stroke. p53 was mutated in most tumours.",
+         "p53 was mutated in most tumours."),
+        ("Renal function was stable. eGFR did not change. End.", "eGFR did not change."),
+        ("Heart rate fell. β-blockers were well tolerated. End.", "β-blockers were well tolerated."),
+        # Mixed-case labels of JAMA-style structured abstracts.
+        ("Conclusions and Relevance: In this trial, aspirin helped.", "In this trial, aspirin helped."),
+        ("Design, Setting, and Participants: We enrolled 40 adults. End.",
+         "We enrolled 40 adults."),
+        # "et al." ends a sentence at the end of the text.
+        ("Intro. This was first shown by Smith et al.", "This was first shown by Smith et al."),
     ],
 )
 def test_biomedical_sentence_edge_cases_are_accepted(text: str, passage: str) -> None:
     """Abbreviations, initials, decimals and brackets do not break sentences."""
     assert _complete(text, passage) == passage
+
+
+@pytest.mark.parametrize(
+    ("text", "passage", "expected"),
+    [
+        # Closing marks taken from the source must have their opening mark.
+        ("*Rates fell sharply.* Next point.", "Rates fell sharply.", "Rates fell sharply."),
+        ("Intro. (Data not shown.) End.", "Data not shown.", "Data not shown."),
+        ('Intro. "The drug works." End.', "The drug works.", "The drug works."),
+        ('Intro. "The drug works." End.', 'The drug works."', "The drug works."),
+        # Balanced marks are kept.
+        ("We saw **lower bleeding risk**. Next point.", "We saw **lower bleeding risk",
+         "We saw **lower bleeding risk**."),
+        ("Intro. The dose (in mg). End.", "The dose (in mg", "The dose (in mg)."),
+    ],
+)
+def test_borrowed_closing_marks_are_balanced(text: str, passage: str, expected: str) -> None:
+    """Extending a quote never leaves an unmatched bracket, quote or ``*``."""
+    assert _complete(text, passage) == expected
 
 
 # ---- rejected -------------------------------------------------------------
@@ -157,19 +199,60 @@ def test_fragments_are_rejected(passage: str) -> None:
         # "et al." followed by a capital is ambiguous; never treated as an end.
         ("Intro. As shown by Smith et al. The effect was large. End.",
          "The effect was large."),
+        # The same in capitals.
+        ("Intro. As shown by SMITH ET AL. The effect was large. End.",
+         "The effect was large."),
         # A sentence glued to the previous one without a space.
         ("Intro.The effect was large. End.", "The effect was large."),
-        # After a period followed by a lowercase word the period is not an end,
-        # so a span starting there is mid-sentence.
-        ("The rate was measured. mRNA levels rose. End.", "mRNA levels rose."),
+        # After a period followed by an ordinary lowercase word the period is
+        # not an end, so a span starting there is mid-sentence.
+        ("The rate was measured. levels rose. End.", "levels rose."),
         # A colon that is not a section label does not start a sentence.
         ("We compared two arms: Group A received aspirin. End.",
          "Group A received aspirin."),
+        # A period after an initial is not a sentence end (U.S., S. aureus,
+        # J. Smith); quoting from there drops the qualifier before it.
+        ("In the U.S. Army personnel were enrolled. End.", "Army personnel were enrolled."),
+        ("Infection with S. Aureus was rare. End.", "Aureus was rare."),
+        ("J. Smith and K. Jones reported the trial. End.", "Jones reported the trial."),
+        ("We used vit. D supplements daily. End.", "D supplements daily."),
     ],
 )
 def test_ambiguous_boundaries_are_rejected(text: str, passage: str) -> None:
     """When a boundary is ambiguous the span is rejected, never accepted."""
     assert _complete(text, passage) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "passage", "last"),
+    [
+        # Hard-wrapped text: a single line break is not a sentence boundary.
+        ("Aspirin reduced the\nrisk of stroke in older adults.", "Aspirin reduced the", False),
+        ("Aspirin reduced the\nrisk of stroke in older adults.",
+         "risk of stroke in older adults.", False),
+        ("Smith et\nal. reported the trial.", "al. reported the trial.", False),
+        # A bare term on its own line.
+        ("Aspirin\nAspirin reduces the risk of stroke.", "Aspirin", False),
+        # A label without a colon on its own line.
+        ("BACKGROUND\nAspirin reduced the risk.", "BACKGROUND", False),
+        ("BACKGROUND\n\nAspirin reduced the risk.", "BACKGROUND", False),
+        # No closing punctuation: a truncated text or a keyword list.
+        ("Intro. The abstract ends without punctuation",
+         "The abstract ends without punctuation", False),
+        ("Aspirin helped. KEYWORDS: aspirin, stroke", "aspirin, stroke", False),
+        ("Aspirin helped. RESULTS: Aspirin", "Aspirin", True),
+        # A single word is not a sentence, punctuated or not.
+        ("Intro. RESULTS: Aspirin. End.", "Aspirin.", False),
+        ("Intro. Next. End.", "Next.", False),
+        # A label alone, even with a full stop.
+        ("Intro. MATERIALS AND METHODS. We enrolled 40 adults.", "MATERIALS AND METHODS.", False),
+    ],
+)
+def test_line_wrapped_and_unpunctuated_fragments_are_rejected(
+    text: str, passage: str, last: bool
+) -> None:
+    """Line breaks and text ends without punctuation never end a citation."""
+    assert _complete(text, passage, last=last) is None
 
 
 @pytest.mark.parametrize(

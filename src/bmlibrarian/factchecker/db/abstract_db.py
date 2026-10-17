@@ -5,9 +5,42 @@ Defines the common interface that both PostgreSQL and SQLite implementations
 must provide, enabling the GUI and scripts to work with either backend.
 """
 
+import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+# Characters of an unreadable stored value quoted in a log message.
+UNREADABLE_VALUE_LOGGED_CHARS = 100
+
+
+def parse_degradation_notes(value: Any) -> Optional[List[str]]:
+    """
+    Read a stored ``degradation_notes`` value (evidence a verdict could not examine).
+
+    Args:
+        value: The column value: a list (PostgreSQL JSONB), a JSON string
+            (SQLite), or None.
+
+    Returns:
+        The notes as a list of strings, or None if there are none or the
+        value is not a JSON list.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning(
+                f"Ignoring unreadable degradation_notes: "
+                f"{value[:UNREADABLE_VALUE_LOGGED_CHARS]!r}"
+            )
+            return None
+    if not isinstance(value, list) or not value:
+        return None
+    return [str(note) for note in value]
 
 
 @dataclass

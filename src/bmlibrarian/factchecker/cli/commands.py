@@ -128,7 +128,10 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         score_threshold=score_threshold,
         max_search_results=max_search_results,
         max_citations=max_citations,
-        incremental=incremental
+        incremental=incremental,
+        **{key: agent_config[key] for key in (
+            'transient_retry_attempts', 'transient_retry_base_delay'
+        ) if key in agent_config}
     )
 
     return agent

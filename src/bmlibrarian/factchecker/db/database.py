@@ -17,7 +17,11 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
+from psycopg.types.json import Jsonb
+
 from bmlibrarian.database import get_db_manager
+
+from .abstract_db import parse_degradation_notes as _as_notes
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,13 @@ class AIEvaluation:
     agent_config: Optional[str] = None  # Will be converted to JSONB
     session_id: Optional[str] = None
     version: int = 1
+    # Evidence that could not be examined for this verdict; None = complete.
+    degradation_notes: Optional[List[str]] = None
+
+
+# Verdicts an AI evaluation row may hold. 'error' (a failed check) is allowed
+# by the schema for historical rows but is never written as a verdict.
+STORABLE_VERDICTS = ("yes", "no", "maybe")
 
 
 @dataclass
@@ -252,12 +263,14 @@ class FactCheckerDB:
                     else:
                         agent_config_jsonb = evaluation.agent_config
 
+                notes = _as_notes(evaluation.degradation_notes)
                 cur.execute("""
                     INSERT INTO factcheck.ai_evaluations (
                         statement_id, evaluation, reason, confidence, documents_reviewed,
                         supporting_citations, contradicting_citations, neutral_citations,
-                        matches_expected, model_used, model_version, agent_config, session_id, version
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        matches_expected, model_used, model_version, agent_config, session_id,
+                        degradation_notes, version
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         (SELECT COALESCE(MAX(version), 0) + 1
                          FROM factcheck.ai_evaluations
                          WHERE statement_id = %s)
@@ -267,7 +280,7 @@ class FactCheckerDB:
                       evaluation.documents_reviewed, evaluation.supporting_citations, evaluation.contradicting_citations,
                       evaluation.neutral_citations, evaluation.matches_expected, evaluation.model_used,
                       evaluation.model_version, json.dumps(agent_config_jsonb) if agent_config_jsonb else None,
-                      evaluation.session_id, evaluation.statement_id))
+                      evaluation.session_id, Jsonb(notes) if notes else None, evaluation.statement_id))
                 return cur.fetchone()[0]
 
     def get_latest_ai_evaluation(self, statement_id: int) -> Optional[AIEvaluation]:
@@ -277,7 +290,8 @@ class FactCheckerDB:
                 cur.execute("""
                     SELECT evaluation_id, statement_id, evaluation, reason, confidence,
                            documents_reviewed, supporting_citations, contradicting_citations, neutral_citations,
-                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version
+                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version,
+                           degradation_notes
                     FROM factcheck.ai_evaluations
                     WHERE statement_id = %s
                     ORDER BY version DESC, evaluated_at DESC
@@ -301,7 +315,8 @@ class FactCheckerDB:
                         model_version=row[12],
                         agent_config=row[13],  # Already JSONB
                         session_id=row[14],
-                        version=row[15]
+                        version=row[15],
+                        degradation_notes=_as_notes(row[16])
                     )
                 return None
 
@@ -312,7 +327,8 @@ class FactCheckerDB:
                 cur.execute("""
                     SELECT evaluation_id, statement_id, evaluation, reason, confidence,
                            documents_reviewed, supporting_citations, contradicting_citations, neutral_citations,
-                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version
+                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version,
+                           degradation_notes
                     FROM factcheck.ai_evaluations
                     WHERE statement_id = %s
                     ORDER BY version DESC, evaluated_at DESC
@@ -335,7 +351,8 @@ class FactCheckerDB:
                         model_version=row[12],
                         agent_config=row[13],
                         session_id=row[14],
-                        version=row[15]
+                        version=row[15],
+                        degradation_notes=_as_notes(row[16])
                     ))
                 return results
 
@@ -512,7 +529,8 @@ class FactCheckerDB:
                         ae.contradicting_citations,
                         ae.neutral_citations,
                         ae.matches_expected,
-                        ae.model_used
+                        ae.model_used,
+                        ae.degradation_notes
                     FROM factcheck.statements s
                     LEFT JOIN factcheck.ai_evaluations ae
                         ON ae.statement_id = s.statement_id
@@ -544,7 +562,8 @@ class FactCheckerDB:
                         'contradicting_citations': row[15],
                         'neutral_citations': row[16],
                         'matches_expected': row[17],
-                        'model_used': row[18]
+                        'model_used': row[18],
+                        'degradation_notes': _as_notes(row[19]) or []
                     }
 
                     # Get evidence if evaluation exists
@@ -749,8 +768,16 @@ class FactCheckerDB:
                             statement_id = self.insert_statement(stmt)
                             stats['new_statements'] += 1
 
-                            # Import AI evaluation if present
-                            if result.get('evaluation'):
+                            # Import AI evaluation if present. A failed check
+                            # ('error') is not a verdict: storing it would stop
+                            # incremental mode from re-checking the statement.
+                            evaluation = result.get('evaluation')
+                            if evaluation and evaluation not in STORABLE_VERDICTS:
+                                logger.warning(
+                                    f"Not importing evaluation {evaluation!r} as a verdict "
+                                    f"for statement: {statement_text[:50]}"
+                                )
+                            elif evaluation:
                                 ai_eval = AIEvaluation(
                                     statement_id=statement_id,
                                     evaluation=result['evaluation'],
@@ -763,7 +790,8 @@ class FactCheckerDB:
                                     matches_expected=result.get('matches_expected'),
                                     model_used='imported',
                                     session_id='json_import',
-                                    version=1
+                                    version=1,
+                                    degradation_notes=_as_notes(result.get('degradation_notes'))
                                 )
                                 eval_id = self.insert_ai_evaluation(ai_eval)
                                 stats['imported_evaluations'] += 1
