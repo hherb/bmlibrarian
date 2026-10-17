@@ -8,7 +8,7 @@ import sys
 import argparse
 from pathlib import Path
 
-from .commands import create_agent, load_input_file, save_output_file
+from .commands import create_agent
 from .formatters import print_result_summary, print_detailed_results
 
 
@@ -133,7 +133,7 @@ Input file format:
             return 1
 
         # Create agent
-        print(f"\nInitializing Fact Checker Agent...")
+        print("\nInitializing Fact Checker Agent...")
         agent = create_agent(args)
 
         # Test connection
@@ -154,11 +154,17 @@ Input file format:
         # Print results information
         print("=" * 80)
         storage_failures = agent.storage_failures
+        check_failures = agent.check_failures
         if storage_failures:
             print(f"\n✗ WARNING: {storage_failures} result(s) FAILED to store in PostgreSQL")
             print("  (see log output above for details - these results are NOT in the database)")
         else:
-            print(f"\n✓ Results stored in PostgreSQL (factcheck schema)")
+            print("\n✓ Results stored in PostgreSQL (factcheck schema)")
+        if check_failures:
+            print(f"\n✗ WARNING: {check_failures} statement(s) could not be checked "
+                  f"(search, scoring, citation or LLM failure)")
+            print("  No verdict was stored for them; fix the cause (see log above) and "
+                  "re-run with --incremental to retry only these")
         print(f"  Total statements processed: {len(results)}")
 
         if args.output:
@@ -171,7 +177,8 @@ Input file format:
         if args.detailed:
             print_detailed_results(results, verbose=args.verbose)
 
-        return 0
+        # Non-zero so scripted runs notice statements left without a verdict
+        return 1 if (check_failures or storage_failures) else 0
 
     except KeyboardInterrupt:
         print("\n\n⚠ Interrupted by user")

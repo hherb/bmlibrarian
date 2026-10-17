@@ -496,10 +496,15 @@ def check_batch_from_file(input_file, output_file=None):
     # 4. Process statements
     results = []
     for item in statements:
-        result = self.check_statement(
-            statement=item.get('statement') or item.get('question', ''),
-            expected_answer=item.get('answer') or item.get('expected_answer')
-        )
+        try:
+            result = self.check_statement(
+                statement=item.get('statement') or item.get('question', ''),
+                expected_answer=item.get('answer') or item.get('expected_answer')
+            )
+        except Exception as e:              # FactCheckStageError or a bug
+            self.check_failures += 1
+            results.append(FactCheckResult(..., evaluation=EVALUATION_ERROR))
+            continue                        # never stored, see "Failure handling"
         results.append(result)
 
         # Store incrementally in database
@@ -512,6 +517,41 @@ def check_batch_from_file(input_file, output_file=None):
 
     return results
 ```
+
+### Failure handling
+
+"maybe" is a verdict about the evidence. It must never stand in for a failure,
+because stored verdicts are training-data audit results (issue #273). Each
+stage of `check_statement` therefore distinguishes "found nothing" from
+"could not look":
+
+| Stage | Empty result ("Insufficient evidence" maybe) | `FactCheckStageError` |
+|---|---|---|
+| `_search_documents` | every search strategy ran, no matches | query generation or search raised, or no matches **and** `search_hybrid` metadata lists `strategies_failed` (it logs and swallows per-strategy errors, so an outage would otherwise look like an empty result) |
+| `_score_documents` | every document scored, none ≥ threshold | none ≥ threshold **and** ≥ 1 document failed to score |
+| `_extract_citations` | every document examined, no verified passage | extraction raised, or no citation **and** the citation agent's `errors` statistic rose |
+| `_evaluate_statement` | n/a | LLM request failed, unparseable JSON after `EVALUATION_JSON_RETRIES`, or invalid verdict/reason in all `EVALUATION_VALIDATION_ATTEMPTS` responses |
+
+Partial failures (some documents failed, others produced evidence) are logged
+and the statement continues with the evidence obtained.
+`_validate_evaluation_response` rejects any verdict outside `VALID_VERDICTS`
+instead of coercing it to "maybe". The old `_fallback_evaluation` heuristic
+has been removed.
+
+`FactCheckStageError` carries `stage` (one of the `STAGE_*` constants) and
+`detail`, and propagates out of `check_statement`. `check_batch` catches every
+exception per statement. It returns a `FactCheckResult` with
+`evaluation == EVALUATION_ERROR` (`result.is_error`), increments
+`self.check_failures`, and **does not store it**. The statement therefore has
+no AI evaluation, and `get_statements_needing_evaluation` (incremental mode)
+picks it up again. The session's `processed_statements` counts verdicts only,
+and failures are noted in `processing_metadata.error_message`. The CLI exits 1
+when `check_failures` or `storage_failures` is non-zero.
+
+`CitationFinderAgent.extract_citation_from_document` counts every failure in
+the `errors` statistic: no LLM connection, unparseable output, a
+connection/value error from the LLM, or an unexpected exception. Irrelevant
+documents and rejected passages are not counted.
 
 ### Database Storage Workflow
 
