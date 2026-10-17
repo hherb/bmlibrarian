@@ -14,7 +14,8 @@ mis-mapped spans.
   [0, 1]).
 - `exact` is True when only case and whitespace differ. Use it rather than
   `similarity == 1.0`. Exact spans may start or end mid-word; fuzzy spans
-  always start and end on word boundaries.
+  always start and end on word boundaries. For citations, the span must also
+  be complete sentences; see `doc/llm/sentence_bounds.md`.
 - `similarity` is `SequenceMatcher(autojunk=False).ratio()` on normalised text
   (lowercase, collapsed whitespace), reported even on rejection. It is 0.0
   when no candidate location was found at all or the passage is too long to

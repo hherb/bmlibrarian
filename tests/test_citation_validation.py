@@ -14,6 +14,7 @@ import pytest
 from bmlibrarian.agents.citation_agent import (
     REJECT_BAD_RELEVANCE,
     REJECT_BELOW_THRESHOLD,
+    REJECT_INCOMPLETE_SENTENCE,
     REJECT_MISSING_SUMMARY,
     REJECT_NOT_JSON_OBJECT,
     REJECT_PASSAGE_EMPTY,
@@ -27,7 +28,10 @@ ABSTRACT = (
     "of heart attack in patients with cardiovascular disease, however it may "
     "increase bleeding risk. Conclusions: weigh benefits and harms."
 )
-GOOD_PASSAGE = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease"
+GOOD_PASSAGE = (
+    "Aspirin reduces the risk of heart attack in patients with cardiovascular "
+    "disease, however it may increase bleeding risk."
+)
 
 
 def test_exact_match():
@@ -212,6 +216,44 @@ def test_extraction_stores_source_text_for_fuzzy_passage():
         "disease, however it may increase bleeding risk."
     )
     assert agent.get_validation_stats()["fuzzy_matches"] == 1
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "Aspirin",  # a bare key term
+        "spirin reduces the risk of heart attack",  # starts mid-word
+        "Aspirin reduces the risk of heart attack in patients with cardiovascular disease",
+        "however it may increase bleeding risk.",  # starts mid-sentence
+    ],
+)
+def test_fragments_are_rejected_as_incomplete_sentences(fragment: str) -> None:
+    """Verbatim fragments are never verified citations (#289); they are retried."""
+    agent, citation, llm = _extract_with_llm_responses([_llm_response(fragment)] * 3)
+
+    assert citation is None
+    assert llm.call_count == 3
+    failed = agent.get_validation_stats()["failed_citations"]
+    assert [entry["reason"] for entry in failed] == [REJECT_INCOMPLETE_SENTENCE]
+
+
+def test_fragment_then_complete_sentence_succeeds() -> None:
+    """A retry that quotes the whole sentence is accepted."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [_llm_response("Aspirin reduces the risk of heart attack"), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert llm.call_count == 2
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+
+
+def test_missing_final_period_is_taken_from_the_abstract() -> None:
+    """A sentence quoted without its full stop is stored with the source's full stop."""
+    _, citation, _ = _extract_with_llm_responses([_llm_response(GOOD_PASSAGE[:-1])])
+
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
 
 
 def test_extraction_retries_non_string_passage():
