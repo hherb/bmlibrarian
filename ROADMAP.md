@@ -143,6 +143,40 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
   PubMed id at the matching positional `%s` — switch to a named
   placeholder or return `(expr, params)` like `build_source_filter_clause`.
 
+- **Indexed ClinicalTrials.gov ↔ document matching.** `importers/
+  clinicaltrials_importer.py` runs, per trial, `INSERT … SELECT … WHERE
+  full_text LIKE '%NCT…%' OR abstract LIKE '%NCT…%' LIMIT 1` — a sequential
+  scan of every document for each of ~500 k trials; on the 41 M-record
+  `bmlibrarian_dev` import it cannot finish. It also links each trial to at
+  most one document (`LIMIT 1`; papers often share a trial), and
+  `transparency.document_metadata` allows only one trial per document. Plan:
+  (1) migration adding `transparency.clinical_trial` (keyed by `nct_id`:
+  sponsor, class, status, has_results) and a link table
+  `transparency.document_trial(document_id, nct_id, source)` indexed on
+  `nct_id`; (2) fill links from PubMed `<DataBankList>` ClinicalTrials.gov
+  accession numbers at import time (`pubmed_bulk_importer.py` drops them
+  today; coordinate with the Rust ingest plan in `doc/planning/rust/`) plus
+  one resumable regex pass (`NCT_PATTERN`) over abstracts/full texts;
+  (3) import trials into their own table with no per-trial document scan,
+  then derive `document_metadata`'s trial columns with one join;
+  (4) TransparencyAgent reads all linked trials. Also: per-trial errors are
+  logged at DEBUG only (rule 8), and `AllPublicXML.zip` now 301-redirects to
+  `/api/legacy/public-xml` — consider moving to the API v2 JSON bulk export
+  before the legacy endpoint goes.
+
+- **Orchestrator `Workflow`: one state map and a per-run result.**
+  `agents/orchestrator.py` keeps step state in four public sets
+  (`completed/failed/skipped/submitted_steps`) on the workflow *definition*;
+  the `mark_*` guards keep them disjoint, but outside code can still mutate
+  them, and `execute_workflow` must `reset()` the shared object each run
+  (hence the "not concurrently" guard). Callers read failures back from
+  that shared object, and only as names. Plan: a `StepState` enum in a
+  private `Dict[str, StepState]` behind read-only `frozenset` properties
+  (existing tests keep passing), then a `WorkflowRun` result (results,
+  failed step → error, skipped step → failed dependency, `succeeded`)
+  returned instead of the bare results dict. Only worth it once something
+  beyond the docs calls this API.
+
 ## Tracked separately on GitHub
 
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker
@@ -170,6 +204,7 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 ## Out of scope for now
 
 - Anything requiring a rewrite of the multi-agent workflow orchestration
-  itself (`cli/workflow_steps.py`) — it works; only the legacy
-  `agents/orchestrator.py` API needs a decision (fix or deprecate/remove,
-  see HANDOVER).
+  itself (`cli/workflow_steps.py`) — it works. The older
+  `agents/orchestrator.py` `Workflow` API was fixed rather than removed
+  (2026-10-17): it has no callers in the apps, but is exported and
+  documented in `doc/users/queue_system_guide.md`.

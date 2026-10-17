@@ -233,43 +233,130 @@ print(f"Success rate: {len(successful_tasks)}/{len(task_ids)}")
 ## Multi-Agent Workflows
 
 ### Creating Workflows
-Define multi-step processes with dependencies:
+Define multi-step processes with dependencies. Each step names a registered
+agent type and the method to call on it:
 
 ```python
-from bmlibrarian.agents import Workflow, WorkflowStep
+from bmlibrarian.agents import TaskPriority, WorkflowStep
 
 # Create workflow
 workflow = orchestrator.create_workflow("research_analysis")
 
 # Define steps with dependencies
 search_step = WorkflowStep(
-    agent_type="query_agent",
-    method_name="find_abstracts",
+    agent_type="searcher",
+    method_name="search",
     priority=TaskPriority.HIGH
 )
 
-scoring_step = WorkflowStep(
-    agent_type="document_scoring_agent", 
-    method_name="batch_evaluate_documents",
+summary_step = WorkflowStep(
+    agent_type="summariser",
+    method_name="summarise",
     depends_on=["search"]  # Waits for search to complete
 )
 
 workflow.add_step("search", search_step)
-workflow.add_step("score", scoring_step)
+workflow.add_step("summary", summary_step)
 ```
+
+**How a step receives its input**: the method is called with the initial
+data plus each dependency's result as **keyword arguments**, the result
+under `<dependency>_result`. So every method must accept every initial-data
+key and the results of its dependencies, or the step fails with a
+`TypeError`. Results are stored in the queue as JSON, so they must be
+JSON-serialisable (a returned object is stored as its `__dict__`, anything
+else that is not a dict as `{"result": value}`). For the example above:
+
+```python
+class SearchAgent(BaseAgent):
+    def search(self, question: str) -> dict: ...
+
+class SummaryAgent(BaseAgent):
+    def summarise(self, question: str, search_result: dict) -> dict: ...
+
+orchestrator.register_agent("searcher", SearchAgent(...))
+orchestrator.register_agent("summariser", SummaryAgent(...))
+```
+
+Existing agent methods rarely have this shape (e.g. `QueryAgent.find_abstracts`
+returns a generator), so wrap them in small adapter methods.
 
 ### Executing Workflows
 ```python
+orchestrator.start_processing()  # agents must be processing the queue
+
 # Execute workflow with initial data
 results = orchestrator.execute_workflow("research_analysis", {
-    "question": "diabetes treatment effectiveness",
-    "max_results": 100
+    "question": "diabetes treatment effectiveness"
 })
 
 # Access step results
 search_results = results.get("search")
-scoring_results = results.get("score")
+summary = results.get("summary")
 ```
+
+`execute_workflow` blocks until every step has finished. Agents registered
+after `start_processing()` get their processing thread when they are
+registered. If a step's agent type has no processing thread a warning is
+logged, and without a `timeout` the call then waits indefinitely: the
+timeout is the only protection against workers that never run or hang.
+
+**When a step fails**: a step whose task fails (after its retries), is
+cancelled or disappears from the queue counts as failed, and every step that
+depends on it, directly or indirectly, is **skipped**. The workflow still
+finishes; failed and skipped steps are missing from `results`, so check the
+workflow's `failed_steps` and `skipped_steps` (or the `success` flag of the
+`workflow_completed` event) before relying on a result:
+
+```python
+from bmlibrarian.agents import WorkflowTimeoutError
+
+workflow = orchestrator.active_workflows["research_analysis"]
+try:
+    results = orchestrator.execute_workflow(
+        "research_analysis", {"question": "..."}, timeout=600  # seconds
+    )
+except WorkflowTimeoutError as e:
+    print(f"Unfinished: {e.unfinished_steps}; done so far: {list(e.results)}")
+else:
+    if workflow.failed_steps or workflow.skipped_steps:
+        print("Failed:", workflow.failed_steps, "Skipped:", workflow.skipped_steps)
+```
+
+- `timeout` is optional (default: wait indefinitely). On timeout, the run's
+  tasks no agent has started yet are **cancelled**. Tasks already running
+  cannot be stopped: they finish in the background, their results are
+  discarded, and their steps are listed in `e.running_steps` (step name →
+  queue task ID). No new steps are submitted after the deadline.
+- If the queue itself fails mid-run (e.g. "database is locked", or step
+  data that is not JSON-serialisable), the run's queued tasks are cancelled,
+  a `workflow_aborted` event is sent and the original exception is re-raised.
+- A dependency on a step name that doesn't exist, a dependency cycle, or a
+  step whose `agent_type` has no registered agent raises `ValueError` before
+  anything is submitted.
+- A workflow can be executed again; each run starts from a clean state. It
+  cannot be executed twice at the same time: a second concurrent call raises
+  `RuntimeError`.
+
+**Progress events** sent to progress callbacks (`event_type` → keys of the
+`data` dict):
+
+| Event | Data keys |
+|---|---|
+| `workflow_started` | `workflow_name`, `steps` |
+| `workflow_step_completed` | `workflow_name`, `step_name`, `result` |
+| `workflow_step_failed` | `workflow_name`, `step_name`, `error`, `status` (`failed`, `cancelled` or `missing`) |
+| `workflow_step_skipped` | `workflow_name`, `step_name`, `failed_dependency` |
+| `workflow_timed_out` | `workflow_name`, `unfinished_steps`, `running_steps`, `results` |
+| `workflow_aborted` | `workflow_name`, `error`, `running_steps`, `results` |
+| `workflow_completed` | `workflow_name`, `success`, `completed_steps`, `failed_steps`, `skipped_steps`, `results` |
+
+`workflow_completed` means the run *finished*; `success` is false when any
+step failed or was skipped. Task-level events (`task_submitted`,
+`task_started`, `task_completed`, `task_failed`) are sent as well.
+
+> The interactive research workflow (CLI and Qt research tab) does not use
+> this class: it runs on the enum-based `cli/workflow_steps.py` system.
 
 ## Best Practices
 

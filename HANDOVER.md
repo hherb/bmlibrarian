@@ -10,8 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Citation passage matching rewritten** (2026-10-16, branch
-  `perf/citation-fuzzy-match`): `CitationFinderAgent` validated LLM
+- **Legacy orchestrator `Workflow` fixed** (2026-10-17, branch
+  `fix/orchestrator-workflow-wedge`): `AgentOrchestrator.execute_workflow`
+  looped forever when a step failed (its dependents never became ready),
+  and resubmitted every in-flight step on each poll. Now a failed, cancelled
+  or vanished task fails its step and transitively skips its dependents
+  (`Workflow.skipped_steps`, `workflow_step_skipped` event); unknown
+  dependencies, cycles and unregistered agent types raise `ValueError`
+  before submitting; each execution resets state, and a concurrent second
+  run of the same workflow raises `RuntimeError`; optional `timeout` raises
+  `WorkflowTimeoutError` (unfinished steps, partial results, steps still
+  running); a timeout or queue error cancels the run's pending tasks
+  (`QueueManager.cancel_task`) and no new ones are submitted after the
+  deadline. `register_agent` after `start_processing()` now starts that
+  agent's thread (it used to hang the workflow silently).
+  `workflow_completed` carries `success`. The `mark_*` methods reject
+  unknown/finished steps. Follow-ups: ROADMAP §5 "Orchestrator `Workflow`:
+  one state map and a per-run result"; queue-worker robustness →
+  issue #294.
+  No app calls it (the CLI/Qt use `cli/workflow_steps.py`); kept because it
+  is exported and documented. Tests: `tests/test_orchestrator_workflow.py`.
+  The other half of that "Next up" item, ClinicalTrials matching
+  (per-trial unindexed `LIKE` over all full texts), turned out structural →
+  ROADMAP §5 "Indexed ClinicalTrials.gov ↔ document matching"; the limit is
+  documented in the module docstring and `doc/users/clinicaltrials_import_guide.md`.
+- **Citation passage matching rewritten** (2026-10-16, PR #288, merged): `CitationFinderAgent` validated LLM
   passages with a sliding-window `SequenceMatcher` (31 s on one 1 kB
   abstract, × retries × every document). It now calls the pure
   `utils/passage_match.find_passage()`: an exact match on normalised text,
@@ -156,17 +179,18 @@ off new work. Longer-term structural items live in
   removed `PaperWeightAssessmentAgent._get_db_connection`;
   `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
 
-## Next up (imminent — from the 2026-07-19 review, P1)
+## Next up
 
-Pick items in whichever order matches what you're touching; they're
-independent unless noted.
+The 2026-07-19 review's imminent P1 items are done or deferred to
+ROADMAP. Candidates, in rough order of
+value — pick one, or pull an item from ROADMAP.md:
 
-- **Orchestrator / importer leftovers**: old `agents/orchestrator.py`
-  `Workflow.execute_workflow` wedges forever on a failed dependency
-  (superseded by `cli/workflow_steps.py` but still exported/documented — fix
-  or deprecate + update `doc/users/queue_system_guide.md`); ClinicalTrials
-  matching does a per-trial leading-wildcard `LIKE` over full text — needs
-  an indexed strategy at scale.
+- Open bugs from recent slices: #289 (short/mid-word citation passages
+  accepted as verified), #273 (fact-checker records infrastructure
+  failures as `maybe`), #279 / #278 (Find PDF / FETCH paths), #285–#287
+  (systematic review follow-ups).
+- #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
+  Service S3 inventory (structural; discovery side already ported).
 
 ## LLM-layer polish follow-up (from 2026-07-22 slice)
 

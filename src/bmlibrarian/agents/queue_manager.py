@@ -14,8 +14,8 @@ import signal
 import atexit
 from datetime import datetime, timezone, timedelta
 from enum import Enum
-from typing import Optional, Dict, Any, List, Iterator, Callable
-from dataclasses import dataclass, asdict
+from typing import Optional, Dict, Any, List, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 # The atomic dequeue (get_next_task) relies on the SQL ``RETURNING`` clause,
@@ -745,6 +745,33 @@ class QueueManager:
                 if needs_close:
                     conn.close()
     
+    def cancel_task(self, task_id: str) -> bool:
+        """
+        Cancel one task if no agent has started it yet.
+
+        Args:
+            task_id: The task to cancel
+
+        Returns:
+            True if the task was pending and is now cancelled; False if it
+            is unknown or already processing or finished.
+        """
+        with self.lock:
+            conn = self._get_connection()
+            needs_close = not self._persistent_conn
+            try:
+                cursor = conn.execute("""
+                    UPDATE queue_tasks
+                    SET status = ?, completed_at = ?
+                    WHERE id = ? AND status = ?
+                """, (TaskStatus.CANCELLED.value, datetime.now(timezone.utc).isoformat(),
+                      task_id, TaskStatus.PENDING.value))
+                conn.commit()
+                return cursor.rowcount == 1
+            finally:
+                if needs_close:
+                    conn.close()
+
     def _row_to_task(self, row) -> QueueTask:
         """Convert database row to QueueTask object."""
         return QueueTask(
