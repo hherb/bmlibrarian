@@ -138,6 +138,7 @@ class LLMClient:
             duration_seconds=duration,
             # Providers without reasoning support omit this attribute.
             thinking=getattr(bmlib_resp, "thinking", None),
+            stop_reason=getattr(bmlib_resp, "stop_reason", None),
         )
 
     @staticmethod

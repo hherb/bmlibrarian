@@ -47,6 +47,7 @@ def test_extract_metadata_parses_llm_json(matcher):
         prompt_tokens=1,
         completion_tokens=1,
         duration_seconds=0.0,
+        stop_reason="stop",
         model="stub",
         provider=SimpleNamespace(value="ollama"),
     )

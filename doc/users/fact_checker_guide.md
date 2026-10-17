@@ -603,7 +603,9 @@ See [Fact-Checker Review Guide](fact_checker_review_guide.md) for detailed revie
 - `fact_checker_agent`: Model for statement evaluation
 - `temperature`: Creativity/randomness (0.0-1.0, default 0.1)
 - `top_p`: Nucleus sampling (0.0-1.0, default 0.9)
-- `max_tokens`: Maximum response length
+- `max_tokens`: Response length for the verdict and its reason; the evaluation
+  adds 100 tokens per citation on top, so large evidence sets leave a
+  reasoning model room to think about every citation
 - `score_threshold`: Minimum document relevance score
 - `max_search_results`: Maximum documents to retrieve
 - `max_citations`: Maximum citations to extract (at least 1; `null` = no limit)

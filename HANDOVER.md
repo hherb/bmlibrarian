@@ -10,6 +10,20 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Fact-check evaluation no longer starves on large evidence sets**
+  (2026-10-18, branch `fix/factcheck-large-evidence`, closes #296). Root
+  cause, reproduced on the backed-up evidence: `gpt-oss:20b` reasons within
+  `num_predict`, and on 49 citations it spent the flat 2,000 tokens on
+  thinking and returned empty content (the prompt is only ~4 k tokens;
+  context is 64 k, so not a context problem). The evaluation budget is now
+  `evaluation_token_budget(max_tokens, n)` = `max_tokens` + 100 per citation;
+  the three largest #296 sets (48–50 citations) now evaluate in 42–69 s.
+  bmlibrarian's `LLMResponse` now carries bmlib's `stop_reason`, and
+  `BaseAgent._checked_content` reports "Model hit the max_tokens limit (N)"
+  instead of "Empty response", and logs a warning for an answer cut off at
+  the limit (`TRUNCATION_STOP_REASONS`). **Still to do (owner's call,
+  writes to `knowledgebase`):** re-run `fact_checker_cli.py --incremental`
+  for the 76 statements whose fallback verdicts were deleted.
 - **Citations must be complete sentences** (2026-10-17, branch
   `fix/citation-complete-sentences`, stacked on #297, closes #289; owner
   policy: fragments risk out-of-context quoting). The new pure module
@@ -24,7 +38,7 @@ off new work. Longer-term structural items live in
   rules; not re-measured after the review changes below). Docs:
   `doc/llm/sentence_bounds.md`, `citation_system.md`, `citation_guide.md`.
   Candidate for upstreaming to bmlib.
-- **PR #298 review fixes** (2026-10-18, same branch):
+- **PR #298 review fixes** (2026-10-18, PR #299, merged):
   - *Sentence rules*: only `.`/`!`/`?` end a sentence (no line-break or
     end-of-text ends); a single line break starts one only after a sentence
     end or a heading/label line; initials ("J.", "U.S.") and more
@@ -63,8 +77,8 @@ off new work. Longer-term structural items live in
   (2026-10-17, owner-approved, #296): their evidence rows went with them via
   cascade; CSV backup in
   `~/.bmlibrarian/backups/factcheck_fallback_verdicts_2026-10-17/`. The 76
-  statements are unevaluated again (`--incremental` re-checks them), but
-  will fail until the #296 root cause is fixed.
+  statements are unevaluated again (`--incremental` re-checks them); the
+  root cause is fixed (see above).
 - **Fact-checker no longer records failures as `maybe`** (2026-10-17, branch
   `fix/factchecker-infra-failures`, closes #273): each stage of
   `FactCheckerAgent.check_statement` now raises `FactCheckStageError`
@@ -85,8 +99,7 @@ off new work. Longer-term structural items live in
   `doc/developers/fact_checker_system.md` "Failure handling". **Follow-up
   #296**: 76 of 1,000 production verdicts were such fallbacks (all with 17–50
   citations, so evaluation probably fails on large evidence sets); they were
-  deleted (see above). The root cause needs fixing or those statements will
-  keep failing.
+  deleted (see above); root cause fixed (see above).
 - **bmlib 0.10 adopted** (2026-10-17, PR #295, merged): pin
   `bmlib[ollama,pdf]>=0.10.0,<0.11.0`; `json_repair`, `agents/text_chunking`
   (`boundary_aware=False`), `paper_reviewer/text_utils` and
@@ -267,9 +280,8 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- #296: fact-checker evaluation fails on large evidence sets (root cause;
-  the contaminated rows are already deleted). Then re-run
-  `fact_checker_cli.py --incremental` for the 76 statements.
+- Re-run `fact_checker_cli.py --incremental` on `knowledgebase` for the 76
+  statements of #296 (needs the owner's go-ahead: production write).
 - Citation follow-ups: #290 (retry prompt should say *why* the last passage
   was rejected, now including "not a complete sentence"), #291 (Unicode
   folding), #292 (rejection counts in Qt/CLI).

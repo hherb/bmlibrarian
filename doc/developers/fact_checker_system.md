@@ -557,6 +557,18 @@ packages, and shown under the AI rationale in the review GUI. The CLI counts
 them and lists them with `--detailed`. A verdict with notes is still a
 verdict: it is stored and does not change the exit code.
 
+**The evaluation budget grows with the evidence.** The evaluation request's
+generation ceiling is `evaluation_token_budget(max_tokens, n)`: the agent's
+`max_tokens` (verdict and reason) plus `EVALUATION_TOKENS_PER_CITATION` (100)
+for each of the `n` citations. A reasoning model such as `gpt-oss:20b` spends
+its thinking within that ceiling; with a flat 2,000 tokens it used all of
+them on 49 citations and answered nothing (#296). With the scaled budget the
+48–50-citation evidence sets of #296 evaluate in under 70 s each. When a
+model still runs out, `BaseAgent` reports "Model hit the max_tokens limit
+(N) before producing an answer" instead of "Empty response from model", and
+logs a warning for a partial answer cut off there (`LLMResponse.stop_reason`
+in `TRUNCATION_STOP_REASONS`).
+
 `_validate_evaluation_response(data, citation_count)` rejects any verdict
 outside `VALID_VERDICTS` instead of coercing it to "maybe", and requires a
 stance in `VALID_STANCES` (case and whitespace ignored) for every citation

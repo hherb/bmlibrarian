@@ -15,6 +15,7 @@ import json
 
 from bmlibrarian.factchecker.agent.fact_checker_agent import (
     EVALUATION_ERROR,
+    EVALUATION_TOKENS_PER_CITATION,
     EVALUATION_VALIDATION_ATTEMPTS,
     STAGE_CITATIONS,
     STAGE_EVALUATION,
@@ -23,6 +24,7 @@ from bmlibrarian.factchecker.agent.fact_checker_agent import (
     FactCheckerAgent,
     FactCheckResult,
     FactCheckStageError,
+    evaluation_token_budget,
     failed_search_strategies,
     EvidenceReference
 )
@@ -323,6 +325,27 @@ class TestFactCheckerAgent(unittest.TestCase):
 
         self.assertEqual(chat.call_count, 2)
         self.assertEqual(result['evaluation'], 'no')
+
+    def test_evaluation_token_budget_grows_with_citations(self):
+        """Each citation adds its own share to the base budget (#296)."""
+        self.assertEqual(evaluation_token_budget(2000, 0), 2000)
+        self.assertEqual(
+            evaluation_token_budget(2000, 49), 2000 + 49 * EVALUATION_TOKENS_PER_CITATION
+        )
+        self.assertEqual(evaluation_token_budget(2000, -1), 2000)
+
+    def test_request_evaluation_scales_num_predict_with_citations(self):
+        """The LLM gets room to reason about every citation, not a flat max_tokens."""
+        stances = {str(i): "neutral" for i in range(1, 31)}
+        with patch.object(self.agent, '_chat_and_parse_json', return_value={
+            "evaluation": "maybe", "reason": "Mixed", "citation_stances": stances,
+        }) as chat:
+            self.agent._request_evaluation("prompt", citation_count=30)
+
+        self.assertEqual(
+            chat.call_args.kwargs['num_predict'],
+            evaluation_token_budget(self.agent.max_tokens, 30),
+        )
 
     def test_request_evaluation_fails_after_repeated_invalid_verdicts(self):
         """Repeatedly invalid responses fail the stage instead of becoming 'maybe'."""

@@ -26,6 +26,7 @@ def _fake_response(content: str) -> SimpleNamespace:
         prompt_tokens=1,
         completion_tokens=1,
         duration_seconds=0.0,
+        stop_reason="stop",
         model="stub",
         provider=SimpleNamespace(value="ollama"),
     )
