@@ -1,6 +1,38 @@
 # bmlib alignment analysis — September 2026
 
-Status: analysis / proposal. No code changed by this document.
+Status: analysis / proposal, being executed (see *Progress* below).
+
+## Progress (updated 2026-10-17)
+
+| Step (§4) | State |
+|---|---|
+| 1. Bump the pin | ✅ `bmlib[ollama,pdf]>=0.10.0,<0.11.0` (branch `feat/bmlib-0.10-adoption`) |
+| 2. Tier 1 swaps | ✅ `utils/json_repair.py`, `agents/text_chunking.py`, `agents/paper_reviewer/text_utils.py`, `importers/pdf_converter.py` are re-export shims over bmlib. `text_chunking` pins `boundary_aware=False` (contract test in `tests/test_text_chunking.py`); both chunkers verified identical to the old code on 3,000 random inputs. Dropped: the local 1 MB `MAX_JSON_LENGTH` guard in `repair_json` (no caller relied on it). Gained: a password-protected PDF is now a failed conversion instead of an empty success. |
+| 3–8 | not started |
+
+Found since this analysis was written (not in §2/§3 below):
+
+- **JATS → Markdown is duplicated.** `discovery/nxml_parser.py` (972 LOC,
+  `NXMLParser`) is used by the medRxiv, MECA, Europe PMC and PMC importers.
+  `bmlib.fulltext.jats_parser` is far more hardened (dozens of measured
+  fixes: nested `<sub-article>`, contributor groups, footnotes, funding,
+  references) but renders HTML, not Markdown. Upstream a
+  `render_markdown(JATSArticle)` to bmlib (Python + Rust), then retire
+  `NXMLParser`. Changes stored full text → re-import/re-embed decision.
+- **Rust PubMed parsing is duplicated.** `spikes/pubmed-ingest/rust/src/parse.rs`
+  re-implements what the `bmlib` crate's `publications::fetchers::pubmed`
+  (`parse_article`, `format_abstract_markdown`, `parse_grants`) already does.
+  The production `bml-ingest` crate must build on the bmlib parser and add
+  bulk-only needs (DeleteCitation, MeSH headings, `<Article>` revision
+  handling) upstream rather than fork it.
+- **Generic import infrastructure** written for the PG18 import is upstream
+  material: `importers/ncbi_https.py` (HTTPS + `.md5` verified, resumable
+  `.part` downloads) and the per-file ingest ledger. bmlib's PubMed sync
+  would use the same HTTPS/MD5 discipline.
+- `tests/writing/test_citation_formatter.py::…test_from_dict_with_string_authors`
+  fails on master (local `DocumentMetadata.from_dict` splits `"Smith, John;
+  Jones, Mary"` into four authors); `bmlib.citations.DocumentMetadata.from_dict`
+  returns the correct two — one more reason for step 4.
 
 ## TL;DR
 

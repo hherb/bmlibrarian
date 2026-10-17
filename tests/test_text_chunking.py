@@ -323,3 +323,34 @@ class TestEdgeCases:
         # Verify whitespace is preserved
         all_content = ''.join(c.content for c in chunks)
         assert '\n\n' in all_content
+
+
+class TestFixedWidthContract:
+    """The shim over bmlib must keep bmlibrarian's fixed-width cuts.
+
+    bmlib's chunker defaults to boundary-aware cuts; the document
+    interrogation agent's retrieval depends on fixed offsets, so a
+    paragraph or sentence break must never move a chunk's end.
+    """
+
+    def test_paragraph_and_sentence_breaks_do_not_move_chunk_ends(self):
+        """Every chunk but the last is exactly chunk_size long."""
+        sentence = "Aspirin reduced events. " * 40
+        text = (sentence + "\n\n") * 10
+        chunker = TextChunker(chunk_size=1500, overlap=100)
+
+        chunks = chunker.chunk_text(text)
+
+        assert len(chunks) > 2
+        for chunk in chunks[:-1]:
+            assert chunk.size == 1500
+        for previous, current in zip(chunks, chunks[1:]):
+            assert current.start_pos == previous.start_pos + chunker.stride
+
+    def test_module_function_is_fixed_width_too(self):
+        """chunk_text() uses the same fixed-width chunker."""
+        text = ("Short sentence. " * 100 + "\n\n") * 5
+        assert [c.end_pos for c in chunk_text(text, 1000, 50)] == [
+            c.end_pos for c in TextChunker(1000, 50).chunk_text(text)
+        ]
+        assert all(c.size == 1000 for c in chunk_text(text, 1000, 50)[:-1])
