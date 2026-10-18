@@ -10,8 +10,10 @@ similarity threshold and are rejected.
 
 Similarity is ``difflib.SequenceMatcher.ratio()`` (``2*M / (len(a)+len(b))``)
 between the normalised passage and the normalised candidate window. Text is
-normalised by lowercasing and collapsing whitespace; an offset map turns a
-window in normalised text back into an exact span of the original.
+normalised by folding typographic quotes and dashes to ASCII, decomposing
+compatibility characters, dropping accents, lowercasing and collapsing
+whitespace; an offset map turns a window in normalised text back into an
+exact span of the original.
 
 Search strategy:
 
@@ -45,9 +47,11 @@ from __future__ import annotations
 
 import bisect
 import math
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 from itertools import accumulate
 from typing import Callable
 
@@ -68,6 +72,18 @@ EDGE_SEARCH_MARGIN = 16
 
 _SPACE = " "
 
+# Typographic punctuation folded to ASCII before comparing (LLMs copy curly
+# quotes as straight ones and dashes as hyphens), and invisible characters
+# dropped. Other compatibility forms are handled by NFKD in fold_char().
+_TYPOGRAPHIC_FOLDS = str.maketrans({
+    **dict.fromkeys("‘’‚‛′´`", "'"),
+    **dict.fromkeys("“”„‟″«»", '"'),
+    **dict.fromkeys("‐‑‒–—―−﹘﹣－", "-"),
+    **dict.fromkeys("­​‌‍⁠﻿", None),
+})
+# Distinct characters whose folding is cached (text is mostly a small alphabet).
+FOLD_CACHE_SIZE = 4096
+
 
 @dataclass(frozen=True)
 class PassageMatch:
@@ -85,7 +101,8 @@ class PassageMatch:
         end: End index (exclusive) of the matched span, or None.
         text: ``original_text[start:end]`` when the match was accepted, else None.
         exact: True when the normalised passage occurs verbatim in the
-            normalised text (only case and whitespace differ).
+            normalised text (only case, whitespace, accents and typographic
+            variants differ).
     """
 
     similarity: float
@@ -122,11 +139,34 @@ class PassageMatch:
         return self.text is not None
 
 
-def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
-    """Lowercase ``text`` and collapse whitespace, keeping a map back to it.
+@lru_cache(maxsize=FOLD_CACHE_SIZE)
+def fold_char(char: str) -> str:
+    """Fold one character to the form passages are compared in.
 
-    Leading and trailing whitespace is dropped and every internal whitespace
-    run becomes one space.
+    Typographic quotes and dashes become ASCII, compatibility characters
+    are decomposed (NFKD: "ﬁ" -> "fi", "²" -> "2"), accents and other
+    combining marks are dropped (so NFC and NFD spellings compare equal),
+    and the result is lowercased.
+
+    Args:
+        char: A single character.
+
+    Returns:
+        Zero or more code points; "" for a character that is dropped
+        entirely (a combining mark, soft hyphen or zero-width character).
+    """
+    decomposed = unicodedata.normalize("NFKD", char.translate(_TYPOGRAPHIC_FOLDS))
+    return "".join(
+        code_point for code_point in decomposed
+        if not unicodedata.combining(code_point) and not code_point.isspace()
+    ).lower()
+
+
+def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
+    """Fold ``text`` and collapse whitespace, keeping a map back to it.
+
+    Each character is folded with :func:`fold_char`. Leading and trailing
+    whitespace is dropped and every internal whitespace run becomes one space.
 
     Args:
         text: Original text.
@@ -134,7 +174,8 @@ def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
     Returns:
         ``(normalised, offsets)`` where ``offsets[i]`` is the index in ``text``
         of the character that produced ``normalised[i]`` (for a collapsed
-        whitespace run, its first character).
+        whitespace run, its first character). Characters folded to nothing
+        have no entry.
     """
     chars: list[str] = []
     offsets: list[int] = []
@@ -144,13 +185,16 @@ def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
             if pending_space < 0 and chars:
                 pending_space = index
             continue
+        folded = fold_char(char)
+        if not folded:
+            continue
         if pending_space >= 0:
             chars.append(_SPACE)
             offsets.append(pending_space)
             pending_space = -1
-        # lower() can yield several code points ("İ" -> "i̇"); map each back.
-        for lowered in char.lower():
-            chars.append(lowered)
+        # Folding can yield several code points ("ﬁ" -> "fi"); map each back.
+        for code_point in folded:
+            chars.append(code_point)
             offsets.append(index)
     return "".join(chars), offsets
 
@@ -507,7 +551,11 @@ def _accepted(
         An accepted :class:`PassageMatch` spanning whole original characters.
     """
     original_start = offsets[start]
-    original_end = offsets[end - 1] + 1
+    # Extend up to the next kept character so marks folded to nothing (an
+    # NFD accent after the last letter) stay in the span; a window ending
+    # inside a multi-code-point fold ("ﬁ") keeps the whole character.
+    next_kept = offsets[end] if end < len(offsets) else len(original)
+    original_end = max(offsets[end - 1] + 1, next_kept)
     # A window edge on a collapsed space maps to raw whitespace: trim it.
     span = original[original_start:original_end]
     original_start += len(span) - len(span.lstrip())

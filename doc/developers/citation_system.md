@@ -294,8 +294,10 @@ The citation stores only `PassageMatch.text`, the matched span of the
 **original** abstract, so it never holds the LLM's copy of the text (the
 `start`/`end` offsets are not kept on the `Citation`):
 
-1. Both texts are normalised (lowercase, whitespace runs collapsed) by
-   `normalize_with_offsets()`, which keeps an index map back to the original.
+1. Both texts are normalised (typographic quotes and dashes folded to ASCII,
+   ligatures and other compatibility characters decomposed, accents dropped,
+   lowercase, whitespace runs collapsed) by `normalize_with_offsets()`, which
+   keeps an index map back to the original.
 2. Exact substring of the normalised passage → similarity 1.0 and
    `PassageMatch.exact` (counted in `exact_matches`). The span may start or
    end mid-word; the citation agent then rejects it unless it is complete
@@ -369,8 +371,9 @@ The PR #298 review tightened the rules (line breaks, initials, single words)
 and relaxed one (gene/molecule names such as "p53" or "mRNA" may start a
 sentence); the figures were not re-measured.
 
-On a retry after a rejection, the prompt names the reason (`_retry_note`),
-so the model is not sent the identical request again.
+On a retry after a rejection, the prompt names the reason, with the
+similarity for a below-threshold passage, and quotes the rejected passage
+(`_retry_note`, #290), so the model is not sent the identical request again.
 
 A response with `has_relevant_content: false`, or a relevance score below
 `min_relevance`, ends extraction for that document without a retry. A

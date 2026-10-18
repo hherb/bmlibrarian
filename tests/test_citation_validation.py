@@ -465,6 +465,20 @@ def test_retry_tells_the_model_why_its_passage_was_rejected() -> None:
     retry_prompt = llm.call_args_list[1].args[0]
     assert REJECT_INCOMPLETE_SENTENCE not in first_prompt
     assert REJECT_INCOMPLETE_SENTENCE in retry_prompt
+    assert 'Your previous passage was: "Aspirin"' in retry_prompt
+
+
+def test_retry_quotes_a_paraphrase_with_its_similarity() -> None:
+    """A below-threshold paraphrase is quoted back with its similarity (#290)."""
+    paraphrase = "Aspirin lowers the risk of heart attacks in people with heart disease"
+    _, citation, llm = _extract_with_llm_responses(
+        [_llm_response(paraphrase), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert citation is not None
+    retry_prompt = llm.call_args_list[1].args[0]
+    assert f"{REJECT_BELOW_THRESHOLD} (similarity=" in retry_prompt
+    assert f'Your previous passage was: "{paraphrase}"' in retry_prompt
 
 
 def test_connection_outage_is_retried_with_backoff(_no_backoff_waits: list) -> None:
