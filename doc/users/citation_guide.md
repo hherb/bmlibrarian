@@ -143,7 +143,11 @@ citation.pmid             # PubMed ID (if available)
 
 `citation.passage` is always text copied from the document's abstract, never
 the model's own wording. Language models often change a comma, the
-capitalisation or the spacing when asked to quote. The Citation Finder
+capitalisation or the spacing when asked to quote, or type curly quotes,
+dashes, ligatures and accented letters differently; none of these count as
+differences (superscripts count as plain digits, so "10²" matches "102", but
+"≠" never matches "="). The saved citation is always the document's own
+text. The Citation Finder
 locates the passage in the abstract and stores the abstract's original text
 for that span. A passage whose similarity to the closest span of the
 abstract is below 95% (a paraphrase or an invented sentence) is rejected.
@@ -165,8 +169,8 @@ longer stretch that starts at an unambiguous sentence start. Sentences that
 start with a gene or molecule name such as "p53" or "mRNA" are accepted.
 
 In every case above, the model is asked again, up to `max_retries` times,
-before the document is skipped; the retry tells the model why its previous
-passage was rejected. If the language model server cannot be reached or
+before the document is skipped; the retry shows the model its previous
+passage and why it was rejected. If the language model server cannot be reached or
 times out, the request is retried a few times with increasing waits before
 the document counts as an error.
 

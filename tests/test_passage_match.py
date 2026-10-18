@@ -1,7 +1,7 @@
 """
 Tests for bmlibrarian.utils.passage_match.
 
-Covers whitespace/case normalisation with offset mapping, exact and fuzzy
+Covers whitespace/case/Unicode normalisation with offset mapping, exact and fuzzy
 passage location (including inserted and dropped words, text edges and
 repeated phrasing), rejection of paraphrases and fabrications, the result
 invariants, input validation, a seeded comparison against exhaustive search,
@@ -69,16 +69,91 @@ class TestNormalizeWithOffsets:
         assert norm == "a b c"
         assert [original[i] for i in offsets] == ["A", " ", "B", "\n", "C"]
 
-    def test_length_changing_lowercase_keeps_offsets_aligned(self) -> None:
-        # "İ".lower() is two code points; both must map to the same source index.
-        original = "İstanbul x"
+    def test_length_changing_fold_keeps_offsets_aligned(self) -> None:
+        # "ﬁ" folds to two code points; both must map to the same source index.
+        original = "ﬁrst x"
         norm, offsets = normalize_with_offsets(original)
-        assert len(offsets) == len(norm)
+        assert norm == "first x"
         assert offsets[0] == offsets[1] == 0
+        assert offsets[2] == 1
+
+    def test_dotted_capital_i_folds_to_plain_i(self) -> None:
+        assert normalize_with_offsets("İstanbul")[0] == "istanbul"
 
     def test_empty(self) -> None:
         assert normalize_with_offsets("   ") == ("", [])
 
+
+class TestUnicodeFolding:
+    """Typographic and Unicode variants of the same text compare equal (#291)."""
+
+    @pytest.mark.parametrize(
+        ("passage", "text"),
+        [
+            ("Caf\u00e9 au lait was served.", "Cafe\u0301 au lait was served."),  # NFC vs NFD
+            ("Cafe\u0301 au lait was served.", "Caf\u00e9 au lait was served."),  # NFD vs NFC
+            ("The patient's \"dose\" was low.", "The patient\u2019s \u201cdose\u201d was low."),
+            ("A dose-response effect was seen.", "A dose\u2013response effect was seen."),
+            ("Effects were seen - not large.", "Effects were seen \u2014 not large."),
+            ("The final efficacy was shown.", "The \ufb01nal e\ufb03cacy was shown."),
+            ("Areas of 5 m2 were treated.", "Areas of 5 m\u00b2 were treated."),
+            ("The treatment was effective.", "The treat\u00adment was effec\u200btive."),
+        ],
+    )
+    def test_variants_match_exactly(self, passage: str, text: str) -> None:
+        match = find_passage(passage, text, min_similarity=0.95)
+        assert match.matched
+        assert match.exact
+        assert match.similarity == 1.0
+        assert match.text == text
+
+    def test_span_keeps_trailing_nfd_accent(self) -> None:
+        # The passage ends on an accented letter that is decomposed in the source.
+        text = "Served with cafe\u0301. Then tea."
+        match = find_passage("served with caf\u00e9", text, min_similarity=0.95)
+        assert match.text == "Served with cafe\u0301"
+
+    def test_span_does_not_split_a_ligature(self) -> None:
+        text = "The \ufb01nal result."
+        match = find_passage("The f", text, min_similarity=0.95)
+        assert match.text == "The \ufb01"
+
+    def test_returned_text_keeps_source_typography(self) -> None:
+        sentence = "Mortality fell from 12% to 8% \u2014 a \u201cmarked\u201d drop."
+        text = f"Background text here. {sentence} More text follows."
+        match = find_passage(
+            'Mortality fell from 12% to 8% - a "marked" drop.', text, min_similarity=0.95
+        )
+        assert match.text == sentence
+
+
+    @pytest.mark.parametrize(
+        ("passage", "text"),
+        [
+            ("The groups differed: A = B.", "The groups differed: A \u2260 B."),
+            ("The value x was in S.", "The value x was \u2209 S."),
+        ],
+    )
+    def test_negated_relation_is_not_an_exact_match(self, passage: str, text: str) -> None:
+        # "≠" is "=" + U+0338; dropping the overlay would flip the meaning.
+        assert not find_passage(passage, text, min_similarity=0.95).exact
+
+    def test_superscript_minus_folds_to_hyphen(self) -> None:
+        # NFKD turns "⁻" into U+2212, which must fold on to "-".
+        match = find_passage("Doses of 10-3 M were used.", "Doses of 10\u207b\u00b3 M were used.", 0.95)
+        assert match.exact
+
+    def test_fuzzy_match_over_folded_text_spans_whole_characters(self) -> None:
+        text = "Intro. The \ufb01nal e\ufb03cacy was shown here today. End."
+        match = find_passage("The final efficacy was clearly shown here today.", text, 0.85)
+        assert match.matched
+        assert not match.exact
+        assert match.text == "The \ufb01nal e\ufb03cacy was shown here today."
+
+    def test_span_keeps_nfd_accent_at_end_of_text(self) -> None:
+        text = "Served with cafe\u0301"
+        match = find_passage("served with caf\u00e9", text, min_similarity=0.95)
+        assert match.text == text
 
 class TestExactMatch:
     """Passages present verbatim (modulo case/whitespace) score 1.0."""

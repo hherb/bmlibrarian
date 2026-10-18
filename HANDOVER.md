@@ -10,8 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Citation retries quote the rejected passage; passage matching folds
+  Unicode** (2026-10-18, branch `fix/citation-retry-feedback-unicode`,
+  closes #290, #291). `_retry_note` now quotes the previous passage
+  (first 200 characters, "…" when cut; not for non-text answers) and, for
+  a below-threshold rejection, its similarity. `passage_match.fold_char()`
+  folds curly quotes/primes to ASCII, dash and minus variants to `-`
+  (before and after NFKD, so `⁻` too), applies NFKD (ligatures, `²`),
+  drops combining marks (NFC = NFD, accent-insensitive) except negation
+  overlays (`≠` stays distinct from `=`), soft hyphens and zero-width
+  characters, then lowercases; `_accepted()` extends a span over trailing
+  folded-away marks and never splits a ligature. Returned spans are still
+  the source's own characters. Not yet measured on the 106 (statement,
+  document) pairs that lost every passage in the #296 re-run (#303).
+  Invisible characters right after a sentence end still fail the sentence
+  check (pre-existing, #302).
 - **Fact-check evaluation no longer starves on large evidence sets**
-  (2026-10-18, PR #300, closes #296). Root
+  (2026-10-18, PR #300, merged, closes #296). Root
   cause, reproduced on the backed-up evidence: `gpt-oss:20b` reasons within
   `num_predict`, and on 49 citations it spent the flat 2,000 tokens on
   thinking and returned empty content (the prompt is only ~4 k tokens;
@@ -37,8 +52,8 @@ off new work. Longer-term structural items live in
   fact-checker; retries add `SCORING_RETRY_TOKEN_INCREMENT`.
   The first, aborted attempt left one in-progress session row in
   `factcheck.processing_metadata`.
-- **Citations must be complete sentences** (2026-10-17, branch
-  `fix/citation-complete-sentences`, stacked on #297, closes #289; owner
+- **Citations must be complete sentences** (2026-10-17,
+  PR #298, merged, closes #289; owner
   policy: fragments risk out-of-context quoting). The new pure module
   `utils/sentence_bounds.py` (`complete_sentence_span`, `is_sentence_start`,
   `is_sentence_end`) knows biomedical abbreviations, decimals, "et al." and
@@ -294,10 +309,10 @@ ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
 - Citation rejections with `gpt-oss:20b` as citation model: 9% of cited
-  documents lose every passage (#296 re-run); #290/#291 may reduce that.
-- Citation follow-ups: #290 (retry prompt should say *why* the last passage
-  was rejected, now including "not a complete sentence"), #291 (Unicode
-  folding), #292 (rejection counts in Qt/CLI).
+  documents lost every passage in the #296 re-run (66 not complete
+  sentences, 40 below the similarity threshold); see the #290/#291 entry
+  above for what the fixes recovered.
+- #292 — show citation rejection counts in the Qt research tab and CLI.
 - Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
   paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and

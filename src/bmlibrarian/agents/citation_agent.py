@@ -46,6 +46,9 @@ REJECT_INCOMPLETE_SENTENCE = "passage is not one or more complete sentences"
 # reasons the similarity says nothing, or reads like a pass).
 SIMILARITY_REJECTIONS = frozenset({REJECT_BELOW_THRESHOLD})
 
+# Rejections whose llm_passage is a repr of a non-text value, not a passage.
+NON_TEXT_REJECTIONS = frozenset({REJECT_NOT_JSON_OBJECT, REJECT_PASSAGE_NOT_TEXT})
+
 # Characters of a rejected LLM passage kept in failed_citations / in logs.
 FAILED_PASSAGE_STORED_CHARS = 200
 FAILED_PASSAGE_LOGGED_CHARS = 100
@@ -218,7 +221,8 @@ class CitationFinderAgent(BaseAgent):
         Returns:
             The :class:`PassageMatch`. ``matched`` tells whether the passage was
             accepted, ``text`` holds the abstract's own wording of the matched
-            span, and ``exact`` is True when only case and whitespace differed.
+            span, and ``exact`` is True when only case, whitespace, accents,
+            typography or compatibility forms differed (see ``fold_char``).
         """
         match = find_passage(llm_passage, abstract, min_similarity)
         if match.text is not None:
@@ -365,21 +369,29 @@ class CitationFinderAgent(BaseAgent):
         )
 
     @staticmethod
-    def _retry_note(previous_failure: Optional[str]) -> str:
+    def _retry_note(previous_failure: Optional[str], previous_passage: str = "") -> str:
         """
-        Tell the model why its previous answer was rejected.
+        Tell the model why its previous answer was rejected (#290).
 
         Args:
-            previous_failure: The ``REJECT_*`` reason of the previous attempt,
-                or None on the first attempt.
+            previous_failure: The ``REJECT_*`` reason of the previous attempt
+                (with its similarity, for a similarity rejection), or None on
+                the first attempt.
+            previous_passage: The passage the previous attempt returned,
+                quoted (shortened, marked with "…") so the model can see what
+                to correct; "" when it returned no text passage.
 
         Returns:
             A prompt line naming the rejection, or "" on the first attempt.
         """
         if previous_failure is None:
             return ""
+        quoted = previous_passage.strip()
+        if len(quoted) > FAILED_PASSAGE_STORED_CHARS:
+            quoted = quoted[:FAILED_PASSAGE_STORED_CHARS] + "…"
+        rejected = f' Your previous passage was: "{quoted}".' if quoted else ""
         return (
-            f"- Your previous answer was REJECTED because: {previous_failure}. "
+            f"- Your previous answer was REJECTED because: {previous_failure}.{rejected} "
             f"Correct this and follow every requirement above exactly"
         )
 
@@ -436,6 +448,7 @@ class CitationFinderAgent(BaseAgent):
         # Reason the previous attempt's passage was rejected, told to the
         # model on the retry so it is not sent the identical prompt.
         previous_failure: Optional[str] = None
+        previous_passage = ""
 
         # Retry loop: initial attempt + retries
         for attempt in range(self.max_retries + 1):
@@ -471,7 +484,7 @@ Your task:
 - Do NOT add interpretations or explanations to the extracted text
 - If no single exact passage is sufficiently relevant, respond with has_relevant_content: false
 - The passage MUST be one or more COMPLETE sentences: start at the first word of a sentence and end at its closing punctuation. Never extract a single word, a phrase or part of a sentence; such passages are rejected
-{self._retry_note(previous_failure)}
+{self._retry_note(previous_failure, previous_passage)}
 
 Response format (JSON):
 {{
@@ -520,13 +533,17 @@ Respond only with valid JSON."""
                 if check.failure is not None:
                     # Validation failed - check if we should retry
                     is_final_attempt = (attempt == self.max_retries)
-                    previous_failure = check.failure
                     detail = check.failure
                     if check.failure in SIMILARITY_REJECTIONS:
                         detail += (
                             f" (similarity={check.match.similarity:.3f}, "
                             f"threshold={min_similarity})"
                         )
+                    previous_failure = detail
+                    # Not-text rejections carry a repr; don't quote it as a passage.
+                    previous_passage = (
+                        "" if check.failure in NON_TEXT_REJECTIONS else check.llm_passage
+                    )
 
                     if is_final_attempt:
                         # Final attempt failed - track statistics and reject
