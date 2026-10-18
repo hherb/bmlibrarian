@@ -135,3 +135,19 @@ class TestThinkingOnResponse:
             )
 
         assert response.thinking is None
+
+
+class TestStopReasonOnResponse:
+    """The provider's stop reason reaches the caller (truncation detection, #296)."""
+
+    def test_stop_reason_is_passed_through(self, client: LLMClient) -> None:
+        """A response cut off at max_tokens says so."""
+        provider_response = BmlibLLMResponse(content="", model=MODEL, stop_reason="length")
+        with patch.object(
+            _bmlib_llm_client.LLMClient, "chat", return_value=provider_response
+        ):
+            response = client.chat(
+                messages=[LLMMessage(role="user", content="q")], model=MODEL
+            )
+
+        assert response.stop_reason == "length"

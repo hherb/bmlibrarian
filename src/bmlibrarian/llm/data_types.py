@@ -16,6 +16,11 @@ from typing import Optional, Any
 from bmlib.llm import LLMMessage  # noqa: F401
 
 
+# Provider stop reasons meaning generation hit the max_tokens ceiling
+# (Ollama reports "length", Anthropic "max_tokens").
+TRUNCATION_STOP_REASONS = ("length", "max_tokens")
+
+
 class Provider(Enum):
     """Supported LLM providers."""
 
@@ -63,6 +68,8 @@ class LLMResponse:
         thinking: The model's reasoning trace, separated from content, or
             None when the model emitted none. A thinking-enabled request
             is not guaranteed to return one.
+        stop_reason: Why the provider stopped generating, as it reported
+            it, or None when it did not say.
     """
 
     content: str
@@ -82,6 +89,8 @@ class LLMResponse:
 
     # Reasoning trace, when the model emitted one separately from content
     thinking: Optional[str] = None
+
+    stop_reason: Optional[str] = None
 
 
 @dataclass

@@ -64,6 +64,11 @@ EVALUATION_JSON_RETRIES = 3
 EVALUATION_VALIDATION_ATTEMPTS = 2
 # Document IDs listed in a failure message or degradation note.
 MAX_LISTED_DOCUMENT_IDS = 10
+# Generation tokens added to the evaluation's max_tokens per citation shown.
+# A reasoning model (gpt-oss:20b) thinks about each citation and then writes
+# its stance; on 49 citations a flat 2,000 tokens all went to reasoning and
+# the answer came back empty (#296).
+EVALUATION_TOKENS_PER_CITATION = 100
 
 
 class FactCheckStage(StrEnum):
@@ -79,6 +84,20 @@ STAGE_SEARCH = FactCheckStage.SEARCH
 STAGE_SCORING = FactCheckStage.SCORING
 STAGE_CITATIONS = FactCheckStage.CITATIONS
 STAGE_EVALUATION = FactCheckStage.EVALUATION
+
+
+def evaluation_token_budget(base_tokens: int, citation_count: int) -> int:
+    """
+    Generation ceiling for an evaluation request over ``citation_count`` citations.
+
+    Args:
+        base_tokens: Budget for the verdict and reason (the agent's ``max_tokens``).
+        citation_count: Citations in the prompt; each needs a stance.
+
+    Returns:
+        ``base_tokens`` plus ``EVALUATION_TOKENS_PER_CITATION`` per citation.
+    """
+    return base_tokens + EVALUATION_TOKENS_PER_CITATION * max(citation_count, 0)
 
 
 def _list_ids(document_ids: List[Any]) -> str:
@@ -389,7 +408,9 @@ class FactCheckerAgent(BaseAgent):
             host: The Ollama server host URL
             temperature: Model temperature for response randomness
             top_p: Model top-p sampling parameter
-            max_tokens: Maximum tokens for model generation
+            max_tokens: Generation budget for the verdict and reason; the
+                evaluation request adds ``EVALUATION_TOKENS_PER_CITATION``
+                per citation (see ``evaluation_token_budget``).
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information
@@ -486,7 +507,7 @@ class FactCheckerAgent(BaseAgent):
                 model=scoring_model,
                 host=self.host,
                 show_model_info=False,
-                **self._filter_agent_params(scoring_config)
+                **self._filter_agent_params(scoring_config, extra={'max_tokens'})
             )
 
             # Initialize CitationFinderAgent
@@ -501,14 +522,18 @@ class FactCheckerAgent(BaseAgent):
                 **self._filter_agent_params(citation_config)
             )
 
-    def _filter_agent_params(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_agent_params(
+        self, config: Dict[str, Any], extra: frozenset[str] | set[str] = frozenset()
+    ) -> Dict[str, Any]:
         """
         Filter agent configuration to only include supported parameters.
 
-        Note: QueryAgent, DocumentScoringAgent, and CitationFinderAgent only support
-        temperature and top_p from the config. They don't accept max_tokens.
+        Args:
+            config: The sub-agent's config section.
+            extra: Keys that sub-agent accepts beyond temperature and top_p
+                (DocumentScoringAgent also takes max_tokens).
         """
-        supported_params = {'temperature', 'top_p'}
+        supported_params = {'temperature', 'top_p'} | set(extra)
         return {k: v for k, v in config.items() if k in supported_params}
 
     def _with_backoff(self, operation: Callable[[], Any], description: str) -> Any:
@@ -1082,6 +1107,7 @@ Respond ONLY with the JSON object, no additional text."""
                 not be parsed as JSON, or every response was invalid.
         """
         last_problem = ""
+        num_predict = evaluation_token_budget(self.max_tokens, citation_count)
         for attempt in range(1, EVALUATION_VALIDATION_ATTEMPTS + 1):
             try:
                 response_data = self._with_backoff(
@@ -1089,7 +1115,7 @@ Respond ONLY with the JSON object, no additional text."""
                         messages=[{'role': 'user', 'content': prompt}],
                         max_retries=EVALUATION_JSON_RETRIES,
                         retry_context="statement evaluation",
-                        num_predict=self.max_tokens
+                        num_predict=num_predict
                     ),
                     "statement evaluation LLM request",
                 )

@@ -23,6 +23,7 @@ from ..llm import (
     LLMMessage,
     LLMResponse,
     Provider,
+    TRUNCATION_STOP_REASONS,
     parse_model_string,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
@@ -294,6 +295,37 @@ class BaseAgent(ABC):
         options.update(overrides)
         return options
     
+    def _checked_content(self, response: LLMResponse, max_tokens: Optional[int]) -> str:
+        """
+        Return a response's content, refusing an empty one.
+
+        Args:
+            response: The provider's response.
+            max_tokens: The generation ceiling that was requested, for messages.
+
+        Returns:
+            The content (not stripped).
+
+        Raises:
+            ValueError: If the content is empty; the message says when the
+                model used up ``max_tokens`` (e.g. on reasoning) first.
+        """
+        content = response.content
+        truncated = response.stop_reason in TRUNCATION_STOP_REASONS
+        if not content or not content.strip():
+            if truncated:
+                raise ValueError(
+                    f"Model hit the max_tokens limit ({max_tokens}) before producing "
+                    f"an answer"
+                )
+            raise ValueError("Empty response from model")
+        if truncated:
+            logging.getLogger('bmlibrarian.agents').warning(
+                f"Response from {response.model} was cut off at the max_tokens "
+                f"limit ({max_tokens})"
+            )
+        return content
+
     def _make_llm_request(
         self,
         messages: list,
@@ -382,9 +414,7 @@ class BaseAgent(ABC):
                 **think_kwargs,
             )
 
-            content = response.content
-            if not content or not content.strip():
-                raise ValueError("Empty response from model")
+            content = self._checked_content(response, max_tokens)
 
             # Log successful response
             response_time = (time.time() - start_time) * 1000
@@ -542,9 +572,7 @@ class BaseAgent(ABC):
                 retry_delay=retry_delay,
             )
 
-            content = response.content
-            if not content or not content.strip():
-                raise ValueError("Empty response from model")
+            content = self._checked_content(response, max_tokens)
 
             # Log successful response
             response_time = (time.time() - start_time) * 1000

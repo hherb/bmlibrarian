@@ -15,13 +15,16 @@ import pytest
 from bmlibrarian.agents import BaseAgent
 
 
-def _fake_response(content: str = "ok", model: str = "stub-model") -> SimpleNamespace:
+def _fake_response(
+    content: str = "ok", model: str = "stub-model", stop_reason: str = "stop"
+) -> SimpleNamespace:
     """Build a minimal object with the attributes BaseAgent reads off a response."""
     return SimpleNamespace(
         content=content,
         prompt_tokens=1,
         completion_tokens=1,
         duration_seconds=0.0,
+        stop_reason=stop_reason,
         model=model,
         provider=SimpleNamespace(value="ollama"),
     )
@@ -179,3 +182,38 @@ def test_generate_error_logs_effective_model(mock_generate, agent, caplog):
             agent._generate_from_prompt("hello", model="other-model")
 
     assert _error_model(caplog) == "other-model"
+
+
+# --- truncation at max_tokens (#296) ---------------------------------------
+
+@pytest.mark.parametrize("stop_reason", ["length", "max_tokens"])
+@patch("bmlibrarian.llm.client.LLMClient.chat")
+def test_chat_empty_truncated_response_names_the_limit(mock_chat, agent, stop_reason):
+    """A model that spent max_tokens on reasoning is reported as such, not as 'empty'."""
+    mock_chat.return_value = _fake_response(content="", stop_reason=stop_reason)
+
+    with pytest.raises(ValueError, match=r"max_tokens limit \(2000\)"):
+        agent._make_llm_request([{"role": "user", "content": "hi"}], num_predict=2000)
+
+
+@patch("bmlibrarian.llm.client.LLMClient.generate")
+def test_generate_empty_response_without_truncation(mock_generate, agent):
+    """An empty answer that was not cut off keeps the plain message."""
+    mock_generate.return_value = _fake_response(content="  ")
+
+    with pytest.raises(ValueError, match="Empty response from model"):
+        agent._generate_from_prompt("hello")
+
+
+@patch("bmlibrarian.llm.client.LLMClient.chat")
+def test_chat_truncated_answer_is_returned_with_a_warning(mock_chat, agent, caplog):
+    """A partial answer is passed on (callers validate it), but the cut-off is logged."""
+    mock_chat.return_value = _fake_response(content='{"a": 1', stop_reason="length")
+
+    with caplog.at_level("WARNING", logger="bmlibrarian.agents"):
+        content = agent._make_llm_request(
+            [{"role": "user", "content": "hi"}], num_predict=50
+        )
+
+    assert content == '{"a": 1'
+    assert "cut off at the max_tokens limit (50)" in caplog.text

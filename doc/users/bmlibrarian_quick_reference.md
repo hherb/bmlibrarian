@@ -217,6 +217,7 @@ export POSTGRES_DB="knowledgebase"
     "scoring": {
       "temperature": 0.1,
       "top_p": 0.9,
+      "max_tokens": 1000,
       "min_relevance_score": 3
     }
   },

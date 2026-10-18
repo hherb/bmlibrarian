@@ -50,7 +50,7 @@ class AgentFactory:
     # Only these parameters will be passed to agent constructors
     SUPPORTED_PARAMS = {
         'query': {'model', 'host', 'temperature', 'top_p', 'max_tokens', 'callback', 'show_model_info', 'orchestrator'},
-        'scoring': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
+        'scoring': {'model', 'host', 'temperature', 'top_p', 'max_tokens', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
         'citation': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
         'reporting': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
         'counterfactual': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},

@@ -16,6 +16,12 @@ from .queue_manager import TaskPriority
 
 logger = logging.getLogger(__name__)
 
+# Generation ceiling for one relevance score (config: agents.scoring.max_tokens).
+# A reasoning model such as gpt-oss:20b thinks within it; 500 ran out.
+DEFAULT_SCORING_MAX_TOKENS = 1000
+# Tokens added to the ceiling on each retry of an incomplete response.
+SCORING_RETRY_TOKEN_INCREMENT = 100
+
 
 class ScoringResult(TypedDict):
     """Result structure for document scoring."""
@@ -40,7 +46,8 @@ class DocumentScoringAgent(BaseAgent):
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
         show_model_info: bool = True,
-        audit_conn: Optional[psycopg.Connection] = None
+        audit_conn: Optional[psycopg.Connection] = None,
+        max_tokens: int = DEFAULT_SCORING_MAX_TOKENS
     ):
         """
         Initialize the DocumentScoringAgent.
@@ -54,8 +61,11 @@ class DocumentScoringAgent(BaseAgent):
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
             audit_conn: Optional database connection for audit tracking
+            max_tokens: Generation ceiling per score; each retry of an
+                incomplete response adds ``SCORING_RETRY_TOKEN_INCREMENT``.
         """
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
+        self.max_tokens = max_tokens
 
         # Audit tracking (optional)
         self.audit_conn = audit_conn
@@ -214,7 +224,7 @@ Please evaluate how well this document addresses the user's question and provide
                 response = self._make_ollama_request(
                     messages,
                     system_prompt=self.system_prompt,
-                    num_predict=500 + (attempt * 100),  # Increase length on retries
+                    num_predict=self.max_tokens + attempt * SCORING_RETRY_TOKEN_INCREMENT,
                     temperature=0.1 + (attempt * 0.05)  # Slightly increase temp on retries
                 )
                 
