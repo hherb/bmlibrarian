@@ -163,10 +163,13 @@ rejected too. The only repair made is adding closing punctuation the model
 left off: a full stop, question or exclamation mark, a closing bracket or
 quote, or Markdown emphasis (`**`), and only as far as it is balanced
 within the passage. When it is unclear whether a full stop ends a sentence
-(for example "et al. The…", or an initial as in "J. Smith" or "U.S. Army"),
+(for example after an initial, as in "J. M. Smith" or "U.S. Army"),
 the passage is rejected rather than accepted, and the model has to quote a
 longer stretch that starts at an unambiguous sentence start. Sentences that
-start with a gene or molecule name such as "p53" or "mRNA" are accepted.
+start with a gene or molecule name such as "p53" or "mRNA" are accepted, and
+so are sentences ending in a letter designator ("…in group B.") or in
+"et al." before the next sentence, and abstracts whose sentences or section
+labels run together without a space ("…stenosis.Conclusion:Pre-operative…").
 
 In every case above, the model is asked again, up to `max_retries` times,
 before the document is skipped; the retry shows the model its previous

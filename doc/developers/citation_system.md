@@ -363,14 +363,22 @@ characters longer than `PassageMatch.text` (whose offsets `_ResponseCheck`
 keeps unchanged in `match`). Ambiguous boundaries count as non-boundaries,
 so a doubtful passage is rejected rather than accepted: a line break or the
 end of the text without punctuation never ends a sentence, a full stop after
-an initial ("J. Smith", "U.S.") is not an end, and label-only or one-word
-spans are rejected. The rules are in `doc/llm/sentence_bounds.md`. Measured
+an initial ("U.S.", "J. M. Smith") is not an end, and label-only or one-word
+spans are rejected. Four exceptions accept real sentences the conservative
+rules lost (#303): single-capital designators ("type B."), all-caps tokens
+that spell an abbreviation ("clinical CA."), "et al." before a capitalised
+word, and sentences or labels glued without a space ("DAPT.The",
+"Conclusion:Pre-operative"); invisible format characters count as
+whitespace (#302). The rules are in `doc/llm/sentence_bounds.md`. Measured
 on 500 random PubMed abstracts with the first version of the rules: 0 of
 6,768 mid-sentence fragments were accepted, and 0.6% of naively split
 sentences were rejected, most of them correctly (splits at "vs." or "i.e.").
 The PR #298 review tightened the rules (line breaks, initials, single words)
 and relaxed one (gene/molecule names such as "p53" or "mRNA" may start a
-sentence); the figures were not re-measured.
+sentence); the figures were not re-measured. After the #303 changes, on a
+different 500-abstract sample, no fragment was accepted that the previous
+rules rejected, and naive sentences were accepted 94.9% of the time (94.3%
+before).
 
 On a retry after a rejection, the prompt names the reason, with the
 similarity for a below-threshold passage, and quotes the rejected passage,

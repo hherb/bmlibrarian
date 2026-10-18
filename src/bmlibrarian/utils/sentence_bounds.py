@@ -7,33 +7,47 @@ quoted out of context. ``complete_sentence_span`` decides whether a span of a
 source text runs from a sentence start to a sentence end.
 
 The rules are conservative. When a boundary is ambiguous it is treated as
-*not* a boundary, so a doubtful span is rejected rather than accepted.
+*not* a boundary, so a doubtful span is rejected rather than accepted. The
+exceptions (designator letters, all-caps tokens, "et al." before a capital,
+glued text) were accepted on purpose because they lost real evidence (#303).
 
 - A sentence ends at ``.``, ``!`` or ``?`` (optionally followed by closing
-  brackets/quotes) that is followed by whitespace or the end of the text.
-  Nothing else ends a sentence: a line break is not a boundary (hard-wrapped
-  text breaks lines mid-sentence), and neither is the end of a text without
-  closing punctuation (a truncated sentence, a keyword list).
+  brackets/quotes) that is followed by whitespace, the end of the text, or a
+  glued capitalised word ("DAPT.The", "stenosis.Conclusion:" -- source text
+  that lost its spaces). Nothing else ends a sentence: a line break is not a
+  boundary (hard-wrapped text breaks lines mid-sentence), and neither is the
+  end of a text without closing punctuation (a truncated sentence, a keyword
+  list).
 - A ``.`` is not a sentence end if the token before it is a known
-  abbreviation ("Fig. 2", "e.g. Aspirin", "et al. (2019)", in any case) or an
-  initial ("J. Smith", "S. aureus", "U.S. Army"), or if the next word starts
-  with an ordinary lowercase word ("et al. reported", "sp. nov."). A lowercase
-  word that contains a digit or a capital ("p53", "mRNA", "eGFR") or starts
-  with a Greek letter ("β-blockers") can start a sentence.
+  abbreviation ("Fig. 2", "e.g. Aspirin", "No. 5"; not an all-caps token, so
+  "clinical CA." and "levels of NO." end sentences), "et al." before anything
+  but a capitalised word ("et al. (2019)"; "...by Smith et al. The effect"
+  does end), or an initial ("U.S. Army", "J. M. Smith"), or if the next word
+  starts with an ordinary lowercase word ("et al. reported", "sp. nov.",
+  "S. aureus"). A single capital letter is an initial only after another
+  initial: elsewhere it is a designator that can end a sentence ("type B.",
+  "Group A.", "hepatitis B."), at the price of splitting "by J. Smith". A
+  lowercase word that contains a digit or a capital ("p53", "mRNA", "eGFR")
+  or starts with a Greek letter ("β-blockers") can start a sentence.
 - A sentence starts at the beginning of the text, after a sentence end, after
   a blank line, after a single line break that follows a sentence end or a
   label/heading line ("BACKGROUND", "## Results"), or after a section label
   that itself starts a sentence ("RESULTS:", "**RESULTS:**", "Materials and
-  methods:"). A label is all upper case or one of ``KNOWN_SECTION_LABELS``, so
-  an ordinary colon ("two arms: Group A ...") does not start a sentence.
+  methods:", "AUTHORS' CONCLUSIONS:"), with or without a space after it. A
+  label is all upper case or one of ``KNOWN_SECTION_LABELS``, so an ordinary
+  colon ("two arms: Group A ...") does not start a sentence.
 - A span that is only a section label, or has fewer than
   ``MIN_SENTENCE_WORDS`` words once a leading label is set aside, is not a
   sentence.
+
+"Whitespace" in these rules includes invisible format characters (zero-width
+space, soft hyphen, word joiner, BOM): they never hide or join a boundary.
 
 All functions are pure and work on character offsets into the original text.
 """
 
 import re
+import unicodedata
 from typing import Optional
 
 # Characters that end a sentence.
@@ -53,15 +67,18 @@ NON_TERMINAL_ABBREVIATIONS = frozenset({
     "e.g", "i.e", "vs", "cf", "ca", "approx", "fig", "figs", "eq", "eqs",
     "ref", "refs", "no", "nos", "vol", "pp", "dr", "prof", "mr", "mrs", "ms",
     "st", "sp", "spp", "subsp", "var", "resp", "viz", "inc", "ltd", "co", "jr",
-    "sr", "vit", "wk", "wks", "yr", "yrs", "mo", "mos", "hr", "hrs", "min",
-    "max", "dept", "univ", "eds",
+    "sr", "vit", "max", "dept", "univ", "eds",
 })
+# Time units ("3 min.", "2 hrs.", "12 wks.") are deliberately not in the list:
+# in abstracts their full stop before a capital or digit ends the sentence.
 # "al." is only an abbreviation in "et al."; on its own it can be a sentence
 # ending in the element symbol "Al" (aluminium). Compared case-insensitively.
+# Before a capitalised word "et al." ends the sentence.
 ET_AL = ("et", "al")
-# An initial: one capital letter ("J", "S"), or letters joined by full stops
-# ("U.S", "e.g", "a.m"), before a full stop.
-INITIAL_PATTERN = re.compile(r"[A-Z]|(?:[A-Za-z]\.)+[A-Za-z]")
+# An initial: letters joined by full stops ("U.S", "e.g", "a.m") before a
+# full stop. A single capital letter ("J", "B") is matched separately.
+INITIAL_PATTERN = re.compile(r"(?:[A-Za-z]\.)+[A-Za-z]")
+SINGLE_CAPITAL = re.compile(r"[A-Z]")
 # Lowercase Greek letters, which start sentences as prefixes ("β-blockers").
 GREEK_LOWERCASE = ("α", "ω")
 # Mixed-case section labels of structured abstracts (lower case). All-caps
@@ -87,13 +104,32 @@ KNOWN_SECTION_LABELS = frozenset({
     "significance", "summary", "level of evidence", "trial registration",
     "registration", "funding", "clinical relevance",
 })
+# Non-letters allowed in a section label ("AUTHORS' CONCLUSIONS").
+LABEL_PUNCTUATION = " &/-,'’"
 # Longest section label considered, in words and in characters.
 LABEL_MAX_WORDS = 6
 LABEL_MAX_CHARS = 60
 # Fewest words a citable sentence has, not counting a leading section label.
 MIN_SENTENCE_WORDS = 2
+# Unicode category of invisible format characters, treated like whitespace.
+FORMAT_CATEGORY = "Cf"
 # Line breaks in a stretch of whitespace that make a paragraph break.
 PARAGRAPH_BREAK_NEWLINES = 2
+
+
+def _is_blank(char: str) -> bool:
+    """
+    Whether ``char`` separates text without being content.
+
+    Args:
+        char: One character.
+
+    Returns:
+        True for whitespace and invisible format characters (Unicode ``Cf``:
+        zero-width space, soft hyphen, word joiner, BOM), which a boundary
+        check must see through (issue #302).
+    """
+    return char.isspace() or unicodedata.category(char) == FORMAT_CATEGORY
 
 
 def _check_offset(text: str, index: int) -> None:
@@ -129,12 +165,12 @@ def _next_word(text: str, index: int) -> Optional[str]:
     Returns:
         The word (up to the next whitespace), or None at the end of the text.
     """
-    while index < len(text) and (text[index].isspace() or text[index] in OPENING_CHARS):
+    while index < len(text) and (_is_blank(text[index]) or text[index] in OPENING_CHARS):
         index += 1
     if index == len(text):
         return None
     end = index
-    while end < len(text) and not text[end].isspace():
+    while end < len(text) and not _is_blank(text[end]):
         end += 1
     return text[index:end]
 
@@ -172,30 +208,68 @@ def _token_start(text: str, end: int) -> int:
         The offset after the preceding whitespace or opening bracket/quote.
     """
     start = end
-    while start > 0 and not text[start - 1].isspace() and text[start - 1] not in OPENING_CHARS:
+    while start > 0 and not _is_blank(text[start - 1]) and text[start - 1] not in OPENING_CHARS:
         start -= 1
     return start
 
 
-def _is_abbreviation_period(text: str, period: int) -> bool:
+def _previous_token(text: str, start: int) -> str:
+    """
+    The token before the one starting at ``start``.
+
+    Args:
+        text: The source text.
+        start: Start offset of a token.
+
+    Returns:
+        The preceding token, or "" at the start of the text.
+    """
+    before = text[:start].rstrip()
+    return before[_token_start(before, len(before)):]
+
+
+def _is_abbreviation_period(text: str, period: int, next_word: Optional[str]) -> bool:
     """
     Whether the full stop at ``period`` belongs to an abbreviation or initial.
 
     Args:
         text: The source text.
         period: Index of a ``.`` in ``text``.
+        next_word: The word after the full stop, or None at the end of the text.
 
     Returns:
-        True if the token before it is in ``NON_TERMINAL_ABBREVIATIONS``, is
-        the "al" of "et al." (any case), or is an initial (``INITIAL_PATTERN``).
+        True if the token before it is in ``NON_TERMINAL_ABBREVIATIONS`` (but
+        not all caps: "CA", "NO"), is the "al" of "et al." (any case) not
+        followed by a capitalised word, is an initial (``INITIAL_PATTERN``),
+        or is a single capital letter after another initial ("J. M. Smith").
     """
     start = _token_start(text, period)
     token = text[start:period]
     if token.lower() == ET_AL[1]:
-        before = text[:start].rstrip()
-        previous = before[_token_start(before, len(before)):]
-        return previous.lower() == ET_AL[0]
+        if _previous_token(text, start).lower() != ET_AL[0]:
+            return False
+        return not (next_word and next_word[0].isupper())
+    if SINGLE_CAPITAL.fullmatch(token):
+        previous = _previous_token(text, start)
+        return previous.endswith(".") and bool(SINGLE_CAPITAL.fullmatch(previous[:-1]))
+    if token.isupper() and len(token) > 1 and not INITIAL_PATTERN.fullmatch(token):
+        return False
     return token.lower() in NON_TERMINAL_ABBREVIATIONS or bool(INITIAL_PATTERN.fullmatch(token))
+
+
+def _glued_word_starts(text: str, index: int) -> bool:
+    """
+    Whether a capitalised word starts at ``index`` with no space before it.
+
+    Args:
+        text: The source text.
+        index: Offset just after a terminator or colon.
+
+    Returns:
+        True for an upper-case letter followed by a lower-case one ("The",
+        "Conclusion"): source text that lost the space between sentences.
+    """
+    return index + 1 < len(text) and text[index].isupper() and text[index + 1].islower()
 
 
 def is_sentence_end(text: str, end: int) -> bool:
@@ -216,7 +290,7 @@ def is_sentence_end(text: str, end: int) -> bool:
     _check_offset(text, end)
     if end == 0:
         return False
-    if end < len(text) and not text[end].isspace():
+    if end < len(text) and not _is_blank(text[end]) and not _glued_word_starts(text, end):
         return False
 
     last = end
@@ -224,12 +298,12 @@ def is_sentence_end(text: str, end: int) -> bool:
         last -= 1
     if last == 0 or text[last - 1] not in SENTENCE_TERMINATORS:
         return False
-    if not text[end:].strip():
+    if all(_is_blank(c) for c in text[end:]):
         return True
     if text[last - 1] == ".":
-        if _is_abbreviation_period(text, last - 1):
-            return False
         next_word = _next_word(text, end)
+        if _is_abbreviation_period(text, last - 1, next_word):
+            return False
         if next_word is not None and not _can_start_sentence(next_word):
             return False
     return True
@@ -247,7 +321,7 @@ def _is_label(label: str) -> bool:
     """
     if not label or not any(c.isalpha() for c in label):
         return False
-    if not all(c.isalpha() or c in " &/-," for c in label):
+    if not all(c.isalpha() or c in LABEL_PUNCTUATION for c in label):
         return False
     return label.upper() == label or label.lower() in KNOWN_SECTION_LABELS
 
@@ -299,13 +373,14 @@ def _label_start(text: str, end: int) -> Optional[int]:
     if body_end == 0 or text[body_end - 1] != ":":
         return None
     body_end -= 1
-    while body_end > 0 and text[body_end - 1].isspace():
+    while body_end > 0 and _is_blank(text[body_end - 1]):
         body_end -= 1
 
     scan_from = max(0, body_end - LABEL_MAX_CHARS)
     word_starts = [
         i for i in range(scan_from, body_end)
-        if not text[i].isspace() and (i == 0 or text[i - 1].isspace())
+        if not _is_blank(text[i])
+        and (i == 0 or _is_blank(text[i - 1]) or is_sentence_end(text, i))
     ]
     for start in reversed(word_starts[-LABEL_MAX_WORDS:]):
         label = text[start:body_end].lstrip("*#").strip()
@@ -334,13 +409,15 @@ def is_sentence_start(text: str, start: int) -> bool:
     while before > 0 and text[before - 1] in OPENING_CHARS:
         before -= 1
     content_end = before
-    while content_end > 0 and text[content_end - 1].isspace():
+    while content_end > 0 and _is_blank(text[content_end - 1]):
         content_end -= 1
 
     if content_end == 0:
         return True
     if content_end == before:
-        return False
+        # No space: only a glued sentence end or section label ("stenosis.The",
+        # "Conclusion:Pre-operative") starts a sentence here.
+        return is_sentence_end(text, before) or _label_start(text, before) is not None
     line_breaks = text[content_end:before].count("\n")
     if line_breaks >= PARAGRAPH_BREAK_NEWLINES:
         return True
@@ -465,9 +542,9 @@ def complete_sentence_span(text: str, start: int, end: int) -> Optional[tuple[in
     if start > end:
         raise ValueError(f"start {start} is after end {end}")
 
-    while start < end and text[start].isspace():
+    while start < end and _is_blank(text[start]):
         start += 1
-    while end > start and text[end - 1].isspace():
+    while end > start and _is_blank(text[end - 1]):
         end -= 1
     if not any(c.isalpha() for c in text[start:end]):
         return None
