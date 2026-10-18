@@ -145,7 +145,9 @@ citation.pmid             # PubMed ID (if available)
 the model's own wording. Language models often change a comma, the
 capitalisation or the spacing when asked to quote, or type curly quotes,
 dashes, ligatures and accented letters differently; none of these count as
-differences. The Citation Finder
+differences (superscripts count as plain digits, so "10²" matches "102", but
+"≠" never matches "="). The saved citation is always the document's own
+text. The Citation Finder
 locates the passage in the abstract and stores the abstract's original text
 for that span. A passage whose similarity to the closest span of the
 abstract is below 95% (a paraphrase or an invented sentence) is rejected.

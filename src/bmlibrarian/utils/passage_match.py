@@ -81,6 +81,9 @@ _TYPOGRAPHIC_FOLDS = str.maketrans({
     **dict.fromkeys("‐‑‒–—―−﹘﹣－", "-"),
     **dict.fromkeys("­​‌‍⁠﻿", None),
 })
+# Combining overlays that negate their base character ("≠" is "=" + U+0338);
+# kept so a negated relation never folds to its positive form.
+_NEGATION_MARKS = frozenset("\u0338\u20d2\u20e5")
 # Distinct characters whose folding is cached (text is mostly a small alphabet).
 FOLD_CACHE_SIZE = 4096
 
@@ -101,8 +104,11 @@ class PassageMatch:
         end: End index (exclusive) of the matched span, or None.
         text: ``original_text[start:end]`` when the match was accepted, else None.
         exact: True when the normalised passage occurs verbatim in the
-            normalised text (only case, whitespace, accents and typographic
-            variants differ).
+            normalised text (only case, whitespace, accents, typographic
+            variants, compatibility forms such as "²" vs "2", and invisible
+            characters differ). An exact span may start or end inside a
+            character that folds to several ("ﬁ"), so ``text`` can then hold
+            one more letter than the passage.
     """
 
     similarity: float
@@ -145,8 +151,9 @@ def fold_char(char: str) -> str:
 
     Typographic quotes and dashes become ASCII, compatibility characters
     are decomposed (NFKD: "ﬁ" -> "fi", "²" -> "2"), accents and other
-    combining marks are dropped (so NFC and NFD spellings compare equal),
-    and the result is lowercased.
+    combining marks are dropped (so NFC and NFD spellings compare equal)
+    except negation overlays ("≠" stays distinct from "="), and the result
+    is lowercased.
 
     Args:
         char: A single character.
@@ -155,10 +162,15 @@ def fold_char(char: str) -> str:
         Zero or more code points; "" for a character that is dropped
         entirely (a combining mark, soft hyphen or zero-width character).
     """
-    decomposed = unicodedata.normalize("NFKD", char.translate(_TYPOGRAPHIC_FOLDS))
+    # Fold before NFKD ("´" would decompose to a bare accent) and after it
+    # (NFKD turns "⁻" into U+2212 and "‴" into primes).
+    decomposed = unicodedata.normalize(
+        "NFKD", char.translate(_TYPOGRAPHIC_FOLDS)
+    ).translate(_TYPOGRAPHIC_FOLDS)
     return "".join(
         code_point for code_point in decomposed
-        if not unicodedata.combining(code_point) and not code_point.isspace()
+        if (code_point in _NEGATION_MARKS or not unicodedata.combining(code_point))
+        and not code_point.isspace()
     ).lower()
 
 

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from bmlibrarian.agents.citation_agent import (
+    FAILED_PASSAGE_STORED_CHARS,
     REJECT_BAD_RELEVANCE,
     REJECT_BELOW_THRESHOLD,
     REJECT_INCOMPLETE_SENTENCE,
@@ -480,6 +481,44 @@ def test_retry_quotes_a_paraphrase_with_its_similarity() -> None:
     assert f"{REJECT_BELOW_THRESHOLD} (similarity=" in retry_prompt
     assert f'Your previous passage was: "{paraphrase}"' in retry_prompt
 
+
+
+def test_retry_quotes_the_latest_rejected_passage() -> None:
+    """The third prompt quotes the second attempt's passage, not the first."""
+    _, citation, llm = _extract_with_llm_responses(
+        [_llm_response("Aspirin"), _llm_response("Heart disease"), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert citation is not None
+    third_prompt = llm.call_args_list[2].args[0]
+    assert 'Your previous passage was: "Heart disease"' in third_prompt
+    assert '"Aspirin"' not in third_prompt
+
+
+def test_retry_marks_a_shortened_quote() -> None:
+    """A rejected passage longer than the quote limit is cut and marked with …."""
+    long_passage = "Aspirin " * 60
+    _, _, llm = _extract_with_llm_responses(
+        [_llm_response(long_passage), _llm_response(GOOD_PASSAGE)]
+    )
+
+    retry_prompt = llm.call_args_list[1].args[0]
+    quoted = long_passage.strip()[:FAILED_PASSAGE_STORED_CHARS]
+    assert f'Your previous passage was: "{quoted}…"' in retry_prompt
+
+
+@pytest.mark.parametrize(
+    "bad_response",
+    [["not", "an", "object"], _llm_response(None)],
+)
+def test_retry_does_not_quote_a_non_text_answer(bad_response: object) -> None:
+    """A repr of a non-text answer is not quoted back as 'your passage'."""
+    _, citation, llm = _extract_with_llm_responses([bad_response, _llm_response(GOOD_PASSAGE)])
+
+    assert citation is not None
+    retry_prompt = llm.call_args_list[1].args[0]
+    assert "REJECTED" in retry_prompt
+    assert "Your previous passage was" not in retry_prompt
 
 def test_connection_outage_is_retried_with_backoff(_no_backoff_waits: list) -> None:
     """A dropped LLM connection is retried; success on retry is not an error."""

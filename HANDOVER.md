@@ -13,15 +13,18 @@ off new work. Longer-term structural items live in
 - **Citation retries quote the rejected passage; passage matching folds
   Unicode** (2026-10-18, branch `fix/citation-retry-feedback-unicode`,
   closes #290, #291). `_retry_note` now quotes the previous passage
-  (first 200 characters) and, for a below-threshold rejection, its
-  similarity. `passage_match.fold_char()` folds curly quotes/primes to
-  ASCII, dash and minus variants to `-`, applies NFKD (ligatures, `²`),
-  drops combining marks (NFC = NFD, accent-insensitive), soft hyphens and
-  zero-width characters, then lowercases; `_accepted()` extends a span over
-  trailing folded-away marks and never splits a ligature. Returned spans
-  are still the source's own characters. Before/after measurement on the
-  106 (statement, document) pairs that lost every passage in the #296
-  re-run: MEASUREMENT PENDING.
+  (first 200 characters, "…" when cut; not for non-text answers) and, for
+  a below-threshold rejection, its similarity. `passage_match.fold_char()`
+  folds curly quotes/primes to ASCII, dash and minus variants to `-`
+  (before and after NFKD, so `⁻` too), applies NFKD (ligatures, `²`),
+  drops combining marks (NFC = NFD, accent-insensitive) except negation
+  overlays (`≠` stays distinct from `=`), soft hyphens and zero-width
+  characters, then lowercases; `_accepted()` extends a span over trailing
+  folded-away marks and never splits a ligature. Returned spans are still
+  the source's own characters. Not yet measured on the 106 (statement,
+  document) pairs that lost every passage in the #296 re-run (#303).
+  Invisible characters right after a sentence end still fail the sentence
+  check (pre-existing, #302).
 - **Fact-check evaluation no longer starves on large evidence sets**
   (2026-10-18, PR #300, merged, closes #296). Root
   cause, reproduced on the backed-up evidence: `gpt-oss:20b` reasons within

@@ -127,6 +127,34 @@ class TestUnicodeFolding:
         assert match.text == sentence
 
 
+    @pytest.mark.parametrize(
+        ("passage", "text"),
+        [
+            ("The groups differed: A = B.", "The groups differed: A \u2260 B."),
+            ("The value x was in S.", "The value x was \u2209 S."),
+        ],
+    )
+    def test_negated_relation_is_not_an_exact_match(self, passage: str, text: str) -> None:
+        # "≠" is "=" + U+0338; dropping the overlay would flip the meaning.
+        assert not find_passage(passage, text, min_similarity=0.95).exact
+
+    def test_superscript_minus_folds_to_hyphen(self) -> None:
+        # NFKD turns "⁻" into U+2212, which must fold on to "-".
+        match = find_passage("Doses of 10-3 M were used.", "Doses of 10\u207b\u00b3 M were used.", 0.95)
+        assert match.exact
+
+    def test_fuzzy_match_over_folded_text_spans_whole_characters(self) -> None:
+        text = "Intro. The \ufb01nal e\ufb03cacy was shown here today. End."
+        match = find_passage("The final efficacy was clearly shown here today.", text, 0.85)
+        assert match.matched
+        assert not match.exact
+        assert match.text == "The \ufb01nal e\ufb03cacy was shown here today."
+
+    def test_span_keeps_nfd_accent_at_end_of_text(self) -> None:
+        text = "Served with cafe\u0301"
+        match = find_passage("served with caf\u00e9", text, min_similarity=0.95)
+        assert match.text == text
+
 class TestExactMatch:
     """Passages present verbatim (modulo case/whitespace) score 1.0."""
 

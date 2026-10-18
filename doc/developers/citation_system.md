@@ -295,7 +295,8 @@ The citation stores only `PassageMatch.text`, the matched span of the
 `start`/`end` offsets are not kept on the `Citation`):
 
 1. Both texts are normalised (typographic quotes and dashes folded to ASCII,
-   ligatures and other compatibility characters decomposed, accents dropped,
+   ligatures and other compatibility characters decomposed, accents dropped
+   but negation overlays kept so "≠" never equals "=",
    lowercase, whitespace runs collapsed) by `normalize_with_offsets()`, which
    keeps an index map back to the original.
 2. Exact substring of the normalised passage → similarity 1.0 and
@@ -372,8 +373,9 @@ and relaxed one (gene/molecule names such as "p53" or "mRNA" may start a
 sentence); the figures were not re-measured.
 
 On a retry after a rejection, the prompt names the reason, with the
-similarity for a below-threshold passage, and quotes the rejected passage
-(`_retry_note`, #290), so the model is not sent the identical request again.
+similarity for a below-threshold passage, and quotes the rejected passage,
+cut at 200 characters and marked with "…" (`_retry_note`, #290; a non-text
+answer is not quoted), so the model is not sent the identical request again.
 
 A response with `has_relevant_content: false`, or a relevance score below
 `min_relevance`, ends extraction for that document without a retry. A

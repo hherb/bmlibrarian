@@ -12,8 +12,9 @@ mis-mapped spans.
   with the original case and whitespace. `__post_init__` rejects
   inconsistent values (span fields only partly set, similarity outside
   [0, 1]).
-- `exact` is True when only case, whitespace, accents and typographic
-  variants differ. Use it rather than
+- `exact` is True when only case, whitespace, accents, typographic
+  variants, compatibility forms (`²` vs `2`) and invisible characters
+  differ. An exact span can start or end inside a multi-letter fold (`ﬁ`). Use it rather than
   `similarity == 1.0`. Exact spans may start or end mid-word; fuzzy spans
   always start and end on word boundaries. For citations, the span must also
   be complete sentences; see `doc/llm/sentence_bounds.md`.
@@ -24,14 +25,17 @@ mis-mapped spans.
   miss.
 - `fold_char()` folds one character (#291): curly quotes, primes and
   guillemets to `'`/`"`, hyphen/dash/minus variants to `-`, NFKD
-  (ligatures `ﬁ` -> `fi`, `²` -> `2`), combining marks dropped (accents, so
-  NFC and NFD compare equal), soft hyphen and zero-width characters dropped,
-  then lowercased. Folding is for comparison only; the returned span is
+  (ligatures `ﬁ` -> `fi`, `²` -> `2`), the quote/dash folds again after
+  NFKD (`⁻` -> U+2212 -> `-`), combining marks dropped (accents, so NFC and
+  NFD compare equal) except negation overlays U+0338/U+20D2/U+20E5 (`≠`
+  must not equal `=`), soft hyphen and zero-width characters dropped, then
+  lowercased. Folding is for comparison only; the returned span is
   always the source's own characters.
 - `normalize_with_offsets()` is the reusable normaliser with an index map back
   to the original. Characters folded to nothing have no map entry;
   `_accepted()` extends a span's end up to the next kept character, so a
-  trailing NFD accent stays in the span and a ligature is never split.
+  trailing NFD accent stays in the span and a ligature is never split. That
+  also pulls a trailing zero-width character or soft hyphen into the span.
 - With `difflib`'s default `autojunk=True`, characters that make up more than
   1% of a string of 200 or more characters are treated as junk. In prose that
   covers most letters, which skews `ratio()`, so always pass
