@@ -10,296 +10,90 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Sentence bounds stop rejecting real sentences** (2026-10-19, branch
+  `fix/sentence-bounds-invisible-chars`, closes #302, #303). Measuring #303
+  showed that most of the 106 (statement, document) pairs that lost every
+  passage in the #296 re-run were false rejections by
+  `utils/sentence_bounds.py`, not model failures. Owner-approved loosening of
+  the conservative policy: invisible `Cf` characters count as whitespace
+  (#302); a single capital is a designator that can end a sentence ("type
+  B.", "Group A.") unless it follows another initial ("J. M. Smith");
+  all-caps tokens are never abbreviations ("clinical CA.", "NO."); "et al."
+  before a capitalised word ends a sentence; time units ("3 min.") left the
+  abbreviation list; glued source text (PubMed and Europe PMC both serve
+  `stenosis.Conclusion:Pre-operative`, `DAPT.The`) has boundaries; labels may
+  contain apostrophes ("AUTHORS' CONCLUSIONS:") and bold labels may
+  have the colon outside (`**Results**:`). Accepted risk: "…by J.
+  Smith" can be cut after "J.". On 500 random PubMed abstracts no fragment
+  is newly accepted; naive sentences accepted 94.3% → 94.9%.
+  **LLM re-run of the 106 pairs** (`gpt-oss:20b`, same config as #296,
+  read-only on `knowledgebase`, scratch harness, not committed): **64
+  accepted** (were 0), 31 still "not complete sentences", 10 below the
+  similarity threshold, 1 now judged irrelevant. Of the 31, ~22 are genuine
+  fragments the model keeps quoting through all 4 attempts ("while prior use
+  of statins…", text inside brackets, clauses after a semicolon); the rest
+  are fused labels (#304), odd label forms (`**CONCLUSIONS:** :`, a 6+-word
+  all-caps heading) and the `**Results**:` form (fixed after the run).
+  Still rejected: labels fused into the next word (`unclear.ObjectiveThis
+  study`, in PubMed's own data) → #304.
 - **Citation retries quote the rejected passage; passage matching folds
-  Unicode** (2026-10-18, branch `fix/citation-retry-feedback-unicode`,
-  closes #290, #291). `_retry_note` now quotes the previous passage
-  (first 200 characters, "…" when cut; not for non-text answers) and, for
-  a below-threshold rejection, its similarity. `passage_match.fold_char()`
-  folds curly quotes/primes to ASCII, dash and minus variants to `-`
-  (before and after NFKD, so `⁻` too), applies NFKD (ligatures, `²`),
-  drops combining marks (NFC = NFD, accent-insensitive) except negation
-  overlays (`≠` stays distinct from `=`), soft hyphens and zero-width
-  characters, then lowercases; `_accepted()` extends a span over trailing
-  folded-away marks and never splits a ligature. Returned spans are still
-  the source's own characters. Not yet measured on the 106 (statement,
-  document) pairs that lost every passage in the #296 re-run (#303).
-  Invisible characters right after a sentence end still fail the sentence
-  check (pre-existing, #302).
-- **Fact-check evaluation no longer starves on large evidence sets**
-  (2026-10-18, PR #300, merged, closes #296). Root
-  cause, reproduced on the backed-up evidence: `gpt-oss:20b` reasons within
-  `num_predict`, and on 49 citations it spent the flat 2,000 tokens on
-  thinking and returned empty content (the prompt is only ~4 k tokens;
-  context is 64 k, so not a context problem). The evaluation budget is now
-  `evaluation_token_budget(max_tokens, n)` = `max_tokens` + 100 per citation;
-  the three largest #296 sets (48–50 citations) now evaluate in 42–69 s.
-  bmlibrarian's `LLMResponse` now carries bmlib's `stop_reason`, and
-  `BaseAgent._checked_content` reports "Model hit the max_tokens limit (N)"
-  instead of "Empty response", and logs a warning for an answer cut off at
-  the limit (`TRUNCATION_STOP_REASONS`). **The 76 statements were re-run on
-  `knowledgebase`** (2026-10-18, owner-approved, `--incremental`, ~13 h):
-  all 76 stored (39 maybe, 25 yes, 12 no; 35 match the expected answer),
-  none failed, 19 citations on average (max 41). 42 carry degradation notes:
-  106 of 1,153 cited documents had every passage rejected (66 not complete
-  sentences, 40 below the similarity threshold), and 3 documents could not
-  be scored. The configured MedGemma models were no longer installed, so
-  `~/.bmlibrarian/config.json` now uses `gpt-oss:20b` for the query,
-  scoring and citation agents (backup `~/.bmlibrarian/backups/config.json.2026-10-18.bak`).
-  With that, 3 documents could not be scored: `DocumentScoringAgent`
-  hardcoded `num_predict=500` and ignored `agents.scoring.max_tokens`. It
-  now takes `max_tokens` (default and `DEFAULT_CONFIG` 1000, was 300 and
-  unused; DB defaults already said 1000), passed by `AgentFactory` and the
-  fact-checker; retries add `SCORING_RETRY_TOKEN_INCREMENT`.
-  The first, aborted attempt left one in-progress session row in
+  Unicode** (2026-10-18, PR #301, merged, closes #290, #291): `_retry_note`
+  quotes the previous passage (≤ 200 chars) and its similarity;
+  `passage_match.fold_char()` folds quotes, dashes, NFKD, accents (not
+  negation overlays), soft hyphens and zero-width characters.
+- **Fact-check evaluation scales its token budget** (2026-10-18, PR #300,
+  closes #296): `evaluation_token_budget(max_tokens, n)` = `max_tokens` + 100
+  per citation (`gpt-oss:20b` thinks inside `num_predict`);
+  `BaseAgent._checked_content` reports "Model hit the max_tokens limit (N)";
+  `DocumentScoringAgent` honours `agents.scoring.max_tokens` (default 1000).
+  **The 76 deleted fallback verdicts were re-run on `knowledgebase`**
+  (owner-approved, ~13 h): all stored (39 maybe, 25 yes, 12 no; 35 match the
+  expected answer); 42 carry degradation notes (106 of 1,153 cited documents
+  had every passage rejected → the slice above). `~/.bmlibrarian/config.json`
+  now uses `gpt-oss:20b` for query/scoring/citation (MedGemma models not
+  installed; backup `~/.bmlibrarian/backups/config.json.2026-10-18.bak`). One
+  in-progress session row from an aborted attempt remains in
   `factcheck.processing_metadata`.
-- **Citations must be complete sentences** (2026-10-17,
-  PR #298, merged, closes #289; owner
-  policy: fragments risk out-of-context quoting). The new pure module
-  `utils/sentence_bounds.py` (`complete_sentence_span`, `is_sentence_start`,
-  `is_sentence_end`) knows biomedical abbreviations, decimals, "et al." and
-  structured-abstract labels. `CitationFinderAgent._check_response` rejects
-  spans that aren't complete sentences with `REJECT_INCOMPLETE_SENTENCE`
-  (retried like other validation failures), and only appends closing
-  punctuation the model omitted. The prompt now demands complete sentences.
-  On 500 random PubMed abstracts it accepted 0 of 6,768 fragments and
-  rejected 0.6% of naive sentences, mostly correctly (first version of the
-  rules; not re-measured after the review changes below). Docs:
-  `doc/llm/sentence_bounds.md`, `citation_system.md`, `citation_guide.md`.
-  Candidate for upstreaming to bmlib.
-- **PR #298 review fixes** (2026-10-18, PR #299, merged):
-  - *Sentence rules*: only `.`/`!`/`?` end a sentence (no line-break or
-    end-of-text ends); a single line break starts one only after a sentence
-    end or a heading/label line; initials ("J.", "U.S.") and more
-    abbreviations are not ends; "ET AL." in any case; gene/molecule names
-    ("p53", "mRNA", "β-…") may start a sentence; label-only and one-word
-    spans are rejected; borrowed closing marks must balance.
-  - *Citation agent*: connection failures retried with backoff;
-    `errored_documents` stat; retry prompt names the rejection reason;
-    batch summary broken down by reason.
-  - *Fact-checker*: no citations with any errored **or rejected** document
-    is now a `STAGE_CITATIONS` failure (it was stored as "insufficient
-    evidence"); recoverable failures retried with exponential backoff
-    (`utils/transient_retry.py`, `doc/developers/transient_retry.md`);
-    partial failures stored as `degradation_notes` (**migration 034**,
-    nullable JSONB on `factcheck.ai_evaluations`; SQLite packages, JSON
-    export and review GUI show them); citation stances validated, not
-    coerced to neutral; `FactCheckStage` StrEnum, picklable
-    `FactCheckStageError`; `FactCheckResult` validates verdict/error shape,
-    `FactCheckResult.failed()`; storage refuses error results; JSON import
-    skips `"error"` evaluations; `max_citations` validated; malformed batch
-    items fail alone; session `failed` when nothing was stored.
-  - *search_hybrid*: per-strategy retry (`search_strategy.retry`), partial
-    rows of a failed strategy discarded, fulltext fallback only when nothing
-    is enabled (`fallback_used`). Behaviour change for every caller: when
-    the enabled strategies all fail, the result is now empty instead of a
-    silent fulltext search. `QueryAgent.find_abstracts` logs a warning and
-    fires a `search_strategies_failed` callback, but the Qt research tab,
-    search tab and systematic review do not show it yet (follow-up).
-  - *CLI*: failed statements listed with their stage; real stored count;
-    failed `-o` export or session write exits 1; partial-evidence verdicts
-    flagged.
-  - Not done (pre-existing, outside this PR): `DocumentScoringAgent`'s regex
-    score fallback for invalid JSON, HyDE logged as enabled but never run in
-    `search_hybrid`, a failed thesaurus expansion not recorded in metadata.
-- **76 fallback fact-check verdicts deleted from `knowledgebase`**
-  (2026-10-17, owner-approved, #296): their evidence rows went with them via
-  cascade; CSV backup in
-  `~/.bmlibrarian/backups/factcheck_fallback_verdicts_2026-10-17/`. The 76
-  statements are unevaluated again (`--incremental` re-checks them); the
-  root cause is fixed (see above).
-- **Fact-checker no longer records failures as `maybe`** (2026-10-17, branch
-  `fix/factchecker-infra-failures`, closes #273): each stage of
-  `FactCheckerAgent.check_statement` now raises `FactCheckStageError`
-  (`stage`, `detail`) instead of returning an "Insufficient evidence" maybe
-  when it could not look. That covers search errors, scoring or citation
-  stages that came up empty while some documents failed, LLM/JSON failures,
-  and invalid verdicts (re-requested, never coerced). `_fallback_evaluation`
-  is gone. `check_batch` returns `EVALUATION_ERROR` results
-  (`result.is_error`), counts `check_failures`, **does not store them** (so
-  `--incremental` retries them), and notes them in the session's
-  `error_message`. The CLI exits 1 on check or storage failures. The
-  `CitationFinderAgent` `errors` stat now also counts connection/LLM/JSON
-  failures. `search_hybrid` swallows per-strategy errors, so its metadata
-  now carries `strategies_failed` (`{'strategy', 'error'}`); an empty search
-  with failed strategies is a stage error. Other `search_hybrid` callers
-  (research tab, systematic review, search tab) could use the same signal
-  but do not yet. Also fixed: the CLI summary crashed on zero results. Docs:
-  `doc/developers/fact_checker_system.md` "Failure handling". **Follow-up
-  #296**: 76 of 1,000 production verdicts were such fallbacks (all with 17–50
-  citations, so evaluation probably fails on large evidence sets); they were
-  deleted (see above); root cause fixed (see above).
-- **bmlib 0.10 adopted** (2026-10-17, PR #295, merged): pin
-  `bmlib[ollama,pdf]>=0.10.0,<0.11.0`; `json_repair`, `agents/text_chunking`
-  (`boundary_aware=False`), `paper_reviewer/text_utils` and
-  `importers/pdf_converter` are re-export shims over bmlib. Plan and next
-  steps: `doc/planning/bmlib_alignment_2026-09.md` (*Progress* table).
-- **Legacy orchestrator `Workflow` fixed** (2026-10-17, branch
-  `fix/orchestrator-workflow-wedge`): `AgentOrchestrator.execute_workflow`
-  looped forever when a step failed (its dependents never became ready),
-  and resubmitted every in-flight step on each poll. Now a failed, cancelled
-  or vanished task fails its step and transitively skips its dependents
-  (`Workflow.skipped_steps`, `workflow_step_skipped` event); unknown
-  dependencies, cycles and unregistered agent types raise `ValueError`
-  before submitting; each execution resets state, and a concurrent second
-  run of the same workflow raises `RuntimeError`; optional `timeout` raises
-  `WorkflowTimeoutError` (unfinished steps, partial results, steps still
-  running); a timeout or queue error cancels the run's pending tasks
-  (`QueueManager.cancel_task`) and no new ones are submitted after the
-  deadline. `register_agent` after `start_processing()` now starts that
-  agent's thread (it used to hang the workflow silently).
-  `workflow_completed` carries `success`. The `mark_*` methods reject
-  unknown/finished steps. Follow-ups: ROADMAP §5 "Orchestrator `Workflow`:
-  one state map and a per-run result"; queue-worker robustness →
-  issue #294.
-  No app calls it (the CLI/Qt use `cli/workflow_steps.py`); kept because it
-  is exported and documented. Tests: `tests/test_orchestrator_workflow.py`.
-  The other half of that "Next up" item, ClinicalTrials matching
-  (per-trial unindexed `LIKE` over all full texts), turned out structural →
-  ROADMAP §5 "Indexed ClinicalTrials.gov ↔ document matching"; the limit is
-  documented in the module docstring and `doc/users/clinicaltrials_import_guide.md`.
-- **Citation passage matching rewritten** (2026-10-16, PR #288, merged): `CitationFinderAgent` validated LLM
-  passages with a sliding-window `SequenceMatcher` (31 s on one 1 kB
-  abstract, × retries × every document). It now calls the pure
-  `utils/passage_match.find_passage()`: an exact match on normalised text,
-  then seed voting plus word-boundary refinement around a `SequenceMatcher`
-  alignment. A sentence-length fuzzy quote takes a few ms, a 1 kB quote
-  about 0.1 s, 2 kB up to ~2 s. A seeded test compares it with exhaustive
-  search (`test_matches_exhaustive_search_on_random_edits`); ad-hoc runs of
-  1,600 edits, a third on repetitive text, found no misses and no wrong
-  spans. Rejections now carry a `reason`, and unexpected errors are logged
-  with a traceback and counted. Review follow-ups: #289 (short or mid-word
-  exact matches), #290 (retry prompt feedback), #291 (Unicode folding),
-  #292 (show rejection counts in Qt/CLI). Also fixed: the matched span drifted one character per preceding
-  word, whole extra sentences were appended to fuzzy matches, and a
-  non-string `relevant_passage` aborted extraction without a retry. The
-  4 stale `test_citation_agent.py` tests (mocking the removed ollama dict
-  API) are fixed, and 2 tests that only passed because the connection was
-  missing now drive `patch_llm`. Docs: `doc/developers/citation_system.md`
-  "Passage Validation", `doc/llm/passage_match.md`.
-- **Systematic-review resume rebuilt on one shared pipeline** (2026-10-16,
-  PR #284, merged): the review phases after search
-  planning now exist once, in `agents/systematic_review/pipeline.py`;
-  `run_review()` enters at the search stage, `run_review_from_checkpoint()`
-  at the stage after the checkpoint (`RESUME_STAGE_BY_CHECKPOINT`). Stages
-  read evaluations back from the store and skip documents already evaluated
-  in the run, so resume no longer re-scores; resume runs the configured
-  (phased) search and applies the quality-gate threshold; runs end
-  `completed`/`paused`/`failed` and resume reopens them
-  (`EvaluationStore.reopen_run`); an unrestorable run raises `ResumeError`;
-  relevance thresholds changed between stop and resume are honoured (GUI
-  applies its overrides on resume).
-  Also fixed: fresh-run `UnboundLocalError` when everything was cached or
-  nothing passed relevance, 0.0 scores missing from exclusions, resume
-  statistics double-counting, `systematic_review_cli.py` never passing
-  `db_manager`. Agent-level tests: `tests/test_systematic_review_pipeline.py`;
-  docs: `doc/developers/systematic_review_pipeline.md`.
-  Review follow-up (same PR #284): failed LLM evaluations are no longer
-  saved as real scores (flagged *uncertain*, retried on resume); a failed
-  save stops the review (`EvaluationSaveError`); a rejected checkpoint returns
-  `result.aborted`/`abort_reason` (CLI prints REVIEW STOPPED, writes no
-  report); resume validates the whole checkpoint (`parse_checkpoint`) before
-  touching agent state; `reopen_run` returns the refreshed run; `reset()` only
-  fails in-progress runs; CLI `--resume` honours the threshold flags (default:
-  the checkpoint's) and no longer crashes on `result.criteria`; warnings reach
-  the GUI activity log (`EVENT_REVIEW_WARNING`). Deferred: #285 (agent's
-  `db_manager` ignored by fetches/searches), #286 (legacy runs holding saved
-  failure placeholders), #287 (DB-backed run-lifecycle test).
-- **PMC discovery moved to the PMC Cloud Service** (2026-10-16, PR #282):
-  PMC removed the FTP `oa_package`/`oa_pdf` trees **and** the OA Web
-  Service (`oa.fcgi`, now 404) in August 2026, so `PMCResolver`'s main path
-  had silently found nothing since. New `discovery/pmc_cloud.py` looks the
-  PMCID up in the `pmc-oa-opendata` bucket over HTTPS (S3 listing →
-  per-version metadata JSON → prefer non-retracted, published over
-  manuscript, highest version) and emits a `SourceType.PMC_CLOUD` source
-  (replaces `PMC_PACKAGE`); `PMCCloudDownloader` fetches the PDF and the
-  JATS XML (saved as `fulltext/<year>/<stem>.nxml`, parsed into
-  `DownloadResult.full_text`) with MD5 verification and one retry loop per
-  file. The tar.gz/FTP package code is gone; `NXMLParser` moved to
-  `discovery/nxml_parser.py` (importers updated). Remaining
-  `ftp://ftp.ncbi.nlm.nih.gov` URLs are rewritten to HTTPS. Verified live
-  (PMC5334499: PDF + 31.7 k chars of full text). **`pmc_bulk_cli`
-  list/download/sync are broken for the same reason → #283** (structural;
-  rebuild on the S3 inventory).
-- **Discovery rate limiting** (2026-10-16, same PR #282): new `utils/rate_limit.py` —
-  process-wide per-host `HostRateLimiter` (NCBI 0.34 s, Unpaywall 0.1 s,
-  CrossRef/doi.org 0.2 s, other hosts 1 s) and `RateLimitedSession`, which
-  retries 429 / 503+Retry-After honouring the server delay (≤ 60 s, 3
-  retries) and defers the host for every caller. All resolvers, the
-  finder's download session, both FTP paths and PMC's `curl` fallback are
-  paced; `_download_from_source` no longer re-retries a throttled
-  response and uses jittered backoff. Also fixed: `OpenAthensResolver`
-  rewrote EZproxy-style URLs (`https://proxy.example.com`) into Redirector
-  URLs although `FullTextFinder` admitted them as proxies — both now share
-  `is_traditional_proxy_url()`; four stale browser-fallback tests in
-  `test_pdf_discovery_download.py` patched a non-existent module attribute.
-- **Flet GUI retired** (2026-10-16, PR #277, merged): Flet 1.0 would have
-  needed a ~25k-line behavioural rewrite, and every Flet app except the
-  Citation lab had a Qt equivalent. `fact_checker_review_gui.py` and
-  `scripts/{query,pico,prisma2020,study_assessment}_lab.py` now open Qt
-  plugins (`gui/qt/core/standalone.py`); `lab/__init__` is lazy;
-  `tests/test_no_flet.py` guards against Flet coming back. Remaining
-  Flet-only features (notably multi-model query generation, now unwired) →
-  ROADMAP §1. Note: `--blind` really hides AI/original columns only since
-  this PR — rerun any blind annotation done with the Qt tab before it.
-- **P1 GUI batch** (2026-10-16, PR #276, merged): "Find PDF" runs on
-  `PDFDiscoveryWorker` (`FindPdfOutcome` reports the real reason);
-  research-tab step handlers no longer run twice; `citation_widget` uses
-  `AbstractFactCheckerDB.get_document_details()`; `extract_pmid()` stops
-  reporting non-PubMed ids as PMIDs. Pre-existing issues filed: #278
-  (FETCH verification prompt on a worker thread), #279 (CrossRef DOI
-  written before verification), #280 (review packages assume PubMed is
-  source id 1).
-
-- **P1 backend correctness batch** (2026-10-15, PR #272): parameterised
-  source filters, per-document guards in counterfactual + transparency
-  batches, explicit `0` overrides honoured in the fact-checker, PubMed-only
-  PMIDs in `paper_weight`, validated TransparencyAgent LLM output; dead
-  legacy `agents/fact_checker_*` deleted.
-
-- **Database state and embedding decision** (2026-10-15): the clean Phase A
-  PubMed import (HTTPS + MD5, 41.2 M records, ledger, withdrawals) lives in
-  PG18 **`bmlibrarian_dev`** (:5532). The December 2025 legacy import in PG18
-  `bmlibrarian` was **dropped** (owner-approved; `~/.bmlibrarian/.env_pg18`
-  now names a missing database), as were the spike schemas `spike_ingest` and
-  `bm25_eval` in dev. `knowledgebase` (:5432) is kept for now: it holds user
-  data (factcheck, audit, paper weights, …), Europe PMC full texts and the
-  running apps. **Vectors will be embedded from scratch** from the clean
-  import (no legacy-vector copy), resumable and partitioned, 256 d unless a
-  pre-run gate shows a major gain for 512 d — see
-  `doc/planning/rust/implementation_plan.md` §0, §3.3, Phase C. Document IDs
-  differ between all databases; carry-over must remap by PMID/DOI.
-
-- **PubMed withdrawals + pytest production guard** (2026-10-15, PR #270):
-  DeleteCitation PMIDs are recorded in `ingest.withdrawn_pmid` (migration 032)
-  and marked in the baseline `document.withdrawn_date` / `withdrawn_reason`,
-  which every SQL search function already excludes. 032's first revision used
-  a separate `document.withdrawn` column that the search functions ignored;
-  migration 033 copies marks into `withdrawn_date` and drops the column. The
-  7 622 marks were in `bmlibrarian_dev` and 033 is already applied there.
-  `knowledgebase` has the empty first-revision column and no marks: 033 will
-  just drop it on the next non-test connection. `db_test_guard.py` is now an
-  allow-list: under pytest every DB without a `dev`/`test*` name token is
-  protected (no migrations, read-only conninfo, also in spawned import
-  workers).
-  `tests/test_withdrawn_search_filters.py` pins the search filters.
-  Remaining gap: direct `psycopg.connect()` callers (ROADMAP §2).
-
-- **July 2026 review follow-ups** (details in `doc/TODO_code_review_2026-07.md`
-  and git history): P0 fixes (PR #229); test-suite hang fixes +
-  `pytest-timeout`; LLM layer fully delegated to `bmlib.llm`, boundary
-  enforced by `tests/test_llm_layer_boundary.py` (PR #249) and BaseAgent
-  per-call `model`/`temperature`/`top_p`/`think` overrides; connection and
-  concurrency fixes (atomic queue dequeue, pooled-connection leaks, per-DB
-  source-id cache); `db_conninfo.build_conninfo()` as the only way to build a
-  libpq string + bound pagination (`doc/llm/db_conninfo.md`); archive
-  path-traversal guard `utils/path_utils.is_safe_archive_member()`
-  (`doc/llm/archive_extraction_safety.md`); dependabot cleanup (PR #256,
-  only the `diskcache` alert remains).
+- **Citation quality policy** (PRs #288, #297–#299, 2026-10-16…18): passages
+  are validated by `utils/passage_match.find_passage()` and must be complete
+  sentences (`utils/sentence_bounds.py`, `REJECT_INCOMPLETE_SENTENCE`); the
+  fact-checker never stores failures as verdicts (`FactCheckStageError`,
+  failed results not stored so `--incremental` retries them), stores partial
+  failures as `degradation_notes` (**migration 034**), retries transient
+  failures (`utils/transient_retry.py`). `search_hybrid` returns empty (not a
+  silent fulltext search) when every enabled strategy fails and reports
+  `strategies_failed`; the Qt research/search tabs and systematic review do
+  not show that yet. Not done: `DocumentScoringAgent`'s regex score fallback
+  for invalid JSON, HyDE logged as enabled but never run in `search_hybrid`.
+  Docs: `doc/developers/citation_system.md`, `fact_checker_system.md`
+  "Failure handling", `doc/llm/sentence_bounds.md`, `doc/llm/passage_match.md`.
+- **Earlier October 2026 slices** (details in git history and the linked
+  docs): bmlib 0.10 adopted with re-export shims (PR #295,
+  `doc/planning/bmlib_alignment_2026-09.md`); legacy orchestrator `Workflow`
+  no longer wedges (`tests/test_orchestrator_workflow.py`; follow-ups ROADMAP
+  §5, #294); systematic-review resume on one shared pipeline (PR #284,
+  `doc/developers/systematic_review_pipeline.md`; follow-ups #285–#287); PMC
+  discovery via the PMC Cloud Service + per-host rate limiting (PR #282;
+  `pmc_bulk_cli` still broken → #283); Flet GUI retired (PR #277, guarded by
+  `tests/test_no_flet.py`; gaps in ROADMAP §1); P1 GUI and backend batches
+  (PRs #272, #276; follow-ups #278–#280).
+- **Database state** (2026-10-15): the clean PubMed import (41.2 M records)
+  is PG18 **`bmlibrarian_dev`** (:5532); PG18 `bmlibrarian` was dropped.
+  `knowledgebase` (:5432) holds user data (factcheck, audit, paper weights),
+  Europe PMC full texts and the running apps. Vectors will be embedded from
+  scratch, 256 d (`doc/planning/rust/implementation_plan.md`). Document IDs
+  differ between databases; carry-over must remap by PMID/DOI. PubMed
+  withdrawals are marked in `document.withdrawn_date` (migrations 032/033;
+  033 drops an empty column in `knowledgebase` on its next non-test
+  connection). `db_test_guard.py` makes every non-dev/test DB read-only under
+  pytest; direct `psycopg.connect()` callers are not covered (ROADMAP §2).
+- **July 2026 review follow-ups**: see `doc/TODO_code_review_2026-07.md`.
+  LLM calls go through `bmlibrarian.llm` only (`tests/test_llm_layer_boundary.py`);
+  `db_conninfo.build_conninfo()` builds libpq strings; archive extraction is
+  guarded by `utils/path_utils.is_safe_archive_member()`.
 - **Known pre-existing red tests** (mock targets removed by refactors, not
   regressions): `tests/paperchecker/test_search_coordinator.py::`
-  `TestEmbeddingGeneration` patches the removed `search_coordinator.ollama`;
-  `tests/test_paper_weight_persistence.py::TestLLMJSONParsing` mocks the
-  removed `PaperWeightAssessmentAgent._get_db_connection`;
+  `TestEmbeddingGeneration`, `tests/test_paper_weight_persistence.py::TestLLMJSONParsing`,
   `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
 
 ## Next up
@@ -308,10 +102,13 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- Citation rejections with `gpt-oss:20b` as citation model: 9% of cited
-  documents lost every passage in the #296 re-run (66 not complete
-  sentences, 40 below the similarity threshold); see the #290/#291 entry
-  above for what the fixes recovered.
+- Remaining citation rejections (see the sentence-bounds entry above): ~22
+  of 106 pairs are genuine mid-sentence fragments the model repeats on every
+  retry, and 10 are below the similarity threshold (long multi-sentence
+  quotes that drift). Policy question for the owner before coding: may the
+  agent widen a verbatim fragment to its enclosing complete sentence(s)
+  instead of rejecting it? (The full sentence is the source's own text, but
+  the current policy is reject-don't-coerce.) Then #304 (fused labels).
 - #292 — show citation rejection counts in the Qt research tab and CLI.
 - Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
   paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same

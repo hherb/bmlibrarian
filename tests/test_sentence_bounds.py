@@ -96,6 +96,9 @@ def test_surrounding_whitespace_is_trimmed() -> None:
         ),
         ("Materials and methods: We enrolled 25 patients. Results followed.",
          "We enrolled 25 patients."),
+        # Bold label with the colon outside the emphasis.
+        ("Deaths fell. **Results**: Radiotherapy delays predicted outcome. End.",
+         "Radiotherapy delays predicted outcome."),
     ],
 )
 def test_sentences_after_section_labels_are_accepted(text: str, passage: str) -> None:

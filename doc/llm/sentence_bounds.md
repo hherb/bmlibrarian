@@ -44,8 +44,8 @@ structured-abstract labels.
   "Methods:"), or after a section label that itself starts a sentence,
   with or without a space after its colon (`"Conclusion:Pre-operative"`).
   Opening brackets, quotes and `*`/`#` in between are skipped.
-- Section labels are all caps ("RESULTS:", "**RESULTS:**", "AUTHORS'
-  CONCLUSIONS:") or mixed-case
+- Section labels are all caps ("RESULTS:", "**RESULTS:**", "**Results**:",
+  "AUTHORS' CONCLUSIONS:") or mixed-case
   names in `KNOWN_SECTION_LABELS` ("Materials and methods:", "Conclusions
   and Relevance:"). An ordinary colon ("two arms: Group A…") is not a label.
 - Policy: ambiguity means "not a boundary", so a doubtful span is rejected,

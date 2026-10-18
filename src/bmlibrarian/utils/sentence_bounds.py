@@ -373,6 +373,8 @@ def _label_start(text: str, end: int) -> Optional[int]:
     if body_end == 0 or text[body_end - 1] != ":":
         return None
     body_end -= 1
+    if text[:body_end].endswith("**"):  # "**Results**:"
+        body_end -= 2
     while body_end > 0 and _is_blank(text[body_end - 1]):
         body_end -= 1
 
