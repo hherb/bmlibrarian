@@ -337,7 +337,7 @@ DEFAULT_CONFIG = {
         "scoring": {
             "temperature": 0.1,
             "top_p": 0.9,
-            "max_tokens": 300,
+            "max_tokens": 1000,  # gpt-oss:20b reasons within it; 500 ran out
             "min_relevance_score": 3
         },
         "query": {

@@ -30,8 +30,11 @@ off new work. Longer-term structural items live in
   be scored. The configured MedGemma models were no longer installed, so
   `~/.bmlibrarian/config.json` now uses `gpt-oss:20b` for the query,
   scoring and citation agents (backup `~/.bmlibrarian/backups/config.json.2026-10-18.bak`).
-  With that, the scoring agent's `max_tokens` 500 occasionally runs out
-  (raise `agents.scoring.max_tokens` to ~1000 if gpt-oss stays the scorer).
+  With that, 3 documents could not be scored: `DocumentScoringAgent`
+  hardcoded `num_predict=500` and ignored `agents.scoring.max_tokens`. It
+  now takes `max_tokens` (default and `DEFAULT_CONFIG` 1000, was 300 and
+  unused; DB defaults already said 1000), passed by `AgentFactory` and the
+  fact-checker; retries add `SCORING_RETRY_TOKEN_INCREMENT`.
   The first, aborted attempt left one in-progress session row in
   `factcheck.processing_metadata`.
 - **Citations must be complete sentences** (2026-10-17, branch

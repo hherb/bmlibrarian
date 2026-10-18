@@ -867,10 +867,16 @@ class TestFactCheckerAgent(unittest.TestCase):
 
         self.assertIn('temperature', filtered)
         self.assertIn('top_p', filtered)
-        # Sub-agents (query/scoring/citation) do not accept max_tokens
+        # Not passed unless the sub-agent accepts it (extra)
         self.assertNotIn('max_tokens', filtered)
         self.assertNotIn('unsupported_param', filtered)
         self.assertNotIn('another_bad_param', filtered)
+
+        # DocumentScoringAgent also takes max_tokens
+        self.assertEqual(
+            self.agent._filter_agent_params(config, extra={'max_tokens'}),
+            {'temperature': 0.1, 'top_p': 0.9, 'max_tokens': 1000},
+        )
 
 
 if __name__ == '__main__':

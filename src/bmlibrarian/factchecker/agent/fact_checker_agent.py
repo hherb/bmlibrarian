@@ -507,7 +507,7 @@ class FactCheckerAgent(BaseAgent):
                 model=scoring_model,
                 host=self.host,
                 show_model_info=False,
-                **self._filter_agent_params(scoring_config)
+                **self._filter_agent_params(scoring_config, extra={'max_tokens'})
             )
 
             # Initialize CitationFinderAgent
@@ -522,14 +522,18 @@ class FactCheckerAgent(BaseAgent):
                 **self._filter_agent_params(citation_config)
             )
 
-    def _filter_agent_params(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_agent_params(
+        self, config: Dict[str, Any], extra: frozenset[str] | set[str] = frozenset()
+    ) -> Dict[str, Any]:
         """
         Filter agent configuration to only include supported parameters.
 
-        Note: QueryAgent, DocumentScoringAgent, and CitationFinderAgent only support
-        temperature and top_p from the config. They don't accept max_tokens.
+        Args:
+            config: The sub-agent's config section.
+            extra: Keys that sub-agent accepts beyond temperature and top_p
+                (DocumentScoringAgent also takes max_tokens).
         """
-        supported_params = {'temperature', 'top_p'}
+        supported_params = {'temperature', 'top_p'} | set(extra)
         return {k: v for k, v in config.items() if k in supported_params}
 
     def _with_backoff(self, operation: Callable[[], Any], description: str) -> Any:
