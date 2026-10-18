@@ -21,9 +21,19 @@ off new work. Longer-term structural items live in
   bmlibrarian's `LLMResponse` now carries bmlib's `stop_reason`, and
   `BaseAgent._checked_content` reports "Model hit the max_tokens limit (N)"
   instead of "Empty response", and logs a warning for an answer cut off at
-  the limit (`TRUNCATION_STOP_REASONS`). **Still to do (owner's call,
-  writes to `knowledgebase`):** re-run `fact_checker_cli.py --incremental`
-  for the 76 statements whose fallback verdicts were deleted.
+  the limit (`TRUNCATION_STOP_REASONS`). **The 76 statements were re-run on
+  `knowledgebase`** (2026-10-18, owner-approved, `--incremental`, ~13 h):
+  all 76 stored (39 maybe, 25 yes, 12 no; 35 match the expected answer),
+  none failed, 19 citations on average (max 41). 42 carry degradation notes:
+  106 of 1,153 cited documents had every passage rejected (66 not complete
+  sentences, 40 below the similarity threshold), and 3 documents could not
+  be scored. The configured MedGemma models were no longer installed, so
+  `~/.bmlibrarian/config.json` now uses `gpt-oss:20b` for the query,
+  scoring and citation agents (backup `~/.bmlibrarian/backups/config.json.2026-10-18.bak`).
+  With that, the scoring agent's `max_tokens` 500 occasionally runs out
+  (raise `agents.scoring.max_tokens` to ~1000 if gpt-oss stays the scorer).
+  The first, aborted attempt left one in-progress session row in
+  `factcheck.processing_metadata`.
 - **Citations must be complete sentences** (2026-10-17, branch
   `fix/citation-complete-sentences`, stacked on #297, closes #289; owner
   policy: fragments risk out-of-context quoting). The new pure module
@@ -280,8 +290,8 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- Re-run `fact_checker_cli.py --incremental` on `knowledgebase` for the 76
-  statements of #296 (needs the owner's go-ahead: production write).
+- Citation rejections with `gpt-oss:20b` as citation model: 9% of cited
+  documents lose every passage (#296 re-run); #290/#291 may reduce that.
 - Citation follow-ups: #290 (retry prompt should say *why* the last passage
   was rejected, now including "not a complete sentence"), #291 (Unicode
   folding), #292 (rejection counts in Qt/CLI).
