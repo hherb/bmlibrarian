@@ -432,7 +432,9 @@ def test_only_irrelevant_documents_is_insufficient_evidence(agent: FactCheckerAg
     assert agent._extract_citations(STATEMENT, _scored()) == []
 
 
-def test_a_model_that_only_quotes_fragments_fails_the_check(agent: FactCheckerAgent) -> None:
+def test_a_model_that_only_quotes_ambiguous_fragments_fails_the_check(
+    agent: FactCheckerAgent,
+) -> None:
     """End to end through the real CitationFinderAgent and its sentence check."""
     citation_agent = CitationFinderAgent(model="test-model", show_model_info=False, max_retries=1)
     agent.citation_agent = citation_agent
@@ -440,11 +442,14 @@ def test_a_model_that_only_quotes_fragments_fails_the_check(agent: FactCheckerAg
         "has_relevant_content": True, "relevant_passage": "Aspirin",
         "summary": "s", "relevance_score": 0.9,
     }
+    # "Aspirin" occurs in both sentences, so it cannot be widened to one.
+    documents = [{'id': 101, 'title': 'Trial A',
+                  'abstract': 'Aspirin reduced stroke. Aspirin increased bleeding.'}]
     with patch.object(citation_agent, 'test_connection', return_value=True), patch.object(
         citation_agent, '_generate_and_parse_json', return_value=fragment
     ):
         with pytest.raises(FactCheckStageError) as raised:
-            agent._extract_citations(STATEMENT, _scored())
+            agent._extract_citations(STATEMENT, _scored(documents))
 
     assert raised.value.stage is STAGE_CITATIONS
     assert REJECT_INCOMPLETE_SENTENCE in str(raised.value)

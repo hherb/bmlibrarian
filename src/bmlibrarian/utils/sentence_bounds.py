@@ -39,10 +39,18 @@ evidence (#303).
   that itself starts a sentence ("RESULTS:", "**RESULTS:**", "Materials and
   methods:", "AUTHORS' CONCLUSIONS:"), with or without a space after it. A
   label is all upper case or one of ``KNOWN_SECTION_LABELS``, so an ordinary
-  colon ("two arms: Group A ...") does not start a sentence.
+  colon ("two arms: Group A ...") does not start a sentence. Damaged source
+  text also starts a sentence: a one-word label fused onto the next word
+  ("unclear.ObjectiveThis study", #304), and a double space or "( " before a
+  capitalised word, where PubMed dropped a formula or symbol ("(all  Women
+  with").
 - A span that is only a section label, or has fewer than
   ``MIN_SENTENCE_WORDS`` words once a leading label is set aside, is not a
   sentence.
+
+``enclosing_sentence_span`` widens a fragment to the complete sentence(s)
+around it, for callers that may cite the source's own sentence instead of
+rejecting a verbatim fragment.
 
 "Whitespace" in these rules (and in the docstrings below) includes invisible
 format characters (zero-width space, soft hyphen, word joiner, BOM): they
@@ -122,6 +130,14 @@ MIN_SENTENCE_WORDS = 2
 FORMAT_CATEGORY = "Cf"
 # Line breaks in a stretch of whitespace that make a paragraph break.
 PARAGRAPH_BREAK_NEWLINES = 2
+# Blanks in a row on one line that mark text the source lost (see
+# _is_lost_text_gap), and the opening brackets after which one blank does.
+LOST_TEXT_GAP_SPACES = 2
+OPENING_BRACKETS = "([{"
+# Most characters ``enclosing_sentence_span`` may add around a fragment, so a
+# fragment in text without detectable boundaries (keyword lists, hard-wrapped
+# text) is not widened into most of the abstract.
+MAX_WIDENING_CHARS = 400
 
 
 def _is_blank(char: str) -> bool:
@@ -450,10 +466,69 @@ def _label_start(text: str, end: int) -> Optional[int]:
         and (i == 0 or _is_blank(text[i - 1]) or is_sentence_end(text, i))
     ]
     for start in reversed(word_starts[-LABEL_MAX_WORDS:]):
-        label = text[start:body_end].lstrip("*#").strip()
+        # _clean_label also takes the stray colon of "**CONCLUSIONS:** :".
+        label = _clean_label(text[start:body_end])
         if _is_label(label) and is_sentence_start(text, start):
             return start
     return None
+
+
+def _is_fused_label_end(text: str, index: int) -> bool:
+    """
+    Whether a section label fused onto the next word ends at ``index``.
+
+    Args:
+        text: The source text.
+        index: Offset of a capital letter with no space before it.
+
+    Returns:
+        True when the letters directly before ``index`` are a capitalised
+        one-word ``KNOWN_SECTION_LABELS`` entry that starts a sentence
+        ("unclear.ObjectiveThis study", "ResultsWe", "MethodsA cohort",
+        "ConclusionsCSF"): PubMed and Europe PMC serve some structured
+        abstracts that way (#304). Multi-word labels are not recognised.
+    """
+    if index == len(text) or not text[index].isupper():
+        return False
+    label_start = index
+    while label_start > 0 and text[label_start - 1].isalpha():
+        label_start -= 1
+    label = text[label_start:index]
+    return (
+        len(label) > 1 and label[0].isupper() and label[1:].islower()
+        and label.lower() in KNOWN_SECTION_LABELS
+        and is_sentence_start(text, label_start)
+    )
+
+
+def _is_lost_text_gap(text: str, content_end: int, word_start: int) -> bool:
+    """
+    Whether a sentence starts after a gap where the source lost text.
+
+    PubMed drops some inline content (formulas, symbols) and leaves a double
+    space or "( " behind, so the sentence before the gap never ends
+    ("(all  Women with…", "patients ( A minority of women…"). The sentence
+    after the gap is accepted; the broken one before it still has no end.
+
+    Args:
+        text: The source text.
+        content_end: Offset just after the last non-blank character before
+            the gap.
+        word_start: Offset of the first character after the gap and any
+            opening marks.
+
+    Returns:
+        True when a capitalised word (``_is_capitalised_word``, or "A")
+        follows at least ``LOST_TEXT_GAP_SPACES`` spaces, or a space after
+        an opening bracket. The caller checks that the gap has no line break.
+    """
+    gap = sum(1 for c in text[content_end:word_start] if c.isspace())
+    after_bracket = content_end > 0 and text[content_end - 1] in OPENING_BRACKETS
+    if gap < LOST_TEXT_GAP_SPACES and not after_bracket:
+        return False
+    word = _next_word(text, word_start)
+    # A one-letter capital word counts too ("( A minority of women").
+    return _is_capitalised_word(word) or bool(word and SINGLE_CAPITAL.fullmatch(word))
 
 
 def is_sentence_start(text: str, start: int) -> bool:
@@ -484,8 +559,14 @@ def is_sentence_start(text: str, start: int) -> bool:
     if content_end == before:
         # No space: only a glued sentence end or section label ("stenosis.The",
         # "Conclusion:Pre-operative") starts a sentence here.
-        return is_sentence_end(text, before) or _label_start(text, before) is not None
+        return (
+            is_sentence_end(text, before)
+            or _label_start(text, before) is not None
+            or _is_fused_label_end(text, before)
+        )
     line_breaks = text[content_end:before].count("\n")
+    if not line_breaks and _is_lost_text_gap(text, content_end, before):
+        return True
     if line_breaks >= PARAGRAPH_BREAK_NEWLINES:
         return True
     if is_sentence_end(text, content_end):
@@ -631,3 +712,72 @@ def complete_sentence_span(text: str, start: int, end: int) -> Optional[tuple[in
     if _word_count(body) < MIN_SENTENCE_WORDS:
         return None
     return start, end
+
+
+def enclosing_sentence_span(
+    text: str, start: int, end: int, max_added_chars: int = MAX_WIDENING_CHARS
+) -> Optional[tuple[int, int]]:
+    """
+    Widen ``text[start:end]`` to the complete sentence(s) that contain it.
+
+    For a quote that is a fragment ("while prior use of statins was ...", a
+    clause after a semicolon): the span is moved back to the nearest
+    sentence start and forward to the nearest sentence end, then checked
+    with ``complete_sentence_span``. The result is the source's own text;
+    callers should record that it was widened.
+
+    Args:
+        text: The source text (e.g. an abstract).
+        start: Start offset of the quoted span.
+        end: End offset (exclusive) of the quoted span.
+        max_added_chars: Most characters the widening may add on both sides
+            together (default ``MAX_WIDENING_CHARS``).
+
+    Returns:
+        The ``(start, end)`` of the enclosing complete sentences (equal to
+        ``complete_sentence_span``'s result if the span already is one), or
+        None if no sentence boundary lies within ``max_added_chars`` or the
+        widened span is not a citable sentence (only a label, too few words).
+
+    Raises:
+        TypeError: If ``text`` is not a str or an offset or the limit is not
+            an int.
+        ValueError: If an offset is outside ``[0, len(text)]``,
+            ``start > end``, or ``max_added_chars`` is negative.
+    """
+    _check_offset(text, start)
+    _check_offset(text, end)
+    if start > end:
+        raise ValueError(f"start {start} is after end {end}")
+    if not isinstance(max_added_chars, int) or isinstance(max_added_chars, bool):
+        raise TypeError(f"max_added_chars must be an int, got {type(max_added_chars).__name__}")
+    if max_added_chars < 0:
+        raise ValueError(f"max_added_chars must not be negative, got {max_added_chars}")
+
+    while start < end and _is_blank(text[start]):
+        start += 1
+    while end > start and _is_blank(text[end - 1]):
+        end -= 1
+
+    new_start = start
+    # Only a word or an opening mark can begin a sentence; is_sentence_start
+    # alone also holds at the stray colon of "**CONCLUSIONS:** : Text".
+    while not (
+        (text[new_start:new_start + 1].isalnum() or text[new_start:new_start + 1] in OPENING_CHARS)
+        and is_sentence_start(text, new_start)
+    ):
+        if new_start == 0 or start - new_start >= max_added_chars:
+            return None
+        new_start -= 1
+    budget = max_added_chars - (start - new_start)
+    new_end = end
+    while not is_sentence_end(text, new_end):
+        if new_end == len(text) or new_end - end >= budget:
+            return None
+        new_end += 1
+        # A new sentence starting before this one ended means the source
+        # broke it off (lost text, a heading without punctuation): reject
+        # rather than run the broken sentence into the next one.
+        if text[new_end:new_end + 1].isalnum() and is_sentence_start(text, new_end):
+            return None
+    return complete_sentence_span(text, new_start, new_end)

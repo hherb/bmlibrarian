@@ -10,35 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Sentence bounds stop rejecting real sentences** (2026-10-19, branch
-  `fix/sentence-bounds-invisible-chars`, closes #302, #303). Measuring #303
-  showed that most of the 106 (statement, document) pairs that lost every
-  passage in the #296 re-run were false rejections by
-  `utils/sentence_bounds.py`, not model failures. Owner-approved loosening of
-  the conservative policy: invisible `Cf` characters count as whitespace
-  (#302); a single capital is a designator that can end a sentence ("type
-  B.", "Group A.") unless it is next to another initial ("J. M. Smith");
-  all-caps words before a capitalised word are not abbreviations ("clinical
-  CA. The", "NO. In"; "FIG. 2", "VS. PLACEBO" still are); "et al."
-  before a capitalised word ends a sentence; time units ("3 min.") left the
-  abbreviation list; glued source text (PubMed and Europe PMC both serve
-  `stenosis.Conclusion:Pre-operative`, `DAPT.The`) has boundaries, except
-  after a one-letter token or inside a token (`p.Val600Glu`, `J.Smith`,
-  `www.ClinicalTrials.gov`, tightened in the PR #305 review); labels may
-  contain apostrophes ("AUTHORS' CONCLUSIONS:") and bold labels may
-  have the colon outside (`**Results**:`). Accepted risk: "…by J.
-  Smith" and "…with S. Typhimurium" can be cut after the lone initial. On 500 random PubMed abstracts no fragment
-  is newly accepted; naive sentences accepted 94.3% → 94.9%.
-  **LLM re-run of the 106 pairs** (`gpt-oss:20b`, same config as #296,
-  read-only on `knowledgebase`, scratch harness, not committed): **64
-  accepted** (were 0), 31 still "not complete sentences", 10 below the
-  similarity threshold, 1 now judged irrelevant. Of the 31, ~22 are genuine
-  fragments the model keeps quoting through all 4 attempts ("while prior use
-  of statins…", text inside brackets, clauses after a semicolon); the rest
-  are fused labels (#304), odd label forms (`**CONCLUSIONS:** :`, a 6+-word
-  all-caps heading) and the `**Results**:` form (fixed after the run).
-  Still rejected: labels fused into the next word (`unclear.ObjectiveThis
-  study`, in PubMed's own data) → #304.
+- **Fragments are widened to their complete sentence(s)** (2026-10-20,
+  branch `feat/widen-fragment-citations`, closes #304). Owner decision
+  (2026-10-19): a verbatim fragment is cited as the abstract's enclosing
+  sentence(s) instead of being rejected, and marked: `Citation.widened_from`
+  holds the fragment, `get_validation_stats()['widened_passages']` counts
+  them, each is logged and the batch summary reports them. No fact-checker
+  degradation note (those mean evidence not examined) and no DB column: the
+  stored `factcheck.evidence.citation_text` does not say it was widened.
+  Still rejected: a fragment that occurs more than once in the abstract, no
+  boundary within `MAX_WIDENING_CHARS` (400), a sentence the source broke off.
+  Two owner-approved sentence-start rules for damaged source text: one-word
+  labels fused onto the next word (`unclear.ObjectiveThis`, #304) and
+  lost-text gaps (double space or `( ` before a capitalised word, where
+  PubMed dropped a formula). 500-abstract sample: no fragment newly
+  accepted; 2,206 of 2,229 comma-cut fragments widen to exactly their
+  sentence. Docs: `doc/llm/sentence_bounds.md`, `citation_system.md`
+  "Widening fragments". LLM re-run of the 106 #303 pairs: see the PR
+  (results were pending when this was written).
+- **Sentence bounds stop rejecting real sentences** (2026-10-19, PR #305,
+  merged, closes #302, #303): invisible `Cf` characters are whitespace;
+  single-capital designators, all-caps tokens before a capital, "et al."
+  before a capital, time units and glued text are boundaries (details and
+  accepted trade-offs in `doc/llm/sentence_bounds.md`). LLM re-run of the
+  106 pairs that lost every passage in the #296 re-run: 64 accepted (were
+  0), 31 fragments, 10 below the similarity threshold, 1 irrelevant.
 - **Citation retries quote the rejected passage; passage matching folds
   Unicode** (2026-10-18, PR #301, merged, closes #290, #291): `_retry_note`
   quotes the previous passage (≤ 200 chars) and its similarity;
@@ -105,14 +101,13 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- Remaining citation rejections (see the sentence-bounds entry above): ~22
-  of 106 pairs are genuine mid-sentence fragments the model repeats on every
-  retry, and 10 are below the similarity threshold (long multi-sentence
-  quotes that drift). Policy question for the owner before coding: may the
-  agent widen a verbatim fragment to its enclosing complete sentence(s)
-  instead of rejecting it? (The full sentence is the source's own text, but
-  the current policy is reject-don't-coerce.) Then #304 (fused labels).
-- #292 — show citation rejection counts in the Qt research tab and CLI.
+- Remaining citation rejections: 10 of the 106 #303 pairs are below the
+  similarity threshold (long multi-sentence quotes that drift), plus
+  whatever the widening re-run leaves (see the PR). Known sentence-bounds
+  misses: lost text with a single space (`8.8%) MAE rates`), multi-word
+  fused labels.
+- #292 — show citation rejection counts in the Qt research tab and CLI
+  (and mark widened citations, `Citation.widened_from`).
 - Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
   paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and
