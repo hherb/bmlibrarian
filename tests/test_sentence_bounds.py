@@ -96,6 +96,9 @@ def test_surrounding_whitespace_is_trimmed() -> None:
         ),
         ("Materials and methods: We enrolled 25 patients. Results followed.",
          "We enrolled 25 patients."),
+        # Bold label with the colon outside the emphasis.
+        ("Deaths fell. **Results**: Radiotherapy delays predicted outcome. End.",
+         "Radiotherapy delays predicted outcome."),
     ],
 )
 def test_sentences_after_section_labels_are_accepted(text: str, passage: str) -> None:
@@ -140,8 +143,38 @@ def test_sentences_after_section_labels_are_accepted(text: str, passage: str) ->
         ("Conclusions and Relevance: In this trial, aspirin helped.", "In this trial, aspirin helped."),
         ("Design, Setting, and Participants: We enrolled 40 adults. End.",
          "We enrolled 40 adults."),
-        # "et al." ends a sentence at the end of the text.
+        # "et al." ends a sentence at the end of the text or before a capital.
         ("Intro. This was first shown by Smith et al.", "This was first shown by Smith et al."),
+        ("Intro. As shown by Smith et al. The effect was large. End.",
+         "The effect was large."),
+        ("Intro. As shown by SMITH ET AL. The effect was large. End.",
+         "The effect was large."),
+        ("Intro. It was studied by Knaus et al. Curves were plotted.",
+         "It was studied by Knaus et al."),
+        # A single capital letter after a word is a designator, not an initial.
+        ("Intro. Rates were higher in type B. Type A was rare. End.",
+         "Rates were higher in type B."),
+        ("Intro. Rates were higher in type B. Type A was rare. End.", "Type A was rare."),
+        ("Punctures were rarer in Group B. Incidence fell. End.", "Incidence fell."),
+        ("Intro. Cases were TDP-43 types B, E and C. In contrast, others were not.",
+         "Cases were TDP-43 types B, E and C."),
+        # All-caps tokens are not the abbreviations they spell ("ca.", "no.").
+        ("EPO rose with clinical CA. Umbilical IL-6 rose too. End.", "Umbilical IL-6 rose too."),
+        ("Intro. Levels of NO. Were measured daily. End.", "Were measured daily."),
+        # Labels with an apostrophe (Cochrane).
+        ("No trials were found.\n\n**AUTHORS' CONCLUSIONS:** This review found no evidence. More.",
+         "This review found no evidence."),
+        # Source text that lost its spaces between sentences and labels.
+        ("Intro.The effect was large. End.", "The effect was large."),
+        ("Risk factors predicted stenosis.Conclusion:Pre-operative screening is needed.",
+         "Pre-operative screening is needed."),
+        ("Risk factors predicted stenosis.Conclusion:Pre-operative screening is needed.",
+         "Risk factors predicted stenosis."),
+        ("Background:The predictive value is unclear. End.", "The predictive value is unclear."),
+        ("Intro (i.e. 20-32 years).Results:our results show an effect. End.",
+         "our results show an effect."),
+        # Time units are not abbreviations: their full stop ends a sentence.
+        ("Patients waited 3 min. Then pain was measured. End.", "Patients waited 3 min."),
     ],
 )
 def test_biomedical_sentence_edge_cases_are_accepted(text: str, passage: str) -> None:
@@ -196,14 +229,8 @@ def test_fragments_are_rejected(passage: str) -> None:
 @pytest.mark.parametrize(
     ("text", "passage"),
     [
-        # "et al." followed by a capital is ambiguous; never treated as an end.
-        ("Intro. As shown by Smith et al. The effect was large. End.",
-         "The effect was large."),
-        # The same in capitals.
-        ("Intro. As shown by SMITH ET AL. The effect was large. End.",
-         "The effect was large."),
-        # A sentence glued to the previous one without a space.
-        ("Intro.The effect was large. End.", "The effect was large."),
+        # A lowercase word glued to a full stop is not a new sentence.
+        ("Intro.the effect was large. End.", "the effect was large. End."),
         # After a period followed by an ordinary lowercase word the period is
         # not an end, so a span starting there is mid-sentence.
         ("The rate was measured. levels rose. End.", "levels rose."),
@@ -211,11 +238,48 @@ def test_fragments_are_rejected(passage: str) -> None:
         ("We compared two arms: Group A received aspirin. End.",
          "Group A received aspirin."),
         # A period after an initial is not a sentence end (U.S., S. aureus,
-        # J. Smith); quoting from there drops the qualifier before it.
+        # J. M. Smith); quoting from there drops the qualifier before it.
         ("In the U.S. Army personnel were enrolled. End.", "Army personnel were enrolled."),
-        ("Infection with S. Aureus was rare. End.", "Aureus was rare."),
-        ("J. Smith and K. Jones reported the trial. End.", "Jones reported the trial."),
+        ("Infection with S. aureus was rare. End.", "aureus was rare."),
+        ("As J. M. Smith reported the trial. End.", "Smith reported the trial."),
+        # Known abbreviations keep their full stop in mixed or lower case.
+        ("Results are in No. 5 of the series. End.", "5 of the series."),
         ("We used vit. D supplements daily. End.", "D supplements daily."),
+        # Both full stops of "J. M." are initials, not only the second.
+        ("Data reported by J. M. Smith in 2019. End.", "Data reported by J."),
+        ("Patients in the U.S.A. were enrolled here. End.", "Patients in the U."),
+        ("Patients in the U.S.A. were enrolled here. End.", "S.A. were enrolled here."),
+        # "et al." before anything but a capitalised word is not an end.
+        ("Intro. Smith et al. (2019) showed a rise. End.", "Intro. Smith et al."),
+        ("Intro. Smith et al. reported a rise. End.", "Intro. Smith et al."),
+        ("Intro. Smith et al. 2019 showed a rise. End.", "Intro. Smith et al."),
+        ("Intro. Smith et al. [12] showed a rise. End.", "Intro. Smith et al."),
+        ("Intro. Smith et al. (Lancet, 2019) showed a rise. End.", "Intro. Smith et al."),
+        # All-caps abbreviations before a digit or an all-caps word stay
+        # abbreviations; only a capitalised word after them starts a sentence.
+        ("We compared ASPIRIN VS. PLACEBO in adults with stroke.", "We compared ASPIRIN VS."),
+        ("As shown in FIG. 2 the effect was large.", "As shown in FIG."),
+        ("Patients were enrolled in ST. LOUIS hospitals.", "Patients were enrolled in ST."),
+        ("Funded by MERCK & CO. Inc. All authors approved.", "Funded by MERCK & CO."),
+        # Time units end a sentence only before a word that can start one.
+        ("Patients waited 3 min. later pain was measured. End.", "Patients waited 3 min."),
+        # Glued text after an abbreviation or initial, after a one-letter token
+        # or inside a token (HGVS notation, domains) is not a boundary.
+        ("See Fig.The figure shows it. End.", "The figure shows it."),
+        ("Data in the U.S.Army were found. End.", "Army were found."),
+        ("We found the variant p.Arg506Gln in five cases. End.", "We found the variant p."),
+        ("The BRAF p.Val600Glu mutation was found in most tumours. End.",
+         "Val600Glu mutation was found in most tumours."),
+        ("Mutations (p.Gly12Asp) occurred in KRAS in all patients. End.",
+         "Gly12Asp) occurred in KRAS in all patients."),
+        ("Published in N.Engl J Med in 2020. End.", "Published in N."),
+        ("As shown by J.Smith the effect was large in all.", "As shown by J."),
+        ("The trial was registered at www.ClinicalTrials.gov under NCT01234567. End.",
+         "The trial was registered at www."),
+        ("The trial was registered at www.ClinicalTrials.gov under NCT01234567. End.",
+         "ClinicalTrials.gov under NCT01234567."),
+        # A bold phrase before a colon is not a label.
+        ("Deaths fell. **two arms**: Group A received aspirin. End.", "Group A received aspirin."),
     ],
 )
 def test_ambiguous_boundaries_are_rejected(text: str, passage: str) -> None:
@@ -269,6 +333,34 @@ def test_sentence_including_its_label_is_accepted() -> None:
     """Quoting the label together with its sentence is fine."""
     text = "Intro. RESULTS: Five patients responded. End."
     assert _complete(text, "RESULTS: Five patients responded.") == "RESULTS: Five patients responded."
+
+
+@pytest.mark.parametrize("invisible", ["​", "﻿", "­", "⁠"])
+def test_invisible_format_characters_count_as_whitespace(invisible: str) -> None:
+    """Zero-width characters at a boundary neither hide nor join a sentence (#302)."""
+    text = f"Intro.{invisible} Rates fell in this cohort.{invisible} Next sentence."
+    assert _complete(text, "Rates fell in this cohort.") == "Rates fell in this cohort."
+    assert _complete(text, "Rates fell in this cohort." + invisible) == "Rates fell in this cohort."
+    assert _complete(f"Rates fell.{invisible}", "Rates fell.") == "Rates fell."
+    assert _complete(f"Intro.{invisible}Rates fell. End.", "Rates fell.") == "Rates fell."
+    # Still no sentence end after an abbreviation or before a lowercase word.
+    assert _complete(f"See Fig.{invisible} 2 for details.", "See Fig.") is None
+    assert _complete(f"It rose.{invisible} and fell.", "It rose.") is None
+    # Between the tokens of "J. M." and "et al." they do not split them.
+    assert _complete(f"Written by J.{invisible} M. Smith in 2020. End.", f"Written by J.{invisible} M.") is None
+    assert _complete(f"Data per Smith et{invisible} al. (2019) rose. End.", f"Data per Smith et{invisible} al.") is None
+    # Nor do they glue two words into one.
+    assert _complete(f"Intro. Rates{invisible}fell. End.", f"Rates{invisible}fell.") == f"Rates{invisible}fell."
+
+
+def test_known_trade_offs_split_single_initials() -> None:
+    """A lone initial before a capitalised word is cut like a designator (#303)."""
+    assert _complete("Intro. Infection with S. Typhimurium was rare.", "Infection with S.") == (
+        "Infection with S."
+    )
+    assert _complete("Intro. It was shown by J. Smith in 2020.", "It was shown by J.") == (
+        "It was shown by J."
+    )
 
 
 def test_whitespace_only_span_is_rejected() -> None:
