@@ -19,15 +19,20 @@ structured-abstract labels.
 - `is_sentence_end(text, i)` (i exclusive): true only for `.`/`!`/`?` plus
   closing brackets/quotes, followed by whitespace, the end of the text, or a
   glued capitalised word (`"DAPT.The"`, `"stenosis.Conclusion:"`: source
-  text, from PubMed and Europe PMC alike, that lost its spaces). A line break
+  text, from PubMed and Europe PMC alike, that lost its spaces). A glued word
+  does not count after a one-letter token (`"p.Arg506Gln"`, `"J.Smith"`,
+  `"N.Engl"`) or when it runs on into a digit or a full stop
+  (`"www.ClinicalTrials.gov"`). A line break
   or the end of the text **without** punctuation is not an end (hard-wrapped
   text, truncated sentences, keyword lists). A `.` does not count if the
-  token before it is in `NON_TERMINAL_ABBREVIATIONS` (unless it is all caps:
-  "clinical CA.", "levels of NO." end sentences), is the "al" of "et al."
-  (any case) not followed by a capitalised word ("et al. (2019)" continues,
-  "…by Knaus et al. Curves were…" ends), is an initial (`INITIAL_PATTERN`:
-  "U.S", "e.g"), or is a single capital letter after another initial
-  ("J. M. Smith"), or if the next word is an ordinary lowercase word. Any
+  token before it is in `NON_TERMINAL_ABBREVIATIONS` (unless it is all caps
+  and a capitalised word follows: "clinical CA. The", "levels of NO. In" end
+  sentences, "FIG. 2", "VS. PLACEBO", "CO. Inc." do not), is the "al" of
+  "et al." (any case) not followed by a capitalised word or followed by a
+  bracket ("et al. (2019)", "et al. (Lancet, 2019)" continue, "…by Knaus et
+  al. Curves were…" ends), is an initial (`INITIAL_PATTERN`: "U.S", "e.g"),
+  or is a single capital letter next to another one (both stops of
+  "J. M. Smith"), or if the next word is an ordinary lowercase word. Any
   other single capital is a designator that can end a sentence ("type B.",
   "Group A.", "hepatitis B."). Time units ("3 min.", "2 hrs.") are not in
   the abbreviation list.
@@ -35,7 +40,7 @@ structured-abstract labels.
   or start with a Greek letter ("β-blockers") can start a sentence. At the
   very end of the text the abbreviation rules do not apply ("…Smith et al."
   ends the text and its sentence). "Al." on its own (aluminium) counts.
-  Throughout the module, invisible format characters (Unicode `Cf`: zero-width
+  In every boundary and token check, invisible format characters (Unicode `Cf`: zero-width
   space, soft hyphen, word joiner, BOM) count as whitespace (`_is_blank`,
   #302), so `"…cohort.​ Next"` still ends a sentence.
 - `is_sentence_start(text, i)`: true at the start of the text, after a
@@ -49,14 +54,18 @@ structured-abstract labels.
   names in `KNOWN_SECTION_LABELS` ("Materials and methods:", "Conclusions
   and Relevance:"). An ordinary colon ("two arms: Group A…") is not a label.
 - Policy: ambiguity means "not a boundary", so a doubtful span is rejected,
-  never accepted, with four owner-approved exceptions (2026-10-19, #303)
-  because they rejected real evidence: all-caps tokens, single-capital
-  designators, "et al." before a capital, and glued sentences/labels. The
-  price: "…reported by J. Smith" can be cut after "J.". Measured on 500
-  random PubMed abstracts: no mid-sentence fragment accepted before or after
-  (0 of 2,319 comma cuts, 0 of 29 abbreviation-ended pieces, the same 15
-  label-artifact "first word dropped" spans of 4,317), naive sentences
-  accepted 94.3% → 94.9%. Known conservative misses: a sentence ending in a
+  never accepted, with five owner-approved exceptions (2026-10-19, #303)
+  because they rejected real evidence: all-caps tokens before a capitalised
+  word, single-capital designators, "et al." before a capital, time units,
+  and glued sentences/labels. The price: "…reported by J. Smith" and
+  "…with S. Typhimurium" can be cut after the lone initial, and "min. 3"
+  after "min." (pinned in `test_known_trade_offs_split_single_initials`).
+  Measured on 500 random PubMed abstracts: no fragment newly accepted (0 of
+  2,319 comma cuts and 0 of 29 abbreviation-ended pieces either way; the
+  same 15 label-artifact "first word dropped" spans of 4,317 were accepted
+  before and after), naive sentences accepted 94.3% → 94.9%. The PR #305
+  review then narrowed the all-caps and glued-text rules (above); not
+  re-measured. Known conservative misses: a sentence ending in a
   listed abbreviation or initial with more text after it ("…given i.v. Next"), a label
   fused to the next word (`"unclear.ObjectiveThis study"`), a sentence starting with an ordinary lowercase word
   after a full stop, a sentence ending in a reference marker after the full

@@ -9,24 +9,28 @@ source text runs from a sentence start to a sentence end.
 The rules are conservative. When a boundary is ambiguous it is treated as
 *not* a boundary, so a doubtful span is rejected rather than accepted. The
 exceptions (designator letters, all-caps tokens, "et al." before a capital,
-glued text) were accepted on purpose because they lost real evidence (#303).
+time units, glued text) were accepted on purpose because they lost real
+evidence (#303).
 
 - A sentence ends at ``.``, ``!`` or ``?`` (optionally followed by closing
   brackets/quotes) that is followed by whitespace, the end of the text, or a
   glued capitalised word ("DAPT.The", "stenosis.Conclusion:" -- source text
-  that lost its spaces). Nothing else ends a sentence: a line break is not a
+  that lost its spaces; not after a one-letter token or inside a token such
+  as "p.Val600Glu", "J.Smith" or "www.ClinicalTrials.gov"). Nothing else ends a sentence: a line break is not a
   boundary (hard-wrapped text breaks lines mid-sentence), and neither is the
   end of a text without closing punctuation (a truncated sentence, a keyword
   list).
 - A ``.`` is not a sentence end if the token before it is a known
-  abbreviation ("Fig. 2", "e.g. Aspirin", "No. 5"; not an all-caps token, so
-  "clinical CA." and "levels of NO." end sentences), "et al." before anything
-  but a capitalised word ("et al. (2019)"; "...by Smith et al. The effect"
-  does end), or an initial ("U.S. Army", "J. M. Smith"), or if the next word
-  starts with an ordinary lowercase word ("et al. reported", "sp. nov.",
-  "S. aureus"). A single capital letter is an initial only after another
-  initial: elsewhere it is a designator that can end a sentence ("type B.",
-  "Group A.", "hepatitis B."), at the price of splitting "by J. Smith". A
+  abbreviation ("Fig. 2", "e.g. Aspirin", "No. 5"; an all-caps token before
+  a capitalised word ends the sentence, so "clinical CA. The" and "levels of
+  NO. In" end sentences but "FIG. 2" and "VS. PLACEBO" do not), "et al."
+  before anything but a capitalised word ("et al. (2019)", "et al. (Lancet,
+  2019)"; "...by Smith et al. The effect" does end), or an initial ("U.S.
+  Army", "J. M. Smith"), or if the next word starts with an ordinary
+  lowercase word ("et al. reported", "sp. nov.", "S. aureus"). A single
+  capital letter is an initial only next to another initial: elsewhere it is
+  a designator that can end a sentence ("type B.", "Group A.", "hepatitis
+  B."), at the price of splitting "by J. Smith" and "with S. Typhimurium". A
   lowercase word that contains a digit or a capital ("p53", "mRNA", "eGFR")
   or starts with a Greek letter ("β-blockers") can start a sentence.
 - A sentence starts at the beginning of the text, after a sentence end, after
@@ -40,8 +44,9 @@ glued text) were accepted on purpose because they lost real evidence (#303).
   ``MIN_SENTENCE_WORDS`` words once a leading label is set aside, is not a
   sentence.
 
-"Whitespace" in these rules includes invisible format characters (zero-width
-space, soft hyphen, word joiner, BOM): they never hide or join a boundary.
+"Whitespace" in these rules (and in the docstrings below) includes invisible
+format characters (zero-width space, soft hyphen, word joiner, BOM): they
+never hide or join a boundary.
 
 All functions are pure and work on character offsets into the original text.
 """
@@ -62,7 +67,8 @@ OPENING_CHARS = "([{\"'“‘«*#"
 # characters (straight quotes, ``*``) pair with themselves.
 PAIRED_CLOSERS = {")": "(", "]": "[", "}": "{", "”": "“", "’": "‘", "»": "«"}
 # Tokens (lower case, without the final ".") whose full stop is never taken as
-# a sentence end when more text follows, even before a capital or a digit.
+# a sentence end when more text follows, even before a capital or a digit --
+# except in all caps before a capitalised word (see _is_abbreviation_period).
 NON_TERMINAL_ABBREVIATIONS = frozenset({
     "e.g", "i.e", "vs", "cf", "ca", "approx", "fig", "figs", "eq", "eqs",
     "ref", "refs", "no", "nos", "vol", "pp", "dr", "prof", "mr", "mrs", "ms",
@@ -70,7 +76,8 @@ NON_TERMINAL_ABBREVIATIONS = frozenset({
     "sr", "vit", "max", "dept", "univ", "eds",
 })
 # Time units ("3 min.", "2 hrs.", "12 wks.") are deliberately not in the list:
-# in abstracts their full stop before a capital or digit ends the sentence.
+# in abstracts their full stop before a capital or digit ends the sentence
+# (at the price of "Range was min. 3 to max. 10" ending after "min.").
 # "al." is only an abbreviation in "et al."; on its own it can be a sentence
 # ending in the element symbol "Al" (aluminium). Compared case-insensitively.
 # Before a capitalised word "et al." ends the sentence.
@@ -163,7 +170,8 @@ def _next_word(text: str, index: int) -> Optional[str]:
         index: Where to start looking.
 
     Returns:
-        The word (up to the next whitespace), or None at the end of the text.
+        The word (up to the next whitespace or ``Cf`` character, see
+        ``_is_blank``), or None at the end of the text.
     """
     while index < len(text) and (_is_blank(text[index]) or text[index] in OPENING_CHARS):
         index += 1
@@ -205,7 +213,8 @@ def _token_start(text: str, end: int) -> int:
         end: Offset just after the token.
 
     Returns:
-        The offset after the preceding whitespace or opening bracket/quote.
+        The offset after the preceding whitespace (``_is_blank``) or opening
+        bracket/quote.
     """
     start = end
     while start > 0 and not _is_blank(text[start - 1]) and text[start - 1] not in OPENING_CHARS:
@@ -224,8 +233,10 @@ def _previous_token(text: str, start: int) -> str:
     Returns:
         The preceding token, or "" at the start of the text.
     """
-    before = text[:start].rstrip()
-    return before[_token_start(before, len(before)):]
+    end = start
+    while end > 0 and _is_blank(text[end - 1]):
+        end -= 1
+    return text[_token_start(text, end):end]
 
 
 def _is_abbreviation_period(text: str, period: int, next_word: Optional[str]) -> bool:
@@ -239,37 +250,91 @@ def _is_abbreviation_period(text: str, period: int, next_word: Optional[str]) ->
 
     Returns:
         True if the token before it is in ``NON_TERMINAL_ABBREVIATIONS`` (but
-        not all caps: "CA", "NO"), is the "al" of "et al." (any case) not
-        followed by a capitalised word, is an initial (``INITIAL_PATTERN``),
-        or is a single capital letter after another initial ("J. M. Smith").
+        not in all caps before a capitalised word: "CA. The", "NO. In"), is
+        the "al" of "et al." (any case) not followed by a capitalised word or
+        followed by an opening bracket, is an initial (``INITIAL_PATTERN``),
+        or is a single capital letter next to another one ("J. M. Smith").
     """
     start = _token_start(text, period)
     token = text[start:period]
     if token.lower() == ET_AL[1]:
         if _previous_token(text, start).lower() != ET_AL[0]:
             return False
+        after = period + 1
+        while after < len(text) and _is_blank(text[after]):
+            after += 1
+        if after < len(text) and text[after] in OPENING_CHARS:  # "et al. (Lancet, 2019)"
+            return True
         return not (next_word and next_word[0].isupper())
     if SINGLE_CAPITAL.fullmatch(token):
-        previous = _previous_token(text, start)
-        return previous.endswith(".") and bool(SINGLE_CAPITAL.fullmatch(previous[:-1]))
-    if token.isupper() and len(token) > 1 and not INITIAL_PATTERN.fullmatch(token):
+        return _is_single_initial(_previous_token(text, start)) or _is_single_initial(next_word)
+    if (
+        token.isupper() and len(token) > 1 and not INITIAL_PATTERN.fullmatch(token)
+        and _is_capitalised_word(next_word)
+    ):
         return False
     return token.lower() in NON_TERMINAL_ABBREVIATIONS or bool(INITIAL_PATTERN.fullmatch(token))
 
 
-def _glued_word_starts(text: str, index: int) -> bool:
+def _is_single_initial(word: Optional[str]) -> bool:
     """
-    Whether a capitalised word starts at ``index`` with no space before it.
+    Whether ``word`` is one capital letter and a full stop ("J.", "M.").
+
+    Args:
+        word: A token, or None.
+
+    Returns:
+        True for a single-letter initial.
+    """
+    return word is not None and word.endswith(".") and bool(SINGLE_CAPITAL.fullmatch(word[:-1]))
+
+
+def _is_capitalised_word(word: Optional[str]) -> bool:
+    """
+    Whether ``word`` looks like an ordinary capitalised sentence start.
+
+    Args:
+        word: A word, or None.
+
+    Returns:
+        True for a capital followed by a lower-case letter ("The", "In") that
+        is not itself a listed abbreviation ("Inc.", "No."); False for digits
+        and all-caps words ("2", "PLACEBO").
+    """
+    return (
+        word is not None and len(word) > 1 and word[0].isupper() and word[1].islower()
+        and word.rstrip(".").lower() not in NON_TERMINAL_ABBREVIATIONS
+    )
+
+
+def _is_glued_sentence_end(text: str, index: int) -> bool:
+    """
+    Whether a sentence ends at ``index`` although no space follows it.
 
     Args:
         text: The source text.
-        index: Offset just after a terminator or colon.
+        index: Offset just after a terminator and any closing marks.
 
     Returns:
-        True for an upper-case letter followed by a lower-case one ("The",
-        "Conclusion"): source text that lost the space between sentences.
+        True when a capitalised word of letters only starts at ``index``
+        ("DAPT.The", "stenosis.Conclusion:"): source text that lost the space
+        between sentences. False after a one-letter token ("p.Arg506Gln",
+        "J.Smith", "N.Engl") and when the glued word runs on into a digit or a
+        full stop ("p53.Val600Glu", "www.ClinicalTrials.gov").
     """
-    return index + 1 < len(text) and text[index].isupper() and text[index + 1].islower()
+    run_end = index
+    while run_end < len(text) and text[run_end].isalpha():
+        run_end += 1
+    if not _is_capitalised_word(text[index:run_end]):
+        return False
+    if run_end < len(text) and (text[run_end] == "." or text[run_end].isdigit()):
+        return False
+    last = index
+    while last > 0 and text[last - 1] in CLOSING_CHARS:
+        last -= 1
+    if last == 0:
+        return False
+    return last - 1 - _token_start(text, last - 1) > 1
 
 
 def is_sentence_end(text: str, end: int) -> bool:
@@ -290,7 +355,7 @@ def is_sentence_end(text: str, end: int) -> bool:
     _check_offset(text, end)
     if end == 0:
         return False
-    if end < len(text) and not _is_blank(text[end]) and not _glued_word_starts(text, end):
+    if end < len(text) and not _is_blank(text[end]) and not _is_glued_sentence_end(text, end):
         return False
 
     last = end
@@ -512,7 +577,8 @@ def _word_count(content: str) -> int:
     Returns:
         The number of such words.
     """
-    return sum(1 for word in content.split() if any(c.isalnum() for c in word))
+    spaced = "".join(" " if _is_blank(c) else c for c in content)
+    return sum(1 for word in spaced.split() if any(c.isalnum() for c in word))
 
 
 def complete_sentence_span(text: str, start: int, end: int) -> Optional[tuple[int, int]]:

@@ -17,14 +17,17 @@ off new work. Longer-term structural items live in
   `utils/sentence_bounds.py`, not model failures. Owner-approved loosening of
   the conservative policy: invisible `Cf` characters count as whitespace
   (#302); a single capital is a designator that can end a sentence ("type
-  B.", "Group A.") unless it follows another initial ("J. M. Smith");
-  all-caps tokens are never abbreviations ("clinical CA.", "NO."); "et al."
+  B.", "Group A.") unless it is next to another initial ("J. M. Smith");
+  all-caps words before a capitalised word are not abbreviations ("clinical
+  CA. The", "NO. In"; "FIG. 2", "VS. PLACEBO" still are); "et al."
   before a capitalised word ends a sentence; time units ("3 min.") left the
   abbreviation list; glued source text (PubMed and Europe PMC both serve
-  `stenosis.Conclusion:Pre-operative`, `DAPT.The`) has boundaries; labels may
+  `stenosis.Conclusion:Pre-operative`, `DAPT.The`) has boundaries, except
+  after a one-letter token or inside a token (`p.Val600Glu`, `J.Smith`,
+  `www.ClinicalTrials.gov`, tightened in the PR #305 review); labels may
   contain apostrophes ("AUTHORS' CONCLUSIONS:") and bold labels may
   have the colon outside (`**Results**:`). Accepted risk: "…by J.
-  Smith" can be cut after "J.". On 500 random PubMed abstracts no fragment
+  Smith" and "…with S. Typhimurium" can be cut after the lone initial. On 500 random PubMed abstracts no fragment
   is newly accepted; naive sentences accepted 94.3% → 94.9%.
   **LLM re-run of the 106 pairs** (`gpt-oss:20b`, same config as #296,
   read-only on `knowledgebase`, scratch harness, not committed): **64
