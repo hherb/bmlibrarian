@@ -26,8 +26,11 @@ off new work. Longer-term structural items live in
   PubMed dropped a formula). 500-abstract sample: no fragment newly
   accepted; 2,206 of 2,229 comma-cut fragments widen to exactly their
   sentence. Docs: `doc/llm/sentence_bounds.md`, `citation_system.md`
-  "Widening fragments". LLM re-run of the 106 #303 pairs: see the PR
-  (results were pending when this was written).
+  "Widening fragments". LLM re-run of the 106 #303 pairs (`gpt-oss:20b`,
+  read-only on `knowledgebase`): **96 accepted** (were 64), 0 fragment
+  rejections (were 31), 10 still below the similarity threshold. 6 accepted
+  passages contain a sentence broken off by lost text (also accepted on
+  master) → #307.
 - **Sentence bounds stop rejecting real sentences** (2026-10-19, PR #305,
   merged, closes #302, #303): invisible `Cf` characters are whitespace;
   single-capital designators, all-caps tokens before a capital, "et al."
@@ -102,10 +105,10 @@ ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
-  similarity threshold (long multi-sentence quotes that drift), plus
-  whatever the widening re-run leaves (see the PR). Known sentence-bounds
-  misses: lost text with a single space (`8.8%) MAE rates`), multi-word
-  fused labels.
+  similarity threshold (long multi-sentence quotes that drift). #307:
+  passages that contain a broken-off sentence (reject or trim? owner
+  policy question). Known sentence-bounds misses: lost text with a single
+  space (`8.8%) MAE rates`), multi-word fused labels.
 - #292 — show citation rejection counts in the Qt research tab and CLI
   (and mark widened citations, `Citation.widened_from`).
 - Open bugs from recent slices: #279 / #278 (Find PDF / FETCH

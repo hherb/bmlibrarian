@@ -399,7 +399,10 @@ when its sentence is broken off (a new sentence starts before it ends:
 lost text, a heading without punctuation), or when the widened span is not
 citable (a label, too few words). Measured on 2,229 comma-cut fragments of
 500 random PubMed abstracts: 2,206 widen to exactly the sentence they were cut from, 22 are rejected, 1 also
-takes in a neighbouring sentence. The fact-checker does not add a
+takes in a neighbouring sentence. An LLM re-run (`gpt-oss:20b`) of the 106
+(statement, document) pairs of #303 accepted 96 (64 before), with no
+fragment rejections left (31 before) and 10 below the similarity threshold.
+The fact-checker does not add a
 degradation note for widened passages (`degradation_notes` mean evidence
 that could not be examined); the widening is in the log and the stats.
 
