@@ -16,18 +16,25 @@ structured-abstract labels.
   `MIN_SENTENCE_WORDS` (2) words besides a leading label (`"RESULTS:
   Aspirin."`). When this returns None the citation agent tries
   `enclosing_sentence_span`, and rejects the passage with
-  `REJECT_INCOMPLETE_SENTENCE` only if that fails too.
+  `REJECT_INCOMPLETE_SENTENCE` only if that fails too (or with
+  `REJECT_AMBIGUOUS_FRAGMENT` if the fragment occurs more than once).
 - `enclosing_sentence_span(text, start, end, max_added_chars=MAX_WIDENING_CHARS)`:
   widens a fragment to the complete sentence(s) containing it: back to the
-  nearest sentence start (only at a letter, digit or opening mark), forward
+  nearest sentence start (only at a letter, digit, symbol such as `≥`/`<`/`~`,
+  or opening mark), forward
   to the nearest sentence end, then `complete_sentence_span`. None if no
+  span is empty or blank, if no
   boundary lies within `max_added_chars` (400) added characters on both
   sides together, if a new sentence starts before the fragment's sentence
   ends (the source broke it off: never run it into the next sentence), or if
   the result is not citable. Already-complete spans come back as
   `complete_sentence_span` returns them. The caller decides whether
   widening is safe; the citation agent also refuses when the fragment occurs
-  more than once in the abstract, and records `Citation.widened_from`.
+  more than once in the abstract (`passage_match.occurs_once`, compared the
+  way `find_passage` compares, so copies differing only in case, whitespace
+  or invisible characters count), and records `Citation.widened_from`.
+  The result can drop a trailing unbalanced closer the fragment had, so the
+  fragment is not always a substring of it.
 - `is_sentence_end(text, i)` (i exclusive): true only for `.`/`!`/`?` plus
   closing brackets/quotes, followed by whitespace, the end of the text, or a
   glued capitalised word (`"DAPT.The"`, `"stenosis.Conclusion:"`: source
@@ -64,8 +71,11 @@ structured-abstract labels.
   word (`"unclear.ObjectiveThis study"`, `"ResultsWe"`, `"ConclusionsCSF"`;
   the label must itself start a sentence; #304), and after a lost-text gap:
   `LOST_TEXT_GAP_SPACES` (2) spaces, or a space after `(`/`[`/`{`, on one
-  line, before a capitalised word or "A" (`"(all  Women with"`, `"E4 ( A
-  minority"`: PubMed dropped a formula or symbol there). The broken sentence
+  line, before a capitalised word or a single capital letter (`"(all  Women
+  with"`, `"E4 ( A minority"`: PubMed dropped a formula or symbol there). Any
+  double space counts, so a typing slip ("with  Aspirin") also starts a
+  sentence; a fragment in such a sentence is then rejected as broken off,
+  not widened. The broken sentence
   before such a gap still has no end, so it cannot be cited on its own; a
   longer quote that contains it and starts and ends at boundaries is
   accepted (owner decision, #307). A stray colon

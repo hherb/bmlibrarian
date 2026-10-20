@@ -21,6 +21,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from bmlibrarian.agents.citation_agent import (
+    REJECT_AMBIGUOUS_FRAGMENT,
     REJECT_INCOMPLETE_SENTENCE,
     REJECT_NOT_JSON_OBJECT,
     Citation,
@@ -452,7 +453,7 @@ def test_a_model_that_only_quotes_ambiguous_fragments_fails_the_check(
             agent._extract_citations(STATEMENT, _scored(documents))
 
     assert raised.value.stage is STAGE_CITATIONS
-    assert REJECT_INCOMPLETE_SENTENCE in str(raised.value)
+    assert REJECT_AMBIGUOUS_FRAGMENT in str(raised.value)
 
 
 # ---- Citation stances are validated, not coerced --------------------------

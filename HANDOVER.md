@@ -18,8 +18,12 @@ off new work. Longer-term structural items live in
   them, each is logged and the batch summary reports them. No fact-checker
   degradation note (those mean evidence not examined) and no DB column: the
   stored `factcheck.evidence.citation_text` does not say it was widened.
-  Still rejected: a fragment that occurs more than once in the abstract, no
-  boundary within `MAX_WIDENING_CHARS` (400), a sentence the source broke off.
+  Still rejected: a fragment that occurs more than once in the abstract
+  (`REJECT_AMBIGUOUS_FRAGMENT`, counted like the matcher compares:
+  `passage_match.occurs_once`), no boundary within `MAX_WIDENING_CHARS`
+  (400), a sentence the source broke off. PR #306 review fixes: symbol-led
+  sentences ("≥50% of…") no longer widen into the previous sentence, an
+  empty span widens to nothing, `widened_from` survives the queue path.
   Two owner-approved sentence-start rules for damaged source text: one-word
   labels fused onto the next word (`unclear.ObjectiveThis`, #304) and
   lost-text gaps (double space or `( ` before a capitalised word, where
@@ -108,7 +112,11 @@ value — pick one, or pull an item from ROADMAP.md:
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
 - #292 — show citation rejection counts in the Qt research tab and CLI
-  (and mark widened citations, `Citation.widened_from`).
+  (and mark widened citations, `Citation.widened_from`); #310 — persist
+  `widened_from` (audit trail, `factcheck.evidence`; needs a migration).
+- Widening decisions from the PR #306 review: #308 (widen one-word quotes,
+  or require a minimum fragment size?), #309 (fragments still lost at text
+  end without a full stop, inside broken-off sentences, past 400 chars).
 - Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
   paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and

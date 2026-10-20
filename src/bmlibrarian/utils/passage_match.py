@@ -211,6 +211,34 @@ def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
     return "".join(chars), offsets
 
 
+def occurs_once(fragment: str, text: str) -> bool:
+    """Whether ``fragment`` occurs exactly once in ``text``.
+
+    Compared the way :func:`find_passage` compares (both sides normalised by
+    :func:`normalize_with_offsets`), so copies that differ only in case,
+    whitespace, invisible characters or typography count as the same text.
+    Overlapping occurrences count too.
+
+    Args:
+        fragment: Text to look for (e.g. a matched span of ``text``).
+        text: Text to search.
+
+    Returns:
+        True if the normalised fragment is non-empty and found exactly once.
+
+    Raises:
+        TypeError: If ``fragment`` or ``text`` is not a string.
+    """
+    if not isinstance(fragment, str) or not isinstance(text, str):
+        raise TypeError("fragment and text must be strings")
+    norm_fragment, _ = normalize_with_offsets(fragment)
+    norm_text, _ = normalize_with_offsets(text)
+    if not norm_fragment:
+        return False
+    first = norm_text.find(norm_fragment)
+    return first >= 0 and norm_text.find(norm_fragment, first + 1) < 0
+
+
 def find_passage(passage: str, text: str, min_similarity: float) -> PassageMatch:
     """Find the best-scoring span of ``text`` it can locate for ``passage``.
 

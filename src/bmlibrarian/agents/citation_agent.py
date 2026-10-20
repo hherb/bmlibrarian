@@ -15,7 +15,7 @@ import psycopg
 
 from .base import BaseAgent
 from .queue_manager import TaskPriority, TaskStatus
-from ..utils.passage_match import PassageMatch, find_passage
+from ..utils.passage_match import PassageMatch, find_passage, occurs_once
 from ..utils.sentence_bounds import complete_sentence_span, enclosing_sentence_span
 from ..utils.transient_retry import (
     DEFAULT_TRANSIENT_ATTEMPTS,
@@ -41,6 +41,12 @@ REJECT_MISSING_SUMMARY = "summary is missing or not text"
 # The matched span is a fragment (a term, a clause, or it starts/ends
 # mid-sentence); citations must be one or more complete sentences (#289).
 REJECT_INCOMPLETE_SENTENCE = "passage is not one or more complete sentences"
+# A fragment that occurs more than once, so the sentence to widen it to
+# would be a guess.
+REJECT_AMBIGUOUS_FRAGMENT = (
+    "passage is a fragment that occurs more than once in the abstract; "
+    "quote the complete sentence"
+)
 
 # Rejections whose log line includes the passage similarity (for the other
 # reasons the similarity says nothing, or reads like a pass).
@@ -108,7 +114,8 @@ class _ResponseCheck:
     accepted: ``passage`` holds the abstract's own text for the complete
     sentences around the matched span, with the response's ``summary`` and
     ``relevance_score``. ``match`` keeps the raw match, whose offsets do not
-    include closing punctuation the sentence check took from the abstract.
+    include closing punctuation the sentence check took from the abstract,
+    nor (when ``widened``) the surrounding sentence text.
     ``widened`` is True when the matched span was a fragment and ``passage``
     is the complete sentence(s) enclosing it.
     """
@@ -296,7 +303,11 @@ class CitationFinderAgent(BaseAgent):
         # A verbatim fragment: cite the source's own enclosing sentence(s)
         # rather than lose the evidence (owner decision, 2026-10-19), unless
         # it occurs more than once and the intended sentence is a guess.
-        if widened and abstract.casefold().count(match.text.casefold()) == 1:
+        if widened:
+            if not occurs_once(match.text, abstract):
+                return _ResponseCheck(
+                    failure=REJECT_AMBIGUOUS_FRAGMENT, match=match, llm_passage=llm_passage
+                )
             sentences = enclosing_sentence_span(abstract, match.start, match.end)
         if sentences is None:
             return _ResponseCheck(
@@ -338,7 +349,8 @@ class CitationFinderAgent(BaseAgent):
 
         Returns:
             A one-line summary for logs and progress callbacks, with the
-            rejections broken down by reason (``REJECT_*``).
+            widened count and the rejections broken down by reason
+            (``REJECT_*``).
         """
         summary = f"Extracted {extracted} citations from {documents} documents"
         rejections = self._validation_stats['failed_citations'][rejections_before:]
@@ -609,8 +621,10 @@ Respond only with valid JSON."""
                     self._validation_stats['widened_passages'] += 1
                     logger.info(
                         f"✓ Citation passage widened to its complete sentence(s) "
-                        f"(doc {doc_id}). LLM fragment: "
-                        f"{(match.text or '')[:FAILED_PASSAGE_LOGGED_CHARS]!r}"
+                        f"(doc {doc_id}, {'exact' if match.exact else 'fuzzy'} match, "
+                        f"similarity={match.similarity:.3f}). Matched fragment: "
+                        f"{(match.text or '')[:FAILED_PASSAGE_LOGGED_CHARS]!r}; "
+                        f"LLM text: {check.llm_passage[:FAILED_PASSAGE_LOGGED_CHARS]!r}"
                     )
                 elif check.passage != check.llm_passage:
                     logger.info(
@@ -807,6 +821,7 @@ Respond only with valid JSON."""
                 'doi': citation.doi,
                 'publication': citation.publication,
                 'abstract': citation.abstract,  # Include abstract for highlighting in GUI
+                'widened_from': citation.widened_from,
                 'created_at': citation.created_at.isoformat(),
                 'has_citation': True
             }
@@ -888,6 +903,7 @@ Respond only with valid JSON."""
                             doi=result_data.get('doi'),
                             publication=result_data.get('publication'),
                             abstract=result_data.get('abstract'),  # Include abstract for highlighting
+                            widened_from=result_data.get('widened_from'),
                             created_at=datetime.fromisoformat(result_data['created_at'])
                         )
                 

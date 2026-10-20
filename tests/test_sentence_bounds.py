@@ -496,6 +496,59 @@ def test_fragments_without_an_enclosing_sentence_are_not_widened(text: str, frag
     assert _widen(text, fragment) is None
 
 
+@pytest.mark.parametrize(
+    ("text", "fragment", "sentence"),
+    [
+        # A sentence starting with a symbol does not take in the one before.
+        ("Patients were enrolled. ≥50% of patients improved markedly.",
+         "patients improved", "≥50% of patients improved markedly."),
+        ("Results were good. <5% of patients relapsed in the first year.",
+         "relapsed in", "<5% of patients relapsed in the first year."),
+        # Fragments at the very start and end of the text.
+        ("Deaths fell by half. Costs rose.", "Deaths fell", "Deaths fell by half."),
+        ("Deaths fell. Strokes fell by a third.", "a third.", "Strokes fell by a third."),
+    ],
+)
+def test_widening_stops_at_the_fragments_own_sentence(
+    text: str, fragment: str, sentence: str
+) -> None:
+    """The widened span is the fragment's sentence, not its neighbour too."""
+    assert _widen(text, fragment) == sentence
+
+
+def test_complete_symbol_led_sentence_is_returned_unchanged() -> None:
+    """An already-complete symbol-led sentence widens to itself."""
+    text = "Patients were enrolled. ≥50% of patients improved markedly."
+    assert _widen(text, "≥50% of patients improved markedly.") == (
+        "≥50% of patients improved markedly."
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment", "widened"),
+    [
+        # The #307 decision: a quote containing a sentence broken off by lost
+        # text is accepted, so a fragment across the break widens over it.
+        ("Rates rose (all  Women had more complications.", "rose (all  Women had",
+         "Rates rose (all  Women had more complications."),
+        ("Rates rose\n\nWomen had more complications.", "rose\n\nWomen had",
+         "Rates rose\n\nWomen had more complications."),
+    ],
+)
+def test_fragment_across_a_broken_off_sentence_is_widened(
+    text: str, fragment: str, widened: str
+) -> None:
+    """Only a fragment wholly inside the broken sentence is rejected."""
+    assert _widen(text, fragment) == widened
+
+
+@pytest.mark.parametrize(("start", "end"), [(5, 5), (12, 13), (12, 14)])
+def test_empty_or_blank_spans_are_not_widened(start: int, end: int) -> None:
+    """Nothing quoted means nothing to widen, not the nearest sentence."""
+    text = "Deaths fell.​ Strokes fell by a third."
+    assert enclosing_sentence_span(text, start, end) is None
+
+
 def test_widening_is_limited() -> None:
     """A fragment is not widened past ``max_added_chars``."""
     assert _widen(ABSTRACT, "risk of heart attack", max_added_chars=10) is None

@@ -43,7 +43,8 @@ evidence (#303).
   text also starts a sentence: a one-word label fused onto the next word
   ("unclear.ObjectiveThis study", #304), and a double space or "( " before a
   capitalised word, where PubMed dropped a formula or symbol ("(all  Women
-  with").
+  with"). Any double space on one line counts, so a typing slip ("with
+  Aspirin" with two spaces) also starts a sentence.
 - A span that is only a section label, or has fewer than
   ``MIN_SENTENCE_WORDS`` words once a leading label is set aside, is not a
   sentence.
@@ -128,6 +129,9 @@ LABEL_MAX_CHARS = 60
 MIN_SENTENCE_WORDS = 2
 # Unicode category of invisible format characters, treated like whitespace.
 FORMAT_CATEGORY = "Cf"
+# Unicode category prefix of symbols ("≥", "<", "~", "±", "$"), which can be
+# the first character of a sentence ("≥50% of patients improved.").
+SYMBOL_CATEGORY_PREFIX = "S"
 # Line breaks in a stretch of whitespace that make a paragraph break.
 PARAGRAPH_BREAK_NEWLINES = 2
 # Blanks in a row on one line that mark text the source lost (see
@@ -153,6 +157,23 @@ def _is_blank(char: str) -> bool:
         check must see through (issue #302).
     """
     return char.isspace() or unicodedata.category(char) == FORMAT_CATEGORY
+
+
+def _is_word_or_symbol(char: str) -> bool:
+    """
+    Whether ``char`` can be the first character of a sentence's first word.
+
+    Args:
+        char: One character, or "" at the end of the text.
+
+    Returns:
+        True for a letter, a digit or a symbol (Unicode ``S*``: "≥50%",
+        "<5 years", "~30%"); False for punctuation, such as the stray colon
+        of "**CONCLUSIONS:** : Text", where ``is_sentence_start`` alone holds.
+    """
+    return bool(char) and (
+        char.isalnum() or unicodedata.category(char).startswith(SYMBOL_CATEGORY_PREFIX)
+    )
 
 
 def _check_offset(text: str, index: int) -> None:
@@ -466,7 +487,8 @@ def _label_start(text: str, end: int) -> Optional[int]:
         and (i == 0 or _is_blank(text[i - 1]) or is_sentence_end(text, i))
     ]
     for start in reversed(word_starts[-LABEL_MAX_WORDS:]):
-        # _clean_label also takes the stray colon of "**CONCLUSIONS:** :".
+        # _clean_label also strips the label's own colon and closing "**"
+        # when a stray ":" follows ("**CONCLUSIONS:** : Text").
         label = _clean_label(text[start:body_end])
         if _is_label(label) and is_sentence_start(text, start):
             return start
@@ -509,18 +531,21 @@ def _is_lost_text_gap(text: str, content_end: int, word_start: int) -> bool:
     space or "( " behind, so the sentence before the gap never ends
     ("(all  Women with…", "patients ( A minority of women…"). The sentence
     after the gap is accepted; the broken one before it still has no end.
+    Any double space on one line counts, so an ordinary typing slip before a
+    capitalised word ("treated with  Aspirin") also starts a sentence there.
 
     Args:
         text: The source text.
         content_end: Offset just after the last non-blank character before
             the gap.
-        word_start: Offset of the first character after the gap and any
-            opening marks.
+        word_start: Offset of the first non-blank character after the gap
+            (possibly an opening mark, which ``_next_word`` skips).
 
     Returns:
-        True when a capitalised word (``_is_capitalised_word``, or "A")
-        follows at least ``LOST_TEXT_GAP_SPACES`` spaces, or a space after
-        an opening bracket. The caller checks that the gap has no line break.
+        True when a capitalised word (``_is_capitalised_word``, or a single
+        capital letter) follows at least ``LOST_TEXT_GAP_SPACES`` whitespace
+        characters, or any blank (``_is_blank``) after an opening bracket.
+        The caller checks that the gap has no line break.
     """
     gap = sum(1 for c in text[content_end:word_start] if c.isspace())
     after_bracket = content_end > 0 and text[content_end - 1] in OPENING_BRACKETS
@@ -724,7 +749,9 @@ def enclosing_sentence_span(
     clause after a semicolon): the span is moved back to the nearest
     sentence start and forward to the nearest sentence end, then checked
     with ``complete_sentence_span``. The result is the source's own text;
-    callers should record that it was widened.
+    callers should record that it was widened. Like ``complete_sentence_span``
+    it may drop a trailing unbalanced closing mark the fragment had, so the
+    fragment is not always a substring of the result.
 
     Args:
         text: The source text (e.g. an abstract).
@@ -736,8 +763,11 @@ def enclosing_sentence_span(
     Returns:
         The ``(start, end)`` of the enclosing complete sentences (equal to
         ``complete_sentence_span``'s result if the span already is one), or
-        None if no sentence boundary lies within ``max_added_chars`` or the
-        widened span is not a citable sentence (only a label, too few words).
+        None if the span is empty or blank, no sentence boundary lies within
+        ``max_added_chars``, a new sentence starts before the fragment's
+        sentence ends (the source broke it off: lost text, a heading without
+        punctuation), or the widened span is not a citable sentence (only a
+        label, too few words).
 
     Raises:
         TypeError: If ``text`` is not a str or an offset or the limit is not
@@ -758,12 +788,15 @@ def enclosing_sentence_span(
         start += 1
     while end > start and _is_blank(text[end - 1]):
         end -= 1
+    if start == end:
+        return None
 
     new_start = start
-    # Only a word or an opening mark can begin a sentence; is_sentence_start
-    # alone also holds at the stray colon of "**CONCLUSIONS:** : Text".
+    # Only a word, a symbol or an opening mark can begin a sentence;
+    # is_sentence_start alone also holds at the stray colon of
+    # "**CONCLUSIONS:** : Text".
     while not (
-        (text[new_start:new_start + 1].isalnum() or text[new_start:new_start + 1] in OPENING_CHARS)
+        (_is_word_or_symbol(text[new_start:new_start + 1]) or text[new_start:new_start + 1] in OPENING_CHARS)
         and is_sentence_start(text, new_start)
     ):
         if new_start == 0 or start - new_start >= max_added_chars:
@@ -778,6 +811,6 @@ def enclosing_sentence_span(
         # A new sentence starting before this one ended means the source
         # broke it off (lost text, a heading without punctuation): reject
         # rather than run the broken sentence into the next one.
-        if text[new_end:new_end + 1].isalnum() and is_sentence_start(text, new_end):
+        if _is_word_or_symbol(text[new_end:new_end + 1]) and is_sentence_start(text, new_end):
             return None
     return complete_sentence_span(text, new_start, new_end)

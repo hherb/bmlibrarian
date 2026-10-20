@@ -20,6 +20,7 @@ from bmlibrarian.utils.passage_match import (
     find_passage,
     fits_text,
     normalize_with_offsets,
+    occurs_once,
 )
 
 SENTENCES = [
@@ -496,3 +497,26 @@ class TestValidation:
             find_passage(None, "abc", min_similarity=0.95)  # type: ignore[arg-type]
         with pytest.raises(TypeError):
             find_passage("abc", None, min_similarity=0.95)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("fragment", "text", "expected"),
+    [
+        ("stroke", "Aspirin reduced stroke.", True),
+        ("stroke", "Stroke fell. Aspirin reduced stroke.", False),  # case
+        ("risk was higher", "Risk was\nhigher. The risk  was higher.", False),  # whitespace
+        ("risk was higher", "Risk was hi\u00adgher. Risk was higher.", False),  # soft hyphen
+        ("aa", "aaa", False),  # overlapping copies
+        ("heart", "Aspirin reduced stroke.", False),  # absent
+        ("\u200b ", "Aspirin reduced stroke.", False),  # nothing to look for
+    ],
+)
+def test_occurs_once(fragment: str, text: str, expected: bool) -> None:
+    """Copies are counted the way find_passage compares text."""
+    assert occurs_once(fragment, text) is expected
+
+
+def test_occurs_once_rejects_non_strings() -> None:
+    """A non-string argument raises instead of counting as absent."""
+    with pytest.raises(TypeError):
+        occurs_once(None, "abc")  # type: ignore[arg-type]
