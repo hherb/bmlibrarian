@@ -1411,6 +1411,7 @@ Respond ONLY with the JSON object, no additional text."""
                     f"({stats['pass_rate']:.1%}), "
                     f"{stats['exact_matches']} exact matches, "
                     f"{stats['fuzzy_matches']} fuzzy matches, "
+                    f"{stats.get('widened_passages', 0)} widened from fragments, "
                     f"{stats['validations_failed']} rejected"
                 )
 

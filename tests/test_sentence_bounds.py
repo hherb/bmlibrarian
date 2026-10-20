@@ -8,7 +8,9 @@ starts or ends mid-sentence risks quoting the source out of context.
 import pytest
 
 from bmlibrarian.utils.sentence_bounds import (
+    MAX_WIDENING_CHARS,
     complete_sentence_span,
+    enclosing_sentence_span,
     is_sentence_end,
     is_sentence_start,
 )
@@ -400,3 +402,120 @@ def test_complete_sentence_span_validates_arguments(args: tuple, error: type) ->
     """Bad arguments raise instead of being silently accepted."""
     with pytest.raises(error):
         complete_sentence_span(*args)
+
+
+# ---- source damage: fused labels (#304) and lost text --------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "passage"),
+    [
+        # PubMed serves some structured abstracts with labels fused on (#304).
+        ("The role of NfL remains unclear.ObjectiveThis study examined NfL in a cohort.",
+         "This study examined NfL in a cohort."),
+        ("ResultsWe estimated a 22% reduction in deaths.", "We estimated a 22% reduction in deaths."),
+        ("Deaths fell.MethodsA cohort of 476 adults was followed.",
+         "A cohort of 476 adults was followed."),
+        ("Deaths fell. ConclusionsCSF NfL is a marker of decline.", "CSF NfL is a marker of decline."),
+        # Text the source lost leaves a double space or "( " before a sentence.
+        ("Rates rose (all  Women with hypothyroidism had more complications.",
+         "Women with hypothyroidism had more complications."),
+        ("It was lower on E4 ( A minority of women reported less desire.",
+         "A minority of women reported less desire."),
+        # A stray colon after a bold label.
+        ("**CONCLUSIONS:** : Reconstruction does not delay chemotherapy.",
+         "Reconstruction does not delay chemotherapy."),
+    ],
+)
+def test_sentences_after_source_damage_are_accepted(text: str, passage: str) -> None:
+    """A fused label or lost text before a sentence does not hide its start."""
+    assert _complete(text, passage) == passage
+
+
+@pytest.mark.parametrize(
+    ("text", "passage"),
+    [
+        # The broken sentence before a lost-text gap still has no end.
+        ("Rates rose (all  Women with hypothyroidism had more complications.", "Rates rose (all"),
+        # A gap before a lowercase word, or across a line break, is no start.
+        ("Rates rose in  women with hypothyroidism overall.", "women with hypothyroidism overall."),
+        # Not a known label, or not at a sentence start.
+        ("Deaths fell.CohortThe study ended.", "The study ended."),
+        ("We used the ResultsWe tool here.", "We tool here."),
+    ],
+)
+def test_damage_rules_do_not_accept_fragments(text: str, passage: str) -> None:
+    """The source-damage rules only open a sentence start where one is certain."""
+    assert _complete(text, passage) is None
+
+
+# ---- widening a fragment to its sentence ----------------------------------
+
+
+def _widen(text: str, passage: str, **kwargs: int) -> str | None:
+    """The enclosing complete-sentence text for ``passage``, or None."""
+    span = enclosing_sentence_span(text, *_span(text, passage), **kwargs)
+    return None if span is None else text[span[0]:span[1]]
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "however it may increase bleeding risk.",  # starts mid-sentence
+        "Aspirin reduces the risk",  # ends mid-sentence
+        "risk of heart attack",  # both
+        "spirin reduces",  # mid-word
+        SENTENCE,  # already complete: unchanged
+    ],
+)
+def test_fragments_widen_to_their_enclosing_sentence(fragment: str) -> None:
+    """The widened span is the whole sentence around the fragment."""
+    assert _widen(ABSTRACT, fragment) == SENTENCE
+
+
+def test_widening_spans_several_sentences_for_a_fragment_across_a_boundary() -> None:
+    """A fragment crossing a sentence end widens to both sentences."""
+    text = "Deaths fell by half. Strokes fell by a third. Costs rose."
+    assert _widen(text, "by half. Strokes fell") == "Deaths fell by half. Strokes fell by a third."
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        # The sentence never ends (truncated text, a keyword list).
+        ("Aspirin reduces the risk of heart attack in patients", "risk of heart"),
+        # The source broke the sentence off: never run it into the next one.
+        ("Rates rose (all  Women had more complications.", "Rates rose"),
+        ("Rates rose\n\nWomen had more complications.", "Rates rose"),
+        # Only a label.
+        ("BACKGROUND: Deaths fell.", "BACKGROUN"),
+    ],
+)
+def test_fragments_without_an_enclosing_sentence_are_not_widened(text: str, fragment: str) -> None:
+    """No certain enclosing sentence means None, never a guess."""
+    assert _widen(text, fragment) is None
+
+
+def test_widening_is_limited() -> None:
+    """A fragment is not widened past ``max_added_chars``."""
+    assert _widen(ABSTRACT, "risk of heart attack", max_added_chars=10) is None
+    added = len(SENTENCE) - len("risk of heart attack")
+    assert _widen(ABSTRACT, "risk of heart attack", max_added_chars=added) == SENTENCE
+    long_sentence = "Aspirin " + "and aspirin " * MAX_WIDENING_CHARS + "worked."
+    assert _widen(long_sentence, "worked.") is None
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        ((None, 0, 1), TypeError),
+        (("text", 3, 1), ValueError),
+        (("text", 0, 1, -1), ValueError),
+        (("text", 0, 1, 1.5), TypeError),
+        (("text", 0, 1, True), TypeError),
+    ],
+)
+def test_enclosing_sentence_span_validates_arguments(args: tuple, error: type) -> None:
+    """Bad arguments raise instead of being silently accepted."""
+    with pytest.raises(error):
+        enclosing_sentence_span(*args)

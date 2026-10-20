@@ -228,9 +228,40 @@ def test_extraction_stores_source_text_for_fuzzy_passage():
         "however it may increase bleeding risk.",  # starts mid-sentence
     ],
 )
-def test_fragments_are_rejected_as_incomplete_sentences(fragment: str) -> None:
-    """Verbatim fragments are never verified citations (#289); they are retried."""
-    agent, citation, llm = _extract_with_llm_responses([_llm_response(fragment)] * 3)
+def test_fragments_are_widened_to_their_complete_sentence(fragment: str) -> None:
+    """A verbatim fragment is cited as its enclosing sentence, and marked so."""
+    agent, citation, llm = _extract_with_llm_responses([_llm_response(fragment)])
+
+    assert llm.call_count == 1
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+    assert citation.widened_from == fragment
+    assert agent.get_validation_stats()["widened_passages"] == 1
+
+
+def test_complete_sentence_is_not_marked_as_widened() -> None:
+    """``widened_from`` stays None for a passage quoted as a whole sentence."""
+    agent, citation, _ = _extract_with_llm_responses([_llm_response(GOOD_PASSAGE)])
+
+    assert citation is not None
+    assert citation.widened_from is None
+    assert agent.get_validation_stats()["widened_passages"] == 0
+
+
+@pytest.mark.parametrize(
+    ("fragment", "abstract"),
+    [
+        # Occurs in two sentences: which one the model meant is a guess.
+        ("cardiovascular disease", ABSTRACT),
+        # The enclosing sentence never ends.
+        ("risk of heart attack", "Aspirin reduces the risk of heart attack in patients"),
+    ],
+)
+def test_fragments_that_cannot_be_widened_are_rejected(fragment: str, abstract: str) -> None:
+    """A fragment without one certain enclosing sentence is still rejected (#289)."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [_llm_response(fragment)] * 3, abstract=abstract
+    )
 
     assert citation is None
     assert llm.call_count == 3
@@ -241,7 +272,7 @@ def test_fragments_are_rejected_as_incomplete_sentences(fragment: str) -> None:
 def test_fragment_then_complete_sentence_succeeds() -> None:
     """A retry that quotes the whole sentence is accepted."""
     agent, citation, llm = _extract_with_llm_responses(
-        [_llm_response("Aspirin reduces the risk of heart attack"), _llm_response(GOOD_PASSAGE)]
+        [_llm_response("cardiovascular disease"), _llm_response(GOOD_PASSAGE)]
     )
 
     assert llm.call_count == 2
@@ -427,7 +458,7 @@ def test_batch_summary_reports_rejections() -> None:
 
 
 def test_batch_summary_breaks_rejections_down_by_reason() -> None:
-    """A fragment is not reported as an unverifiable passage."""
+    """A fragment is not reported as an unverifiable passage; widening is counted."""
     events = []
     agent = CitationFinderAgent(
         model="gpt-oss:20b",
@@ -441,7 +472,7 @@ def test_batch_summary_breaks_rejections_down_by_reason() -> None:
     responses = [
         _llm_response("Statins lower cholesterol."),
         _llm_response("Aspirin"),
-        _llm_response("Aspirin"),
+        _llm_response("cardiovascular disease"),
     ]
     with patch.object(agent, "test_connection", return_value=True), patch.object(
         agent, "_generate_and_parse_json", side_effect=responses
@@ -450,15 +481,16 @@ def test_batch_summary_breaks_rejections_down_by_reason() -> None:
 
     completed = [data for step, data in events if step == "citation_extraction_completed"]
     assert completed == [
-        "Extracted 0 citations from 3 documents (3 rejected: "
-        f"{REJECT_PASSAGE_NOT_FOUND} ×1, {REJECT_INCOMPLETE_SENTENCE} ×2)"
+        "Extracted 1 citations from 3 documents "
+        "(1 widened from a fragment to complete sentences; 2 rejected: "
+        f"{REJECT_PASSAGE_NOT_FOUND} ×1, {REJECT_INCOMPLETE_SENTENCE} ×1)"
     ]
 
 
 def test_retry_tells_the_model_why_its_passage_was_rejected() -> None:
     """A retry is not the identical prompt: it names the rejection reason."""
     _, citation, llm = _extract_with_llm_responses(
-        [_llm_response("Aspirin"), _llm_response(GOOD_PASSAGE)]
+        [_llm_response("cardiovascular disease"), _llm_response(GOOD_PASSAGE)]
     )
 
     assert citation is not None
@@ -466,7 +498,7 @@ def test_retry_tells_the_model_why_its_passage_was_rejected() -> None:
     retry_prompt = llm.call_args_list[1].args[0]
     assert REJECT_INCOMPLETE_SENTENCE not in first_prompt
     assert REJECT_INCOMPLETE_SENTENCE in retry_prompt
-    assert 'Your previous passage was: "Aspirin"' in retry_prompt
+    assert 'Your previous passage was: "cardiovascular disease"' in retry_prompt
 
 
 def test_retry_quotes_a_paraphrase_with_its_similarity() -> None:
@@ -486,13 +518,17 @@ def test_retry_quotes_a_paraphrase_with_its_similarity() -> None:
 def test_retry_quotes_the_latest_rejected_passage() -> None:
     """The third prompt quotes the second attempt's passage, not the first."""
     _, citation, llm = _extract_with_llm_responses(
-        [_llm_response("Aspirin"), _llm_response("Heart disease"), _llm_response(GOOD_PASSAGE)]
+        [
+            _llm_response("cardiovascular disease"),
+            _llm_response("Heart disease"),
+            _llm_response(GOOD_PASSAGE),
+        ]
     )
 
     assert citation is not None
     third_prompt = llm.call_args_list[2].args[0]
     assert 'Your previous passage was: "Heart disease"' in third_prompt
-    assert '"Aspirin"' not in third_prompt
+    assert '"cardiovascular disease"' not in third_prompt
 
 
 def test_retry_marks_a_shortened_quote() -> None:

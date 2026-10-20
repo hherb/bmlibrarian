@@ -346,7 +346,7 @@ recorded in `get_validation_stats()['failed_citations']` with a `reason`
 | `passage is empty` | Only whitespace |
 | `passage not found in abstract` | No candidate span at all (similarity 0.0), including a passage too long for the abstract |
 | `passage similarity below threshold` | A paraphrase or near miss |
-| `passage is not one or more complete sentences` | The matched span is a term, a clause, or starts/ends mid-sentence (see below) |
+| `passage is not one or more complete sentences` | The matched span is a term, a clause, or starts/ends mid-sentence, and cannot be widened to its sentence (see below) |
 | `summary is missing or not text` | The passage matched but `summary` is unusable |
 
 **Complete sentences (#289).** After `find_passage()` locates the span,
@@ -382,6 +382,38 @@ different 500-abstract sample, no fragment was accepted that the previous
 rules rejected, and naive sentences were accepted 94.9% of the time (94.3%
 before).
 
+**Widening fragments (owner decision, 2026-10-19).** When the matched span
+is not complete sentences, `_check_response` widens it with
+`sentence_bounds.enclosing_sentence_span()`: back to the nearest sentence
+start, forward to the nearest sentence end, then `complete_sentence_span()`
+again. The citation stores the abstract's enclosing sentence(s);
+`Citation.widened_from` keeps the matched fragment (`PassageMatch.text`),
+`get_validation_stats()['widened_passages']` counts them, each one is
+logged, and the batch summary reports them ("2 widened from a fragment to
+complete sentences"). The model's `summary` and `relevance_score` are kept
+as they are. A fragment is still rejected with
+`REJECT_INCOMPLETE_SENTENCE` when its text occurs more than once in the
+abstract (case-insensitive; the intended sentence would be a guess), when no
+sentence boundary lies within `MAX_WIDENING_CHARS` (400) added characters,
+when its sentence is broken off (a new sentence starts before it ends:
+lost text, a heading without punctuation), or when the widened span is not
+citable (a label, too few words). Measured on 2,229 comma-cut fragments of
+500 random PubMed abstracts: 2,206 widen to exactly the sentence they were cut from, 22 are rejected, 1 also
+takes in a neighbouring sentence. An LLM re-run (`gpt-oss:20b`) of the 106
+(statement, document) pairs of #303 accepted 96 (64 before), with no
+fragment rejections left (31 before) and 10 below the similarity threshold.
+Six of the 96 are verbatim multi-sentence quotes that contain a
+sentence broken off by lost text; they are accepted as they are (owner
+decision, #307: rejecting them would lose evidence). The fact-checker does not add a
+degradation note for widened passages (`degradation_notes` mean evidence
+that could not be examined); the widening is in the log and the stats.
+
+Two sentence-start rules were added with it for damaged source text: a
+section label fused onto the next word ("unclear.ObjectiveThis study",
+#304) and text the source lost, which leaves a double space or "( " before a
+capitalised word ("…(all  Women with…"). On the 500-abstract sample this
+accepted no fragment the previous rules rejected.
+
 On a retry after a rejection, the prompt names the reason, with the
 similarity for a below-threshold passage, and quotes the rejected passage,
 cut at 200 characters and marked with "…" (`_retry_note`, #290; a non-text
@@ -409,10 +441,11 @@ rejected, as a failure rather than as missing evidence (see
 
 Both batch methods (`process_scored_documents_for_citations` and
 `extract_citations_with_audit`) end with a `citation_extraction_completed`
-callback whose message gives the rejections broken down by reason and the
-number of errors, e.g. `Extracted 0 citations from 3 documents (3 rejected:
+callback whose message gives the widened passages, the rejections broken
+down by reason and the number of errors, e.g. `Extracted 1 citations from 3
+documents (1 widened from a fragment to complete sentences; 2 rejected:
 passage not found in abstract ×1, passage is not one or more complete
-sentences ×2)`.
+sentences ×1)`.
 
 Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`.
 

@@ -154,13 +154,19 @@ abstract is below 95% (a paraphrase or an invented sentence) is rejected.
 So is a response with a missing or empty passage or summary.
 
 A citation must also be **at least one complete sentence**, from the
-sentence's first word to its closing punctuation. A single term, a phrase, or
-a quote that starts or stops mid-sentence (even mid-word) is rejected,
-because a fragment can easily misrepresent the source out of context. A
-single word ("Aspirin."), a section label on its own, and text without
-closing punctuation (a line-wrapped half sentence, a keyword list) are
-rejected too. The only repair made is adding closing punctuation the model
-left off: a full stop, question or exclamation mark, a closing bracket or
+sentence's first word to its closing punctuation, because a fragment can
+easily misrepresent the source out of context. When the model quotes a
+term, a phrase, or a quote that starts or stops mid-sentence (even
+mid-word), the citation stores the **complete sentence(s) of the abstract
+that contain it** instead, and keeps the model's fragment in
+`Citation.widened_from` so you can see that it was widened. The fragment is
+rejected instead when the sentence around it is uncertain: it occurs more
+than once in the abstract, its sentence never ends (a truncated abstract, a
+keyword list, text the source lost), or the sentence is more than 400
+characters longer than the fragment. A single word ("Aspirin."), a section
+label on its own, and text without closing punctuation (a line-wrapped half
+sentence, a keyword list) are rejected too. Apart from widening, the only
+repair made is adding closing punctuation the model left off: a full stop, question or exclamation mark, a closing bracket or
 quote, or Markdown emphasis (`**`), and only as far as it is balanced
 within the passage. When it is unclear whether a full stop ends a sentence
 (for example after an initial, as in "J. M. Smith" or "U.S. Army"),
@@ -169,7 +175,10 @@ longer stretch that starts at an unambiguous sentence start. Sentences that
 start with a gene or molecule name such as "p53" or "mRNA" are accepted, and
 so are sentences ending in a letter designator ("…in group B.") or in
 "et al." before the next sentence, and abstracts whose sentences or section
-labels run together without a space ("…stenosis.Conclusion:Pre-operative…").
+labels run together without a space ("…stenosis.Conclusion:Pre-operative…",
+"…unclear.ObjectiveThis study…"). Where PubMed dropped part of the text
+(a formula or a symbol), leaving a double space or "( " before the next
+sentence ("…(all  Women with…"), the sentence after the gap is accepted.
 
 In every case above, the model is asked again, up to `max_retries` times,
 before the document is skipped; the retry shows the model its previous
@@ -180,8 +189,9 @@ the document counts as an error.
 When a batch finishes, the log (and the agent's
 `citation_extraction_completed` progress callback) says how many documents
 were skipped this way and why, for example "Extracted 12 citations from 20
-documents (3 rejected: passage not found in abstract ×1, passage is not one
-or more complete sentences ×2)". From Python,
+documents (2 widened from a fragment to complete sentences; 3 rejected:
+passage not found in abstract ×1, passage is not one or more complete
+sentences ×2)". From Python,
 `agent.get_validation_stats()['failed_citations']` lists one entry per
 skipped document: the reason, the similarity score, and the first 200
 characters of the model's last rejected passage. Earlier failed attempts for

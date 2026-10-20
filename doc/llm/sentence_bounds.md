@@ -14,8 +14,20 @@ structured-abstract labels.
   Returns None for fragments, spans without letters, label-only spans
   (`"BACKGROUND"`, `"MATERIALS AND METHODS."`) and spans with fewer than
   `MIN_SENTENCE_WORDS` (2) words besides a leading label (`"RESULTS:
-  Aspirin."`). The citation agent rejects a passage with
-  `REJECT_INCOMPLETE_SENTENCE` when this returns None.
+  Aspirin."`). When this returns None the citation agent tries
+  `enclosing_sentence_span`, and rejects the passage with
+  `REJECT_INCOMPLETE_SENTENCE` only if that fails too.
+- `enclosing_sentence_span(text, start, end, max_added_chars=MAX_WIDENING_CHARS)`:
+  widens a fragment to the complete sentence(s) containing it: back to the
+  nearest sentence start (only at a letter, digit or opening mark), forward
+  to the nearest sentence end, then `complete_sentence_span`. None if no
+  boundary lies within `max_added_chars` (400) added characters on both
+  sides together, if a new sentence starts before the fragment's sentence
+  ends (the source broke it off: never run it into the next sentence), or if
+  the result is not citable. Already-complete spans come back as
+  `complete_sentence_span` returns them. The caller decides whether
+  widening is safe; the citation agent also refuses when the fragment occurs
+  more than once in the abstract, and records `Citation.widened_from`.
 - `is_sentence_end(text, i)` (i exclusive): true only for `.`/`!`/`?` plus
   closing brackets/quotes, followed by whitespace, the end of the text, or a
   glued capitalised word (`"DAPT.The"`, `"stenosis.Conclusion:"`: source
@@ -47,7 +59,17 @@ structured-abstract labels.
   sentence end, after a blank line, after a single line break that follows
   a sentence end or a heading/label line ("BACKGROUND", "## Results",
   "Methods:"), or after a section label that itself starts a sentence,
-  with or without a space after its colon (`"Conclusion:Pre-operative"`).
+  with or without a space after its colon (`"Conclusion:Pre-operative"`),
+  after a capitalised one-word `KNOWN_SECTION_LABELS` label fused onto the
+  word (`"unclear.ObjectiveThis study"`, `"ResultsWe"`, `"ConclusionsCSF"`;
+  the label must itself start a sentence; #304), and after a lost-text gap:
+  `LOST_TEXT_GAP_SPACES` (2) spaces, or a space after `(`/`[`/`{`, on one
+  line, before a capitalised word or "A" (`"(all  Women with"`, `"E4 ( A
+  minority"`: PubMed dropped a formula or symbol there). The broken sentence
+  before such a gap still has no end, so it cannot be cited on its own; a
+  longer quote that contains it and starts and ends at boundaries is
+  accepted (owner decision, #307). A stray colon
+  after a bold label (`"**CONCLUSIONS:** : Text"`) is part of the label.
   Opening brackets, quotes and `*`/`#` in between are skipped.
 - Section labels are all caps ("RESULTS:", "**RESULTS:**", "**Results**:",
   "AUTHORS' CONCLUSIONS:") or mixed-case
@@ -66,8 +88,10 @@ structured-abstract labels.
   before and after), naive sentences accepted 94.3% → 94.9%. The PR #305
   review then narrowed the all-caps and glued-text rules (above); not
   re-measured. Known conservative misses: a sentence ending in a
-  listed abbreviation or initial with more text after it ("…given i.v. Next"), a label
-  fused to the next word (`"unclear.ObjectiveThis study"`), a sentence starting with an ordinary lowercase word
+  listed abbreviation or initial with more text after it ("…given i.v. Next"), a
+  multi-word label fused to the next word (`"Materials and methodsWe"`), a
+  sentence after lost text with a single space (`"8.8%) MAE rates"`), a
+  sentence starting with an ordinary lowercase word
   after a full stop, a sentence ending in a reference marker after the full
   stop (`significant.[12] Next`), and a final sentence with no closing
   punctuation.

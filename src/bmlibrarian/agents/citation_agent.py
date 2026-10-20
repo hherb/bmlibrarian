@@ -16,7 +16,7 @@ import psycopg
 from .base import BaseAgent
 from .queue_manager import TaskPriority, TaskStatus
 from ..utils.passage_match import PassageMatch, find_passage
-from ..utils.sentence_bounds import complete_sentence_span
+from ..utils.sentence_bounds import complete_sentence_span, enclosing_sentence_span
 from ..utils.transient_retry import (
     DEFAULT_TRANSIENT_ATTEMPTS,
     DEFAULT_TRANSIENT_BASE_SECONDS,
@@ -90,6 +90,9 @@ class Citation:
     created_at: Optional[datetime] = None
     human_review_status: Optional[str] = None  # 'accepted', 'refused', or None (unrated)
     abstract: Optional[str] = None  # Full abstract for display in review
+    # The abstract text the LLM quoted when it was a fragment and ``passage``
+    # was widened to the complete sentence(s) around it; None otherwise.
+    widened_from: Optional[str] = None
 
     def __post_init__(self):
         if self.created_at is None:
@@ -106,6 +109,8 @@ class _ResponseCheck:
     sentences around the matched span, with the response's ``summary`` and
     ``relevance_score``. ``match`` keeps the raw match, whose offsets do not
     include closing punctuation the sentence check took from the abstract.
+    ``widened`` is True when the matched span was a fragment and ``passage``
+    is the complete sentence(s) enclosing it.
     """
 
     irrelevant: bool = False
@@ -115,6 +120,7 @@ class _ResponseCheck:
     passage: str = ""
     relevance_score: float = 0.0
     summary: str = ""
+    widened: bool = False
 
 
 class CitationFinderAgent(BaseAgent):
@@ -187,6 +193,8 @@ class CitationFinderAgent(BaseAgent):
             'validations_failed': 0,
             'exact_matches': 0,
             'fuzzy_matches': 0,
+            # Accepted passages widened from a fragment to complete sentences.
+            'widened_passages': 0,
             'errors': 0,
             'failed_citations': [],
             # One entry per document counted in 'errors':
@@ -284,6 +292,12 @@ class CitationFinderAgent(BaseAgent):
             return _ResponseCheck(failure=reason, match=match, llm_passage=llm_passage)
 
         sentences = complete_sentence_span(abstract, match.start, match.end)
+        widened = sentences is None
+        # A verbatim fragment: cite the source's own enclosing sentence(s)
+        # rather than lose the evidence (owner decision, 2026-10-19), unless
+        # it occurs more than once and the intended sentence is a guess.
+        if widened and abstract.casefold().count(match.text.casefold()) == 1:
+            sentences = enclosing_sentence_span(abstract, match.start, match.end)
         if sentences is None:
             return _ResponseCheck(
                 failure=REJECT_INCOMPLETE_SENTENCE, match=match, llm_passage=llm_passage
@@ -300,10 +314,16 @@ class CitationFinderAgent(BaseAgent):
             passage=abstract[sentences[0]:sentences[1]],
             relevance_score=relevance_score,
             summary=summary,
+            widened=widened,
         )
 
     def _extraction_summary(
-        self, extracted: int, documents: int, rejections_before: int, errors_before: int
+        self,
+        extracted: int,
+        documents: int,
+        rejections_before: int,
+        errors_before: int,
+        widened: int = 0,
     ) -> str:
         """
         Describe a batch extraction, including rejected passages and errors.
@@ -313,6 +333,8 @@ class CitationFinderAgent(BaseAgent):
             documents: Documents processed in this batch.
             rejections_before: Length of ``failed_citations`` before the batch.
             errors_before: ``errors`` before the batch started.
+            widened: Extracted citations whose passage was widened from a
+                fragment to complete sentences.
 
         Returns:
             A one-line summary for logs and progress callbacks, with the
@@ -322,6 +344,8 @@ class CitationFinderAgent(BaseAgent):
         rejections = self._validation_stats['failed_citations'][rejections_before:]
         errors = self._validation_stats['errors'] - errors_before
         notes = []
+        if widened:
+            notes.append(f"{widened} widened from a fragment to complete sentences")
         if rejections:
             counts: Dict[str, int] = {}
             for entry in rejections:
@@ -581,7 +605,14 @@ Respond only with valid JSON."""
                     self._validation_stats['exact_matches'] += 1
                 else:
                     self._validation_stats['fuzzy_matches'] += 1
-                if check.passage != check.llm_passage:
+                if check.widened:
+                    self._validation_stats['widened_passages'] += 1
+                    logger.info(
+                        f"✓ Citation passage widened to its complete sentence(s) "
+                        f"(doc {doc_id}). LLM fragment: "
+                        f"{(match.text or '')[:FAILED_PASSAGE_LOGGED_CHARS]!r}"
+                    )
+                elif check.passage != check.llm_passage:
                     logger.info(
                         f"✓ Citation {'exact' if match.exact else 'fuzzy'}-matched "
                         f"(similarity={match.similarity:.3f}). "
@@ -608,7 +639,8 @@ Respond only with valid JSON."""
                     pmid=document.get('pmid'),
                     doi=document.get('doi'),
                     publication=document.get('publication'),
-                    abstract=abstract  # Include full abstract for citation review
+                    abstract=abstract,  # Include full abstract for citation review
+                    widened_from=match.text if check.widened else None,
                 )
 
                 return citation
@@ -677,7 +709,8 @@ Respond only with valid JSON."""
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
 
         summary = self._extraction_summary(
-            len(citations), len(qualifying_docs), rejections_before, errors_before
+            len(citations), len(qualifying_docs), rejections_before, errors_before,
+            widened=sum(c.widened_from is not None for c in citations),
         )
         logger.info(summary)
         self._call_callback("citation_extraction_completed", summary)
@@ -1077,7 +1110,8 @@ Respond only with valid JSON."""
         self._call_callback(
             "citation_extraction_completed",
             self._extraction_summary(
-                total_extracted, len(qualifying_docs), failed_before, errors_before
+                total_extracted, len(qualifying_docs), failed_before, errors_before,
+                widened=sum(c.widened_from is not None for c, _ in results),
             )
         )
 
