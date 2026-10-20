@@ -287,8 +287,11 @@ class PDFButtonWidget(QPushButton):
 PDF discovery and downloads are network-bound and can take tens of seconds.
 Both button paths run them on a `QThread`:
 
-- **FETCH** (`PDFButtonWidget._handle_fetch`): `PDFFetchWorker` runs the
-  `on_fetch` handler.
+- **FETCH** (`PDFButtonWidget._handle_fetch`): on cards built by
+  `QtDocumentCardFactory`, the button's `on_discover` hook runs the Find PDF
+  flow below, with the FETCH button as its own "find" button. A
+  `PDFButtonConfig.on_fetch` handler supplied by other code still runs on a
+  `PDFFetchWorker`.
 - **Find PDF** (`QtDocumentCardFactory._handle_find_pdf_click`):
   `PDFDiscoveryWorker` runs `_discover_and_download()` (CrossRef title search,
   resolvers, HTTP/browser download). A `FindPDFSession` — a `QObject` living on
@@ -302,8 +305,9 @@ Both button paths run them on a `QThread`:
   tooltip; a failed database write is reported as "⚠ Not Saved" rather than
   "✓ Found".
 
-Note: the default FETCH handler still passes `prompt_on_mismatch=True` from
-the worker thread; see the known issue in `pdf_verification_system.md`.
+Closing the progress dialog before the result arrives cancels the session
+and re-enables the button. A CrossRef-discovered DOI is saved only after a
+verified download (see `pdf_verification_system.md`).
 
 Rules for new code: worker callables must not touch widgets; receive worker
 signals on methods of a `QObject` that lives on the GUI thread, so the

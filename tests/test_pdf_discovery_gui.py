@@ -1084,6 +1084,137 @@ class TestFindPDFSessionRobustness:
         assert factory._pdf_path_cache[42] == pdf_path
 
 
+@pytest.mark.skipif(not HAS_QT, reason="Qt not available")
+class TestFetchAndDiscoveredDoi:
+    """FETCH clicks use the Find PDF flow (#278); a CrossRef DOI is saved only
+    after a verified download (#279); closing the dialog cancels."""
+
+    @pytest.fixture
+    def app(self):
+        """Create QApplication for tests."""
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def test_fetch_click_runs_find_flow_and_becomes_view(self, app, tmp_path):
+        """A FETCH click starts no PDFFetchWorker and ends as an enabled View button."""
+        from bmlibrarian.gui.document_card_factory_base import (
+            DocumentCardData, PDFButtonConfig, PDFButtonState
+        )
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus, PDFButtonWidget, QtDocumentCardFactory
+        )
+
+        pdf_path = tmp_path / "found.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
+        card = DocumentCardData(doc_id=42, title="A paper", pdf_url="https://x/p.pdf")
+        button = PDFButtonWidget(PDFButtonConfig(state=PDFButtonState.FETCH, doc_id=42))
+        _container = factory._create_button_container(button, card)  # owns button
+        outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
+
+        with patch.object(factory, '_discover_and_download',
+                          return_value=_download_result(verified=True)), \
+             patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+             patch.object(factory, '_update_pdf_filename_in_database', return_value=True), \
+             patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot'):
+            button.click()
+            assert button._fetch_worker is None
+            assert _pump_until(lambda: not factory._find_pdf_sessions)
+
+        assert button.config.state == PDFButtonState.VIEW
+        assert button.isEnabled()
+        assert "View" in button.text()
+
+    def _run_attached(self, tmp_path, result):
+        """Run a Find PDF click ending ATTACHED; return the DOI-update mock."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus
+        )
+        pdf_path = tmp_path / "found.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
+        with patch.object(factory, '_discover_and_download', return_value=result), \
+             patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+             patch.object(factory, '_update_pdf_filename_in_database', return_value=True), \
+             patch.object(factory, '_update_doi_in_database') as update_doi, \
+             patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot'):
+            factory._handle_find_pdf_click(find_button, primary, card)
+            assert _pump_until(lambda: not factory._find_pdf_sessions)
+        return update_doi
+
+    def test_discovered_doi_saved_after_verified_download(self, app, tmp_path):
+        """A verified PDF confirms the CrossRef DOI, which is then saved."""
+        update_doi = self._run_attached(
+            tmp_path, _download_result(verified=True, discovered_doi="10.9/found")
+        )
+        update_doi.assert_called_once_with(42, "10.9/found")
+
+    def test_discovered_doi_not_saved_for_accepted_mismatch(self, app, tmp_path):
+        """ACCEPT of a mismatched PDF does not confirm the CrossRef DOI."""
+        update_doi = self._run_attached(
+            tmp_path, _download_result(verified=False, discovered_doi="10.9/found")
+        )
+        update_doi.assert_not_called()
+
+    def test_discover_and_download_writes_no_doi(self, app, tmp_path):
+        """The worker half carries the discovered DOI instead of writing it."""
+        from types import SimpleNamespace
+        from bmlibrarian.discovery import DownloadResult
+
+        factory, _, _, card = _make_find_pdf_widgets(tmp_path)
+        card.doi = None
+        title_result = SimpleNamespace(
+            status=SimpleNamespace(value='success'),
+            metadata={'discovered_doi': '10.9/found', 'similarity': 0.95},
+            error_message=None,
+        )
+        finder = MagicMock()
+        finder.download_for_document.return_value = DownloadResult(success=False)
+        with patch('bmlibrarian.config.get_config', return_value={}), \
+             patch('bmlibrarian.config.get_openathens_config', return_value={}), \
+             patch('bmlibrarian.discovery.resolvers.CrossRefTitleResolver.resolve',
+                   return_value=title_result), \
+             patch('bmlibrarian.discovery.FullTextFinder', return_value=finder), \
+             patch.object(factory, '_update_doi_in_database') as update_doi:
+            result = factory._discover_and_download(card)
+
+        update_doi.assert_not_called()
+        assert result.discovered_doi == '10.9/found'
+        document = finder.download_for_document.call_args.kwargs['document']
+        assert document['doi'] == '10.9/found'
+
+    def test_closing_dialog_cancels_search(self, app, tmp_path):
+        """Closing the progress dialog re-enables the button; the late result is dropped."""
+        import threading
+        from bmlibrarian.gui.qt.qt_document_card_factory import PDFDiscoveryProgressDialog
+
+        release = threading.Event()
+
+        def blocking_discovery(card_data, progress_cb):
+            """Block until released, simulating slow discovery."""
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return 'RESULT'
+
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        try:
+            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, '_finalize_discovery_result') as finalize:
+                factory._handle_find_pdf_click(find_button, primary, card)
+                assert not find_button.isEnabled()
+
+                find_button.findChild(PDFDiscoveryProgressDialog).reject()
+                assert find_button.isEnabled()
+                assert find_button.text() == "Find PDF"
+
+                release.set()
+                assert _pump_until(lambda: not factory._find_pdf_sessions)
+                finalize.assert_not_called()
+        finally:
+            release.set()
+            factory.shutdown()
+
+
 class TestDescribeDiscoveryError:
     """User-facing discovery error text."""
 

@@ -185,21 +185,25 @@ else:  # 'reject'
 
 #### QtDocumentCardFactory (`gui/qt/qt_document_card_factory.py`)
 
-Document cards verify downloads on two paths:
+Document cards verify downloads on one path, used by both the "🔍 Find"
+(FETCH state) and "🔍 Find PDF" buttons. It is split across threads.
+`_discover_and_download()` runs the network-bound CrossRef/resolver/download
+work on a `PDFDiscoveryWorker` (QThread) and must not touch widgets or the
+database. A DOI found by the CrossRef title search travels in
+`DownloadResult.discovered_doi` and is written to `document.doi` (only where
+it is NULL) **only when the PDF was verified against it** (`verified is
+True`), never for ACCEPT of a mismatch or a manual upload. The result is
+delivered (via `FindPDFSession`, a GUI-thread QObject) to
+`_finalize_discovery_result()`, which shows the modal verification prompt on
+the GUI thread and returns a `FindPdfOutcome` (ATTACHED, UNSAVED, REASSIGNED,
+SAVED_COPY, DECLINED, NOT_FOUND) with a user-facing message, so a reassigned
+or rejected PDF is not reported as "not found". RETRY discards the PDF; the
+button re-enables so the user can search again. Closing the progress dialog
+before the result arrives cancels the search.
 
-- **FETCH** (`_create_fetch_handler`): `PDFManager.download_pdf_with_discovery(...,
-  prompt_on_mismatch=True)` runs inside `PDFFetchWorker`, on the worker thread.
-  **Known issue (pre-existing):** the factory never sets `_parent`, so
-  `parent_widget` is None there and a mismatch falls back to the CLI prompt,
-  which reads stdin on the worker thread.
-- **Find PDF**: split across threads. `_discover_and_download()` runs the
-  network-bound CrossRef/resolver/download work on a `PDFDiscoveryWorker`
-  (QThread) and must not touch widgets (it does persist a CrossRef-discovered
-  DOI). Its result is delivered (via `FindPDFSession`, a GUI-thread QObject)
-  to `_finalize_discovery_result()`, which shows the modal verification prompt
-  on the GUI thread and returns a `FindPdfOutcome` (ATTACHED, UNSAVED,
-  REASSIGNED, SAVED_COPY, DECLINED, NOT_FOUND) with a user-facing message, so
-  a reassigned or rejected PDF is not reported as "not found":
+`PDFManager.download_pdf_with_discovery(prompt_on_mismatch=True)` without a
+`parent_widget` or `verification_callback` prompts on stdin; GUI code must not
+call it that way from a worker thread.
 
 ```python
 def _finalize_discovery_result(self, card_data, result):

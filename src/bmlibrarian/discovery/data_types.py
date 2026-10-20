@@ -191,3 +191,6 @@ class DownloadResult:
     extracted_pmid: Optional[str] = None
     extracted_title: Optional[str] = None
     title_similarity: Optional[float] = None  # 0.0 to 1.0
+    # DOI found by a CrossRef title search for this download; unconfirmed
+    # until the PDF is verified, so callers persist it only when verified=True
+    discovered_doi: Optional[str] = None
