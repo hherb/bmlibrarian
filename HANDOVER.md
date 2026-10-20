@@ -29,8 +29,8 @@ off new work. Longer-term structural items live in
   "Widening fragments". LLM re-run of the 106 #303 pairs (`gpt-oss:20b`,
   read-only on `knowledgebase`): **96 accepted** (were 64), 0 fragment
   rejections (were 31), 10 still below the similarity threshold. 6 accepted
-  passages contain a sentence broken off by lost text (also accepted on
-  master) → #307.
+  passages contain a sentence broken off by lost text; the owner accepts
+  them as they are (#307 closed: rejecting would lose evidence).
 - **Sentence bounds stop rejecting real sentences** (2026-10-19, PR #305,
   merged, closes #302, #303): invisible `Cf` characters are whitespace;
   single-capital designators, all-caps tokens before a capital, "et al."
@@ -105,9 +105,7 @@ ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
-  similarity threshold (long multi-sentence quotes that drift). #307:
-  passages that contain a broken-off sentence (reject or trim? owner
-  policy question). Known sentence-bounds misses: lost text with a single
+  similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
 - #292 — show citation rejection counts in the Qt research tab and CLI
   (and mark widened citations, `Citation.widened_from`).

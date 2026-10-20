@@ -402,7 +402,9 @@ citable (a label, too few words). Measured on 2,229 comma-cut fragments of
 takes in a neighbouring sentence. An LLM re-run (`gpt-oss:20b`) of the 106
 (statement, document) pairs of #303 accepted 96 (64 before), with no
 fragment rejections left (31 before) and 10 below the similarity threshold.
-The fact-checker does not add a
+Six of the 96 are verbatim multi-sentence quotes that contain a
+sentence broken off by lost text; they are accepted as they are (owner
+decision, #307: rejecting them would lose evidence). The fact-checker does not add a
 degradation note for widened passages (`degradation_notes` mean evidence
 that could not be examined); the widening is in the log and the stats.
 

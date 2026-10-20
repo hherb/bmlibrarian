@@ -66,7 +66,9 @@ structured-abstract labels.
   `LOST_TEXT_GAP_SPACES` (2) spaces, or a space after `(`/`[`/`{`, on one
   line, before a capitalised word or "A" (`"(all  Women with"`, `"E4 ( A
   minority"`: PubMed dropped a formula or symbol there). The broken sentence
-  before such a gap still has no end, so it cannot be cited. A stray colon
+  before such a gap still has no end, so it cannot be cited on its own; a
+  longer quote that contains it and starts and ends at boundaries is
+  accepted (owner decision, #307). A stray colon
   after a bold label (`"**CONCLUSIONS:** : Text"`) is part of the label.
   Opening brackets, quotes and `*`/`#` in between are skipped.
 - Section labels are all caps ("RESULTS:", "**RESULTS:**", "**Results**:",
