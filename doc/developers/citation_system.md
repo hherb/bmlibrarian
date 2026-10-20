@@ -347,19 +347,23 @@ recorded in `get_validation_stats()['failed_citations']` with a `reason`
 | `passage not found in abstract` | No candidate span at all (similarity 0.0), including a passage too long for the abstract |
 | `passage similarity below threshold` | A paraphrase or near miss |
 | `passage is not one or more complete sentences` | The matched span is a term, a clause, or starts/ends mid-sentence, and cannot be widened to its sentence (see below) |
+| `passage is a fragment that occurs more than once in the abstract; quote the complete sentence` | A fragment that could be widened, but its text occurs more than once, so which sentence the model meant is a guess |
 | `summary is missing or not text` | The passage matched but `summary` is unusable |
 
 **Complete sentences (#289).** After `find_passage()` locates the span,
 `utils/sentence_bounds.complete_sentence_span(abstract, start, end)` must
 confirm that the span runs from a sentence start to a sentence end. Without
 that check, verbatim matches such as `"a"`, `"Aspirin"` or `"spirin reduces"`
-(exact matches may start mid-word) were stored as verified citations. Only
+(exact matches may start mid-word) were stored as verified citations; such
+fragments are now widened to their sentence when that is certain (see
+below). Only
 surrounding whitespace is trimmed and closing punctuation the model omitted
 is appended from the abstract: closing brackets and quotes, `.`/`!`/`?`, and
 Markdown `*`. A trailing closing mark without its opening mark inside the
 span is dropped again, so no unbalanced bracket, quote or `**` is stored.
 The stored passage is that span of the abstract, so it can be a few
-characters longer than `PassageMatch.text` (whose offsets `_ResponseCheck`
+characters longer than `PassageMatch.text` (or, when widened, up to
+`MAX_WIDENING_CHARS` longer) (whose offsets `_ResponseCheck`
 keeps unchanged in `match`). Ambiguous boundaries count as non-boundaries,
 so a doubtful passage is rejected rather than accepted: a line break or the
 end of the text without punctuation never ends a sentence, a full stop after
@@ -391,9 +395,14 @@ again. The citation stores the abstract's enclosing sentence(s);
 `get_validation_stats()['widened_passages']` counts them, each one is
 logged, and the batch summary reports them ("2 widened from a fragment to
 complete sentences"). The model's `summary` and `relevance_score` are kept
-as they are. A fragment is still rejected with
-`REJECT_INCOMPLETE_SENTENCE` when its text occurs more than once in the
-abstract (case-insensitive; the intended sentence would be a guess), when no
+as they are. The log line gives the match kind, similarity, matched
+fragment and the model's own text. `widened_from` also survives the queue
+path (`extract_citation_from_queue` / `process_citation_queue`). A fragment is rejected with
+`REJECT_AMBIGUOUS_FRAGMENT` when its text occurs more than once in the
+abstract (`passage_match.occurs_once`, which compares the way `find_passage`
+does: case, whitespace, invisible characters and typography are ignored; the
+intended sentence would be a guess), and with `REJECT_INCOMPLETE_SENTENCE`
+when no
 sentence boundary lies within `MAX_WIDENING_CHARS` (400) added characters,
 when its sentence is broken off (a new sentence starts before it ends:
 lost text, a heading without punctuation), or when the widened span is not

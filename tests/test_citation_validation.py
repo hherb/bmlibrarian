@@ -13,6 +13,7 @@ import pytest
 
 from bmlibrarian.agents.citation_agent import (
     FAILED_PASSAGE_STORED_CHARS,
+    REJECT_AMBIGUOUS_FRAGMENT,
     REJECT_BAD_RELEVANCE,
     REJECT_BELOW_THRESHOLD,
     REJECT_INCOMPLETE_SENTENCE,
@@ -249,15 +250,27 @@ def test_complete_sentence_is_not_marked_as_widened() -> None:
 
 
 @pytest.mark.parametrize(
-    ("fragment", "abstract"),
+    ("fragment", "abstract", "reason"),
     [
         # Occurs in two sentences: which one the model meant is a guess.
-        ("cardiovascular disease", ABSTRACT),
+        ("cardiovascular disease", ABSTRACT, REJECT_AMBIGUOUS_FRAGMENT),
+        # The copies differ only in case or whitespace, which the matcher
+        # ignores: still two occurrences.
+        ("aspirin reduced stroke",
+         "Aspirin reduced stroke in adults. In children, aspirin reduced stroke less.",
+         REJECT_AMBIGUOUS_FRAGMENT),
+        ("bleeding risk was higher in group",
+         "Bleeding risk was\nhigher in group A than in controls. In the second "
+         "cohort, bleeding risk was higher in group B.",
+         REJECT_AMBIGUOUS_FRAGMENT),
         # The enclosing sentence never ends.
-        ("risk of heart attack", "Aspirin reduces the risk of heart attack in patients"),
+        ("risk of heart attack", "Aspirin reduces the risk of heart attack in patients",
+         REJECT_INCOMPLETE_SENTENCE),
     ],
 )
-def test_fragments_that_cannot_be_widened_are_rejected(fragment: str, abstract: str) -> None:
+def test_fragments_that_cannot_be_widened_are_rejected(
+    fragment: str, abstract: str, reason: str
+) -> None:
     """A fragment without one certain enclosing sentence is still rejected (#289)."""
     agent, citation, llm = _extract_with_llm_responses(
         [_llm_response(fragment)] * 3, abstract=abstract
@@ -266,7 +279,36 @@ def test_fragments_that_cannot_be_widened_are_rejected(fragment: str, abstract: 
     assert citation is None
     assert llm.call_count == 3
     failed = agent.get_validation_stats()["failed_citations"]
-    assert [entry["reason"] for entry in failed] == [REJECT_INCOMPLETE_SENTENCE]
+    assert [entry["reason"] for entry in failed] == [reason]
+
+
+def test_fuzzy_fragment_is_widened_and_keeps_the_source_wording() -> None:
+    """A near-verbatim fragment widens; ``widened_from`` is the abstract's text."""
+    fragment = "reduces the risk of heart attacks in patients with cardiovascular disease"
+    agent, citation, _ = _extract_with_llm_responses([_llm_response(fragment)])
+
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+    assert citation.widened_from is not None
+    assert citation.widened_from != fragment
+    assert citation.widened_from in ABSTRACT
+    stats = agent.get_validation_stats()
+    assert stats["fuzzy_matches"] == 1
+    assert stats["widened_passages"] == 1
+
+
+def test_queue_result_keeps_widened_from() -> None:
+    """The queue path carries ``widened_from`` through its result dict."""
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=0)
+    document = {"id": 42, "title": "Aspirin trial", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=[_llm_response("Aspirin")]
+    ):
+        result = agent.extract_citation_from_queue("Does aspirin help?", document, {}, 0.0)
+
+    assert result["has_citation"] is True
+    assert result["passage"] == GOOD_PASSAGE
+    assert result["widened_from"] == "Aspirin"
 
 
 def test_fragment_then_complete_sentence_succeeds() -> None:
@@ -483,7 +525,7 @@ def test_batch_summary_breaks_rejections_down_by_reason() -> None:
     assert completed == [
         "Extracted 1 citations from 3 documents "
         "(1 widened from a fragment to complete sentences; 2 rejected: "
-        f"{REJECT_PASSAGE_NOT_FOUND} ×1, {REJECT_INCOMPLETE_SENTENCE} ×1)"
+        f"{REJECT_PASSAGE_NOT_FOUND} ×1, {REJECT_AMBIGUOUS_FRAGMENT} ×1)"
     ]
 
 
@@ -496,8 +538,8 @@ def test_retry_tells_the_model_why_its_passage_was_rejected() -> None:
     assert citation is not None
     first_prompt = llm.call_args_list[0].args[0]
     retry_prompt = llm.call_args_list[1].args[0]
-    assert REJECT_INCOMPLETE_SENTENCE not in first_prompt
-    assert REJECT_INCOMPLETE_SENTENCE in retry_prompt
+    assert REJECT_AMBIGUOUS_FRAGMENT not in first_prompt
+    assert REJECT_AMBIGUOUS_FRAGMENT in retry_prompt
     assert 'Your previous passage was: "cardiovascular disease"' in retry_prompt
 
 

@@ -158,14 +158,15 @@ sentence's first word to its closing punctuation, because a fragment can
 easily misrepresent the source out of context. When the model quotes a
 term, a phrase, or a quote that starts or stops mid-sentence (even
 mid-word), the citation stores the **complete sentence(s) of the abstract
-that contain it** instead, and keeps the model's fragment in
-`Citation.widened_from` so you can see that it was widened. The fragment is
-rejected instead when the sentence around it is uncertain: it occurs more
-than once in the abstract, its sentence never ends (a truncated abstract, a
+that contain it** instead, and keeps the matched fragment (the abstract's
+own text for it) in `Citation.widened_from` so you can see that it was
+widened. The fragment is rejected instead when the sentence around it is
+uncertain: it occurs more than once in the abstract (ignoring differences in
+case, spacing and invisible characters), its sentence never ends (a truncated abstract, a
 keyword list, text the source lost), or the sentence is more than 400
-characters longer than the fragment. A single word ("Aspirin."), a section
-label on its own, and text without closing punctuation (a line-wrapped half
-sentence, a keyword list) are rejected too. Apart from widening, the only
+characters longer than the fragment. A one-word sentence ("Aspirin."), a
+section label on its own, and text whose sentence has no closing punctuation
+are rejected too. Apart from widening, the only
 repair made is adding closing punctuation the model left off: a full stop, question or exclamation mark, a closing bracket or
 quote, or Markdown emphasis (`**`), and only as far as it is balanced
 within the passage. When it is unclear whether a full stop ends a sentence
@@ -180,7 +181,7 @@ labels run together without a space ("…stenosis.Conclusion:Pre-operative…",
 (a formula or a symbol), leaving a double space or "( " before the next
 sentence ("…(all  Women with…"), the sentence after the gap is accepted.
 
-In every case above, the model is asked again, up to `max_retries` times,
+Whenever a response is rejected, the model is asked again, up to `max_retries` times,
 before the document is skipped; the retry shows the model its previous
 passage and why it was rejected. If the language model server cannot be reached or
 times out, the request is retried a few times with increasing waits before
