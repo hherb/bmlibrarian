@@ -108,9 +108,10 @@ def discard_abandoned_download(result: Any) -> None:
     """Delete the PDF that a cancelled "Find PDF" search downloaded.
 
     Nothing links that file to a document, so it would otherwise stay on disk
-    unreferenced (#314). A file that was already at that path before the
-    search (``file_existed_before``) is kept, as is anything whose origin is
-    unknown.
+    unreferenced (#314). The file is kept if it was already at that path
+    before the search (``file_existed_before``), if it has changed since the
+    search wrote it (another search for the same document may have attached
+    it since), or if the result does not record both facts.
 
     Args:
         result: The cancelled search's download result
@@ -121,9 +122,19 @@ def discard_abandoned_download(result: Any) -> None:
     if getattr(result, 'file_existed_before', True):
         logger.info(f"Cancelled PDF search: keeping {file_path} (it existed before the search)")
         return
+    written_mtime_ns = getattr(result, 'file_mtime_ns', None)
+    path = Path(file_path)
     try:
-        Path(file_path).unlink(missing_ok=True)
+        if written_mtime_ns is None or path.stat().st_mtime_ns != written_mtime_ns:
+            logger.info(
+                f"Cancelled PDF search: keeping {file_path} "
+                f"(changed since the search wrote it, or not recorded)"
+            )
+            return
+        path.unlink()
         logger.info(f"Cancelled PDF search: deleted its download {file_path}")
+    except FileNotFoundError:
+        pass
     except OSError as e:
         logger.warning(f"Cancelled PDF search: could not delete {file_path}: {e}")
 
@@ -331,7 +342,8 @@ class FindPDFSession(QObject):
 
         A result that arrives afterwards is dropped: no verification prompt,
         no widget updates, no database writes, and the PDF it downloaded is
-        deleted (``discard_abandoned_download``).
+        deleted (``discard_abandoned_download``). At app quit the event loop
+        has stopped, so a late result is never delivered and its PDF stays.
         """
         self._cancelled = True
 
@@ -1400,7 +1412,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Closing the progress dialog before the result arrives abandons the
         search: the worker finishes in the background and its result is
         ignored (no verification prompt out of context) and a PDF it
-        downloaded is deleted. The button stays disabled until the worker
+        downloaded is deleted, unless that path held a file before the search
+        or the file changed since. The button stays disabled until the worker
         has stopped, so a new search cannot race its download.
 
         Args:
@@ -1952,7 +1965,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             decision, save_path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
 
             if decision == VerificationDecision.ACCEPT:
-                logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
+                logger.info(
+                    f"User ACCEPTED {'unchecked' if unchecked else 'mismatched'} PDF "
+                    f"for document {card_data.doc_id}"
+                )
                 # Fall through to attach the path and store full_text
             elif decision == VerificationDecision.MANUAL_UPLOAD:
                 # User manually selected a different PDF file

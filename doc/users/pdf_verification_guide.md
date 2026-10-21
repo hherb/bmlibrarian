@@ -22,11 +22,11 @@ The verification dialog appears when:
    Find buttons always prompt)
 
 On document cards and in the Paper Weight Lab it also appears, headed **PDF
-Could Not Be Checked**, when a PDF was found through a DOI guessed from the
-title and the check against your document failed (for example, the PDF could
-not be read). Without a check, nothing confirms it is the right paper, so you
-decide. If you accept it, it is attached as "content not verified" and the
-guessed DOI is not saved.
+Could Not Be Checked**, when an error stopped the check of the PDF against
+your document (an unexpected verifier error; a PDF with no readable text
+counts as a mismatch instead). Without a check, nothing confirms it is the
+right paper, so you decide. If you accept it, it is attached as "content not
+verified", and a DOI guessed from the title is not saved.
 
 ## Dialog Layout
 
@@ -89,7 +89,8 @@ and tries the others.
 
 #### ✗ Reject (Red)
 Discard the downloaded PDF completely and close the dialog. Later searches
-for this document also skip its source (until you restart the application).
+for this document in the same view (for example the research tab, or the
+Paper Weight Lab) also skip its source, until you close that view or quit.
 
 **Use when**: The PDF is not useful at all.
 

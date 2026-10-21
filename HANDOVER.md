@@ -11,16 +11,21 @@ off new work. Longer-term structural items live in
 ## Recently landed (context)
 
 - **Find PDF follow-ups** (2026-10-21, closes #314, #315, #317;
-  owner decisions 2026-10-21). A PDF whose CrossRef-DOI re-check *raised*
-  (`DownloadResult.verification_error`) now goes to the verification prompt
+  owner decisions 2026-10-21). A PDF whose verification *raised* (the
+  CrossRef-DOI re-check or `FullTextFinder`'s own check;
+  `DownloadResult.verification_error`) now goes to the verification prompt
   (`VerificationPromptData.unchecked`, header "PDF Could Not Be Checked")
   instead of being attached silently; verification switched off still
   attaches without a prompt. RETRY/REJECT remember the PDF's source URL per
-  document (`QtDocumentCardFactory._remember_rejected_source`, in memory);
-  the next search passes them to `FullTextFinder` as `excluded_urls` (DOI
-  fallback URL included). A cancelled search deletes the PDF it downloaded
-  (`discard_abandoned_download`) unless the file existed before
-  (`DownloadResult.file_existed_before`). Docs: `pdf_verification_guide.md`,
+  document (`QtDocumentCardFactory._remember_rejected_source`, in memory,
+  per factory); the next search passes them to `FullTextFinder` as
+  `excluded_urls` (DOI fallback URL included; NCBI FTP/HTTPS forms match
+  via `comparable_source_url`). A cancelled search deletes the PDF it
+  downloaded (`discard_abandoned_download`) unless the file existed before
+  (`DownloadResult.file_existed_before`) or changed since
+  (`file_mtime_ns`). Open follow-ups: downloads overwrite an existing file
+  at the target path (#319), doi.org fallback after rejecting
+  every source (#320). Docs: `pdf_verification_guide.md`,
   `pdf_verification_system.md`, `document_card_factory_system.md`.
 - **Find PDF runs on one shared, verified flow** (2026-10-21, PRs #313,
   #316, closes #278, #279, #312). Card FETCH and Find, and the Paper Weight

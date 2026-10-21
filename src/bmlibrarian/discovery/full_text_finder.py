@@ -71,6 +71,21 @@ def format_resolver_errors(resolution_results: List[ResolutionResult]) -> str:
     )
 
 
+def comparable_source_url(url: str) -> str:
+    """Return the form of a source URL used to match excluded sources.
+
+    NCBI FTP sources are downloaded over HTTPS, so a rejected download carries
+    the HTTPS URL while discovery reports the FTP one; both map to HTTPS here.
+
+    Args:
+        url: Source URL as discovered or as downloaded
+
+    Returns:
+        The HTTPS form of an NCBI FTP URL, otherwise ``url`` unchanged
+    """
+    return ncbi_ftp_to_https(url) or url
+
+
 class FullTextFinder:
     """Orchestrates full-text PDF discovery from multiple sources.
 
@@ -307,7 +322,7 @@ class FullTextFinder:
             DownloadResult with download status and verification results
         """
         start_time = time.time()
-        excluded = set(excluded_urls or ())
+        excluded = {comparable_source_url(u) for u in excluded_urls or ()}
 
         # First, discover sources
         if progress_callback:
@@ -316,16 +331,20 @@ class FullTextFinder:
         # When verification is enabled, don't stop on first OA - we need fallback sources
         # in case the first source fails verification (e.g., PMC has wrong PDF)
         stop_early = self.prefer_open_access and not verify_content
+        # The first OA source may be an excluded one; keep looking past it
+        stop_early = stop_early and not excluded
 
         discovery = self.discover(
             identifiers,
             stop_on_first_oa=stop_early,
             progress_callback=progress_callback
         )
-        kept_sources = [s for s in discovery.sources if s.url not in excluded]
+        kept_sources = [
+            s for s in discovery.sources if comparable_source_url(s.url) not in excluded
+        ]
         skipped = len(discovery.sources) - len(kept_sources)
         if skipped:
-            logger.info(f"Skipping {skipped} source(s) rejected earlier for this document")
+            logger.info(f"Skipping {skipped} excluded source(s) for this document")
         discovery.sources = kept_sources
 
         # If no sources found but we have a DOI, create a fallback DOI URL
@@ -333,7 +352,7 @@ class FullTextFinder:
         # (e.g., Cochrane, Wiley) that block HTTP-based discovery
         if not discovery.sources and identifiers.doi:
             doi_url = self._create_doi_fallback_url(identifiers.doi)
-            if doi_url and doi_url in excluded:
+            if doi_url and comparable_source_url(doi_url) in excluded:
                 skipped += 1
             elif doi_url:
                 fallback_source = PDFSource(
@@ -347,13 +366,15 @@ class FullTextFinder:
                 logger.info(f"No sources found, added DOI fallback: {doi_url}")
 
         if not discovery.sources:
-            error_message = (
-                f"No PDF sources left after skipping {skipped} you rejected earlier"
-                if skipped else "No PDF sources found and no DOI available for fallback"
-            )
-            resolver_errors = format_resolver_errors(discovery.resolution_results)
-            if resolver_errors:
-                error_message += f" (resolver errors: {resolver_errors})"
+            if skipped:
+                # No resolver errors appended: their "timed out"/"404" wording
+                # would get the message classified as a retryable network error
+                error_message = f"No PDF sources left after skipping {skipped} excluded source(s)"
+            else:
+                error_message = "No PDF sources found and no DOI available for fallback"
+                resolver_errors = format_resolver_errors(discovery.resolution_results)
+                if resolver_errors:
+                    error_message += f" (resolver errors: {resolver_errors})"
             return DownloadResult(
                 success=False,
                 error_message=error_message,
@@ -990,7 +1011,8 @@ class FullTextFinder:
                 progress_callback("verification", "skipped")
 
         except Exception as e:
-            logger.error(f"PDF verification error: {e}")
+            logger.error(f"PDF verification error: {e}", exc_info=True)
+            download_result.verification_error = str(e) or type(e).__name__
             download_result.verification_warnings = [f"Verification error: {e}"]
             if progress_callback:
                 progress_callback("verification", "error")
@@ -1137,7 +1159,8 @@ class FullTextFinder:
 
         Returns:
             DownloadResult with download status, file path, and verification results;
-            ``file_existed_before`` tells whether the PDF overwrote an existing file
+            ``file_existed_before`` tells whether ``output_path`` already held a
+            file, ``file_mtime_ns`` records the downloaded file's modification time
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -1181,6 +1204,11 @@ class FullTextFinder:
             excluded_urls=excluded_urls
         )
         result.file_existed_before = file_existed_before
+        if result.file_path:
+            try:
+                result.file_mtime_ns = Path(result.file_path).stat().st_mtime_ns
+            except OSError as e:
+                logger.warning(f"Cannot stat downloaded PDF {result.file_path}: {e}")
         return result
 
     def _generate_output_path(

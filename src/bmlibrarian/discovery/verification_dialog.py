@@ -128,8 +128,8 @@ class PDFVerificationDialog(QDialog):
         if self.data.unchecked:
             heading = "<b>PDF Could Not Be Checked</b><br>"
             explanation = (
-                "The PDF was found through a DOI guessed from the title, and "
-                "checking it against this document failed. "
+                "An error stopped the check of this PDF against the expected "
+                "document, so it may be the wrong paper. "
             )
         else:
             heading = "<b>PDF Verification Failed</b><br>"
