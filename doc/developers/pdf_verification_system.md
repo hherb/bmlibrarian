@@ -227,11 +227,17 @@ card the button re-enables so the user can search again. Closing the
 progress dialog before the result arrives abandons the search: the worker
 finishes in the background, its result is ignored, a PDF it downloaded is
 deleted (`discard_abandoned_download`, #314), and the button re-enables
-once the worker has stopped. The file is kept if it was already there
-before the search (`DownloadResult.file_existed_before`) or if its mtime no
-longer matches `DownloadResult.file_mtime_ns` (another search for the same
-document wrote it since, e.g. in the Paper Weight Lab, which does not block
-a second search). Late results at app quit are never delivered, so their
+once the worker has stopped. The file is kept if its mtime no longer
+matches `DownloadResult.file_mtime_ns` (written again since) or that was not
+recorded.
+
+`FullTextFinder.download_for_document` never replaces an existing file
+(#319): if `<year>/<doi>.pdf` (or `doc_<id>.pdf`) is taken, the PDF goes to
+the next free `<stem>_<n>.pdf` (`utils/download_utils.unused_download_path`).
+Without this, a DOI guessed by the CrossRef title search could overwrite
+another document's PDF, and REJECT/RETRY would then delete it. A document
+that already had a PDF at that path and accepts a new one keeps the old
+file on disk, unlinked. Late results at app quit are never delivered, so their
 file stays.
 
 The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/

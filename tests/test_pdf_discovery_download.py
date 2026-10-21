@@ -228,18 +228,22 @@ class TestDownloadForDocument:
             call_args = mock_dad.call_args
             assert call_args is not None
 
-    @pytest.mark.parametrize("existed", [False, True])
-    def test_reports_whether_output_file_existed(self, tmp_path, existed):
-        """``file_existed_before`` tells callers if the PDF overwrote a file."""
+    def test_never_overwrites_an_existing_file(self, tmp_path):
+        """An existing PDF at the generated path (possibly another document's,
+        #319) is left alone; the download goes to the next free name."""
         finder = FullTextFinder(unpaywall_email="test@example.com")
         document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
-        if existed:
-            target = finder._generate_output_path(document, tmp_path)
-            target.write_bytes(b"%PDF-1.4 old")
+        target = finder._generate_output_path(document, tmp_path)
+        assert target.name == '10.1234_test.pdf'
         with patch.object(finder, 'discover_and_download',
-                          return_value=DownloadResult(success=True)):
-            result = finder.download_for_document(document, output_dir=tmp_path)
-        assert result.file_existed_before is existed
+                          return_value=DownloadResult(success=False)) as dad:
+            finder.download_for_document(document, output_dir=tmp_path)
+            assert dad.call_args.kwargs['output_path'] == target
+            target.write_bytes(b"%PDF-1.4 old")
+            target.with_name('10.1234_test_1.pdf').write_bytes(b"%PDF-1.4 older")
+            finder.download_for_document(document, output_dir=tmp_path)
+            assert dad.call_args.kwargs['output_path'] == target.with_name('10.1234_test_2.pdf')
+        assert target.read_bytes() == b"%PDF-1.4 old"
 
     def test_records_downloaded_file_mtime(self, tmp_path):
         """``file_mtime_ns`` is the downloaded file's mtime, None without a file."""

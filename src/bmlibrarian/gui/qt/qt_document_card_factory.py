@@ -108,19 +108,16 @@ def discard_abandoned_download(result: Any) -> None:
     """Delete the PDF that a cancelled "Find PDF" search downloaded.
 
     Nothing links that file to a document, so it would otherwise stay on disk
-    unreferenced (#314). The file is kept if it was already at that path
-    before the search (``file_existed_before``), if it has changed since the
-    search wrote it (another search for the same document may have attached
-    it since), or if the result does not record both facts.
+    unreferenced (#314). The search never overwrites an existing file (#319),
+    so its file is its own; it is kept anyway if it has changed since the
+    search wrote it, or if the result does not record when that was
+    (``file_mtime_ns``, set only by ``download_for_document``).
 
     Args:
         result: The cancelled search's download result
     """
     file_path = getattr(result, 'file_path', None)
     if not file_path:
-        return
-    if getattr(result, 'file_existed_before', True):
-        logger.info(f"Cancelled PDF search: keeping {file_path} (it existed before the search)")
         return
     written_mtime_ns = getattr(result, 'file_mtime_ns', None)
     path = Path(file_path)
