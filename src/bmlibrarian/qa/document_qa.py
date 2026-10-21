@@ -25,6 +25,7 @@ Example:
 import logging
 import re
 import concurrent.futures
+from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Tuple, TYPE_CHECKING
 
@@ -79,6 +80,15 @@ FALLBACK_NO_PROXY_CONFIGURED = "no_proxy_configured"
 FALLBACK_OPEN_ACCESS_FAILED = "open_access_failed"
 FALLBACK_NO_FULLTEXT_CHUNKS = "no_fulltext_chunks"
 FALLBACK_CALLBACK_TIMEOUT = "callback_timeout"
+FALLBACK_PDF_HAS_NO_TEXT = "pdf_has_no_text"
+
+
+class FulltextOutcome(Enum):
+    """Result of ``_download_fulltext_if_needed``."""
+
+    STORED = "stored"  # Full text stored
+    NO_TEXT = "no_text"  # A verified PDF is linked, but no text could be extracted
+    FAILED = "failed"  # No usable PDF obtained, or storing failed
 
 
 def _invoke_proxy_callback_with_timeout(
@@ -501,15 +511,15 @@ def _download_fulltext_if_needed(
     db_manager: "DatabaseManager",
     use_proxy: bool = True,
     output_dir: Optional[Path] = None,
-) -> bool:
+) -> FulltextOutcome:
     """
-    Obtain full text for a document from its PDF and store it.
+    Obtain full text for a document from its PDF (or PMC article XML) and store it.
 
     Uses the document's linked PDF if it is on disk; otherwise downloads one
-    with FullTextFinder. A downloaded PDF is kept and linked only if it is
-    verified to be this document's (an unchecked PDF is never attached
-    silently, #314); a linked PDF is reused so repeated questions do not
-    pile up copies (#323).
+    with FullTextFinder. Verification is forced on: with no user to prompt
+    (unlike Find PDF, #314), a downloaded PDF that is not verified to be this
+    document's is deleted. A linked PDF is reused so repeated questions do
+    not pile up copies (#323).
 
     Args:
         document_id: The document's database ID.
@@ -518,7 +528,9 @@ def _download_fulltext_if_needed(
         output_dir: Directory for PDF storage (uses default if None).
 
     Returns:
-        True if full-text was obtained and stored, False otherwise.
+        STORED if full text was stored; NO_TEXT if a verified PDF is linked
+        but has no extractable text (another download would not help);
+        FAILED otherwise (logged).
     """
     try:
         from bmlibrarian.discovery import download_pdf_for_document
@@ -541,7 +553,7 @@ def _download_fulltext_if_needed(
                 row = cur.fetchone()
 
                 if not row:
-                    return False
+                    return FulltextOutcome.FAILED
 
                 doi, pmid, title, pub_date, pdf_filename = row
 
@@ -586,7 +598,7 @@ def _download_fulltext_if_needed(
             logger.warning(
                 f"Failed to download PDF for document {document_id}: {result.error_message}"
             )
-            return False
+            return FulltextOutcome.FAILED
 
         pdf_path = Path(result.file_path)
         if result.verified is not True:
@@ -596,20 +608,29 @@ def _download_fulltext_if_needed(
                 f"({result.verification_error or 'verification unavailable'})"
             )
             pdf_path.unlink(missing_ok=True)
-            return False
+            return FulltextOutcome.FAILED
 
         logger.info(f"Downloaded PDF for document {document_id}: {pdf_path}")
-        return _store_pdf_fulltext(
-            document_id, pdf_path, str(pdf_path.relative_to(output_dir)),
-            result.full_text, db_manager,
-        )
+        try:
+            return _store_pdf_fulltext(
+                document_id, pdf_path, pdf_path.relative_to(output_dir).as_posix(),
+                result.full_text, db_manager,
+            )
+        except Exception as e:
+            logger.error(
+                f"Downloaded {pdf_path} for document {document_id} but could not link it: {e}",
+                exc_info=True,
+            )
+            return FulltextOutcome.FAILED
 
-    except ImportError:
-        logger.error("Discovery module not available")
-        return False
+    except ImportError as e:
+        logger.error(f"Full-text download unavailable for document {document_id}: {e}")
+        return FulltextOutcome.FAILED
     except Exception as e:
-        logger.error(f"Error downloading full-text: {e}")
-        return False
+        logger.error(
+            f"Error obtaining full text for document {document_id}: {e}", exc_info=True
+        )
+        return FulltextOutcome.FAILED
 
 
 def _store_pdf_fulltext(
@@ -618,34 +639,44 @@ def _store_pdf_fulltext(
     pdf_filename: Optional[str],
     full_text: Optional[str],
     db_manager: "DatabaseManager",
-) -> bool:
+) -> FulltextOutcome:
     """
     Store a document's full text, and link its PDF if newly downloaded.
 
     Args:
         document_id: The document's database ID.
         pdf_path: The document's PDF on disk.
-        pdf_filename: Path to link as ``pdf_filename`` (relative to the PDF
-            base directory), or None to leave the link unchanged.
+        pdf_filename: Path to link as ``pdf_filename`` (POSIX, relative to the
+            PDF base directory), or None to leave the link unchanged.
         full_text: Full text already parsed (e.g. PMC article XML), or None
             to extract it from ``pdf_path``.
         db_manager: Database manager instance.
 
     Returns:
-        True if full text was stored, False otherwise (logged). A new PDF is
-        linked even when no text could be extracted, so it is not
-        downloaded again.
+        STORED if full text was stored, NO_TEXT if none could be extracted
+        (logged). A new PDF is linked even then, or when extraction fails,
+        so it is not downloaded again.
+
+    Raises:
+        Exception: If the database update fails.
     """
     if not full_text:
-        from bmlibrarian.importers.pdf_converter import get_converter, DEFAULT_CONVERTER
+        try:
+            from bmlibrarian.importers.pdf_converter import get_converter, DEFAULT_CONVERTER
 
-        conversion = get_converter(DEFAULT_CONVERTER).convert(pdf_path)
-        if conversion.success and conversion.text.strip():
-            full_text = conversion.text
-        else:
-            logger.warning(
-                f"No text extracted from {pdf_path} for document {document_id}: "
-                f"{conversion.error_message or 'scanned or image-only PDF?'}"
+            conversion = get_converter(DEFAULT_CONVERTER).convert(pdf_path)
+            if conversion.success and conversion.text.strip():
+                full_text = conversion.text
+            else:
+                logger.warning(
+                    f"No text extracted from {pdf_path} for document {document_id}: "
+                    f"{conversion.error_message or 'scanned or image-only PDF?'}"
+                )
+        except Exception as e:
+            # Still link the PDF below: an unlinked download is fetched again next time
+            logger.error(
+                f"Text extraction failed for {pdf_path} (document {document_id}): {e}",
+                exc_info=True,
             )
 
     with db_manager.get_connection() as conn:
@@ -660,9 +691,13 @@ def _store_pdf_fulltext(
                 """,
                 (full_text, pdf_filename, document_id),
             )
-    if full_text:
-        logger.info(f"Stored full text for document {document_id} ({len(full_text)} chars)")
-    return bool(full_text)
+            if cur.rowcount == 0:
+                logger.warning(f"Document {document_id} no longer exists; nothing stored")
+                return FulltextOutcome.FAILED
+    if not full_text:
+        return FulltextOutcome.NO_TEXT
+    logger.info(f"Stored full text for document {document_id} ({len(full_text)} chars)")
+    return FulltextOutcome.STORED
 
 
 def _extract_thinking(response_content: str) -> Tuple[str, Optional[str]]:
@@ -993,13 +1028,17 @@ def answer_from_document(
         if not status.has_fulltext and download_missing_fulltext:
             # First attempt: try open-access sources (no proxy)
             logger.info(f"Attempting to download full-text for document {document_id} (open access)")
-            download_success = _download_fulltext_if_needed(
+            outcome = _download_fulltext_if_needed(
                 document_id, db_manager, use_proxy=False
             )
 
-            if download_success:
+            if outcome is FulltextOutcome.STORED:
                 # Refresh status after successful download
                 status = _get_document_text_status(document_id, db_manager)
+            elif outcome is FulltextOutcome.NO_TEXT:
+                # The proxy would only fetch the same PDF again: don't ask for it
+                logger.info(f"Linked PDF for document {document_id} has no extractable text")
+                fallback_reason = FALLBACK_PDF_HAS_NO_TEXT
             else:
                 # Open access failed - need to decide on proxy
                 logger.info(f"Open access download failed for document {document_id}")
@@ -1008,7 +1047,9 @@ def answer_from_document(
                 if always_allow_proxy:
                     # Auto-consent: use proxy directly without asking
                     logger.info(f"Using proxy automatically for document {document_id}")
-                    if _download_fulltext_if_needed(document_id, db_manager, use_proxy=True):
+                    if _download_fulltext_if_needed(
+                        document_id, db_manager, use_proxy=True
+                    ) is FulltextOutcome.STORED:
                         status = _get_document_text_status(document_id, db_manager)
                         fallback_reason = None  # Success - no fallback
                     else:
@@ -1059,7 +1100,9 @@ def answer_from_document(
                     elif callback_result.allow_proxy:
                         # User consented to proxy - try OpenAthens
                         logger.info(f"User consented to proxy for document {document_id}")
-                        if _download_fulltext_if_needed(document_id, db_manager, use_proxy=True):
+                        if _download_fulltext_if_needed(
+                            document_id, db_manager, use_proxy=True
+                        ) is FulltextOutcome.STORED:
                             status = _get_document_text_status(document_id, db_manager)
                             fallback_reason = None  # Success - no fallback
                         else:

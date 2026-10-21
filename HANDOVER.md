@@ -22,7 +22,16 @@ off new work. Longer-term structural items live in
   `get_converter(DEFAULT_CONVERTER)`) and `pdf_filename` (linked even when
   the PDF has no extractable text). Before, it stored nothing, so QA never
   got full text from a download. Tests: `tests/qa/test_download_fulltext.py`,
-  `TestUnusedDownloadPath`.
+  `TestUnusedDownloadPath`. Review follow-ups (PR #324):
+  `_download_fulltext_if_needed` returns `FulltextOutcome`
+  (STORED/NO_TEXT/FAILED); NO_TEXT (linked PDF, no extractable text) skips
+  the proxy offer (`fallback_reason="pdf_has_no_text"`). A converter crash
+  still links the PDF. A mismatched PDF is emptied, not unlinked, so its
+  name stays reserved while the next source is tried. A "successful"
+  download that left only the placeholder is a failure (the undetected-Chrome
+  iframe branch now checks `is_pdf_file`). A failed manual-upload copy
+  removes its reserved file. Open: #325 (Chrome fallback moves the newest
+  PDF in the year folder, possibly another document's).
 - **Find PDF never overwrites an existing file** (2026-10-21, closes #319).
   `FullTextFinder.download_for_document` downloads to the next free
   `<stem>_<n>.pdf` when `<year>/<doi>.pdf` is taken

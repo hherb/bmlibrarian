@@ -1994,7 +1994,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     if target_path:
                         # <year>/<picked name> may be another document's PDF (#319)
                         target_path = unused_download_path(target_path)
-                        shutil.copy2(save_path, target_path)
+                        try:
+                            shutil.copy2(save_path, target_path)
+                        except OSError:
+                            # The reserved name is ours: drop the empty or partial copy
+                            target_path.unlink(missing_ok=True)
+                            raise
                         logger.info(
                             f"User MANUALLY UPLOADED PDF for document {card_data.doc_id}: "
                             f"{save_path} -> {target_path}"

@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import asyncio
 
+from .pdf_validation import is_pdf_file
+
 logger = logging.getLogger(__name__)
 
 # Try to import playwright-stealth for anti-detection
@@ -2321,13 +2323,16 @@ def download_pdf_with_undetected_chrome(
                         if newest_file != save_path:
                             import shutil
                             shutil.move(str(newest_file), str(save_path))
+                        # The newest PDF may be an empty reserved placeholder (#322)
                         if save_path.exists():
-                            size = save_path.stat().st_size
-                            return {
-                                'status': 'success',
-                                'path': str(save_path),
-                                'size': size
-                            }
+                            if is_pdf_file(save_path):
+                                size = save_path.stat().st_size
+                                return {
+                                    'status': 'success',
+                                    'path': str(save_path),
+                                    'size': size
+                                }
+                            logger.warning("Downloaded iframe file is not a valid PDF")
         except Exception as e:
             logger.debug(f"Error checking iframes: {e}")
 

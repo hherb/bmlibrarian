@@ -17,7 +17,7 @@ place only after the content has been fully written and validated. Error
 handlers then discard the partial file only, and can never touch a good
 file at the final path.
 
-These are small pure helpers (golden rule 11) with no dependency on any
+These are small helpers (golden rule 11) with no dependency on any
 network library, so every download call site (HTTP, FTP, browser) can
 share them and they can be unit tested in isolation.
 """
@@ -55,7 +55,9 @@ def unused_download_path(path: Path) -> Path:
     atomically creating an empty file there (``O_CREAT | O_EXCL``), so two
     concurrent downloads can never pick the same name (#322). The caller
     writes over the placeholder, or removes it with
-    :func:`discard_empty_reservation` if nothing was written.
+    :func:`discard_empty_reservation` if nothing was written. A crash before
+    that leaves the empty placeholder behind; it is never linked, and later
+    downloads move on to ``_<n>``.
 
     Args:
         path: The preferred destination (its directory must exist).
@@ -100,7 +102,8 @@ def promote_partial_download(partial_path: Path, final_path: Path) -> None:
     """Atomically move a completed, validated partial download into place.
 
     Overwrites any existing file at ``final_path`` (a fresh successful
-    download supersedes a previous one).
+    download supersedes a previous one, or the empty placeholder from
+    :func:`unused_download_path`).
 
     Args:
         partial_path: The fully-written temporary file.

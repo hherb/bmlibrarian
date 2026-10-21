@@ -532,7 +532,12 @@ class PDFManager:
                             if target_path:
                                 # <year>/<picked name> may be another document's PDF (#319)
                                 target_path = unused_download_path(target_path)
-                                shutil.copy2(save_path, target_path)
+                                try:
+                                    shutil.copy2(save_path, target_path)
+                                except OSError:
+                                    # The reserved name is ours: drop the empty or partial copy
+                                    target_path.unlink(missing_ok=True)
+                                    raise
                                 document['pdf_filename'] = target_path.name
                                 logger.info(
                                     f"User MANUALLY UPLOADED PDF for document {document.get('id')}: "

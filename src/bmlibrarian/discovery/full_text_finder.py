@@ -510,6 +510,8 @@ class FullTextFinder:
         else:
             error_msg = f"All {total_sources} sources failed. Last error: {last_error}"
 
+        # A mismatched download is left empty at output_path (see _verify_downloaded_pdf)
+        discard_empty_reservation(output_path)
         return DownloadResult(
             success=False,
             error_message=error_msg,
@@ -999,8 +1001,10 @@ class FullTextFinder:
                 # Delete mismatched PDF if requested
                 if delete_on_mismatch:
                     try:
-                        Path(download_result.file_path).unlink()
-                        logger.info(f"Deleted mismatched PDF: {download_result.file_path}")
+                        # Emptied, not unlinked: the name stays reserved (#322) while the
+                        # next source downloads there; an empty file is discarded later
+                        Path(download_result.file_path).write_bytes(b"")
+                        logger.info(f"Discarded mismatched PDF: {download_result.file_path}")
                         download_result.success = False
                         download_result.error_message = f"PDF content mismatch: {warning_msg}"
                         download_result.file_path = None
@@ -1183,7 +1187,11 @@ class FullTextFinder:
             )
 
         # Never overwrite: with a guessed DOI the path can be another document's PDF
-        output_path = unused_download_path(self._generate_output_path(document, output_dir))
+        try:
+            output_path = unused_download_path(self._generate_output_path(document, output_dir))
+        except OSError as e:
+            logger.error(f"Cannot reserve a PDF path in {output_dir}: {e}")
+            return DownloadResult(success=False, error_message=f"Cannot create PDF file: {e}")
 
         # Determine browser fallback settings
         browser_config = getattr(self, '_browser_fallback_config', {
@@ -1209,6 +1217,12 @@ class FullTextFinder:
             )
         finally:
             discard_empty_reservation(output_path)
+        if result.success and not (result.file_path and Path(result.file_path).exists()):
+            # An empty "successful" download was just discarded as a placeholder
+            logger.error(f"Download reported success but left no file at {output_path}")
+            result.success = False
+            result.file_path = None
+            result.error_message = "Download produced an empty file"
         if result.file_path:
             try:
                 result.file_mtime_ns = Path(result.file_path).stat().st_mtime_ns
