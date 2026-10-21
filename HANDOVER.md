@@ -16,8 +16,12 @@ off new work. Longer-term structural items live in
   (`utils/download_utils.unused_download_path`), so a CrossRef-guessed DOI
   can no longer overwrite (and REJECT then delete) another document's PDF.
   `DownloadResult.file_existed_before` was removed (always False now);
-  `discard_abandoned_download` relies on `file_mtime_ns`. Accepting a better
-  version of a document's own PDF leaves the old file on disk, unlinked.
+  `discard_abandoned_download` relies on `file_mtime_ns`. Manual upload from
+  the verification prompt (card factory and `PDFManager`) uses the same
+  helper. Accepting a better version of a document's own PDF leaves the old
+  file on disk, unlinked. Follow-ups: #322 (concurrent searches can pick the
+  same free name), #323 (`DocumentQA` downloads never get linked, so copies
+  pile up).
 - **Find PDF follow-ups** (2026-10-21, closes #314, #315, #317;
   owner decisions 2026-10-21). A PDF whose verification *raised* (the
   CrossRef-DOI re-check or `FullTextFinder`'s own check;
@@ -29,9 +33,8 @@ off new work. Longer-term structural items live in
   per factory); the next search passes them to `FullTextFinder` as
   `excluded_urls` (DOI fallback URL included; NCBI FTP/HTTPS forms match
   via `comparable_source_url`). A cancelled search deletes the PDF it
-  downloaded (`discard_abandoned_download`) unless the file existed before
-  (`DownloadResult.file_existed_before`) or changed since
-  (`file_mtime_ns`). Open follow-up: doi.org fallback after rejecting
+  downloaded (`discard_abandoned_download`) unless it changed since
+  (`file_mtime_ns`; the `file_existed_before` check was dropped by #319). Open follow-up: doi.org fallback after rejecting
   every source (#320). Docs: `pdf_verification_guide.md`,
   `pdf_verification_system.md`, `document_card_factory_system.md`.
 - **Find PDF runs on one shared, verified flow** (2026-10-21, PRs #313,

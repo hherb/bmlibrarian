@@ -229,7 +229,7 @@ finishes in the background, its result is ignored, a PDF it downloaded is
 deleted (`discard_abandoned_download`, #314), and the button re-enables
 once the worker has stopped. The file is kept if its mtime no longer
 matches `DownloadResult.file_mtime_ns` (written again since) or that was not
-recorded.
+recorded. Late results at app quit are never delivered, so their file stays.
 
 `FullTextFinder.download_for_document` never replaces an existing file
 (#319): if `<year>/<doi>.pdf` (or `doc_<id>.pdf`) is taken, the PDF goes to
@@ -237,8 +237,9 @@ the next free `<stem>_<n>.pdf` (`utils/download_utils.unused_download_path`).
 Without this, a DOI guessed by the CrossRef title search could overwrite
 another document's PDF, and REJECT/RETRY would then delete it. A document
 that already had a PDF at that path and accepts a new one keeps the old
-file on disk, unlinked. Late results at app quit are never delivered, so their
-file stays.
+file on disk, unlinked. A manual upload from the verification prompt is
+copied the same way (`<year>/<picked name>` → next free name). Two
+concurrent searches can still pick the same free name (#322).
 
 The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/
 search_tab.py`) runs the same three factory methods on its own

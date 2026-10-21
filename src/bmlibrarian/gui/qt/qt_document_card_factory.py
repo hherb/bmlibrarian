@@ -1980,6 +1980,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     # Copy the manually selected file to the correct location
                     import shutil
                     from bmlibrarian.utils.pdf_manager import PDFManager
+                    from bmlibrarian.utils.download_utils import unused_download_path
                     # Same directory as discovery downloads and the DB link
                     pdf_manager = PDFManager(base_dir=str(self.base_pdf_dir))
                     document = {
@@ -1991,6 +1992,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     }
                     target_path = pdf_manager.get_pdf_path(document, create_dirs=True)
                     if target_path:
+                        # <year>/<picked name> may be another document's PDF (#319)
+                        target_path = unused_download_path(target_path)
                         shutil.copy2(save_path, target_path)
                         logger.info(
                             f"User MANUALLY UPLOADED PDF for document {card_data.doc_id}: "

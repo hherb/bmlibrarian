@@ -57,7 +57,8 @@ Shows three information cards:
 A downloaded PDF never replaces a file that is already in your PDF folder:
 if the usual name (`<year>/<doi>.pdf`) is taken, it is saved as
 `<doi>_1.pdf`, `<doi>_2.pdf`, and so on. Rejecting it deletes only the new
-download.
+download. A file you upload instead is saved the same way: if its name is
+taken in that year's folder, it gets a `_1`, `_2`, ... suffix.
 
 ## Available Actions
 

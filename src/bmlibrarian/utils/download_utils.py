@@ -60,6 +60,8 @@ def unused_download_path(path: Path) -> Path:
         ``path`` if nothing is there, else the first ``<stem>_<n><suffix>``
         (n = 1, 2, ...) that does not exist.
     """
+    # shortcut: the name is picked, not reserved; concurrent downloads to the
+    # same path can still collide, fix with a no-clobber promote (#322)
     candidate = path
     n = 1
     while candidate.exists():

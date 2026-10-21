@@ -1277,6 +1277,27 @@ class TestFinalizeDiscoveryResult:
         # Recorded once, by the caller
         update_pdf.assert_not_called()
 
+    def test_manual_upload_never_overwrites_another_pdf(self, app, tmp_path):
+        """A taken YYYY/<picked name> (maybe another document's PDF) is left
+        alone; the upload goes to the next free name (#319)."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        wrong = tmp_path / "wrong.pdf"
+        wrong.write_bytes(b"%PDF-1.4")
+        chosen = tmp_path / "main.pdf"
+        chosen.write_bytes(b"%PDF-1.4 chosen")
+        taken = tmp_path / "2021" / "main.pdf"
+        taken.parent.mkdir()
+        taken.write_bytes(b"%PDF-1.4 other document")
+        with patch('bmlibrarian.utils.pdf_manager.PDFManager.get_pdf_path',
+                   return_value=taken):
+            outcome, *_ = self._finalize(
+                tmp_path, _download_result(verified=False, file_path=str(wrong)),
+                decision=VerificationDecision.MANUAL_UPLOAD, save_path=chosen,
+            )
+        assert outcome.pdf_path == tmp_path / "2021" / "main_1.pdf"
+        assert outcome.pdf_path.read_bytes() == b"%PDF-1.4 chosen"
+        assert taken.read_bytes() == b"%PDF-1.4 other document"
+
 
 class TestFindPDFSessionRobustness:
     """Sessions always end the UI's searching state, and stop on shutdown."""

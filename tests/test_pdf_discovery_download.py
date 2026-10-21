@@ -245,6 +245,41 @@ class TestDownloadForDocument:
             assert dad.call_args.kwargs['output_path'] == target.with_name('10.1234_test_2.pdf')
         assert target.read_bytes() == b"%PDF-1.4 old"
 
+    @pytest.mark.parametrize("mismatch", [False, True])
+    def test_real_download_leaves_existing_file_alone(self, tmp_path, mismatch):
+        """Through the real HTTP download and promote (and the mismatch
+        delete), only the fresh ``_1`` file is written or removed (#319)."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        target = finder._generate_output_path(document, tmp_path)
+        target.write_bytes(b"%PDF-1.4 other document")
+        source = PDFSource(url="https://example.com/p.pdf",
+                           source_type=SourceType.DIRECT_URL, access_type=AccessType.OPEN)
+        response = MagicMock(status_code=200, headers={'content-type': 'application/pdf'})
+        response.iter_content.return_value = [b"%PDF-1.4 new download"]
+        verification = MagicMock(verified=not mismatch, confidence=0.9, match_type='doi',
+                                 warnings=['DOI mismatch'] if mismatch else [],
+                                 extracted_doi=None, extracted_pmid=None,
+                                 extracted_title=None, title_similarity=None)
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=DocumentIdentifiers(doi='10.1234/test'), sources=[source])), \
+             patch.object(finder.session, 'get', return_value=response), \
+             patch('bmlibrarian.discovery.pdf_verifier.PDFVerifier.verify_pdf',
+                   return_value=verification):
+            result = finder.download_for_document(
+                document, output_dir=tmp_path, use_browser_fallback=False,
+                verify_content=True,
+            )
+        fresh = target.with_name('10.1234_test_1.pdf')
+        assert target.read_bytes() == b"%PDF-1.4 other document"
+        assert not list(target.parent.glob('*.part'))
+        if mismatch:
+            assert result.success is False
+            assert not fresh.exists()
+        else:
+            assert result.file_path == str(fresh)
+            assert fresh.read_bytes() == b"%PDF-1.4 new download"
+
     def test_records_downloaded_file_mtime(self, tmp_path):
         """``file_mtime_ns`` is the downloaded file's mtime, None without a file."""
         finder = FullTextFinder(unpaywall_email="test@example.com")
