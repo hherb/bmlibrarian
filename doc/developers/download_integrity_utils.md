@@ -48,7 +48,8 @@ touch a good file at the final path.
 |----------|---------|
 | `partial_download_path(final_path)` | Temporary sibling path (`paper.pdf` → `paper.pdf.part`, same directory so the promoting rename is atomic). |
 | `promote_partial_download(partial_path, final_path)` | `os.replace` the validated partial file into place (overwrites an older download). |
-| `unused_download_path(path)` | `path` if free, else the first free `<stem>_<n><suffix>`; `FullTextFinder.download_for_document` uses it so a download never replaces another document's PDF (#319). |
+| `unused_download_path(path)` | Reserves and returns `path` if free, else the first free `<stem>_<n><suffix>`, by creating an empty file there with `O_CREAT \| O_EXCL`; `FullTextFinder.download_for_document` uses it so a download never replaces another document's PDF (#319) and concurrent downloads never share a name (#322). |
+| `discard_empty_reservation(path)` | Remove that placeholder if it is still empty (the download failed); a written file is kept. Logs and swallows filesystem errors. |
 | `discard_partial_download(partial_path)` | Remove the partial file if present; safe in error handlers (logs and swallows filesystem errors, never touches the final path). |
 
 ### Canonical usage

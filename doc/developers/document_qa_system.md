@@ -234,6 +234,10 @@ answer_from_document(document_id, question)
     ├─► 6. If use_fulltext=True:
     │       │
     │       ├─► 6a. If no fulltext and download_missing=True:
+    │       │       │   (_download_fulltext_if_needed: a linked PDF on disk is
+    │       │       │    read instead of downloading; a download must verify,
+    │       │       │    else it is deleted; on success full_text and
+    │       │       │    pdf_filename are stored, #323)
     │       │       └─► First try open-access sources (no proxy)
     │       │           │
     │       │           ├─► If success: refresh status

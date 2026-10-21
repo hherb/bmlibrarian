@@ -154,6 +154,9 @@ When `use_fulltext=True`:
    - Discover PDF via PMC, Unpaywall, DOI resolution
    - Download with browser fallback if needed
    - Use OpenAthens proxy if `use_proxy=True`
+   - Keep the PDF only if it is verified to be this document; then store
+     its text and link it to the document. A PDF already linked to the
+     document is read instead of downloading a new copy.
 4. **If still no full-text**: Fall back to abstract
 
 ### 3. Semantic Search

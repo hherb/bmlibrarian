@@ -238,8 +238,10 @@ Without this, a DOI guessed by the CrossRef title search could overwrite
 another document's PDF, and REJECT/RETRY would then delete it. A document
 that already had a PDF at that path and accepts a new one keeps the old
 file on disk, unlinked. A manual upload from the verification prompt is
-copied the same way (`<year>/<picked name>` → next free name). Two
-concurrent searches can still pick the same free name (#322).
+copied the same way (`<year>/<picked name>` → next free name). The name
+is reserved when picked (an empty placeholder created atomically), so two
+concurrent searches for the same document get different files (#322); a
+failed download removes its placeholder (`discard_empty_reservation`).
 
 The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/
 search_tab.py`) runs the same three factory methods on its own

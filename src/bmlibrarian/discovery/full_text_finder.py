@@ -33,6 +33,7 @@ from ..utils.download_utils import (
     partial_download_path,
     promote_partial_download,
     discard_partial_download,
+    discard_empty_reservation,
     unused_download_path,
 )
 from ..utils.rate_limit import (
@@ -1162,7 +1163,8 @@ class FullTextFinder:
             DownloadResult with download status, file path, and verification results;
             ``file_mtime_ns`` records the downloaded file's modification time.
             An existing file at the generated path is never replaced: the PDF
-            goes to the next free ``<stem>_<n>.pdf`` instead (#319).
+            goes to the next free ``<stem>_<n>.pdf`` instead (#319), reserved
+            up front so concurrent downloads get different names (#322).
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -1193,17 +1195,20 @@ class FullTextFinder:
         if use_browser_fallback is None:
             use_browser_fallback = browser_config.get('enabled', True)
 
-        result = self.discover_and_download(
-            identifiers=identifiers,
-            output_path=output_path,
-            use_browser_fallback=use_browser_fallback,
-            browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
-            browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
-            progress_callback=progress_callback,
-            verify_content=verify_content,
-            delete_on_mismatch=delete_on_mismatch,
-            excluded_urls=excluded_urls
-        )
+        try:
+            result = self.discover_and_download(
+                identifiers=identifiers,
+                output_path=output_path,
+                use_browser_fallback=use_browser_fallback,
+                browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
+                browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
+                progress_callback=progress_callback,
+                verify_content=verify_content,
+                delete_on_mismatch=delete_on_mismatch,
+                excluded_urls=excluded_urls
+            )
+        finally:
+            discard_empty_reservation(output_path)
         if result.file_path:
             try:
                 result.file_mtime_ns = Path(result.file_path).stat().st_mtime_ns

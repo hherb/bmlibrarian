@@ -503,9 +503,13 @@ def _download_fulltext_if_needed(
     output_dir: Optional[Path] = None,
 ) -> bool:
     """
-    Attempt to download full-text PDF for a document.
+    Obtain full text for a document from its PDF and store it.
 
-    Uses FullTextFinder to discover and download PDFs.
+    Uses the document's linked PDF if it is on disk; otherwise downloads one
+    with FullTextFinder. A downloaded PDF is kept and linked only if it is
+    verified to be this document's (an unchecked PDF is never attached
+    silently, #314); a linked PDF is reused so repeated questions do not
+    pile up copies (#323).
 
     Args:
         document_id: The document's database ID.
@@ -519,6 +523,7 @@ def _download_fulltext_if_needed(
     try:
         from bmlibrarian.discovery import download_pdf_for_document
         from bmlibrarian.config import get_config
+        from bmlibrarian.utils.pdf_manager import PDFManager
 
         config = get_config()
 
@@ -527,7 +532,7 @@ def _download_fulltext_if_needed(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT doi, external_id, title, publication_date
+                    SELECT doi, external_id, title, publication_date, pdf_filename
                     FROM public.document
                     WHERE id = %s
                     """,
@@ -538,7 +543,7 @@ def _download_fulltext_if_needed(
                 if not row:
                     return False
 
-                doi, pmid, title, pub_date = row
+                doi, pmid, title, pub_date, pdf_filename = row
 
         document = {
             "id": document_id,
@@ -546,12 +551,18 @@ def _download_fulltext_if_needed(
             "pmid": pmid,
             "title": title,
             "publication_date": pub_date,
+            "pdf_filename": pdf_filename,
         }
 
         # Determine output directory
         if output_dir is None:
             pdf_base_dir = config.get("pdf", {}).get("base_dir", "~/knowledgebase/pdf")
             output_dir = Path(pdf_base_dir).expanduser()
+
+        linked_pdf = PDFManager(base_dir=str(output_dir)).get_pdf_path(document)
+        if linked_pdf and linked_pdf.exists():
+            logger.info(f"Using linked PDF for document {document_id}: {linked_pdf}")
+            return _store_pdf_fulltext(document_id, linked_pdf, None, None, db_manager)
 
         # Get validated OpenAthens proxy URL if enabled (prevents SSRF attacks)
         openathens_url = None
@@ -567,20 +578,31 @@ def _download_fulltext_if_needed(
             unpaywall_email=unpaywall_email,
             openathens_proxy_url=openathens_url,
             use_browser_fallback=True,
+            verify_content=True,
+            delete_on_mismatch=True,
         )
 
-        if result.success and result.file_path:
-            logger.info(f"Downloaded PDF for document {document_id}: {result.file_path}")
-
-            # Extract text from PDF and store in database
-            # This would require PDF text extraction - for now just return success
-            # The actual text extraction should be handled by a separate process
-            return True
-        else:
+        if not (result.success and result.file_path):
             logger.warning(
                 f"Failed to download PDF for document {document_id}: {result.error_message}"
             )
             return False
+
+        pdf_path = Path(result.file_path)
+        if result.verified is not True:
+            # No one to ask here, so a PDF that could not be checked is dropped
+            logger.warning(
+                f"Discarding unverified PDF for document {document_id}: {pdf_path} "
+                f"({result.verification_error or 'verification unavailable'})"
+            )
+            pdf_path.unlink(missing_ok=True)
+            return False
+
+        logger.info(f"Downloaded PDF for document {document_id}: {pdf_path}")
+        return _store_pdf_fulltext(
+            document_id, pdf_path, str(pdf_path.relative_to(output_dir)),
+            result.full_text, db_manager,
+        )
 
     except ImportError:
         logger.error("Discovery module not available")
@@ -588,6 +610,59 @@ def _download_fulltext_if_needed(
     except Exception as e:
         logger.error(f"Error downloading full-text: {e}")
         return False
+
+
+def _store_pdf_fulltext(
+    document_id: int,
+    pdf_path: Path,
+    pdf_filename: Optional[str],
+    full_text: Optional[str],
+    db_manager: "DatabaseManager",
+) -> bool:
+    """
+    Store a document's full text, and link its PDF if newly downloaded.
+
+    Args:
+        document_id: The document's database ID.
+        pdf_path: The document's PDF on disk.
+        pdf_filename: Path to link as ``pdf_filename`` (relative to the PDF
+            base directory), or None to leave the link unchanged.
+        full_text: Full text already parsed (e.g. PMC article XML), or None
+            to extract it from ``pdf_path``.
+        db_manager: Database manager instance.
+
+    Returns:
+        True if full text was stored, False otherwise (logged). A new PDF is
+        linked even when no text could be extracted, so it is not
+        downloaded again.
+    """
+    if not full_text:
+        from bmlibrarian.importers.pdf_converter import get_converter, DEFAULT_CONVERTER
+
+        conversion = get_converter(DEFAULT_CONVERTER).convert(pdf_path)
+        if conversion.success and conversion.text.strip():
+            full_text = conversion.text
+        else:
+            logger.warning(
+                f"No text extracted from {pdf_path} for document {document_id}: "
+                f"{conversion.error_message or 'scanned or image-only PDF?'}"
+            )
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE public.document
+                SET full_text = COALESCE(%s, full_text),
+                    pdf_filename = COALESCE(%s, pdf_filename),
+                    updated_date = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (full_text, pdf_filename, document_id),
+            )
+    if full_text:
+        logger.info(f"Stored full text for document {document_id} ({len(full_text)} chars)")
+    return bool(full_text)
 
 
 def _extract_thinking(response_content: str) -> Tuple[str, Optional[str]]:

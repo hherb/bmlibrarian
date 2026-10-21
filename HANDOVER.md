@@ -10,6 +10,19 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Download names are reserved; DocumentQA downloads are linked**
+  (2026-10-21, closes #322, #323). `unused_download_path` now creates an
+  empty placeholder atomically (`O_CREAT | O_EXCL`), so concurrent Find PDF
+  searches for the same document get different files;
+  `download_for_document` removes the placeholder if nothing was written
+  (`discard_empty_reservation`). `qa/document_qa._download_fulltext_if_needed`
+  reads a linked PDF on disk instead of downloading, downloads with
+  `verify_content=True` and deletes anything not verified (`verified is
+  not True`: no one to prompt), then stores `full_text` (PMC XML text, else
+  `get_converter(DEFAULT_CONVERTER)`) and `pdf_filename` (linked even when
+  the PDF has no extractable text). Before, it stored nothing, so QA never
+  got full text from a download. Tests: `tests/qa/test_download_fulltext.py`,
+  `TestUnusedDownloadPath`.
 - **Find PDF never overwrites an existing file** (2026-10-21, closes #319).
   `FullTextFinder.download_for_document` downloads to the next free
   `<stem>_<n>.pdf` when `<year>/<doi>.pdf` is taken
@@ -19,9 +32,7 @@ off new work. Longer-term structural items live in
   `discard_abandoned_download` relies on `file_mtime_ns`. Manual upload from
   the verification prompt (card factory and `PDFManager`) uses the same
   helper. Accepting a better version of a document's own PDF leaves the old
-  file on disk, unlinked. Follow-ups: #322 (concurrent searches can pick the
-  same free name), #323 (`DocumentQA` downloads never get linked, so copies
-  pile up).
+  file on disk, unlinked.
 - **Find PDF follow-ups** (2026-10-21, closes #314, #315, #317;
   owner decisions 2026-10-21). A PDF whose verification *raised* (the
   CrossRef-DOI re-check or `FullTextFinder`'s own check;
