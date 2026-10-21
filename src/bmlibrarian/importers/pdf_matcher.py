@@ -27,6 +27,7 @@ from bmlibrarian.agents.base import BaseAgent
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.llm import DEFAULT_OLLAMA_HOST
 from bmlibrarian.utils.pdf_manager import PDFManager
+from bmlibrarian.utils.browser_downloader import CHROME_DOWNLOAD_DIR_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -1115,7 +1116,14 @@ Text to analyze:
 
         # Find all PDF files
         if recursive:
-            pdf_files = list(directory.rglob('*.pdf'))
+            # Skip per-call Chrome download dirs a crashed download left behind
+            pdf_files = [
+                f for f in directory.rglob('*.pdf')
+                if not any(
+                    part.startswith(CHROME_DOWNLOAD_DIR_PREFIX)
+                    for part in f.relative_to(directory).parts
+                )
+            ]
         else:
             pdf_files = list(directory.glob('*.pdf'))
 

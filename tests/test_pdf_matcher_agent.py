@@ -14,6 +14,7 @@ import pytest
 
 from bmlibrarian.agents import BaseAgent
 from bmlibrarian.importers.pdf_matcher import PDFMatcher
+from bmlibrarian.utils.browser_downloader import CHROME_DOWNLOAD_DIR_PREFIX
 
 
 @pytest.fixture
@@ -59,3 +60,24 @@ def test_extract_metadata_parses_llm_json(matcher):
     assert metadata["pmid"] == "12345678"
     assert metadata["title"] == "A Study"
     assert metadata["authors"] == ["Smith J"]
+
+
+def test_recursive_import_skips_chrome_download_dirs(matcher, tmp_path):
+    """Leftover undetected-Chrome download dirs are never imported (#325)."""
+    year_dir = tmp_path / "2024"
+    leftover = year_dir / f"{CHROME_DOWNLOAD_DIR_PREFIX}abc123"
+    leftover.mkdir(parents=True)
+    (leftover / "orphan.pdf").write_bytes(b"%PDF-1.4\n")
+    (year_dir / "10.1000_x.pdf").write_bytes(b"%PDF-1.4\n")
+    seen = []
+
+    def fake_import(pdf_file, dry_run):
+        """Record each PDF the directory import would process."""
+        seen.append(pdf_file)
+        return {"status": "skipped"}
+
+    with patch.object(matcher, "match_and_import_pdf", side_effect=fake_import):
+        stats = matcher.match_and_import_directory(tmp_path, recursive=True)
+
+    assert seen == [year_dir / "10.1000_x.pdf"]
+    assert stats["total"] == 1

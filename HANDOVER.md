@@ -17,7 +17,11 @@ off new work. Longer-term structural items live in
   `os.replace`) and removes the dir in `finally`. Before, it moved the
   newest `*.pdf` in the shared year folder, which could be another
   document's PDF. Tests: `tests/test_undetected_chrome_download_dir.py`
-  (fake `undetected_chromedriver`/selenium).
+  (fake `undetected_chromedriver`/selenium). Review follow-ups (PR #326):
+  the newest *valid* PDF wins, a junk-only download fails with "not a valid
+  PDF", a failed move in the iframe branch is reported (was a debug log),
+  cleanup failures are logged, and recursive PDF imports skip leftover
+  `.chrome-download-*` dirs.
 - **Download names are reserved; DocumentQA downloads are linked**
   (2026-10-21, closes #322, #323). `unused_download_path` now creates an
   empty placeholder atomically (`O_CREAT | O_EXCL`), so concurrent Find PDF

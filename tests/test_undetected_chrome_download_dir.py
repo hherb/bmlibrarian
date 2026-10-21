@@ -1,8 +1,8 @@
 """Tests that the undetected-Chrome fallback only takes its own downloads (#325).
 
-Chrome used to download into the shared ``<year>/`` folder, and the newest
-``*.pdf`` there was moved onto the target path, which could be another
-document's PDF. It now downloads into a fresh per-call directory.
+Chrome downloads into a per-call directory; a sibling PDF in the year folder
+must never be moved onto the target path, and the directory is removed on
+every exit path.
 """
 
 import os
@@ -62,6 +62,21 @@ class TestPromoteDownloadedPdf:
         assert promote_downloaded_pdf(download_dir, save_path) is None
         assert save_path.read_bytes() == b""
 
+    def test_older_valid_pdf_wins_over_newer_junk(self, tmp_path: Path) -> None:
+        """A newer non-PDF does not hide an older valid PDF."""
+        download_dir = tmp_path / "dl"
+        download_dir.mkdir()
+        valid = download_dir / "article.pdf"
+        valid.write_bytes(PDF_BYTES)
+        old_mtime = valid.stat().st_mtime - 60
+        os.utime(valid, (old_mtime, old_mtime))
+        (download_dir / "login.pdf").write_bytes(b"<html>login</html>")
+        save_path = tmp_path / "target.pdf"
+        save_path.touch()
+
+        assert promote_downloaded_pdf(download_dir, save_path) == len(PDF_BYTES)
+        assert save_path.read_bytes() == PDF_BYTES
+
     def test_partial_download_is_ignored(self, tmp_path: Path) -> None:
         """Chrome's in-progress .crdownload files are not taken."""
         download_dir = tmp_path / "dl"
@@ -89,6 +104,18 @@ class _FakeOptions:
             self.prefs = value
 
 
+class _FakeMeta:
+    """A ``<meta name="citation_pdf_url">`` element."""
+
+    def __init__(self, content: str) -> None:
+        """Store the content attribute."""
+        self._content = content
+
+    def get_attribute(self, name: str) -> Optional[str]:
+        """Return the content attribute."""
+        return self._content if name == "content" else None
+
+
 class _FakeIframe:
     """An iframe element whose src points at a PDF."""
 
@@ -102,12 +129,22 @@ class _FakeIframe:
 
 
 class _FakeDriver:
-    """A Chrome driver showing an article page with a PDF iframe."""
+    """A Chrome driver showing an article page with a PDF iframe or meta link."""
 
-    def __init__(self, options: _FakeOptions, download_bytes: Optional[bytes]) -> None:
-        """Keep the download dir from the prefs and what a PDF fetch saves."""
+    def __init__(
+        self,
+        options: _FakeOptions,
+        download_bytes: Optional[bytes],
+        meta_pdf_url: Optional[str],
+    ) -> None:
+        """Keep the download dir from the prefs and what a PDF fetch saves.
+
+        With ``meta_pdf_url`` the page has a citation_pdf_url meta tag and no
+        iframe; otherwise it has a PDF iframe and no meta tag.
+        """
         self.download_dir = Path(options.prefs["download.default_directory"])
         self.download_bytes = download_bytes
+        self.meta_pdf_url = meta_pdf_url
         self.title = "Article"
         self.page_source = "<html>article</html>"
         self.current_url = "https://publisher.example/article"
@@ -121,23 +158,38 @@ class _FakeDriver:
             (self.download_dir / "download.pdf").write_bytes(self.download_bytes)
 
     def find_elements(self, by: str, value: str) -> List[_FakeIframe]:
-        """No links; one PDF iframe."""
-        if value == "iframe":
+        """No links; one PDF iframe unless the page has a meta PDF link."""
+        if value == "iframe" and self.meta_pdf_url is None:
             return [_FakeIframe("https://publisher.example/viewer/article.pdf")]
         return []
 
-    def find_element(self, by: str, value: str) -> None:
-        """No meta tags."""
+    def find_element(self, by: str, value: str) -> _FakeMeta:
+        """Only the citation_pdf_url meta tag, if this page has one."""
+        if self.meta_pdf_url is not None and "citation_pdf_url" in value:
+            return _FakeMeta(self.meta_pdf_url)
         raise LookupError(value)
+
+    def execute_script(self, script: str) -> Dict[str, Any]:
+        """The in-page fetch fails, so the download path is used."""
+        return {"error": "fetch blocked"}
 
     def quit(self) -> None:
         """Nothing to close."""
 
 
 def _install_fake_chrome(
-    monkeypatch: pytest.MonkeyPatch, download_bytes: Optional[bytes]
+    monkeypatch: pytest.MonkeyPatch,
+    download_bytes: Optional[bytes],
+    meta_pdf_url: Optional[str] = None,
+    fail_on_start: bool = False,
 ) -> List[_FakeDriver]:
-    """Replace undetected_chromedriver and selenium with fakes.
+    """Replace undetected_chromedriver and selenium with fakes, and no-op time.sleep.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture.
+        download_bytes: What navigating to a PDF URL saves, or None for nothing.
+        meta_pdf_url: Give the page a citation_pdf_url meta tag with this URL.
+        fail_on_start: Make launching Chrome raise (e.g. a driver mismatch).
 
     Returns:
         A list that receives each driver created.
@@ -145,7 +197,10 @@ def _install_fake_chrome(
     drivers: List[_FakeDriver] = []
 
     def make_chrome(options: _FakeOptions, version_main: Optional[int] = None) -> _FakeDriver:
-        driver = _FakeDriver(options, download_bytes)
+        """Create a fake driver, or fail like a Chrome/driver version mismatch."""
+        if fail_on_start:
+            raise RuntimeError("session not created: Chrome version mismatch")
+        driver = _FakeDriver(options, download_bytes, meta_pdf_url)
         drivers.append(driver)
         return driver
 
@@ -200,6 +255,91 @@ class TestUndetectedChromeDownloadDir:
         assert result["status"] == "failed"
         assert other.read_bytes() == OTHER_PDF_BYTES
         assert save_path.read_bytes() == b""
+        assert not list(year_dir.glob(CHROME_DOWNLOAD_DIR_PREFIX + "*"))
+
+    def test_meta_link_download_never_takes_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The direct-navigation branch also ignores the year folder."""
+        _install_fake_chrome(
+            monkeypatch, download_bytes=None,
+            meta_pdf_url="https://publisher.example/article.pdf",
+        )
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+        other = year_dir / "10.1000_other.pdf"
+        other.write_bytes(OTHER_PDF_BYTES)
+        old_mtime = other.stat().st_mtime - 60
+        os.utime(save_path, (old_mtime, old_mtime))
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path
+        )
+
+        assert result["status"] == "failed"
+        assert other.read_bytes() == OTHER_PDF_BYTES
+        assert save_path.read_bytes() == b""
+
+    def test_meta_link_download_is_promoted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A PDF downloaded by direct navigation reaches save_path."""
+        _install_fake_chrome(
+            monkeypatch, download_bytes=PDF_BYTES,
+            meta_pdf_url="https://publisher.example/article.pdf",
+        )
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path
+        )
+
+        assert result["status"] == "success"
+        assert save_path.read_bytes() == PDF_BYTES
+        assert not list(year_dir.glob(CHROME_DOWNLOAD_DIR_PREFIX + "*"))
+
+    def test_non_pdf_download_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A login page saved as .pdf fails with a specific error."""
+        _install_fake_chrome(monkeypatch, download_bytes=b"<html>login</html>")
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path
+        )
+
+        assert result["status"] == "failed"
+        assert "not a valid PDF" in result["error"]
+        assert save_path.read_bytes() == b""
+        assert not list(year_dir.glob(CHROME_DOWNLOAD_DIR_PREFIX + "*"))
+
+    def test_chrome_launch_failure_removes_temp_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash after the dir is created still cleans it up."""
+        _install_fake_chrome(monkeypatch, download_bytes=None, fail_on_start=True)
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path
+        )
+
+        assert result["status"] == "failed"
+        assert "version mismatch" in result["error"]
+        assert save_path.read_bytes() == b""
+        assert not list(year_dir.glob(CHROME_DOWNLOAD_DIR_PREFIX + "*"))
 
     def test_own_download_is_promoted_and_temp_dir_removed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
