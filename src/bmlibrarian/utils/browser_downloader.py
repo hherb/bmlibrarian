@@ -21,6 +21,9 @@ It also supports institutional access via OpenAthens/SAML federation:
 """
 
 import logging
+import os
+import shutil
+import tempfile
 import time
 import re
 from pathlib import Path
@@ -1576,7 +1579,6 @@ async def _download_with_persistent_context(
         Dictionary with download result
     """
     from playwright.async_api import async_playwright
-    import os
 
     # Default user data directory
     if not user_data_dir:
@@ -1864,6 +1866,35 @@ def download_pdf_with_browser(
     return result
 
 
+# Dot-prefixed so the per-call dir stays out of file listings; recursive
+# scans skip it by this prefix (PDFMatcher.match_and_import_directory).
+CHROME_DOWNLOAD_DIR_PREFIX = '.chrome-download-'
+
+
+def promote_downloaded_pdf(download_dir: Path, save_path: Path) -> Optional[int]:
+    """Move the newest valid PDF in a per-call download dir onto save_path.
+
+    Only files Chrome wrote into ``download_dir`` (a fresh directory created
+    for this download) are considered, so another document's PDF in the
+    shared year folder can never be taken (#325). A non-PDF download is not
+    moved (the caller's cleanup deletes it) and save_path is not touched.
+
+    Args:
+        download_dir: Directory Chrome downloaded into for this call only.
+        save_path: Final path (usually an empty reserved placeholder).
+
+    Returns:
+        Size in bytes of the promoted PDF, or None if no valid PDF was found.
+    """
+    candidates = [f for f in download_dir.glob('*.pdf') if f.is_file()]
+    for candidate in sorted(candidates, key=lambda f: f.stat().st_mtime, reverse=True):
+        if is_pdf_file(candidate):
+            os.replace(candidate, save_path)
+            return save_path.stat().st_size
+        logger.warning(f"Downloaded file is not a valid PDF: {candidate.name}")
+    return None
+
+
 def download_pdf_with_undetected_chrome(
     url: str,
     save_path: Path,
@@ -1909,10 +1940,10 @@ def download_pdf_with_undetected_chrome(
             'error': 'undetected-chromedriver not installed. Install with: uv add undetected-chromedriver'
         }
 
-    import os
     from urllib.parse import urlparse, quote
 
     driver = None
+    download_dir: Optional[Path] = None
     try:
         logger.info(f"Starting undetected Chrome (headless={headless})...")
 
@@ -1922,12 +1953,15 @@ def download_pdf_with_undetected_chrome(
         if headless:
             options.add_argument('--headless=new')
 
-        # Set download directory
-        download_dir = str(save_path.parent.absolute())
-        os.makedirs(download_dir, exist_ok=True)
+        # Download into a fresh directory so only this call's files are taken;
+        # under save_path.parent so os.replace stays on one filesystem
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        download_dir = Path(tempfile.mkdtemp(
+            prefix=CHROME_DOWNLOAD_DIR_PREFIX, dir=save_path.parent.absolute()
+        ))
 
         prefs = {
-            'download.default_directory': download_dir,
+            'download.default_directory': str(download_dir),
             'download.prompt_for_download': False,
             'download.directory_upgrade': True,
             'plugins.always_open_pdf_externally': True,  # Download PDFs instead of viewing
@@ -2276,37 +2310,18 @@ def download_pdf_with_undetected_chrome(
             # Method 2: Direct navigation (may trigger download)
             logger.info("Attempting direct navigation to PDF URL...")
             driver.get(pdf_url)
-            time.sleep(5)  # Wait for download to start/complete
+            time.sleep(5)  # Give the download time to finish
 
-            # Check if file was downloaded
-            downloaded_files = list(Path(download_dir).glob('*.pdf'))
+            promoted_size = promote_downloaded_pdf(download_dir, save_path)
+            if promoted_size is not None:
+                logger.info(f"PDF downloaded successfully: {save_path} ({promoted_size} bytes)")
+                return {
+                    'status': 'success',
+                    'path': str(save_path),
+                    'size': promoted_size
+                }
 
-            # Find most recently modified PDF
-            if downloaded_files:
-                newest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
-
-                # Move/rename to expected path
-                if newest_file != save_path:
-                    import shutil
-                    shutil.move(str(newest_file), str(save_path))
-
-                if save_path.exists():
-                    # Verify it's a PDF
-                    with open(save_path, 'rb') as f:
-                        header = f.read(4)
-                    if header == b'%PDF':
-                        size = save_path.stat().st_size
-                        logger.info(f"PDF downloaded successfully: {save_path} ({size} bytes)")
-                        return {
-                            'status': 'success',
-                            'path': str(save_path),
-                            'size': size
-                        }
-                    else:
-                        logger.warning("Downloaded file is not a valid PDF")
-
-        # If no PDF link found, try to get page content
-        # Some sites embed PDFs in viewers
+        # No PDF link, or its download failed: some sites embed PDFs in viewers
         try:
             # Check for embedded PDF viewer
             iframes = driver.find_elements(By.TAG_NAME, 'iframe')
@@ -2317,24 +2332,17 @@ def download_pdf_with_undetected_chrome(
                     driver.get(src)
                     time.sleep(5)
 
-                    downloaded_files = list(Path(download_dir).glob('*.pdf'))
-                    if downloaded_files:
-                        newest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
-                        if newest_file != save_path:
-                            import shutil
-                            shutil.move(str(newest_file), str(save_path))
-                        # The newest PDF may be an empty reserved placeholder (#322)
-                        if save_path.exists():
-                            if is_pdf_file(save_path):
-                                size = save_path.stat().st_size
-                                return {
-                                    'status': 'success',
-                                    'path': str(save_path),
-                                    'size': size
-                                }
-                            logger.warning("Downloaded iframe file is not a valid PDF")
+                    promoted_size = promote_downloaded_pdf(download_dir, save_path)
+                    if promoted_size is not None:
+                        return {
+                            'status': 'success',
+                            'path': str(save_path),
+                            'size': promoted_size
+                        }
+        except OSError:
+            raise  # A failed move onto save_path is reported, not swallowed
         except Exception as e:
-            logger.debug(f"Error checking iframes: {e}")
+            logger.warning(f"Error checking iframes: {e}")
 
         # If institutional login was needed but not successful
         if institutional_login_needed:
@@ -2374,6 +2382,12 @@ def download_pdf_with_undetected_chrome(
                     'needs_institutional_access': True
                 }
 
+        if any(download_dir.glob('*.pdf')):
+            # Anything still here failed is_pdf_file in promote_downloaded_pdf
+            return {
+                'status': 'failed',
+                'error': 'Downloaded file is not a valid PDF (likely a login or bot-check page)'
+            }
         return {
             'status': 'failed',
             'error': 'Could not find or download PDF from page'
@@ -2390,8 +2404,13 @@ def download_pdf_with_undetected_chrome(
         if driver:
             try:
                 driver.quit()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error quitting Chrome: {e}")
+        if download_dir is not None:
+            try:
+                shutil.rmtree(download_dir)
+            except OSError as e:
+                logger.warning(f"Could not remove Chrome download dir {download_dir}: {e}")
 
 
 # Example usage

@@ -247,7 +247,13 @@ failed download or upload copy removes its placeholder
 reserved while the next source is tried. A "successful" download that left
 only the empty placeholder is reported as failed. A crash mid-download can
 leave an empty placeholder behind; it is never linked and only pushes later
-downloads to `_<n>`.
+downloads to `_<n>`. The undetected-Chrome fallback
+(`browser_downloader.download_pdf_with_undetected_chrome`) downloads into a
+fresh `<year>/.chrome-download-*` directory and promotes only a valid PDF
+from there onto the reserved path (`promote_downloaded_pdf`), then removes
+the directory on every exit path (#325). A hard kill (no `finally`) can
+leave a `.chrome-download-*` directory behind; it is safe to delete, and
+recursive PDF imports (`PDFMatcher.match_and_import_directory`) skip it.
 
 The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/
 search_tab.py`) runs the same three factory methods on its own

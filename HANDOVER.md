@@ -10,6 +10,18 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Undetected-Chrome fallback only takes its own download** (2026-10-21,
+  closes #325). `download_pdf_with_undetected_chrome` downloads into a
+  fresh `<year>/.chrome-download-*` dir (`tempfile.mkdtemp`), promotes only
+  a valid PDF from it onto the reserved path (`promote_downloaded_pdf`,
+  `os.replace`) and removes the dir in `finally`. Before, it moved the
+  newest `*.pdf` in the shared year folder, which could be another
+  document's PDF. Tests: `tests/test_undetected_chrome_download_dir.py`
+  (fake `undetected_chromedriver`/selenium). Review follow-ups (PR #326):
+  the newest *valid* PDF wins, a junk-only download fails with "not a valid
+  PDF", a failed move in the iframe branch is reported (was a debug log),
+  cleanup failures are logged, and recursive PDF imports skip leftover
+  `.chrome-download-*` dirs.
 - **Download names are reserved; DocumentQA downloads are linked**
   (2026-10-21, closes #322, #323). `unused_download_path` now creates an
   empty placeholder atomically (`O_CREAT | O_EXCL`), so concurrent Find PDF
@@ -30,8 +42,7 @@ off new work. Longer-term structural items live in
   name stays reserved while the next source is tried. A "successful"
   download that left only the placeholder is a failure (the undetected-Chrome
   iframe branch now checks `is_pdf_file`). A failed manual-upload copy
-  removes its reserved file. Open: #325 (Chrome fallback moves the newest
-  PDF in the year folder, possibly another document's).
+  removes its reserved file.
 - **Find PDF never overwrites an existing file** (2026-10-21, closes #319).
   `FullTextFinder.download_for_document` downloads to the next free
   `<stem>_<n>.pdf` when `<year>/<doi>.pdf` is taken
