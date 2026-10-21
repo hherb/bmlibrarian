@@ -10,7 +10,7 @@ This document describes the architecture and implementation of the PDF verificat
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  PDFManager.download_pdf_with_discovery()                           │
-│  (document cards: _discover_and_download())                         │
+│  (document cards: discover_and_download())                         │
 │       │                                                              │
 │       ▼                                                              │
 │  FullTextFinder.discover_and_download()                             │
@@ -188,7 +188,7 @@ else:  # 'reject'
 
 Document cards verify downloads on one path, used by both the "🔍 Find"
 (FETCH state) and "🔍 Find PDF" buttons. It is split across threads.
-`_discover_and_download()` runs the network-bound CrossRef/resolver/download
+`discover_and_download()` runs the network-bound CrossRef/resolver/download
 work on a `PDFDiscoveryWorker` (QThread) and must not touch widgets or the
 database. A DOI found by the CrossRef title search is used to find the PDF
 but cannot confirm it: a PDF fetched via that DOI will carry it. So a PDF
@@ -202,7 +202,7 @@ PDF. A failed DOI write is named in the outcome message. A PDF that was
 never checked (`verified is None`) is reported as "PDF found (content not
 verified)". The result is
 delivered (via `FindPDFSession`, a GUI-thread QObject) to
-`_finalize_discovery_result()`, which shows the modal verification prompt on
+`finalize_discovery_result()`, which shows the modal verification prompt on
 the GUI thread and returns a `FindPdfOutcome` (ATTACHED, UNSAVED, REASSIGNED,
 SAVED_COPY, DECLINED, NOT_FOUND) with a user-facing message, so a reassigned
 or rejected PDF is not reported as "not found". RETRY discards the PDF; the
@@ -210,14 +210,21 @@ button re-enables so the user can search again. Closing the progress dialog
 before the result arrives abandons the search: the worker finishes in the
 background, its result (and any file it downloaded) is ignored, and the
 button re-enables once the worker has stopped.
+`record_find_pdf_outcome()` then saves an ATTACHED outcome's `pdf_filename`
+and the verified DOI (UNSAVED if the link could not be written).
+
+The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/
+search_tab.py`) runs the same three factory methods on its own
+`FindPDFSession`, so it verifies, prompts and saves DOIs exactly like the
+cards (#312). Anything other than ATTACHED continues with the abstract.
 
 `PDFManager.download_pdf_with_discovery(prompt_on_mismatch=True)` without a
 `parent_widget` or `verification_callback` prompts on stdin; GUI code must not
 call it that way from a worker thread.
 
 ```python
-def _finalize_discovery_result(self, card_data, result):
-    # GUI thread: result comes from _discover_and_download() on the worker
+def finalize_discovery_result(self, card_data, result):
+    # GUI thread: result comes from discover_and_download() on the worker
 
     if result.verified is False:
         # Build VerificationPromptData with source_url

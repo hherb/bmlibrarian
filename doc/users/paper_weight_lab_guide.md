@@ -38,6 +38,13 @@ The top section provides two ways to select documents:
 
 2. **Recent Assessments**: Select from the dropdown of recently assessed documents
 
+If the selected document has no full text, the lab offers to search for its
+PDF online, as the "🔍 Find PDF" button on document cards does. The
+downloaded PDF is checked against the document's PMID and title. If it looks
+like a different paper, you are asked whether to accept, reject or reassign
+it. A DOI found by title search is saved only when the PDF matches. If no PDF
+is attached, the assessment uses the abstract.
+
 ### Selected Document Display
 
 Once a document is selected, you'll see:

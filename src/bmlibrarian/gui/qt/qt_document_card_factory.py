@@ -1417,7 +1417,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 self._reset_find_button(find_button, original_text)
 
         worker = PDFDiscoveryWorker(
-            lambda progress_cb: self._discover_and_download(card_data, progress_cb)
+            lambda progress_cb: self.discover_and_download(card_data, progress_cb)
         )
         session = FindPDFSession(
             worker,
@@ -1457,7 +1457,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         worker ran, so each is checked before use.
 
         Args:
-            result: Download result returned by ``_discover_and_download``
+            result: Download result returned by ``discover_and_download``
             find_button: The "Find PDF" button; the primary button itself
                 for a FETCH click
             primary_button: The primary PDF button to update on success
@@ -1466,7 +1466,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             original_text: Find button text to restore on failure
         """
         try:
-            outcome = self._finalize_discovery_result(card_data, result)
+            outcome = self.finalize_discovery_result(card_data, result)
         except Exception as e:
             logger.error(
                 f"Error finalizing PDF discovery for document {card_data.doc_id}: {e}",
@@ -1478,38 +1478,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             )
             return
 
+        outcome = self.record_find_pdf_outcome(card_data, result, outcome)
         pdf_path = outcome.pdf_path
-        if outcome.status == FindPdfStatus.ATTACHED and pdf_path:
-            document = {
-                'id': card_data.doc_id,
-                'doi': card_data.doi,
-                'pmid': card_data.pmid,
-                'pdf_url': card_data.pdf_url,
-                'title': card_data.title,
-                'authors': card_data.authors,
-                'year': card_data.year,
-                'pdf_filename': pdf_path.name,
-            }
-            if not self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document):
-                outcome = FindPdfOutcome(
-                    FindPdfStatus.UNSAVED,
-                    f"Downloaded {pdf_path.name}, but the link could not be "
-                    f"saved to the database (see log)",
-                    pdf_path,
-                )
-            # A CrossRef title match is only trusted once the PDF it led to
-            # passed verification against the card's PMID/title (not for
-            # ACCEPT or a manual upload). The PDF's content confirms the DOI
-            # even if its link could not be saved (UNSAVED).
-            discovered_doi = getattr(result, 'discovered_doi', None)
-            if (discovered_doi and getattr(result, 'verified', None) is True
-                    and not self._update_doi_in_database(card_data.doc_id, discovered_doi)):
-                outcome = FindPdfOutcome(
-                    outcome.status,
-                    f"{outcome.message}; the discovered DOI {discovered_doi} "
-                    f"could not be saved (see log)",
-                    outcome.pdf_path,
-                )
 
         logger.info(
             f"Find PDF for document {card_data.doc_id}: "
@@ -1555,6 +1525,62 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             PDFOperationSettings.BUTTON_RESET_DELAY_MS,
             lambda: self._reset_find_button(find_button, original_text)
         )
+
+    def record_find_pdf_outcome(
+        self,
+        card_data: DocumentCardData,
+        result: Any,
+        outcome: FindPdfOutcome
+    ) -> FindPdfOutcome:
+        """
+        Save an ATTACHED outcome's PDF link and verified DOI (GUI thread).
+
+        Other outcomes are returned unchanged (``finalize_discovery_result``
+        already did their database work).
+
+        Args:
+            card_data: Document card data with identifiers
+            result: Download result returned by ``discover_and_download``
+            outcome: Outcome returned by ``finalize_discovery_result``
+
+        Returns:
+            The outcome; UNSAVED if the PDF link could not be saved, with a
+            note in the message if the discovered DOI could not be saved
+        """
+        pdf_path = outcome.pdf_path
+        if outcome.status != FindPdfStatus.ATTACHED or not pdf_path:
+            return outcome
+        document = {
+            'id': card_data.doc_id,
+            'doi': card_data.doi,
+            'pmid': card_data.pmid,
+            'pdf_url': card_data.pdf_url,
+            'title': card_data.title,
+            'authors': card_data.authors,
+            'year': card_data.year,
+            'pdf_filename': pdf_path.name,
+        }
+        if not self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document):
+            outcome = FindPdfOutcome(
+                FindPdfStatus.UNSAVED,
+                f"Downloaded {pdf_path.name}, but the link could not be "
+                f"saved to the database (see log)",
+                pdf_path,
+            )
+        # A CrossRef title match is only trusted once the PDF it led to
+        # passed verification against the card's PMID/title (not for
+        # ACCEPT or a manual upload). The PDF's content confirms the DOI
+        # even if its link could not be saved (UNSAVED).
+        discovered_doi = getattr(result, 'discovered_doi', None)
+        if (discovered_doi and getattr(result, 'verified', None) is True
+                and not self._update_doi_in_database(card_data.doc_id, discovered_doi)):
+            outcome = FindPdfOutcome(
+                outcome.status,
+                f"{outcome.message}; the discovered DOI {discovered_doi} "
+                f"could not be saved (see log)",
+                outcome.pdf_path,
+            )
+        return outcome
 
     def _on_find_pdf_error(
         self,
@@ -1609,7 +1635,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         button.setText(original_text)
         button.setEnabled(True)
 
-    def _discover_and_download(
+    def discover_and_download(
         self,
         card_data: DocumentCardData,
         progress_callback: Optional[Callable[[str, str], None]] = None
@@ -1619,7 +1645,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         This is the network-bound half of "Find PDF" and runs on a
         ``PDFDiscoveryWorker`` thread: it must not touch GUI objects. The
-        result is handed to ``_finalize_discovery_result`` on the GUI thread.
+        result is handed to ``finalize_discovery_result`` on the GUI thread.
         A CrossRef-discovered DOI travels in ``result.discovered_doi``; it is
         saved only if the PDF is verified against it (``_on_find_pdf_result``).
 
@@ -1809,7 +1835,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         if progress_callback and not verification.verified:
             progress_callback("verification", "mismatch")
 
-    def _finalize_discovery_result(
+    def finalize_discovery_result(
         self,
         card_data: DocumentCardData,
         result: "DownloadResult"
@@ -1827,7 +1853,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         Args:
             card_data: Document card data with identifiers
-            result: Result from ``_discover_and_download``
+            result: Result from ``discover_and_download``
 
         Returns:
             The outcome; ``pdf_path`` is set only for ATTACHED
