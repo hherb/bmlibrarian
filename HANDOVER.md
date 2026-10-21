@@ -13,23 +13,28 @@ off new work. Longer-term structural items live in
 - **Paper Weight Lab's "find full text online" reuses the card flow**
   (2026-10-21, closes #312). `lab/paper_weight_lab/tabs/search_tab.py`
   drops its own copy (CrossRef DOI written before download, PDFs attached
-  unverified, broad `except`) and runs the card factory's now-public
+  unverified, broad `except` around the DB writes) and runs the card factory's now-public
   `discover_and_download()` (worker), `finalize_discovery_result()` (GUI,
   verification prompt) and the new `record_find_pdf_outcome()` (saves an
   ATTACHED outcome's `pdf_filename` and the verified DOI; extracted from
   `_on_find_pdf_result`). The tab creates its `QtDocumentCardFactory` on first
-  use (PDFs to `pdf.base_dir`). Anything other than ATTACHED continues with
-  the abstract. The lab's NXML-only branch was dead (PMC full text only comes
-  with a PDF) and is gone; `main_window._on_full_text_downloaded` still
-  handles `pdf_path=None`.
+  use (PDFs to `pdf.base_dir`; a bad config value is reported). Closing the
+  progress dialog cancels the session like a card's and continues with the
+  abstract, as does anything other than ATTACHED. `has_full_text` follows
+  `FindPdfOutcome.full_text_stored` (a failed full-text write is named in the
+  message; a manual upload never claims the rejected download's text). A
+  manual upload now goes to the factory's `base_pdf_dir`, not
+  `PDF_BASE_DIR`. The NXML-only (`pdf_path=None`) branches in the tab,
+  `main_window` and the plugin were dead (PMC full text only comes with a
+  PDF) and are gone.
 - **Card FETCH uses the Find PDF flow; CrossRef DOIs wait for verification**
   (2026-10-21, closes #278, #279). A FETCH-state "🔍 Find" click runs
   `_handle_find_pdf_click` through `PDFButtonWidget.on_discover`, so
   downloads run on the worker and the verification prompt runs on the GUI
   thread. Before, `_create_fetch_handler` prompted from the worker and fell
-  back to stdin; it is deleted. `_discover_and_download` no longer writes to
+  back to stdin; it is deleted. `discover_and_download` no longer writes to
   the DB: the CrossRef DOI travels in `DownloadResult.discovered_doi`, and
-  `_on_find_pdf_result` saves it only when `verified is True` (also if the
+  `record_find_pdf_outcome` saves it only when `verified is True` (also if the
   PDF link itself could not be saved), so not for ACCEPT of a mismatch, a
   manual upload or an unchecked PDF. Because a PDF fetched via the CrossRef
   DOI carries that DOI, a DOI-only match is re-verified against the card's

@@ -304,32 +304,15 @@ class PaperWeightLab(QMainWindow):
         Starts PDF ingestion to extract text and create embeddings,
         then proceeds to document selection.
 
-        For NXML downloads (no PDF), the full_text is already in the database,
-        so we only need to create embeddings.
-
         Args:
             document_id: Document ID
-            pdf_path: Path to downloaded PDF (as object due to Signal limitation).
-                     May be None if full text came from NXML (already in DB).
+            pdf_path: Path to downloaded PDF (as object due to Signal limitation)
         """
         # Store pending document ID
         self._pending_document_id = document_id
 
         # Show status in results tab (switch there first)
         self.tab_widget.setCurrentIndex(TAB_INDEX_RESULTS)
-
-        # Handle NXML case (full text already in DB, just need embeddings)
-        if pdf_path is None:
-            logger.info(f"Full text from NXML for document {document_id}, creating embeddings...")
-            self.results_tab.show_ingestion_status("Creating embeddings from full text...")
-
-            # Use embedding worker instead of PDF ingest worker
-            self._ingest_worker = EmbeddingWorker(document_id, self)
-            self._ingest_worker.status_update.connect(self._on_ingest_status)
-            self._ingest_worker.embedding_complete.connect(self._on_embedding_complete)
-            self._ingest_worker.embedding_error.connect(self._on_ingest_error)
-            self._ingest_worker.start()
-            return
 
         # Convert to Path if needed
         if not isinstance(pdf_path, Path):
@@ -410,28 +393,6 @@ class PaperWeightLab(QMainWindow):
         if document_id is not None:
             self.results_tab.load_document(document_id)
             self._load_document_viewer(document_id)
-
-    def _on_embedding_complete(self, num_chunks: int) -> None:
-        """
-        Handle completed embedding creation (for NXML full text).
-
-        Args:
-            num_chunks: Number of chunks created
-        """
-        document_id = self._pending_document_id
-
-        self.results_tab.show_ingestion_status(
-            f"Embedding complete: {num_chunks} chunks created"
-        )
-        logger.info(f"Embedding complete for document {document_id}: {num_chunks} chunks")
-
-        # Load document in results tab and document viewer
-        if document_id is not None:
-            self.results_tab.load_document(document_id)
-            self._load_document_viewer(document_id)
-
-        # Refresh recent assessments
-        self.search_tab.load_recent_assessments()
 
     def _terminate_workers(self) -> None:
         """Safely terminate any running worker threads."""

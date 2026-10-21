@@ -42,6 +42,11 @@ from ..utils import format_recent_assessment_display
 
 logger = logging.getLogger(__name__)
 
+# Outcomes the user chose in the verification prompt (not errors)
+USER_CHOICE_STATUSES = frozenset({
+    FindPdfStatus.DECLINED, FindPdfStatus.REASSIGNED, FindPdfStatus.SAVED_COPY,
+})
+
 # Status tag constants
 TAG_PDF = "📄"       # Has PDF file
 TAG_FULLTEXT = "📝"  # Has full text
@@ -331,7 +336,7 @@ class SearchTab(QWidget):
         else:
             parts.append("✗ No PDF or full text")
             if doc.get('doi') or doc.get('pmid'):
-                parts.append("  → Click 'Find Full Text' to search online")
+                parts.append("  → Select it to search online for full text")
 
         return "\n".join(parts)
 
@@ -454,7 +459,9 @@ class SearchTab(QWidget):
             The factory, writing PDFs to the configured ``pdf.base_dir``
 
         Raises:
-            ValueError: If the PDF directory cannot be created or written
+            ValueError: If the PDF directory cannot be created or is not a
+                directory
+            TypeError: If the configured ``pdf.base_dir`` is not a path
         """
         if self._card_factory is None:
             from bmlibrarian.config import get_config
@@ -488,8 +495,13 @@ class SearchTab(QWidget):
         document_id = doc_data['id']
         try:
             factory = self._get_card_factory()
-        except ValueError as e:
-            self._on_full_text_error(document_id, None, str(e))
+        except Exception as e:
+            # Config values are untrusted (e.g. "base_dir": null)
+            logger.error(f"Cannot set up full-text discovery: {e}", exc_info=True)
+            self._on_full_text_error(
+                document_id, None,
+                f"Cannot use the configured PDF directory: {str(e) or type(e).__name__}"
+            )
             return
 
         pmid = doc_data.get('pmid')
@@ -528,6 +540,16 @@ class SearchTab(QWidget):
             on_done=self._discovery_sessions.discard,
         )
         self._discovery_sessions.add(session)
+
+        def on_dialog_closed() -> None:
+            """Closed before the result arrived: abandon the search (no late
+            verification prompt or database writes) and use the abstract."""
+            if not session.outcome_delivered:
+                session.cancel()
+                logger.info(f"Find full text for document {document_id} cancelled by the user")
+                self.document_selected.emit(document_id)
+
+        progress_dialog.rejected.connect(on_dialog_closed)
         session.start()
 
     def _on_full_text_result(
@@ -538,10 +560,11 @@ class SearchTab(QWidget):
         result: Any
     ) -> None:
         """
-        Apply a finished discovery (GUI thread): verify, update DB, tree and dialog.
+        Apply a finished discovery (GUI thread): prompt, update DB, tree and dialog.
 
         A PDF that failed verification is only attached if the user accepts
-        it; a CrossRef-discovered DOI is saved only for a verified PDF.
+        it (or uploads their own file instead); a CrossRef-discovered DOI is
+        saved only for a verified PDF.
 
         Args:
             doc_data: Document dictionary (updated in place)
@@ -558,7 +581,10 @@ class SearchTab(QWidget):
                 f"Error applying discovery result for document {document_id}: {e}",
                 exc_info=True
             )
-            self._on_full_text_error(document_id, progress_dialog, str(e) or type(e).__name__)
+            self._on_full_text_error(
+                document_id, progress_dialog,
+                describe_discovery_error(str(e) or type(e).__name__)
+            )
             return
         outcome = factory.record_find_pdf_outcome(card_data, result, outcome)
         logger.info(
@@ -567,9 +593,12 @@ class SearchTab(QWidget):
         )
 
         pdf_path = outcome.pdf_path
+        if outcome.status in USER_CHOICE_STATUSES:
+            # Declined, reassigned or copied by the user: no error to log
+            self._continue_with_abstract(document_id, progress_dialog, outcome.message)
+            return
         if outcome.status != FindPdfStatus.ATTACHED or pdf_path is None:
-            # Not found, declined, given to another document or not saved:
-            # this document has no new full text
+            # Not found or not saved: this document has no new full text
             self._on_full_text_error(document_id, progress_dialog, outcome.message)
             return
 
@@ -581,8 +610,7 @@ class SearchTab(QWidget):
             )
         doc_data['has_pdf'] = True
         doc_data['pdf_filename'] = pdf_path.name
-        if result.full_text:
-            # PMC full text, stored by finalize_discovery_result
+        if outcome.full_text_stored:
             doc_data['has_full_text'] = True
         self._update_tree_item_status(document_id, doc_data)
 
@@ -606,8 +634,26 @@ class SearchTab(QWidget):
             error_msg: Error message
         """
         logger.error(f"Full text not available for document {document_id}: {error_msg}")
+        self._continue_with_abstract(document_id, progress_dialog, error_msg)
+
+    def _continue_with_abstract(
+        self,
+        document_id: int,
+        progress_dialog: Optional[PDFDiscoveryProgressDialog],
+        message: str
+    ) -> None:
+        """
+        Tell the user no new full text was attached and select the document
+        so the assessment proceeds with the abstract (GUI thread).
+
+        Args:
+            document_id: Document being processed
+            progress_dialog: The discovery progress dialog, None if discovery
+                never started
+            message: Why no full text was attached
+        """
         if progress_dialog is not None and is_widget_valid(progress_dialog):
-            progress_dialog.set_failure(error_msg)
+            progress_dialog.set_failure(message)
             QTimer.singleShot(
                 PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
                 progress_dialog.reject
@@ -615,7 +661,7 @@ class SearchTab(QWidget):
         QMessageBox.warning(
             self,
             "Full Text Not Available",
-            f"Full text is not available:\n{error_msg}\n\n"
+            f"Full text is not available:\n{message}\n\n"
             "The assessment will proceed using only the abstract."
         )
         self.document_selected.emit(document_id)

@@ -40,10 +40,13 @@ The top section provides two ways to select documents:
 
 If the selected document has no full text, the lab offers to search for its
 PDF online, as the "🔍 Find PDF" button on document cards does. The
-downloaded PDF is checked against the document's PMID and title. If it looks
-like a different paper, you are asked whether to accept, reject or reassign
-it. A DOI found by title search is saved only when the PDF matches. If no PDF
-is attached, the assessment uses the abstract.
+downloaded PDF is checked against the document's DOI, PMID and title. If it
+looks like a different paper, you are asked what to do: accept it, reject
+it, retry, save a copy, upload your own file, or attach it to the matching
+document if that is in the database. A DOI found by title search is saved
+only when the PDF matches. Closing the search window stops the search. If no
+new PDF is attached, the assessment uses the abstract; select the document
+again to search again.
 
 ### Selected Document Display
 
