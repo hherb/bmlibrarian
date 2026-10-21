@@ -10,8 +10,26 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Card FETCH uses the Find PDF flow; CrossRef DOIs wait for verification**
+  (2026-10-21, closes #278, #279). A FETCH-state "🔍 Find" click runs
+  `_handle_find_pdf_click` through `PDFButtonWidget.on_discover`, so
+  downloads run on the worker and the verification prompt runs on the GUI
+  thread. Before, `_create_fetch_handler` prompted from the worker and fell
+  back to stdin; it is deleted. `_discover_and_download` no longer writes to
+  the DB: the CrossRef DOI travels in `DownloadResult.discovered_doi`, and
+  `_on_find_pdf_result` saves it only when `verified is True` (also if the
+  PDF link itself could not be saved), so not for ACCEPT of a mismatch, a
+  manual upload or an unchecked PDF. Because a PDF fetched via the CrossRef
+  DOI carries that DOI, a DOI-only match is re-verified against the card's
+  PMID/title (`_verify_without_discovered_doi`). A failed DOI write and an
+  unchecked PDF ("content not verified") show in the outcome message.
+  Closing the progress dialog abandons the session; the button stays
+  disabled until the worker stops (its downloaded file is left unlinked).
+  The paper weight lab's copy of the flow has the same DOI bug and
+  no verification at all (#312). Docs: `pdf_verification_system.md`,
+  `document_card_factory_system.md`.
 - **Fragments are widened to their complete sentence(s)** (2026-10-20,
-  branch `feat/widen-fragment-citations`, closes #304). Owner decision
+  PRs #306/#311, merged, closes #304). Owner decision
   (2026-10-19): a verbatim fragment is cited as the abstract's enclosing
   sentence(s) instead of being rejected, and marked: `Citation.widened_from`
   holds the fragment, `get_validation_stats()['widened_passages']` counts
@@ -117,8 +135,8 @@ value — pick one, or pull an item from ROADMAP.md:
 - Widening decisions from the PR #306 review: #308 (widen one-word quotes,
   or require a minimum fragment size?), #309 (fragments still lost at text
   end without a full stop, inside broken-off sentences, past 400 chars).
-- Open bugs from recent slices: #279 / #278 (Find PDF / FETCH
-  paths), #285–#287 (systematic review follow-ups), #274 / #275 (the same
+- Open bugs from recent slices: #312 (paper weight lab Find full text:
+  early DOI write, no verification), #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and
   `paper_weight/db.py`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
