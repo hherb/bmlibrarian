@@ -113,8 +113,10 @@ The PDF button has three distinct states based on PDF availability:
 
 ### 2. FETCH State (Orange)
 - **Condition**: PDF URL available but no local file
-- **Button Text**: "⬇️ Fetch Full Text"
-- **Action**: Downloads PDF from URL, then transitions to VIEW state
+- **Button Text**: "🔍 Find"
+- **Action**: Runs the Find PDF discovery workflow (CrossRef title search,
+  PMC/Unpaywall/DOI/URL resolvers, browser fallback, verification prompt on
+  mismatch), then transitions to VIEW state
 - **Color**: Orange (#F57C00)
 
 ### 3. UPLOAD State (Green)
@@ -126,7 +128,7 @@ The PDF button has three distinct states based on PDF availability:
 ### State Transitions
 
 ```
-┌─────────┐  Download   ┌──────┐
+┌─────────┐  Find PDF   ┌──────┐
 │  FETCH  │ ───────────>│ VIEW │
 └─────────┘             └──────┘
                            ^
@@ -184,15 +186,11 @@ from pathlib import Path
 from bmlibrarian.gui.document_card_factory_base import DocumentCardData
 
 def custom_pdf_action_handler(action: str, doc_id: int, *args):
-    """Custom handler for PDF actions."""
+    """Custom handler for PDF actions ('view' and 'upload'; FETCH always runs
+    the factory's Find PDF discovery and is not dispatched here)."""
     if action == 'view':
         print(f"Viewing PDF for document {doc_id}")
         # Custom view logic
-    elif action == 'fetch':
-        pdf_url = args[0]
-        print(f"Fetching PDF from {pdf_url}")
-        # Custom fetch logic
-        return Path("/path/to/downloaded.pdf")
     elif action == 'upload':
         print(f"Uploading PDF for document {doc_id}")
         # Custom upload logic
@@ -305,9 +303,12 @@ Both button paths run them on a `QThread`:
   tooltip; a failed database write is reported as "⚠ Not Saved" rather than
   "✓ Found".
 
-Closing the progress dialog before the result arrives cancels the session
-and re-enables the button. A CrossRef-discovered DOI is saved only after a
-verified download (see `pdf_verification_system.md`).
+Closing the progress dialog before the result arrives abandons the session:
+the worker finishes in the background and its result is ignored (a file it
+downloaded stays on disk, unlinked); the button stays disabled ("Cancelling...")
+until the worker stops, so a retry cannot race its download. A
+CrossRef-discovered DOI is saved only after the PDF passed verification
+against the card's own PMID/title (see `pdf_verification_system.md`).
 
 Rules for new code: worker callables must not touch widgets; receive worker
 signals on methods of a `QObject` that lives on the GUI thread, so the
@@ -427,13 +428,12 @@ card_data = DocumentCardData(..., context=CardContext.CITATIONS)
 Implement PDF action handlers that return appropriate values:
 
 ```python
-def on_pdf_fetch(url: str) -> Optional[Path]:
-    """Fetch handler should return downloaded path."""
+def on_pdf_upload(doc_id: int) -> Optional[Path]:
+    """Upload handler should return the stored path."""
     try:
-        path = download_pdf(url)
-        return path
+        return store_uploaded_pdf(doc_id)
     except Exception as e:
-        logger.error(f"Download failed: {e}")
+        logger.error(f"Upload failed: {e}")
         return None
 ```
 

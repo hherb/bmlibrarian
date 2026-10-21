@@ -323,6 +323,10 @@ class FindPDFSession(QObject):
         """
         self._outcome_delivered = True
         if self._cancelled:
+            logger.info(
+                f"Ignoring PDF discovery result after cancel "
+                f"(file left unlinked: {getattr(result, 'file_path', None)})"
+            )
             return
         self._handling_result = True
         try:
@@ -887,11 +891,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Initialize Qt document card factory.
 
         Args:
-            pdf_manager: PDFManager instance for handling PDF operations
+            pdf_manager: PDFManager used to resolve stored PDF paths and
+                update the database (Find/FETCH downloads use FullTextFinder)
             base_pdf_dir: Base directory for PDF files
-            use_discovery: If True, use discovery-first workflow for PDF downloads.
-                This leverages PMC, Unpaywall, and DOI resolution to find the best
-                available PDF source, with browser-based fallback for protected sites.
+            use_discovery: Unused; kept for backwards compatibility. Find and
+                FETCH always use the discovery workflow.
             unpaywall_email: Email for Unpaywall API requests (optional)
 
         Raises:
@@ -1204,6 +1208,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         If the primary button is Upload, adds a "Find PDF" button to trigger
         PDF discovery using PMC, Unpaywall, DOI, and optionally OpenAthens.
+        A Fetch button runs the same discovery itself (via ``on_discover``).
 
         Args:
             button: The primary PDF button widget
@@ -1362,8 +1367,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         is handled on the GUI thread by ``_on_find_pdf_result`` /
         ``_on_find_pdf_error``.
 
-        Closing the progress dialog before the result arrives cancels the
-        search, so no verification prompt appears later out of context.
+        Closing the progress dialog before the result arrives abandons the
+        search: the worker finishes in the background and its result is
+        ignored (no verification prompt out of context; a file it downloaded
+        is left on disk unlinked, #314). The button stays disabled until the worker
+        has stopped, so a new search cannot race its download.
 
         Args:
             find_button: The "Find PDF" button (to disable during operation);
@@ -1400,6 +1408,14 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 progress_dialog, original_text
             )
 
+        cancelled_by_user = False
+
+        def on_done(done_session: FindPDFSession) -> None:
+            self._find_pdf_sessions.discard(done_session)
+            if cancelled_by_user:
+                # Only now can a new search start without racing this one's download
+                self._reset_find_button(find_button, original_text)
+
         worker = PDFDiscoveryWorker(
             lambda progress_cb: self._discover_and_download(card_data, progress_cb)
         )
@@ -1408,15 +1424,18 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             on_progress=on_progress,
             on_discovered=on_discovered,
             on_failed=on_failed,
-            on_done=self._find_pdf_sessions.discard,
+            on_done=on_done,
         )
         self._find_pdf_sessions.add(session)
 
         def on_dialog_closed() -> None:
+            nonlocal cancelled_by_user
             if not session.outcome_delivered:
                 session.cancel()
+                cancelled_by_user = True
                 logger.info(f"Find PDF for document {card_data.doc_id} cancelled by the user")
-                self._reset_find_button(find_button, original_text)
+                if is_widget_valid(find_button):
+                    find_button.setText("Cancelling...")
 
         progress_dialog.rejected.connect(on_dialog_closed)
         session.start()
@@ -1439,7 +1458,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         Args:
             result: Download result returned by ``_discover_and_download``
-            find_button: The "Find PDF" button
+            find_button: The "Find PDF" button; the primary button itself
+                for a FETCH click
             primary_button: The primary PDF button to update on success
             card_data: Document card data with identifiers
             progress_dialog: The discovery progress dialog
@@ -1478,10 +1498,18 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     pdf_path,
                 )
             # A CrossRef title match is only trusted once the PDF it led to
-            # was verified against it (not for ACCEPT or a manual upload)
+            # passed verification against the card's PMID/title (not for
+            # ACCEPT or a manual upload). The PDF's content confirms the DOI
+            # even if its link could not be saved (UNSAVED).
             discovered_doi = getattr(result, 'discovered_doi', None)
-            if discovered_doi and getattr(result, 'verified', None) is True:
-                self._update_doi_in_database(card_data.doc_id, discovered_doi)
+            if (discovered_doi and getattr(result, 'verified', None) is True
+                    and not self._update_doi_in_database(card_data.doc_id, discovered_doi)):
+                outcome = FindPdfOutcome(
+                    outcome.status,
+                    f"{outcome.message}; the discovered DOI {discovered_doi} "
+                    f"could not be saved (see log)",
+                    outcome.pdf_path,
+                )
 
         logger.info(
             f"Find PDF for document {card_data.doc_id}: "
@@ -1521,7 +1549,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             find_button.setToolTip(outcome.message)
 
         if has_pdf:
-            # This document has its PDF; the Find button stays disabled
+            # This document has its PDF; a separate Find button stays disabled
             return
         QTimer.singleShot(
             PDFOperationSettings.BUTTON_RESET_DELAY_MS,
@@ -1542,7 +1570,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         Args:
             error_msg: Error message from the worker or finalization
-            find_button: The "Find PDF" button
+            find_button: The "Find PDF" button; the primary button itself
+                for a FETCH click
             primary_button: The primary PDF button (unused; kept for symmetry
                 with ``_on_find_pdf_result``)
             card_data: Document card data with identifiers
@@ -1619,12 +1648,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         openathens_config = get_openathens_config()
         discovery_config = config.get('discovery', {}) or {}
 
-        # DOI found by CrossRef title search (None if the document has a DOI)
+        # DOI found by CrossRef title search (None if the document has a DOI
+        # or CrossRef found no match)
         discovered_doi: Optional[str] = None
 
         # If no DOI but we have a title, try CrossRef title search first.
-        # resolve() reports network/API errors in its result; anything it
-        # raises is a bug and goes to the worker's failed path.
+        # resolve() reports its own errors as an ERROR result.
         if not card_data.doi and card_data.title:
             if progress_callback:
                 progress_callback('crossref_title', 'resolving')
@@ -1654,15 +1683,14 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     f"for document {card_data.doc_id}"
                 )
             else:
+                no_match = title_result.status.value in ('not_found', 'skipped')
                 if progress_callback:
-                    progress_callback(
-                        'crossref_title',
-                        'not_found' if title_result.status.value in ('not_found', 'skipped')
-                        else 'error'
-                    )
-                logger.debug(
+                    progress_callback('crossref_title', 'not_found' if no_match else 'error')
+                logger.log(
+                    logging.DEBUG if no_match else logging.WARNING,
                     f"CrossRef title search did not find DOI for document "
-                    f"{card_data.doc_id}: {title_result.error_message}"
+                    f"{card_data.doc_id} ({title_result.status.value}): "
+                    f"{title_result.error_message}"
                 )
 
         # Determine if OpenAthens should be used for discovery
@@ -1719,7 +1747,67 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             delete_on_mismatch=discovery_config.get('delete_on_mismatch', False)
         )
         result.discovered_doi = discovered_doi
+        if (discovered_doi and result.verified is True
+                and result.verification_match_type == 'doi' and result.file_path):
+            # The PDF was fetched via the CrossRef DOI, so finding that DOI in
+            # it proves nothing; check it against the card's own PMID/title
+            self._verify_without_discovered_doi(
+                result, Path(result.file_path), card_data, progress_callback
+            )
         return result
+
+    @staticmethod
+    def _verify_without_discovered_doi(
+        result: "DownloadResult",
+        pdf_path: Path,
+        card_data: DocumentCardData,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> None:
+        """
+        Re-verify a downloaded PDF against the card's PMID and title only.
+
+        Overwrites the verification fields of ``result`` in place. If the
+        verifier itself fails, ``verified`` becomes None (not verified), so
+        the discovered DOI is not saved but the PDF is still offered.
+
+        Args:
+            result: Download result whose PDF was verified by the CrossRef DOI
+            pdf_path: The downloaded PDF (``result.file_path``)
+            card_data: Document card data with the known PMID and title
+            progress_callback: Optional callback(stage, status) for progress updates
+        """
+        from bmlibrarian.discovery.pdf_verifier import PDFVerifier
+
+        try:
+            verification = PDFVerifier().verify_pdf(
+                pdf_path=pdf_path,
+                expected_pmid=card_data.pmid,
+                expected_title=card_data.title,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Re-verifying PDF for document {card_data.doc_id} without the "
+                f"discovered DOI failed: {e}",
+                exc_info=True
+            )
+            result.verified = None
+            result.verification_warnings = list(result.verification_warnings or []) + [
+                f"Could not check the PDF against the document title: {e}"
+            ]
+            return
+
+        result.verified = verification.verified
+        result.verification_confidence = verification.confidence
+        result.verification_match_type = verification.match_type
+        result.verification_warnings = verification.warnings
+        result.title_similarity = verification.title_similarity
+        logger.info(
+            f"PDF for document {card_data.doc_id} re-verified without the "
+            f"discovered DOI: verified={verification.verified} "
+            f"({verification.match_type})"
+        )
+        if progress_callback and not verification.verified:
+            progress_callback("verification", "mismatch")
 
     def _finalize_discovery_result(
         self,
@@ -1913,7 +2001,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             # If we got full text from a PMC package, store it in the database
             if result.full_text:
                 self._update_full_text_in_database(card_data.doc_id, result.full_text)
-            return FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", file_path)
+            # None: verification was off, unavailable or crashed
+            message = (
+                "PDF found" if result.verified
+                else "PDF found (content not verified)"
+            )
+            return FindPdfOutcome(FindPdfStatus.ATTACHED, message, file_path)
 
         logger.warning(
             f"PDF discovery failed for document {card_data.doc_id}: "
@@ -1925,13 +2018,18 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             if result.error_message else "No PDF sources found"
         )
 
-    def _update_doi_in_database(self, doc_id: int, doi: str) -> None:
+    def _update_doi_in_database(self, doc_id: int, doi: str) -> bool:
         """
         Update the DOI in the database after discovering it via CrossRef.
+
+        A document that already has a DOI is left unchanged.
 
         Args:
             doc_id: Document ID
             doi: Discovered DOI
+
+        Returns:
+            False if the database update failed, True otherwise
         """
         try:
             from bmlibrarian.database import get_db_manager
@@ -1940,7 +2038,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE document SET doi = %s WHERE id = %s AND doi IS NULL",
+                        "UPDATE document SET doi = %s "
+                        "WHERE id = %s AND (doi IS NULL OR doi = '')",
                         (doi, doc_id)
                     )
                     if cur.rowcount > 0:
@@ -1952,12 +2051,14 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                         logger.debug(
                             f"Document {doc_id} already has a DOI, not updating"
                         )
+            return True
 
         except Exception as e:
             logger.error(
-                f"Failed to update DOI in database for document {doc_id}: {e}"
+                f"Failed to update DOI in database for document {doc_id}: {e}",
+                exc_info=True
             )
-            # Don't raise - the discovery can still continue
+            return False
 
     def _create_view_handler(self, card_data: DocumentCardData) -> Callable:
         """

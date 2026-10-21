@@ -18,7 +18,8 @@ The verification dialog appears when:
 
 1. A PDF is successfully downloaded
 2. The PDF's metadata (DOI, title) doesn't match the expected document
-3. Interactive mode is enabled (`prompt_on_mismatch=True`)
+3. Interactive mode is enabled (`prompt_on_mismatch=True`; document card
+   Find buttons always prompt)
 
 ## Dialog Layout
 

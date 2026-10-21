@@ -17,11 +17,15 @@ off new work. Longer-term structural items live in
   thread. Before, `_create_fetch_handler` prompted from the worker and fell
   back to stdin; it is deleted. `_discover_and_download` no longer writes to
   the DB: the CrossRef DOI travels in `DownloadResult.discovered_doi`, and
-  `_on_find_pdf_result` saves it only for an ATTACHED outcome with
-  `verified is True`, so not for ACCEPT of a mismatch or a manual upload.
-  Errors raised by the CrossRef step reach the worker's failed path.
-  Closing the progress dialog before the result arrives cancels the
-  session. The paper weight lab's copy of the flow has the same DOI bug and
+  `_on_find_pdf_result` saves it only when `verified is True` (also if the
+  PDF link itself could not be saved), so not for ACCEPT of a mismatch, a
+  manual upload or an unchecked PDF. Because a PDF fetched via the CrossRef
+  DOI carries that DOI, a DOI-only match is re-verified against the card's
+  PMID/title (`_verify_without_discovered_doi`). A failed DOI write and an
+  unchecked PDF ("content not verified") show in the outcome message.
+  Closing the progress dialog abandons the session; the button stays
+  disabled until the worker stops (its downloaded file is left unlinked).
+  The paper weight lab's copy of the flow has the same DOI bug and
   no verification at all (#312). Docs: `pdf_verification_system.md`,
   `document_card_factory_system.md`.
 - **Fragments are widened to their complete sentence(s)** (2026-10-20,

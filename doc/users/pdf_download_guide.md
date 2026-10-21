@@ -158,22 +158,25 @@ Add to `~/.bmlibrarian/config.json`:
 
 ## Document Card Integration
 
-The document card "Fetch" button automatically uses the discovery workflow:
+The document card "🔍 Find" button (FETCH state) and the "🔍 Find PDF" button
+both run the discovery workflow above with your `discovery` settings, check
+the downloaded PDF against the document, and ask you what to do if it does
+not match:
 
 ```python
+from pathlib import Path
 from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
-from bmlibrarian.utils.pdf_manager import PDFManager
 
-# Create factory with discovery enabled
 factory = QtDocumentCardFactory(
-    pdf_manager=PDFManager(base_dir='~/pdfs'),
-    use_discovery=True,
+    base_pdf_dir=Path('~/pdfs').expanduser(),
     unpaywall_email='your@email.com'
 )
-
-# Cards created with this factory will use discovery for the Fetch button
 card = factory.create_card(card_data)
 ```
+
+If the document has no DOI, the card looks one up on CrossRef by title. That
+DOI is saved to the database only when the downloaded PDF matches the
+document's own PMID or title.
 
 ## Source Priority
 

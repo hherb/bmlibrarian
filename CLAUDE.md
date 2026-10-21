@@ -478,7 +478,7 @@ card = factory.create_card(card_data)
 
 **PDF Button States**:
 - **VIEW** (Blue): Local PDF exists → Opens in viewer
-- **FETCH** (Orange): URL available → Downloads then transitions to VIEW
+- **FETCH** (Orange, "🔍 Find"): URL available → Runs the Find PDF discovery (CrossRef, resolvers, browser fallback, verification prompt) then transitions to VIEW
 - **UPLOAD** (Green): No PDF → File picker then transitions to VIEW
 
 **See Documentation**:
