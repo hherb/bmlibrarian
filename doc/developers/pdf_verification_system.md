@@ -198,9 +198,14 @@ then gets the normal mismatch prompt. The DOI travels in
 `DownloadResult.discovered_doi` and is written to `document.doi` (only where
 it is NULL or empty) only when the PDF passed that verification (`verified
 is True`), never for ACCEPT of a mismatch, a manual upload or an unchecked
-PDF. A failed DOI write is named in the outcome message. A PDF that was
-never checked (`verified is None`) is reported as "PDF found (content not
-verified)". The result is
+PDF. A failed DOI write is named in the outcome message. If that re-check
+raises, `verified` is None and `DownloadResult.verification_error` is set:
+the PDF goes to the prompt with `VerificationPromptData.unchecked=True`
+(header "PDF Could Not Be Checked"), because a title-guessed DOI is the only
+evidence for it (#317). A PDF that was never checked because verification is
+off or unavailable (`verified is None`, no `verification_error`) is attached
+without a prompt; both are reported as "PDF found (content not verified)".
+The result is
 delivered (via `FindPDFSession`, a GUI-thread QObject) to
 `finalize_discovery_result()`, which shows the modal verification prompt on
 the GUI thread and returns a `FindPdfOutcome` (ATTACHED, UNSAVED, REASSIGNED,
@@ -209,10 +214,15 @@ or rejected PDF is not reported as "not found". It also stores PMC full text
 (`FindPdfOutcome.full_text_stored`; a failed write is named in the message).
 `record_find_pdf_outcome()` then saves an ATTACHED outcome's `pdf_filename`
 and the verified DOI (UNSAVED if the link could not be written). RETRY
-discards the PDF; on a card the button re-enables so the user can search
-again. Closing the progress dialog
-before the result arrives abandons the search: the worker finishes in the
-background, its result (and any file it downloaded) is ignored, and the
+and REJECT discard the PDF and remember its source URL for that document
+(`_remember_rejected_source`, in memory for the factory's lifetime);
+`discover_and_download` passes those URLs to `FullTextFinder` as
+`excluded_urls`, so searching again tries the other sources (#315). On a
+card the button re-enables so the user can search again. Closing the
+progress dialog before the result arrives abandons the search: the worker
+finishes in the background, its result is ignored, a PDF it downloaded is
+deleted (`discard_abandoned_download`; kept if the file was already there
+before the search, `DownloadResult.file_existed_before`, #314), and the
 button re-enables once the worker has stopped.
 
 The Paper Weight Lab's "find full text online" (`lab/paper_weight_lab/tabs/

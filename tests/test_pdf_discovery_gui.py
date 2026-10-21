@@ -1208,6 +1208,46 @@ class TestFinalizeDiscoveryResult:
         assert not pdf.exists()
         update_pdf.assert_not_called()
 
+    @pytest.mark.parametrize("decision_name, remembered", [
+        ("REJECT", True), ("RETRY", True), ("ACCEPT", False),
+    ])
+    def test_rejected_source_is_remembered(self, app, tmp_path, decision_name, remembered):
+        """REJECT and RETRY make the next search skip the PDF's source (#315)."""
+        from types import SimpleNamespace
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        pdf = tmp_path / "wrong.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        factory, _, _, card = _make_find_pdf_widgets(tmp_path)
+        prompt = MagicMock(return_value=(VerificationDecision[decision_name], None, None))
+        result = _download_result(
+            verified=False, file_path=str(pdf), success=True,
+            source=SimpleNamespace(url="https://bad.example/a.pdf"),
+        )
+        with patch('bmlibrarian.discovery.verification_prompt.prompt_gui_verification', prompt), \
+             patch('bmlibrarian.discovery.verification_prompt.find_alternative_document',
+                   return_value=None), \
+             patch.object(factory, '_update_full_text_in_database', return_value=True):
+            factory.finalize_discovery_result(card, result)
+        expected = {"https://bad.example/a.pdf"} if remembered else set()
+        assert factory._rejected_source_urls.get(42, set()) == expected
+
+    def test_unchecked_pdf_is_prompted(self, app, tmp_path):
+        """A PDF whose re-check crashed goes to the prompt marked "unchecked";
+        accepting it attaches it as not verified (#317)."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        pdf = tmp_path / "x.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        outcome, prompt, *_ = self._finalize(
+            tmp_path,
+            _download_result(success=True, file_path=str(pdf), verified=None,
+                             verification_error="boom", discovered_doi="10.9/found"),
+            decision=VerificationDecision.ACCEPT,
+        )
+        assert prompt.call_args[0][0].unchecked is True
+        assert outcome.status == FindPdfStatus.ATTACHED
+        assert outcome.message == "PDF found (content not verified)"
+
     def test_manual_upload_copies_into_year_directory(self, app, tmp_path):
         """MANUAL_UPLOAD copies the chosen file under YYYY/ and attaches it."""
         from bmlibrarian.discovery.verification_prompt import VerificationDecision
@@ -1568,7 +1608,25 @@ class TestFetchAndDiscoveredDoi:
             tmp_path, downloaded, MagicMock(side_effect=RuntimeError("boom"))
         )
         assert result.verified is None
+        assert result.verification_error == "boom"
         assert any("boom" in w for w in result.verification_warnings)
+
+    def test_rejected_sources_are_excluded_from_next_search(self, app, tmp_path):
+        """Sources the user rejected for this document reach the finder as
+        ``excluded_urls``; other documents are unaffected (#315)."""
+        from bmlibrarian.discovery import DownloadResult
+
+        factory, _, _, card = _make_find_pdf_widgets(tmp_path)
+        factory._remember_rejected_source(card.doc_id, "https://bad.example/a.pdf")
+        factory._remember_rejected_source(7, "https://other.example/c.pdf")
+        finder = MagicMock()
+        finder.download_for_document.return_value = DownloadResult(success=False)
+        with patch('bmlibrarian.config.get_config', return_value={}), \
+             patch('bmlibrarian.config.get_openathens_config', return_value={}), \
+             patch('bmlibrarian.discovery.FullTextFinder', return_value=finder):
+            factory.discover_and_download(card)
+        excluded = finder.download_for_document.call_args.kwargs['excluded_urls']
+        assert excluded == {"https://bad.example/a.pdf"}
 
     def test_title_verified_pdf_is_not_rechecked(self, app, tmp_path):
         """A PDF verified by the card's title needs no second check."""
@@ -1617,10 +1675,15 @@ class TestFetchAndDiscoveredDoi:
 
         release = threading.Event()
 
+        downloaded = tmp_path / "late.pdf"
+
         def blocking_discovery(card_data, progress_cb):
             """Block until released, simulating slow discovery."""
             release.wait(EVENT_PUMP_TIMEOUT_S)
-            return 'RESULT'
+            downloaded.write_bytes(b"%PDF-1.4")
+            return _download_result(
+                success=True, file_path=str(downloaded), file_existed_before=False
+            )
 
         factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
         try:
@@ -1638,9 +1701,41 @@ class TestFetchAndDiscoveredDoi:
                 finalize.assert_not_called()
                 assert find_button.isEnabled()
                 assert find_button.text() == "Find PDF"
+                # Nothing links the abandoned download, so it is deleted (#314)
+                assert not downloaded.exists()
         finally:
             release.set()
             factory.shutdown()
+
+
+class TestDiscardAbandonedDownload:
+    """``discard_abandoned_download`` only deletes files the search created."""
+
+    def test_new_file_is_deleted(self, tmp_path):
+        """A PDF the cancelled search created is removed."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import discard_abandoned_download
+        pdf = tmp_path / "new.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        discard_abandoned_download(_download_result(file_path=str(pdf), file_existed_before=False))
+        assert not pdf.exists()
+
+    @pytest.mark.parametrize("result_fields", [
+        {"file_existed_before": True},
+        {},  # origin unknown
+    ])
+    def test_preexisting_or_unknown_file_is_kept(self, tmp_path, result_fields):
+        """A file that was there before the search, or of unknown origin, stays."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import discard_abandoned_download
+        pdf = tmp_path / "old.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        discard_abandoned_download(_download_result(file_path=str(pdf), **result_fields))
+        assert pdf.exists()
+
+    def test_no_file_is_fine(self):
+        """A result without a file (nothing found) is ignored."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import discard_abandoned_download
+        discard_abandoned_download(_download_result(file_existed_before=False))
+        discard_abandoned_download("RESULT")
 
 
 class TestDescribeDiscoveryError:

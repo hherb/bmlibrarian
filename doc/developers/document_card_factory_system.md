@@ -309,8 +309,9 @@ Both button paths run them on a `QThread`:
   `_terminate_workers`).
 
 Closing the progress dialog before the result arrives abandons the session:
-the worker finishes in the background and its result is ignored (a file it
-downloaded stays on disk, unlinked); the button stays disabled ("Cancelling...")
+the worker finishes in the background and its result is ignored (a PDF it
+downloaded is deleted unless the file existed before the search); the button
+stays disabled ("Cancelling...")
 until the worker stops, so a retry cannot race its download. A
 CrossRef-discovered DOI is saved only after the PDF passed verification
 against the card's own PMID/title (see `pdf_verification_system.md`).

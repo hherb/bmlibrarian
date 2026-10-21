@@ -58,6 +58,8 @@ class VerificationPromptData:
     source_url: Optional[str] = None
     # Path to manually uploaded PDF (set by dialog when user uploads)
     manual_upload_path: Optional[Path] = None
+    # The verifier could not check the PDF (as opposed to finding a mismatch)
+    unchecked: bool = False
 
     def get_mismatch_summary(self) -> str:
         """Get a human-readable summary of the mismatch."""
@@ -81,7 +83,9 @@ class VerificationPromptData:
                 if warning not in str(lines):
                     lines.append(f"Warning: {warning}")
 
-        return "\n".join(lines) if lines else "Unknown mismatch"
+        if lines:
+            return "\n".join(lines)
+        return "The PDF could not be checked" if self.unchecked else "Unknown mismatch"
 
 
 def find_alternative_document(extracted_doi: str) -> Optional[AlternativeDocument]:

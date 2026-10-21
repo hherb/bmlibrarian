@@ -13,7 +13,7 @@ import time
 import ftplib
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Collection
 from urllib.parse import urlparse
 
 import requests
@@ -281,7 +281,8 @@ class FullTextFinder:
         browser_timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
         progress_callback: Optional[Callable[[str, str], None]] = None,
         verify_content: bool = False,
-        delete_on_mismatch: bool = False
+        delete_on_mismatch: bool = False,
+        excluded_urls: Optional[Collection[str]] = None
     ) -> DownloadResult:
         """Discover PDF sources and download the best one.
 
@@ -299,11 +300,14 @@ class FullTextFinder:
             progress_callback: Optional callback(stage, status)
             verify_content: If True, verify downloaded PDF matches expected DOI/title
             delete_on_mismatch: If True and verify_content=True, delete mismatched PDFs
+            excluded_urls: Source URLs not to download from (e.g. sources the
+                user already rejected for this document)
 
         Returns:
             DownloadResult with download status and verification results
         """
         start_time = time.time()
+        excluded = set(excluded_urls or ())
 
         # First, discover sources
         if progress_callback:
@@ -318,13 +322,20 @@ class FullTextFinder:
             stop_on_first_oa=stop_early,
             progress_callback=progress_callback
         )
+        kept_sources = [s for s in discovery.sources if s.url not in excluded]
+        skipped = len(discovery.sources) - len(kept_sources)
+        if skipped:
+            logger.info(f"Skipping {skipped} source(s) rejected earlier for this document")
+        discovery.sources = kept_sources
 
         # If no sources found but we have a DOI, create a fallback DOI URL
         # This enables browser-based download for publishers with Cloudflare protection
         # (e.g., Cochrane, Wiley) that block HTTP-based discovery
         if not discovery.sources and identifiers.doi:
             doi_url = self._create_doi_fallback_url(identifiers.doi)
-            if doi_url:
+            if doi_url and doi_url in excluded:
+                skipped += 1
+            elif doi_url:
                 fallback_source = PDFSource(
                     url=doi_url,
                     source_type=SourceType.DOI_FALLBACK,
@@ -336,7 +347,10 @@ class FullTextFinder:
                 logger.info(f"No sources found, added DOI fallback: {doi_url}")
 
         if not discovery.sources:
-            error_message = "No PDF sources found and no DOI available for fallback"
+            error_message = (
+                f"No PDF sources left after skipping {skipped} you rejected earlier"
+                if skipped else "No PDF sources found and no DOI available for fallback"
+            )
             resolver_errors = format_resolver_errors(discovery.resolution_results)
             if resolver_errors:
                 error_message += f" (resolver errors: {resolver_errors})"
@@ -1097,7 +1111,8 @@ class FullTextFinder:
         use_browser_fallback: Optional[bool] = None,
         progress_callback: Optional[Callable[[str, str], None]] = None,
         verify_content: bool = False,
-        delete_on_mismatch: bool = False
+        delete_on_mismatch: bool = False,
+        excluded_urls: Optional[Collection[str]] = None
     ) -> DownloadResult:
         """Download PDF for a document using discovery + direct download + browser fallback.
 
@@ -1118,9 +1133,11 @@ class FullTextFinder:
             progress_callback: Optional callback(stage, status)
             verify_content: If True, verify downloaded PDF matches expected DOI/title
             delete_on_mismatch: If True and verify_content=True, delete mismatched PDFs
+            excluded_urls: Source URLs not to download from
 
         Returns:
-            DownloadResult with download status, file path, and verification results
+            DownloadResult with download status, file path, and verification results;
+            ``file_existed_before`` tells whether the PDF overwrote an existing file
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -1151,7 +1168,8 @@ class FullTextFinder:
         if use_browser_fallback is None:
             use_browser_fallback = browser_config.get('enabled', True)
 
-        return self.discover_and_download(
+        file_existed_before = output_path.exists()
+        result = self.discover_and_download(
             identifiers=identifiers,
             output_path=output_path,
             use_browser_fallback=use_browser_fallback,
@@ -1159,8 +1177,11 @@ class FullTextFinder:
             browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
             progress_callback=progress_callback,
             verify_content=verify_content,
-            delete_on_mismatch=delete_on_mismatch
+            delete_on_mismatch=delete_on_mismatch,
+            excluded_urls=excluded_urls
         )
+        result.file_existed_before = file_existed_before
+        return result
 
     def _generate_output_path(
         self,

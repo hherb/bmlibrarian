@@ -99,6 +99,52 @@ class TestFullTextFinderBrowserFallback:
         assert result.success is True
 
 
+class TestExcludedSources:
+    """Sources the user rejected are not downloaded from again (#315)."""
+
+    def _sources(self):
+        """Two discovered sources, the rejected one first."""
+        return [
+            PDFSource(url="https://bad.example/a.pdf", source_type=SourceType.PMC,
+                      access_type=AccessType.OPEN, priority=1),
+            PDFSource(url="https://good.example/b.pdf", source_type=SourceType.UNPAYWALL,
+                      access_type=AccessType.OPEN, priority=2),
+        ]
+
+    def test_excluded_url_is_skipped(self, tmp_path):
+        """Only the source not rejected earlier is tried."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=self._sources(), resolution_results=[])), \
+             patch.object(finder, '_download_from_source',
+                          return_value=DownloadResult(success=True)) as download:
+            result = finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf", use_browser_fallback=False,
+                excluded_urls={"https://bad.example/a.pdf"},
+            )
+        assert result.success
+        assert [c.kwargs['source'].url for c in download.call_args_list] == [
+            "https://good.example/b.pdf"
+        ]
+
+    def test_excluded_doi_fallback_is_not_added(self, tmp_path):
+        """With nothing discovered, a rejected DOI fallback URL is not retried
+        and the error says why nothing was tried."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        fallback = finder._create_doi_fallback_url("10.1234/test")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=[], resolution_results=[])), \
+             patch.object(finder, '_download_from_source') as download:
+            result = finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf", excluded_urls={fallback},
+            )
+        download.assert_not_called()
+        assert not result.success
+        assert "rejected earlier" in result.error_message
+
+
 class TestDownloadForDocument:
     """Test download_for_document convenience method."""
 
@@ -128,6 +174,19 @@ class TestDownloadForDocument:
             # Check that discover_and_download was called with correct path
             call_args = mock_dad.call_args
             assert call_args is not None
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_reports_whether_output_file_existed(self, tmp_path, existed):
+        """``file_existed_before`` tells callers if the PDF overwrote a file."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        if existed:
+            target = finder._generate_output_path(document, tmp_path)
+            target.write_bytes(b"%PDF-1.4 old")
+        with patch.object(finder, 'discover_and_download',
+                          return_value=DownloadResult(success=True)):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.file_existed_before is existed
 
     def test_download_for_document_generates_year_path(self):
         """Test that output path uses year-based directory structure."""

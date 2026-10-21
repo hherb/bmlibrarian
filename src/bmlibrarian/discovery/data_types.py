@@ -194,3 +194,8 @@ class DownloadResult:
     # DOI found by a CrossRef title search for this download; unconfirmed
     # until the PDF is verified, so callers persist it only when verified=True
     discovered_doi: Optional[str] = None
+    # Set when the verifier itself failed (verified stays None): the PDF could
+    # not be checked, as opposed to verification being switched off
+    verification_error: Optional[str] = None
+    # output_path already held a file before this download (it was overwritten)
+    file_existed_before: bool = False
