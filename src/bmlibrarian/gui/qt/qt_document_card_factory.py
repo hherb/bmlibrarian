@@ -108,19 +108,16 @@ def discard_abandoned_download(result: Any) -> None:
     """Delete the PDF that a cancelled "Find PDF" search downloaded.
 
     Nothing links that file to a document, so it would otherwise stay on disk
-    unreferenced (#314). The file is kept if it was already at that path
-    before the search (``file_existed_before``), if it has changed since the
-    search wrote it (another search for the same document may have attached
-    it since), or if the result does not record both facts.
+    unreferenced (#314). The search never overwrites an existing file (#319),
+    so its file is its own; it is kept anyway if it has changed since the
+    search wrote it, or if the result does not record when that was
+    (``file_mtime_ns``, set only by ``download_for_document``).
 
     Args:
         result: The cancelled search's download result
     """
     file_path = getattr(result, 'file_path', None)
     if not file_path:
-        return
-    if getattr(result, 'file_existed_before', True):
-        logger.info(f"Cancelled PDF search: keeping {file_path} (it existed before the search)")
         return
     written_mtime_ns = getattr(result, 'file_mtime_ns', None)
     path = Path(file_path)
@@ -1983,6 +1980,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     # Copy the manually selected file to the correct location
                     import shutil
                     from bmlibrarian.utils.pdf_manager import PDFManager
+                    from bmlibrarian.utils.download_utils import unused_download_path
                     # Same directory as discovery downloads and the DB link
                     pdf_manager = PDFManager(base_dir=str(self.base_pdf_dir))
                     document = {
@@ -1994,6 +1992,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     }
                     target_path = pdf_manager.get_pdf_path(document, create_dirs=True)
                     if target_path:
+                        # <year>/<picked name> may be another document's PDF (#319)
+                        target_path = unused_download_path(target_path)
                         shutil.copy2(save_path, target_path)
                         logger.info(
                             f"User MANUALLY UPLOADED PDF for document {card_data.doc_id}: "

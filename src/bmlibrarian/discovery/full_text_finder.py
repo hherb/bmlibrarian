@@ -33,6 +33,7 @@ from ..utils.download_utils import (
     partial_download_path,
     promote_partial_download,
     discard_partial_download,
+    unused_download_path,
 )
 from ..utils.rate_limit import (
     HostRateLimiter,
@@ -1159,8 +1160,9 @@ class FullTextFinder:
 
         Returns:
             DownloadResult with download status, file path, and verification results;
-            ``file_existed_before`` tells whether ``output_path`` already held a
-            file, ``file_mtime_ns`` records the downloaded file's modification time
+            ``file_mtime_ns`` records the downloaded file's modification time.
+            An existing file at the generated path is never replaced: the PDF
+            goes to the next free ``<stem>_<n>.pdf`` instead (#319).
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -1178,8 +1180,8 @@ class FullTextFinder:
                 error_message="Document has no usable identifiers (DOI, PMID, PMCID, or pdf_url)"
             )
 
-        # Generate output path
-        output_path = self._generate_output_path(document, output_dir)
+        # Never overwrite: with a guessed DOI the path can be another document's PDF
+        output_path = unused_download_path(self._generate_output_path(document, output_dir))
 
         # Determine browser fallback settings
         browser_config = getattr(self, '_browser_fallback_config', {
@@ -1191,7 +1193,6 @@ class FullTextFinder:
         if use_browser_fallback is None:
             use_browser_fallback = browser_config.get('enabled', True)
 
-        file_existed_before = output_path.exists()
         result = self.discover_and_download(
             identifiers=identifiers,
             output_path=output_path,
@@ -1203,7 +1204,6 @@ class FullTextFinder:
             delete_on_mismatch=delete_on_mismatch,
             excluded_urls=excluded_urls
         )
-        result.file_existed_before = file_existed_before
         if result.file_path:
             try:
                 result.file_mtime_ns = Path(result.file_path).stat().st_mtime_ns

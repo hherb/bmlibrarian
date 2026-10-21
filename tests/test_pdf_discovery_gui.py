@@ -1277,6 +1277,27 @@ class TestFinalizeDiscoveryResult:
         # Recorded once, by the caller
         update_pdf.assert_not_called()
 
+    def test_manual_upload_never_overwrites_another_pdf(self, app, tmp_path):
+        """A taken YYYY/<picked name> (maybe another document's PDF) is left
+        alone; the upload goes to the next free name (#319)."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        wrong = tmp_path / "wrong.pdf"
+        wrong.write_bytes(b"%PDF-1.4")
+        chosen = tmp_path / "main.pdf"
+        chosen.write_bytes(b"%PDF-1.4 chosen")
+        taken = tmp_path / "2021" / "main.pdf"
+        taken.parent.mkdir()
+        taken.write_bytes(b"%PDF-1.4 other document")
+        with patch('bmlibrarian.utils.pdf_manager.PDFManager.get_pdf_path',
+                   return_value=taken):
+            outcome, *_ = self._finalize(
+                tmp_path, _download_result(verified=False, file_path=str(wrong)),
+                decision=VerificationDecision.MANUAL_UPLOAD, save_path=chosen,
+            )
+        assert outcome.pdf_path == tmp_path / "2021" / "main_1.pdf"
+        assert outcome.pdf_path.read_bytes() == b"%PDF-1.4 chosen"
+        assert taken.read_bytes() == b"%PDF-1.4 other document"
+
 
 class TestFindPDFSessionRobustness:
     """Sessions always end the UI's searching state, and stop on shutdown."""
@@ -1717,7 +1738,7 @@ class TestFetchAndDiscoveredDoi:
             release.wait(EVENT_PUMP_TIMEOUT_S)
             downloaded.write_bytes(b"%PDF-1.4")
             return _download_result(
-                success=True, file_path=str(downloaded), file_existed_before=False,
+                success=True, file_path=str(downloaded),
                 file_mtime_ns=downloaded.stat().st_mtime_ns,
             )
 
@@ -1753,20 +1774,17 @@ class TestDiscardAbandonedDownload:
         pdf = tmp_path / "new.pdf"
         pdf.write_bytes(b"%PDF-1.4")
         discard_abandoned_download(_download_result(
-            file_path=str(pdf), file_existed_before=False,
-            file_mtime_ns=pdf.stat().st_mtime_ns,
+            file_path=str(pdf), file_mtime_ns=pdf.stat().st_mtime_ns,
         ))
         assert not pdf.exists()
 
     @pytest.mark.parametrize("result_fields", [
-        {"file_existed_before": True, "file_mtime_ns": "CURRENT"},
-        {"file_existed_before": False},  # mtime not recorded
-        {"file_mtime_ns": "CURRENT"},  # origin unknown (duck-typed result)
-        {"file_existed_before": False, "file_mtime_ns": "STALE"},  # rewritten since
+        {},  # mtime not recorded: origin unknown
+        {"file_mtime_ns": "STALE"},  # rewritten since
     ])
     def test_file_not_known_to_be_ours_is_kept(self, tmp_path, result_fields):
-        """A file that was there before the search, was written again after
-        it (e.g. a second search attached it), or of unknown origin, stays."""
+        """A file written again after the search (e.g. a second search
+        attached it), or of unknown origin, stays."""
         from bmlibrarian.gui.qt.qt_document_card_factory import discard_abandoned_download
         pdf = tmp_path / "old.pdf"
         pdf.write_bytes(b"%PDF-1.4")
@@ -1790,7 +1808,7 @@ class TestDiscardAbandonedDownload:
     def test_no_file_is_fine(self):
         """A result without a file (nothing found) is ignored."""
         from bmlibrarian.gui.qt.qt_document_card_factory import discard_abandoned_download
-        discard_abandoned_download(_download_result(file_existed_before=False))
+        discard_abandoned_download(_download_result())
         discard_abandoned_download("RESULT")
 
 

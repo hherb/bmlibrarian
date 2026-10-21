@@ -22,6 +22,7 @@ from .download_utils import (
     partial_download_path,
     promote_partial_download,
     discard_partial_download,
+    unused_download_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -529,6 +530,8 @@ class PDFManager:
                             # Copy the manually selected file to the correct location
                             target_path = self.get_pdf_path(document, create_dirs=True)
                             if target_path:
+                                # <year>/<picked name> may be another document's PDF (#319)
+                                target_path = unused_download_path(target_path)
                                 shutil.copy2(save_path, target_path)
                                 document['pdf_filename'] = target_path.name
                                 logger.info(

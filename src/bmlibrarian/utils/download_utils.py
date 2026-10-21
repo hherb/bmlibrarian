@@ -47,6 +47,29 @@ def partial_download_path(final_path: Path) -> Path:
     return final_path.with_name(final_path.name + PARTIAL_DOWNLOAD_SUFFIX)
 
 
+def unused_download_path(path: Path) -> Path:
+    """Return ``path``, or the first free ``<stem>_<n><suffix>`` if it exists.
+
+    A download must not replace a file that may be another document's PDF
+    (#319), so it goes to a fresh name instead.
+
+    Args:
+        path: The preferred destination.
+
+    Returns:
+        ``path`` if nothing is there, else the first ``<stem>_<n><suffix>``
+        (n = 1, 2, ...) that does not exist.
+    """
+    # shortcut: the name is picked, not reserved; concurrent downloads to the
+    # same path can still collide, fix with a no-clobber promote (#322)
+    candidate = path
+    n = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_{n}{path.suffix}")
+        n += 1
+    return candidate
+
+
 def promote_partial_download(partial_path: Path, final_path: Path) -> None:
     """Atomically move a completed, validated partial download into place.
 
