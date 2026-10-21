@@ -167,18 +167,6 @@ class PaperWeightLabTabWidget(QWidget, IDocumentReceiver):
         self._pending_document_id = document_id
         self.tab_widget.setCurrentIndex(2)  # Results tab
 
-        if pdf_path is None:
-            # NXML case - just need embeddings
-            logger.info(f"Full text from NXML for document {document_id}")
-            self.results_tab.show_ingestion_status("Creating embeddings from full text...")
-
-            self._ingest_worker = self._EmbeddingWorker(document_id, self)
-            self._ingest_worker.status_update.connect(self._on_ingest_status)
-            self._ingest_worker.embedding_complete.connect(self._on_embedding_complete)
-            self._ingest_worker.embedding_error.connect(self._on_ingest_error)
-            self._ingest_worker.start()
-            return
-
         if not isinstance(pdf_path, Path):
             pdf_path = Path(str(pdf_path))
 

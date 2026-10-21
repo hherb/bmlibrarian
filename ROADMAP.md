@@ -95,6 +95,15 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 - Split `config.py` (1,625 lines): extract paper-weight validation and
   OpenAthens URL validation; replace debug `print()` with logger calls.
 - Split `utils/browser_downloader.py` (2,402 lines) per download strategy.
+- **A shared Qt toast widget.** The project prefers dismissable toasts to
+  modal `QMessageBox`es (modals interrupt the user and can hang the Qt test
+  suite), but there is no toast component yet, so status messages still use
+  modals. Example: in the Paper Weight Lab, "find full text" can show the
+  verification prompt and then a "Full Text Not Available" warning
+  (`search_tab._continue_with_abstract`), and that warning repeats what the
+  progress dialog already says. Build one toast under `gui/qt/widgets/`,
+  styled through the stylesheet generator and sized with `dpi_scale`, then
+  move non-decision modals over to it.
 - Delete or de-duplicate the dormant `gui/qt/plugins/settings/` +
   `gui/qt/tabs/*` mirror of `gui/qt/plugins/configuration/`.
 - **Pool the Qt GUI session's DB connection.** Login (`gui/qt/core/
@@ -200,6 +209,9 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
   callers.
 - [#275](https://github.com/hherb/bmlibrarian/issues/275) — `paper_weight/db.py`
   query helpers return `[]`/`None` on database errors.
+- [#317](https://github.com/hherb/bmlibrarian/issues/317) — Find PDF: a PDF
+  found via a CrossRef-guessed DOI is attached without a prompt when its
+  re-verification crashes (`verified is None`).
 
 ## Out of scope for now
 

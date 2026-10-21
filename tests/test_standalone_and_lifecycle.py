@@ -271,16 +271,16 @@ class TestPaperWeightSearchTabShutdown:
 
         release = threading.Event()
 
-        def blocking_discovery(doc_data, progress_cb):
+        def blocking_discovery(card_data, progress_cb):
             """Block until released, simulating slow discovery."""
             release.wait(SUBPROCESS_TIMEOUT_S)
             return SimpleNamespace(full_text=None, file_path=None, error_message=None)
 
         with patch.object(SearchTab, '_setup_ui'):
             tab = SearchTab()
+        tab._card_factory = MagicMock(discover_and_download=blocking_discovery)
         timer = threading.Timer(0.2, release.set)
-        with patch.object(tab, '_discover_full_text', side_effect=blocking_discovery), \
-             patch.object(tab, '_on_full_text_result') as on_result:
+        with patch.object(tab, '_on_full_text_result') as on_result:
             tab._find_full_text_online({'id': 7, 'title': 'T'})
             worker = next(iter(tab._discovery_sessions)).worker
             timer.start()
@@ -296,29 +296,35 @@ class TestPaperWeightSearchTabShutdown:
 
     def test_database_failure_is_not_reported_as_success(self, app, tmp_path):
         """Database failure is not reported as success."""
+        from bmlibrarian.gui.document_card_factory_base import DocumentCardData
+        from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
         from bmlibrarian.lab.paper_weight_lab.tabs.search_tab import SearchTab
 
         pdf_path = tmp_path / "paper.pdf"
         pdf_path.write_bytes(b"%PDF-1.4")
         with patch.object(SearchTab, '_setup_ui'):
             tab = SearchTab()
+        tab._card_factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
         doc = {'id': 7, 'title': 'T'}
-        result = SimpleNamespace(full_text=None, file_path=str(pdf_path), error_message=None)
+        result = SimpleNamespace(
+            success=True, verified=True, full_text=None, file_path=str(pdf_path),
+            error_message=None, discovered_doi=None,
+        )
         dialog = MagicMock()
         downloaded = []
         tab.full_text_downloaded.connect(lambda *a: downloaded.append(a))
-        with patch.object(tab, '_update_pdf_in_database',
-                          side_effect=RuntimeError("read-only database")), \
+        with patch.object(tab._card_factory, '_update_pdf_filename_in_database',
+                          return_value=False), \
              patch('bmlibrarian.lab.paper_weight_lab.tabs.search_tab.is_widget_valid',
                    return_value=True), \
              patch('bmlibrarian.lab.paper_weight_lab.tabs.search_tab.QTimer'), \
              patch('bmlibrarian.lab.paper_weight_lab.tabs.search_tab.QMessageBox') as box:
-            tab._on_full_text_result(doc, dialog, result)
+            tab._on_full_text_result(doc, DocumentCardData(doc_id=7, title='T'), dialog, result)
 
         dialog.set_success.assert_not_called()
         failure_text = dialog.set_failure.call_args[0][0]
         assert "could not be saved to the database" in failure_text
-        assert str(pdf_path) in failure_text
+        assert pdf_path.name in failure_text
         assert 'has_pdf' not in doc
         assert downloaded == []
         box.warning.assert_called_once()

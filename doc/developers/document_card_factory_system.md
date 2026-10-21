@@ -291,17 +291,22 @@ Both button paths run them on a `QThread`:
   `PDFButtonConfig.on_fetch` handler supplied by other code still runs on a
   `PDFFetchWorker`.
 - **Find PDF** (`QtDocumentCardFactory._handle_find_pdf_click`):
-  `PDFDiscoveryWorker` runs `_discover_and_download()` (CrossRef title search,
+  `PDFDiscoveryWorker` runs `discover_and_download()` (CrossRef title search,
   resolvers, HTTP/browser download). A `FindPDFSession` — a `QObject` living on
   the GUI thread — receives the worker's signals, so its slots (progress
-  dialog updates, `_finalize_discovery_result()` with its modal verification
-  prompt, button/DB/cache updates) all run on the GUI thread. The factory keeps
-  each session referenced until its thread finishes, and `shutdown()` (also
+  dialog updates, `finalize_discovery_result()` with its modal verification
+  prompt, `record_find_pdf_outcome()` for the ATTACHED link/DOI writes,
+  button/cache updates) all run on the GUI thread. The factory keeps each
+  session referenced until its thread finishes, and `shutdown()` (also
   connected to `QCoreApplication.aboutToQuit`) stops running sessions, since
   destroying a running `QThread` aborts the process. Each click ends in a
   `FindPdfOutcome`: the Find button shows its label and the reason as a
   tooltip; a failed database write is reported as "⚠ Not Saved" rather than
-  "✓ Found".
+  "✓ Found". The Paper Weight Lab's search tab reuses
+  `discover_and_download()`, `finalize_discovery_result()` and
+  `record_find_pdf_outcome()` for its own "find full text online"; it owns
+  its sessions (cancelled when its dialog closes, stopped in
+  `_terminate_workers`).
 
 Closing the progress dialog before the result arrives abandons the session:
 the worker finishes in the background and its result is ignored (a file it

@@ -650,8 +650,8 @@ class TestFindPDFRunsOffGuiThread:
         outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
 
         try:
-            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
-                 patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+            with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, 'finalize_discovery_result', return_value=outcome), \
                  patch.object(factory, '_update_pdf_filename_in_database',
                               return_value=True) as update_db:
                 factory._handle_find_pdf_click(find_button, primary, card)
@@ -687,29 +687,40 @@ class TestPaperWeightLabFindFullText:
             app = QApplication([])
         return app
 
-    def test_find_full_text_does_not_block(self, app, tmp_path):
-        import threading
-        from types import SimpleNamespace
+    @staticmethod
+    def _make_tab(tmp_path):
+        """A search tab (no UI) using a card factory that writes to tmp_path."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
         from bmlibrarian.lab.paper_weight_lab.tabs.search_tab import SearchTab
+
+        with patch.object(SearchTab, '_setup_ui'):
+            tab = SearchTab()
+        tab._card_factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
+        return tab
+
+    def test_find_full_text_does_not_block(self, app, tmp_path):
+        """Discovery runs on a worker; a verified PDF is attached and ingested."""
+        import threading
 
         pdf_path = tmp_path / "paper.pdf"
         pdf_path.write_bytes(b"%PDF-1.4")
         release = threading.Event()
-        result = SimpleNamespace(full_text=None, file_path=str(pdf_path), error_message=None)
+        result = _download_result(success=True, file_path=str(pdf_path), verified=True)
 
-        def blocking_discovery(doc_data, progress_cb):
+        def blocking_discovery(card_data, progress_cb):
             progress_cb('pmc', 'resolving')
             release.wait(EVENT_PUMP_TIMEOUT_S)
             return result
 
-        with patch.object(SearchTab, '_setup_ui'):
-            tab = SearchTab()
+        tab = self._make_tab(tmp_path)
+        factory = tab._card_factory
         downloaded = []
         tab.full_text_downloaded.connect(lambda doc_id, path: downloaded.append((doc_id, path)))
         doc = {'id': 7, 'title': 'T', 'doi': '10.1/x', 'year': 2020}
 
-        with patch.object(tab, '_discover_full_text', side_effect=blocking_discovery), \
-             patch.object(tab, '_update_pdf_in_database') as update_pdf, \
+        with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+             patch.object(factory, '_update_pdf_filename_in_database',
+                          return_value=True) as update_pdf, \
              patch.object(tab, '_update_tree_item_status'):
             tab._find_full_text_online(doc)
             assert not release.is_set()  # returned while discovery still running
@@ -721,6 +732,249 @@ class TestPaperWeightLabFindFullText:
         update_pdf.assert_called_once()
         assert downloaded == [(7, pdf_path)]
         assert doc['has_pdf'] is True
+
+    def _apply(self, tmp_path, result, decision=None, save_path=None,
+               reassign_doc_id=None, full_text_saved=True, finalize_error=None):
+        """Run ``_on_full_text_result`` with DB writes and the prompt patched."""
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from bmlibrarian.gui.document_card_factory_base import DocumentCardData
+
+        tab = self._make_tab(tmp_path)
+        factory = tab._card_factory
+        doc = {'id': 7, 'title': 'A paper'}
+        card = DocumentCardData(doc_id=7, title='A paper')
+        dialog = MagicMock()
+        downloaded, selected = [], []
+        tab.full_text_downloaded.connect(lambda *a: downloaded.append(a))
+        tab.document_selected.connect(selected.append)
+        prompt = MagicMock(return_value=(decision, save_path, reassign_doc_id))
+        module = 'bmlibrarian.lab.paper_weight_lab.tabs.search_tab'
+        with patch('bmlibrarian.discovery.verification_prompt.prompt_gui_verification', prompt), \
+             patch('bmlibrarian.discovery.verification_prompt.find_alternative_document',
+                   return_value=None), \
+             patch.object(factory, '_update_pdf_filename_in_database',
+                          return_value=True) as update_pdf, \
+             patch.object(factory, '_update_doi_in_database', return_value=True) as update_doi, \
+             patch.object(factory, '_update_full_text_in_database',
+                          return_value=full_text_saved) as update_full_text, \
+             (patch.object(factory, 'finalize_discovery_result', side_effect=finalize_error)
+              if finalize_error else nullcontext()), \
+             patch.object(tab, '_update_tree_item_status'), \
+             patch(f'{module}.is_widget_valid', return_value=True), \
+             patch(f'{module}.QTimer'), \
+             patch(f'{module}.QMessageBox') as message_box:
+            tab._on_full_text_result(doc, card, dialog, result)
+        return SimpleNamespace(
+            doc=doc, dialog=dialog, downloaded=downloaded, selected=selected,
+            prompt=prompt, update_pdf=update_pdf, update_doi=update_doi,
+            update_full_text=update_full_text, message_box=message_box,
+        )
+
+    def test_verified_pdf_saves_discovered_doi(self, app, tmp_path):
+        """The CrossRef DOI is saved only after the PDF passed verification (#312)."""
+        from unittest.mock import ANY
+        pdf = tmp_path / "ok.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=True,
+                                  discovered_doi='10.1/found')
+        r = self._apply(tmp_path, result)
+        r.prompt.assert_not_called()
+        r.update_pdf.assert_called_once_with(7, pdf, ANY)
+        r.update_doi.assert_called_once_with(7, '10.1/found')
+        assert r.downloaded == [(7, pdf)]
+        assert r.selected == []
+        assert r.doc['has_pdf'] is True
+        assert 'has_full_text' not in r.doc
+
+    def test_mismatched_pdf_is_prompted_and_rejected(self, app, tmp_path):
+        """A PDF that failed verification is not attached unless accepted (#312)."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        pdf = tmp_path / "wrong.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=False,
+                                  discovered_doi='10.1/wrong')
+        r = self._apply(tmp_path, result, VerificationDecision.REJECT)
+        r.prompt.assert_called_once()
+        r.update_pdf.assert_not_called()
+        r.update_doi.assert_not_called()
+        assert not pdf.exists()
+        assert r.downloaded == []
+        assert r.selected == [7]  # proceeds with the abstract
+        assert 'has_pdf' not in r.doc
+        r.dialog.set_failure.assert_called_once()
+
+    @pytest.mark.parametrize("decision_name, reassign_to", [
+        ("REASSIGN", 99), ("SAVE_AS", None), ("RETRY", None),
+    ])
+    def test_user_choices_give_this_document_nothing(
+        self, app, tmp_path, decision_name, reassign_to
+    ):
+        """Reassign, save-a-copy and retry attach nothing to this document."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        pdf = tmp_path / "other.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=False,
+                                  full_text="Other paper text")
+        r = self._apply(
+            tmp_path, result, VerificationDecision[decision_name],
+            save_path=tmp_path / "copy.pdf", reassign_doc_id=reassign_to,
+        )
+        assert r.downloaded == []
+        assert r.selected == [7]
+        assert 'has_pdf' not in r.doc and 'has_full_text' not in r.doc
+        assert all(c.args[0] != 7 for c in r.update_pdf.call_args_list)
+        assert all(c.args[0] != 7 for c in r.update_full_text.call_args_list)
+        if reassign_to:
+            assert r.update_pdf.call_args.args[0] == reassign_to
+        # RETRY's message must not point at a card's Find button
+        assert "click Find" not in r.dialog.set_failure.call_args.args[0]
+
+    def test_nothing_found_continues_with_abstract(self, app, tmp_path):
+        """A failed discovery selects the document for an abstract-only assessment."""
+        result = _download_result(success=False, error_message="No PDF sources found")
+        r = self._apply(tmp_path, result)
+        assert r.downloaded == []
+        assert r.selected == [7]
+        r.message_box.warning.assert_called_once()
+
+    def test_finalize_error_continues_with_abstract(self, app, tmp_path):
+        """An exception while applying the result is reported, not raised."""
+        pdf = tmp_path / "x.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=True)
+        r = self._apply(tmp_path, result, finalize_error=RuntimeError("boom"))
+        assert r.downloaded == []
+        assert r.selected == [7]
+        assert "boom" in r.dialog.set_failure.call_args.args[0]
+
+    def test_stored_pmc_full_text_marks_document(self, app, tmp_path):
+        """PMC full text that was saved marks the document as having full text."""
+        pdf = tmp_path / "pmc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=True,
+                                  full_text="Body text")
+        r = self._apply(tmp_path, result)
+        r.update_full_text.assert_called_once_with(7, "Body text")
+        assert r.doc['has_full_text'] is True
+
+    def test_unsaved_full_text_is_not_claimed(self, app, tmp_path):
+        """A failed full-text write is reported and not shown as full text."""
+        pdf = tmp_path / "pmc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=True,
+                                  full_text="Body text")
+        r = self._apply(tmp_path, result, full_text_saved=False)
+        assert 'has_full_text' not in r.doc
+        assert r.doc['has_pdf'] is True
+        assert "full text could not be saved" in r.dialog.set_success.call_args.args[1]
+
+    def test_manual_upload_ignores_mismatched_full_text(self, app, tmp_path):
+        """A manual upload is stored under the factory's PDF directory, and the
+        rejected download's full text is not claimed for this document."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        pdf = tmp_path / "wrong.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        upload_dir = tmp_path / "elsewhere"
+        upload_dir.mkdir()
+        uploaded = upload_dir / "mine.pdf"
+        uploaded.write_bytes(b"%PDF-1.4 mine")
+        result = _download_result(success=True, file_path=str(pdf), verified=False,
+                                  full_text="Wrong paper text")
+        r = self._apply(tmp_path, result, VerificationDecision.MANUAL_UPLOAD,
+                        save_path=uploaded)
+        assert len(r.downloaded) == 1
+        stored = r.downloaded[0][1]
+        assert stored.is_relative_to(tmp_path) and stored.read_bytes() == b"%PDF-1.4 mine"
+        r.update_full_text.assert_not_called()
+        assert 'has_full_text' not in r.doc
+
+    def test_unverified_pdf_says_so(self, app, tmp_path):
+        """A PDF whose content could not be checked is attached and marked."""
+        pdf = tmp_path / "unchecked.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result = _download_result(success=True, file_path=str(pdf), verified=None)
+        r = self._apply(tmp_path, result)
+        assert "content not verified" in r.dialog.set_success.call_args.args[1]
+        assert r.downloaded == [(7, pdf)]
+
+    def test_closing_dialog_cancels_search(self, app, tmp_path):
+        """Closing the progress dialog drops the late result (no prompt, no
+        DB writes) and continues with the abstract straight away."""
+        import threading
+        from bmlibrarian.gui.qt.qt_document_card_factory import PDFDiscoveryProgressDialog
+
+        pdf = tmp_path / "late.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        release = threading.Event()
+        result = _download_result(success=True, file_path=str(pdf), verified=False)
+
+        def blocking_discovery(card_data, progress_cb):
+            """Block until released, simulating slow discovery."""
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return result
+
+        tab = self._make_tab(tmp_path)
+        factory = tab._card_factory
+        downloaded, selected = [], []
+        tab.full_text_downloaded.connect(lambda *a: downloaded.append(a))
+        tab.document_selected.connect(selected.append)
+        try:
+            with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, 'finalize_discovery_result') as finalize:
+                tab._find_full_text_online({'id': 7, 'title': 'T'})
+                tab.findChild(PDFDiscoveryProgressDialog).reject()
+                assert selected == [7]
+
+                release.set()
+                assert _pump_until(lambda: not tab._discovery_sessions)
+                finalize.assert_not_called()
+        finally:
+            release.set()
+            tab._terminate_workers()
+        assert downloaded == []
+        assert selected == [7]
+
+
+@pytest.mark.skipif(not HAS_QT, reason="Qt not available")
+class TestPaperWeightLabCardFactory:
+    """The search tab builds its card factory from the configured PDF directory."""
+
+    @pytest.fixture
+    def app(self):
+        """Create Qt application for tests."""
+        return QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _tab():
+        """A search tab without UI or factory."""
+        from bmlibrarian.lab.paper_weight_lab.tabs.search_tab import SearchTab
+        with patch.object(SearchTab, '_setup_ui'):
+            return SearchTab()
+
+    def test_uses_configured_pdf_dir(self, app, tmp_path):
+        """``pdf.base_dir`` from config is where the factory stores PDFs."""
+        tab = self._tab()
+        with patch('bmlibrarian.config.get_config',
+                   return_value={'pdf': {'base_dir': str(tmp_path)}}):
+            factory = tab._get_card_factory()
+        assert factory.base_pdf_dir == tmp_path
+        assert tab._get_card_factory() is factory
+
+    def test_bad_config_is_reported(self, app):
+        """A non-path ``pdf.base_dir`` is reported and the abstract is used."""
+        tab = self._tab()
+        selected = []
+        tab.document_selected.connect(selected.append)
+        module = 'bmlibrarian.lab.paper_weight_lab.tabs.search_tab'
+        with patch('bmlibrarian.config.get_config',
+                   return_value={'pdf': {'base_dir': None}}), \
+             patch(f'{module}.QMessageBox') as message_box:
+            tab._find_full_text_online({'id': 7, 'title': 'T'})
+        message_box.warning.assert_called_once()
+        assert "PDF directory" in message_box.warning.call_args.args[2]
+        assert selected == [7]
+        assert not tab._discovery_sessions
 
 
 def _make_find_pdf_widgets(tmp_path):
@@ -769,8 +1023,8 @@ class TestFindPDFOutcomes:
             {'side_effect': finalize_error} if finalize_error
             else {'return_value': outcome}
         )
-        with patch.object(factory, '_discover_and_download', return_value='RESULT'), \
-             patch.object(factory, '_finalize_discovery_result', **finalize), \
+        with patch.object(factory, 'discover_and_download', return_value='RESULT'), \
+             patch.object(factory, 'finalize_discovery_result', **finalize), \
              patch.object(factory, '_update_pdf_filename_in_database',
                           return_value=db_ok) as update_db, \
              patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot'):
@@ -837,7 +1091,7 @@ class TestFindPDFOutcomes:
 
 
 class TestFinalizeDiscoveryResult:
-    """``_finalize_discovery_result`` maps each verification decision."""
+    """``finalize_discovery_result`` maps each verification decision."""
 
     @pytest.fixture
     def app(self):
@@ -857,7 +1111,7 @@ class TestFinalizeDiscoveryResult:
                           return_value=True) as update_pdf, \
              patch.object(factory, '_update_full_text_in_database',
                           return_value=True) as update_text:
-            outcome = factory._finalize_discovery_result(card, result)
+            outcome = factory.finalize_discovery_result(card, result)
         return outcome, prompt, update_pdf, update_text
 
     def test_success_with_full_text(self, app, tmp_path):
@@ -1037,8 +1291,8 @@ class TestFindPDFSessionRobustness:
             return 'RESULT'
 
         factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
-        with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
-             patch.object(factory, '_finalize_discovery_result') as finalize:
+        with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+             patch.object(factory, 'finalize_discovery_result') as finalize:
             factory._handle_find_pdf_click(find_button, primary, card)
             session = next(iter(factory._find_pdf_sessions))
             worker = session.worker
@@ -1079,8 +1333,8 @@ class TestFindPDFSessionRobustness:
         factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
         outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
         try:
-            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
-                 patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+            with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, 'finalize_discovery_result', return_value=outcome), \
                  patch.object(factory, '_update_pdf_filename_in_database',
                               return_value=True) as update_db:
                 factory._handle_find_pdf_click(find_button, primary, card)
@@ -1125,9 +1379,9 @@ class TestFetchAndDiscoveredDoi:
         _container = factory._create_button_container(button, card)  # owns button
         outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
 
-        with patch.object(factory, '_discover_and_download',
+        with patch.object(factory, 'discover_and_download',
                           return_value=_download_result(verified=True)), \
-             patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+             patch.object(factory, 'finalize_discovery_result', return_value=outcome), \
              patch.object(factory, '_update_pdf_filename_in_database', return_value=True), \
              patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot'):
             button.click()
@@ -1154,9 +1408,9 @@ class TestFetchAndDiscoveredDoi:
         card = DocumentCardData(doc_id=42, title="A paper", pdf_url="https://x/p.pdf")
         button = PDFButtonWidget(PDFButtonConfig(state=PDFButtonState.FETCH, doc_id=42))
         self._container = factory._create_button_container(button, card)  # owns button
-        with patch.object(factory, '_discover_and_download',
+        with patch.object(factory, 'discover_and_download',
                           return_value=_download_result()), \
-             patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+             patch.object(factory, 'finalize_discovery_result', return_value=outcome), \
              patch.object(factory, '_update_pdf_filename_in_database', return_value=True), \
              patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot') as timer:
             original_text = button.text()
@@ -1207,8 +1461,8 @@ class TestFetchAndDiscoveredDoi:
         pdf_path.write_bytes(b"%PDF-1.4")
         factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
         outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
-        with patch.object(factory, '_discover_and_download', return_value=result), \
-             patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+        with patch.object(factory, 'discover_and_download', return_value=result), \
+             patch.object(factory, 'finalize_discovery_result', return_value=outcome), \
              patch.object(factory, '_update_pdf_filename_in_database',
                           return_value=pdf_saved), \
              patch.object(factory, '_update_doi_in_database',
@@ -1251,7 +1505,7 @@ class TestFetchAndDiscoveredDoi:
         assert "10.9/found could not be saved" in find_button.toolTip()
 
     def _discover(self, tmp_path, download_result, verify=None):
-        """Run ``_discover_and_download`` with CrossRef finding 10.9/found.
+        """Run ``discover_and_download`` with CrossRef finding 10.9/found.
 
         Returns (result, finder mock, PDFVerifier.verify_pdf mock).
         """
@@ -1275,7 +1529,7 @@ class TestFetchAndDiscoveredDoi:
              patch('bmlibrarian.discovery.FullTextFinder', return_value=finder), \
              patch('bmlibrarian.discovery.pdf_verifier.PDFVerifier.verify_pdf', verify), \
              patch.object(factory, '_update_doi_in_database') as update_doi:
-            result = factory._discover_and_download(card)
+            result = factory.discover_and_download(card)
         update_doi.assert_not_called()
         return result, finder, verify
 
@@ -1348,7 +1602,7 @@ class TestFetchAndDiscoveredDoi:
                    return_value=title_result), \
              patch('bmlibrarian.discovery.FullTextFinder', return_value=finder), \
              patch.object(factory, '_update_doi_in_database') as update_doi:
-            result = factory._discover_and_download(card)
+            result = factory.discover_and_download(card)
 
         update_doi.assert_not_called()
         assert result.discovered_doi == '10.9/found'
@@ -1370,8 +1624,8 @@ class TestFetchAndDiscoveredDoi:
 
         factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
         try:
-            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
-                 patch.object(factory, '_finalize_discovery_result') as finalize:
+            with patch.object(factory, 'discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, 'finalize_discovery_result') as finalize:
                 factory._handle_find_pdf_click(find_button, primary, card)
                 assert not find_button.isEnabled()
 

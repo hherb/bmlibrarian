@@ -10,14 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Paper Weight Lab's "find full text online" reuses the card flow**
+  (2026-10-21, closes #312). `lab/paper_weight_lab/tabs/search_tab.py`
+  drops its own copy (CrossRef DOI written before download, PDFs attached
+  unverified, broad `except` around the DB writes) and runs the card factory's now-public
+  `discover_and_download()` (worker), `finalize_discovery_result()` (GUI,
+  verification prompt) and the new `record_find_pdf_outcome()` (saves an
+  ATTACHED outcome's `pdf_filename` and the verified DOI; extracted from
+  `_on_find_pdf_result`). The tab creates its `QtDocumentCardFactory` on first
+  use (PDFs to `pdf.base_dir`; a bad config value is reported). Closing the
+  progress dialog cancels the session like a card's and continues with the
+  abstract, as does anything other than ATTACHED. `has_full_text` follows
+  `FindPdfOutcome.full_text_stored` (a failed full-text write is named in the
+  message; a manual upload never claims the rejected download's text). A
+  manual upload now goes to the factory's `base_pdf_dir`, not
+  `PDF_BASE_DIR`. The NXML-only (`pdf_path=None`) branches in the tab,
+  `main_window` and the plugin were dead (PMC full text only comes with a
+  PDF) and are gone.
 - **Card FETCH uses the Find PDF flow; CrossRef DOIs wait for verification**
   (2026-10-21, closes #278, #279). A FETCH-state "🔍 Find" click runs
   `_handle_find_pdf_click` through `PDFButtonWidget.on_discover`, so
   downloads run on the worker and the verification prompt runs on the GUI
   thread. Before, `_create_fetch_handler` prompted from the worker and fell
-  back to stdin; it is deleted. `_discover_and_download` no longer writes to
+  back to stdin; it is deleted. `discover_and_download` no longer writes to
   the DB: the CrossRef DOI travels in `DownloadResult.discovered_doi`, and
-  `_on_find_pdf_result` saves it only when `verified is True` (also if the
+  `record_find_pdf_outcome` saves it only when `verified is True` (also if the
   PDF link itself could not be saved), so not for ACCEPT of a mismatch, a
   manual upload or an unchecked PDF. Because a PDF fetched via the CrossRef
   DOI carries that DOI, a DOI-only match is re-verified against the card's
@@ -25,8 +42,7 @@ off new work. Longer-term structural items live in
   unchecked PDF ("content not verified") show in the outcome message.
   Closing the progress dialog abandons the session; the button stays
   disabled until the worker stops (its downloaded file is left unlinked).
-  The paper weight lab's copy of the flow has the same DOI bug and
-  no verification at all (#312). Docs: `pdf_verification_system.md`,
+  Docs: `pdf_verification_system.md`,
   `document_card_factory_system.md`.
 - **Fragments are widened to their complete sentence(s)** (2026-10-20,
   PRs #306/#311, merged, closes #304). Owner decision
@@ -135,8 +151,7 @@ value — pick one, or pull an item from ROADMAP.md:
 - Widening decisions from the PR #306 review: #308 (widen one-word quotes,
   or require a minimum fragment size?), #309 (fragments still lost at text
   end without a full stop, inside broken-off sentences, past 400 chars).
-- Open bugs from recent slices: #312 (paper weight lab Find full text:
-  early DOI write, no verification), #285–#287 (systematic review follow-ups), #274 / #275 (the same
+- Open bugs from recent slices: #285–#287 (systematic review follow-ups), #274 / #275 (the same
   "failure looks like no result" pattern in TransparencyAgent and
   `paper_weight/db.py`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
