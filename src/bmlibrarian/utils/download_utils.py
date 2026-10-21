@@ -17,7 +17,7 @@ place only after the content has been fully written and validated. Error
 handlers then discard the partial file only, and can never touch a good
 file at the final path.
 
-These are small pure helpers (golden rule 11) with no dependency on any
+These are small helpers (golden rule 11) with no dependency on any
 network library, so every download call site (HTTP, FTP, browser) can
 share them and they can be unit tested in isolation.
 """
@@ -48,33 +48,62 @@ def partial_download_path(final_path: Path) -> Path:
 
 
 def unused_download_path(path: Path) -> Path:
-    """Return ``path``, or the first free ``<stem>_<n><suffix>`` if it exists.
+    """Reserve and return ``path``, or the first free ``<stem>_<n><suffix>``.
 
     A download must not replace a file that may be another document's PDF
-    (#319), so it goes to a fresh name instead.
+    (#319), so it goes to a fresh name instead. The name is reserved by
+    atomically creating an empty file there (``O_CREAT | O_EXCL``), so two
+    concurrent downloads can never pick the same name (#322). The caller
+    writes over the placeholder, or removes it with
+    :func:`discard_empty_reservation` if nothing was written. A crash before
+    that leaves the empty placeholder behind; it is never linked, and later
+    downloads move on to ``_<n>``.
 
     Args:
-        path: The preferred destination.
+        path: The preferred destination (its directory must exist).
 
     Returns:
-        ``path`` if nothing is there, else the first ``<stem>_<n><suffix>``
-        (n = 1, 2, ...) that does not exist.
+        ``path`` if nothing was there, else the first ``<stem>_<n><suffix>``
+        (n = 1, 2, ...) that did not exist; either way now an empty file.
+
+    Raises:
+        OSError: If the placeholder cannot be created (e.g. missing directory).
     """
-    # shortcut: the name is picked, not reserved; concurrent downloads to the
-    # same path can still collide, fix with a no-clobber promote (#322)
     candidate = path
     n = 1
-    while candidate.exists():
-        candidate = path.with_name(f"{path.stem}_{n}{path.suffix}")
-        n += 1
-    return candidate
+    while True:
+        try:
+            os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.stem}_{n}{path.suffix}")
+            n += 1
+
+
+def discard_empty_reservation(path: Path) -> None:
+    """Remove the placeholder from :func:`unused_download_path` if still empty.
+
+    A non-empty file is a completed download and is kept. Filesystem errors
+    are logged, never raised, so cleanup cannot mask a download failure.
+
+    Args:
+        path: The path :func:`unused_download_path` returned.
+    """
+    try:
+        if path.stat().st_size == 0:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("Failed to remove unused download placeholder %s: %s", path, e)
 
 
 def promote_partial_download(partial_path: Path, final_path: Path) -> None:
     """Atomically move a completed, validated partial download into place.
 
     Overwrites any existing file at ``final_path`` (a fresh successful
-    download supersedes a previous one).
+    download supersedes a previous one, or the empty placeholder from
+    :func:`unused_download_path`).
 
     Args:
         partial_path: The fully-written temporary file.

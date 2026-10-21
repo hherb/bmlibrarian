@@ -2,7 +2,7 @@
 
 Modules: `bmlibrarian.utils.pdf_validation`, `bmlibrarian.utils.download_utils`
 
-Small pure helpers (golden rule 11) shared by every PDF download path
+Small helpers (golden rule 11) shared by every PDF download path
 (`utils/pdf_manager.py`, `discovery/full_text_finder.py`,
 `importers/medrxiv_importer.py`), closing two silent-corruption bug classes
 found in the July 2026 code review.
@@ -47,8 +47,9 @@ touch a good file at the final path.
 | Function | Purpose |
 |----------|---------|
 | `partial_download_path(final_path)` | Temporary sibling path (`paper.pdf` → `paper.pdf.part`, same directory so the promoting rename is atomic). |
-| `promote_partial_download(partial_path, final_path)` | `os.replace` the validated partial file into place (overwrites an older download). |
-| `unused_download_path(path)` | `path` if free, else the first free `<stem>_<n><suffix>`; `FullTextFinder.download_for_document` uses it so a download never replaces another document's PDF (#319). |
+| `promote_partial_download(partial_path, final_path)` | `os.replace` the validated partial file into place (overwrites an older download, or the empty placeholder from `unused_download_path`). |
+| `unused_download_path(path)` | Reserves and returns `path` if free, else the first free `<stem>_<n><suffix>`, by creating an empty file there with `O_CREAT \| O_EXCL`; `FullTextFinder.download_for_document` uses it so a download never replaces another document's PDF (#319) and concurrent downloads never share a name (#322). The manual-upload copies in `PDFManager` and the Qt card factory use it too, and delete the reserved file if the copy fails. |
+| `discard_empty_reservation(path)` | Remove that placeholder if it is still empty (the download failed); a written file is kept. A missing file is ignored; other filesystem errors are logged and swallowed. |
 | `discard_partial_download(partial_path)` | Remove the partial file if present; safe in error handlers (logs and swallows filesystem errors, never touches the final path). |
 
 ### Canonical usage

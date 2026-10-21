@@ -234,9 +234,16 @@ answer_from_document(document_id, question)
     ├─► 6. If use_fulltext=True:
     │       │
     │       ├─► 6a. If no fulltext and download_missing=True:
+    │       │       │   (_download_fulltext_if_needed → FulltextOutcome: a
+    │       │       │    linked PDF on disk is read instead of downloading; a
+    │       │       │    download must verify, else it is deleted; a verified
+    │       │       │    PDF is linked even if no text is extracted, #323)
     │       │       └─► First try open-access sources (no proxy)
     │       │           │
-    │       │           ├─► If success: refresh status
+    │       │           ├─► If STORED: refresh status
+    │       │           │
+    │       │           ├─► If NO_TEXT: fall back to abstract, no proxy
+    │       │           │   (pdf_has_no_text: the proxy would fetch the same PDF)
     │       │           │
     │       │           └─► If failed, decide on proxy:
     │       │               │

@@ -20,6 +20,7 @@ from bmlibrarian.discovery import (
     AccessType,
     download_pdf_for_document
 )
+from bmlibrarian.utils.download_utils import discard_empty_reservation, unused_download_path
 
 # _download_with_browser imports this lazily, so patch it at its source.
 BROWSER_DOWNLOAD_TARGET = 'bmlibrarian.utils.browser_downloader.download_pdf_with_browser'
@@ -239,6 +240,7 @@ class TestDownloadForDocument:
                           return_value=DownloadResult(success=False)) as dad:
             finder.download_for_document(document, output_dir=tmp_path)
             assert dad.call_args.kwargs['output_path'] == target
+            assert not target.exists()  # the failed download's placeholder is gone
             target.write_bytes(b"%PDF-1.4 old")
             target.with_name('10.1234_test_1.pdf').write_bytes(b"%PDF-1.4 older")
             finder.download_for_document(document, output_dir=tmp_path)
@@ -357,6 +359,103 @@ class TestDownloadForDocument:
         generated_path = finder._generate_output_path(document, output_dir)
 
         assert "doc_456" in generated_path.name
+
+
+class TestUnusedDownloadPath:
+    """The download name is reserved when picked (#322)."""
+
+    def test_concurrent_picks_get_different_names(self, tmp_path):
+        """A name already handed out (still an empty placeholder) is not
+        handed out again, so two searches never share a file."""
+        target = tmp_path / "x.pdf"
+        first = unused_download_path(target)
+        second = unused_download_path(target)
+        assert (first, second) == (target, tmp_path / "x_1.pdf")
+        assert first.read_bytes() == b"" and second.exists()
+
+    def test_discard_keeps_written_file(self, tmp_path):
+        """Only an empty placeholder is removed; a completed download stays."""
+        empty = unused_download_path(tmp_path / "a.pdf")
+        written = unused_download_path(tmp_path / "b.pdf")
+        written.write_bytes(b"%PDF-1.4")
+        discard_empty_reservation(empty)
+        discard_empty_reservation(written)
+        discard_empty_reservation(tmp_path / "missing.pdf")
+        assert not empty.exists()
+        assert written.read_bytes() == b"%PDF-1.4"
+
+    def test_download_in_flight_blocks_the_name(self, tmp_path):
+        """A second search started while the first is downloading gets ``_1``."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        target = finder._generate_output_path(document, tmp_path)
+        paths = []
+
+        def first_search(**kwargs):
+            paths.append(kwargs['output_path'])
+            with patch.object(finder, 'discover_and_download',
+                              side_effect=lambda **kw: paths.append(kw['output_path'])
+                              or DownloadResult(success=False)):
+                finder.download_for_document(document, output_dir=tmp_path)
+            kwargs['output_path'].write_bytes(b"%PDF-1.4 first")
+            return DownloadResult(success=True, file_path=str(kwargs['output_path']))
+
+        with patch.object(finder, 'discover_and_download', side_effect=first_search):
+            finder.download_for_document(document, output_dir=tmp_path)
+        assert paths == [target, target.with_name('10.1234_test_1.pdf')]
+        assert target.read_bytes() == b"%PDF-1.4 first"
+        assert not paths[1].exists()
+
+    def test_crash_inside_download_drops_placeholder(self, tmp_path):
+        """The placeholder is removed even when the download raises."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        target = finder._generate_output_path(document, tmp_path)
+        with patch.object(finder, 'discover_and_download', side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                finder.download_for_document(document, output_dir=tmp_path)
+        assert not target.exists()
+
+    def test_empty_successful_download_is_a_failure(self, tmp_path):
+        """A "success" that wrote nothing (the placeholder) is reported as failed."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        with patch.object(finder, 'discover_and_download',
+                          side_effect=lambda **kw: DownloadResult(
+                              success=True, file_path=str(kw['output_path']))):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.success is False and result.file_path is None
+        assert "empty" in result.error_message
+
+    def test_unreservable_path_is_a_failed_result(self, tmp_path):
+        """A path that cannot be created returns a failure instead of raising."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        with patch('bmlibrarian.discovery.full_text_finder.unused_download_path',
+                   side_effect=PermissionError("read-only")):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.success is False
+        assert "read-only" in result.error_message
+
+    def test_mismatch_keeps_the_name_reserved(self, tmp_path):
+        """A mismatched PDF is emptied, not deleted, so the name stays taken
+        while the next source is tried."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        pdf = tmp_path / "x.pdf"
+        pdf.write_bytes(b"%PDF-1.4 wrong paper")
+        verification = MagicMock(verified=False, confidence=0.9, match_type='doi',
+                                 warnings=['DOI mismatch'], extracted_doi=None,
+                                 extracted_pmid=None, extracted_title=None,
+                                 title_similarity=None)
+        with patch('bmlibrarian.discovery.pdf_verifier.PDFVerifier.verify_pdf',
+                   return_value=verification):
+            result = finder._verify_downloaded_pdf(
+                DownloadResult(success=True, file_path=str(pdf)),
+                DocumentIdentifiers(doi="10.1234/test"), delete_on_mismatch=True,
+            )
+        assert result.success is False and result.file_path is None
+        assert pdf.read_bytes() == b""
+        assert unused_download_path(pdf) == tmp_path / "x_1.pdf"
 
 
 class TestDownloadPdfForDocumentFunction:

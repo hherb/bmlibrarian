@@ -33,6 +33,7 @@ from ..utils.download_utils import (
     partial_download_path,
     promote_partial_download,
     discard_partial_download,
+    discard_empty_reservation,
     unused_download_path,
 )
 from ..utils.rate_limit import (
@@ -509,6 +510,8 @@ class FullTextFinder:
         else:
             error_msg = f"All {total_sources} sources failed. Last error: {last_error}"
 
+        # A mismatched download is left empty at output_path (see _verify_downloaded_pdf)
+        discard_empty_reservation(output_path)
         return DownloadResult(
             success=False,
             error_message=error_msg,
@@ -998,8 +1001,10 @@ class FullTextFinder:
                 # Delete mismatched PDF if requested
                 if delete_on_mismatch:
                     try:
-                        Path(download_result.file_path).unlink()
-                        logger.info(f"Deleted mismatched PDF: {download_result.file_path}")
+                        # Emptied, not unlinked: the name stays reserved (#322) while the
+                        # next source downloads there; an empty file is discarded later
+                        Path(download_result.file_path).write_bytes(b"")
+                        logger.info(f"Discarded mismatched PDF: {download_result.file_path}")
                         download_result.success = False
                         download_result.error_message = f"PDF content mismatch: {warning_msg}"
                         download_result.file_path = None
@@ -1162,7 +1167,8 @@ class FullTextFinder:
             DownloadResult with download status, file path, and verification results;
             ``file_mtime_ns`` records the downloaded file's modification time.
             An existing file at the generated path is never replaced: the PDF
-            goes to the next free ``<stem>_<n>.pdf`` instead (#319).
+            goes to the next free ``<stem>_<n>.pdf`` instead (#319), reserved
+            up front so concurrent downloads get different names (#322).
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -1181,7 +1187,11 @@ class FullTextFinder:
             )
 
         # Never overwrite: with a guessed DOI the path can be another document's PDF
-        output_path = unused_download_path(self._generate_output_path(document, output_dir))
+        try:
+            output_path = unused_download_path(self._generate_output_path(document, output_dir))
+        except OSError as e:
+            logger.error(f"Cannot reserve a PDF path in {output_dir}: {e}")
+            return DownloadResult(success=False, error_message=f"Cannot create PDF file: {e}")
 
         # Determine browser fallback settings
         browser_config = getattr(self, '_browser_fallback_config', {
@@ -1193,17 +1203,26 @@ class FullTextFinder:
         if use_browser_fallback is None:
             use_browser_fallback = browser_config.get('enabled', True)
 
-        result = self.discover_and_download(
-            identifiers=identifiers,
-            output_path=output_path,
-            use_browser_fallback=use_browser_fallback,
-            browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
-            browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
-            progress_callback=progress_callback,
-            verify_content=verify_content,
-            delete_on_mismatch=delete_on_mismatch,
-            excluded_urls=excluded_urls
-        )
+        try:
+            result = self.discover_and_download(
+                identifiers=identifiers,
+                output_path=output_path,
+                use_browser_fallback=use_browser_fallback,
+                browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
+                browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
+                progress_callback=progress_callback,
+                verify_content=verify_content,
+                delete_on_mismatch=delete_on_mismatch,
+                excluded_urls=excluded_urls
+            )
+        finally:
+            discard_empty_reservation(output_path)
+        if result.success and not (result.file_path and Path(result.file_path).exists()):
+            # An empty "successful" download was just discarded as a placeholder
+            logger.error(f"Download reported success but left no file at {output_path}")
+            result.success = False
+            result.file_path = None
+            result.error_message = "Download produced an empty file"
         if result.file_path:
             try:
                 result.file_mtime_ns = Path(result.file_path).stat().st_mtime_ns
