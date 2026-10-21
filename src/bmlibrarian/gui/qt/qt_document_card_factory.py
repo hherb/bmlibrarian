@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 import logging
+import threading
 import weakref
 
 from bmlibrarian.gui.document_card_factory_base import (
@@ -101,6 +102,41 @@ def describe_discovery_error(error_msg: str) -> str:
     if friendly.category == ErrorCategory.INTERNAL and error_msg:
         return f"{friendly.user_message} ({error_msg})"
     return friendly.user_message
+
+
+def discard_abandoned_download(result: Any) -> None:
+    """Delete the PDF that a cancelled "Find PDF" search downloaded.
+
+    Nothing links that file to a document, so it would otherwise stay on disk
+    unreferenced (#314). The file is kept if it was already at that path
+    before the search (``file_existed_before``), if it has changed since the
+    search wrote it (another search for the same document may have attached
+    it since), or if the result does not record both facts.
+
+    Args:
+        result: The cancelled search's download result
+    """
+    file_path = getattr(result, 'file_path', None)
+    if not file_path:
+        return
+    if getattr(result, 'file_existed_before', True):
+        logger.info(f"Cancelled PDF search: keeping {file_path} (it existed before the search)")
+        return
+    written_mtime_ns = getattr(result, 'file_mtime_ns', None)
+    path = Path(file_path)
+    try:
+        if written_mtime_ns is None or path.stat().st_mtime_ns != written_mtime_ns:
+            logger.info(
+                f"Cancelled PDF search: keeping {file_path} "
+                f"(changed since the search wrote it, or not recorded)"
+            )
+            return
+        path.unlink()
+        logger.info(f"Cancelled PDF search: deleted its download {file_path}")
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(f"Cancelled PDF search: could not delete {file_path}: {e}")
 
 
 def stop_qthread(thread: QThread, label: str) -> None:
@@ -305,7 +341,9 @@ class FindPDFSession(QObject):
         """Stop forwarding worker signals (app quitting, dialog closed).
 
         A result that arrives afterwards is dropped: no verification prompt,
-        no widget updates, no database writes.
+        no widget updates, no database writes, and the PDF it downloaded is
+        deleted (``discard_abandoned_download``). At app quit the event loop
+        has stopped, so a late result is never delivered and its PDF stays.
         """
         self._cancelled = True
 
@@ -325,10 +363,8 @@ class FindPDFSession(QObject):
         """
         self._outcome_delivered = True
         if self._cancelled:
-            logger.info(
-                f"Ignoring PDF discovery result after cancel "
-                f"(file left unlinked: {getattr(result, 'file_path', None)})"
-            )
+            logger.info("Ignoring PDF discovery result after cancel")
+            discard_abandoned_download(result)
             return
         self._handling_result = True
         try:
@@ -910,6 +946,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         self._pdf_path_cache: Dict[int, Optional[Path]] = {}  # Performance optimization
         # Running "Find PDF" sessions, kept referenced until their thread stops
         self._find_pdf_sessions: Set[FindPDFSession] = set()
+        # Source URLs whose PDF the user rejected, per document; skipped by
+        # later searches (written on the GUI thread, read on workers)
+        self._rejected_source_urls: Dict[int, Set[str]] = {}
+        self._rejected_source_lock = threading.Lock()
         self._stop_sessions_on_quit()
 
     def _stop_sessions_on_quit(self) -> None:
@@ -1371,8 +1411,9 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         Closing the progress dialog before the result arrives abandons the
         search: the worker finishes in the background and its result is
-        ignored (no verification prompt out of context; a file it downloaded
-        is left on disk unlinked, #314). The button stays disabled until the worker
+        ignored (no verification prompt out of context) and a PDF it
+        downloaded is deleted, unless that path held a file before the search
+        or the file changed since. The button stays disabled until the worker
         has stopped, so a new search cannot race its download.
 
         Args:
@@ -1648,7 +1689,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         result is handed to ``finalize_discovery_result`` on the GUI thread.
         A CrossRef-discovered DOI travels in ``result.discovered_doi``; it is
         saved by ``record_find_pdf_outcome`` only if the PDF passed
-        verification against the card's PMID/title.
+        verification against the card's PMID/title. Sources whose PDF the
+        user rejected or retried for this document are skipped.
 
         Uses FullTextFinder to discover and download PDFs from:
         1. CrossRef title search (to discover DOI if missing)
@@ -1763,6 +1805,9 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             'publication_date': str(card_data.year) if card_data.year else None,  # For backwards compat
         }
 
+        with self._rejected_source_lock:
+            excluded_urls = frozenset(self._rejected_source_urls.get(card_data.doc_id, ()))
+
         # Execute discovery and download with progress callback
         # Enable content verification by default to catch wrong PDFs
         result = finder.download_for_document(
@@ -1771,7 +1816,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             use_browser_fallback=discovery_config.get('use_browser_fallback', True),
             progress_callback=progress_callback,
             verify_content=discovery_config.get('verify_content', True),
-            delete_on_mismatch=discovery_config.get('delete_on_mismatch', False)
+            delete_on_mismatch=discovery_config.get('delete_on_mismatch', False),
+            excluded_urls=excluded_urls
         )
         result.discovered_doi = discovered_doi
         if (discovered_doi and result.verified is True
@@ -1794,8 +1840,9 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Re-verify a downloaded PDF against the card's PMID and title only.
 
         Overwrites the verification fields of ``result`` in place. If the
-        verifier itself fails, ``verified`` becomes None (not verified), so
-        the discovered DOI is not saved but the PDF is still offered.
+        verifier itself fails, ``verified`` becomes None and
+        ``verification_error`` is set: the discovered DOI is not saved and
+        ``finalize_discovery_result`` asks the user about the PDF (#317).
 
         Args:
             result: Download result whose PDF was verified by the CrossRef DOI
@@ -1818,6 +1865,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 exc_info=True
             )
             result.verified = None
+            result.verification_error = str(e) or type(e).__name__
             result.verification_warnings = list(result.verification_warnings or []) + [
                 f"Could not check the PDF against the document title: {e}"
             ]
@@ -1844,8 +1892,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         """
         Decide what a download result means for the document (GUI thread).
 
-        If content verification failed, asks the user what to do via the
-        modal verification dialog, so this must run on the GUI thread.
+        If content verification failed, or the PDF could not be checked
+        (``verification_error``), asks the user what to do via the modal
+        verification dialog, so this must run on the GUI thread. A REJECT or
+        RETRY makes later searches for this document skip the PDF's source.
         Side effects: stores PMC full text for the document when the download
         provided it; deletes the temporary PDF on REJECT, RETRY, SAVE_AS and
         MANUAL_UPLOAD; on REASSIGN writes ``pdf_filename`` (and full text) to
@@ -1859,11 +1909,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Returns:
             The outcome; ``pdf_path`` is set only for ATTACHED
         """
-        # Check for verification failure
-        if result.verified is False:
+        # A PDF that failed verification, or could not be checked, needs the user
+        unchecked = bool(getattr(result, 'verification_error', None))
+        if result.verified is False or unchecked:
             logger.warning(
-                f"PDF verification FAILED for document {card_data.doc_id}: "
-                f"{result.verification_warnings}"
+                f"PDF verification {'could not run' if unchecked else 'FAILED'} "
+                f"for document {card_data.doc_id}: {result.verification_warnings}"
             )
             # Prompt user for decision via verification dialog
             from bmlibrarian.discovery.verification_prompt import (
@@ -1905,7 +1956,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 verification_warnings=result.verification_warnings,
                 doc_id=card_data.doc_id,
                 alternative_document=alternative_doc,
-                source_url=source_url
+                source_url=source_url,
+                unchecked=unchecked
             )
 
             # Show verification dialog
@@ -1913,7 +1965,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             decision, save_path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
 
             if decision == VerificationDecision.ACCEPT:
-                logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
+                logger.info(
+                    f"User ACCEPTED {'unchecked' if unchecked else 'mismatched'} PDF "
+                    f"for document {card_data.doc_id}"
+                )
                 # Fall through to attach the path and store full_text
             elif decision == VerificationDecision.MANUAL_UPLOAD:
                 # User manually selected a different PDF file
@@ -2000,19 +2055,21 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     pdf_path.unlink()
                 except Exception as e:
                     logger.warning(f"Failed to delete temp PDF: {e}")
+                self._remember_rejected_source(card_data.doc_id, source_url)
                 # Searching again is the retry (the card's Find button
                 # re-enables after a short delay)
                 return FindPdfOutcome(
                     FindPdfStatus.DECLINED,
-                    "Mismatched PDF discarded; you can search again"
+                    "PDF discarded; searching again skips its source"
                 )
             else:  # REJECT
-                logger.info(f"User REJECTED mismatched PDF for document {card_data.doc_id}")
+                logger.info(f"User REJECTED the PDF for document {card_data.doc_id}")
                 try:
                     pdf_path.unlink()
                 except Exception as e:
                     logger.warning(f"Failed to delete rejected PDF: {e}")
-                return FindPdfOutcome(FindPdfStatus.DECLINED, "Mismatched PDF rejected")
+                self._remember_rejected_source(card_data.doc_id, source_url)
+                return FindPdfOutcome(FindPdfStatus.DECLINED, "PDF rejected")
 
         if result.success and result.file_path:
             file_path = Path(result.file_path)
@@ -2046,6 +2103,19 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             describe_discovery_error(result.error_message)
             if result.error_message else "No PDF sources found"
         )
+
+    def _remember_rejected_source(self, doc_id: int, source_url: Optional[str]) -> None:
+        """Make later searches for a document skip a source the user rejected.
+
+        Args:
+            doc_id: Document ID
+            source_url: URL the rejected PDF came from (None: nothing to skip)
+        """
+        if not source_url:
+            return
+        with self._rejected_source_lock:
+            self._rejected_source_urls.setdefault(doc_id, set()).add(source_url)
+        logger.info(f"Later PDF searches for document {doc_id} skip {source_url}")
 
     def _update_doi_in_database(self, doc_id: int, doi: str) -> bool:
         """

@@ -10,40 +10,32 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Paper Weight Lab's "find full text online" reuses the card flow**
-  (2026-10-21, closes #312). `lab/paper_weight_lab/tabs/search_tab.py`
-  drops its own copy (CrossRef DOI written before download, PDFs attached
-  unverified, broad `except` around the DB writes) and runs the card factory's now-public
-  `discover_and_download()` (worker), `finalize_discovery_result()` (GUI,
-  verification prompt) and the new `record_find_pdf_outcome()` (saves an
-  ATTACHED outcome's `pdf_filename` and the verified DOI; extracted from
-  `_on_find_pdf_result`). The tab creates its `QtDocumentCardFactory` on first
-  use (PDFs to `pdf.base_dir`; a bad config value is reported). Closing the
-  progress dialog cancels the session like a card's and continues with the
-  abstract, as does anything other than ATTACHED. `has_full_text` follows
-  `FindPdfOutcome.full_text_stored` (a failed full-text write is named in the
-  message; a manual upload never claims the rejected download's text). A
-  manual upload now goes to the factory's `base_pdf_dir`, not
-  `PDF_BASE_DIR`. The NXML-only (`pdf_path=None`) branches in the tab,
-  `main_window` and the plugin were dead (PMC full text only comes with a
-  PDF) and are gone.
-- **Card FETCH uses the Find PDF flow; CrossRef DOIs wait for verification**
-  (2026-10-21, closes #278, #279). A FETCH-state "🔍 Find" click runs
-  `_handle_find_pdf_click` through `PDFButtonWidget.on_discover`, so
-  downloads run on the worker and the verification prompt runs on the GUI
-  thread. Before, `_create_fetch_handler` prompted from the worker and fell
-  back to stdin; it is deleted. `discover_and_download` no longer writes to
-  the DB: the CrossRef DOI travels in `DownloadResult.discovered_doi`, and
-  `record_find_pdf_outcome` saves it only when `verified is True` (also if the
-  PDF link itself could not be saved), so not for ACCEPT of a mismatch, a
-  manual upload or an unchecked PDF. Because a PDF fetched via the CrossRef
-  DOI carries that DOI, a DOI-only match is re-verified against the card's
-  PMID/title (`_verify_without_discovered_doi`). A failed DOI write and an
-  unchecked PDF ("content not verified") show in the outcome message.
-  Closing the progress dialog abandons the session; the button stays
-  disabled until the worker stops (its downloaded file is left unlinked).
-  Docs: `pdf_verification_system.md`,
-  `document_card_factory_system.md`.
+- **Find PDF follow-ups** (2026-10-21, closes #314, #315, #317;
+  owner decisions 2026-10-21). A PDF whose verification *raised* (the
+  CrossRef-DOI re-check or `FullTextFinder`'s own check;
+  `DownloadResult.verification_error`) now goes to the verification prompt
+  (`VerificationPromptData.unchecked`, header "PDF Could Not Be Checked")
+  instead of being attached silently; verification switched off still
+  attaches without a prompt. RETRY/REJECT remember the PDF's source URL per
+  document (`QtDocumentCardFactory._remember_rejected_source`, in memory,
+  per factory); the next search passes them to `FullTextFinder` as
+  `excluded_urls` (DOI fallback URL included; NCBI FTP/HTTPS forms match
+  via `comparable_source_url`). A cancelled search deletes the PDF it
+  downloaded (`discard_abandoned_download`) unless the file existed before
+  (`DownloadResult.file_existed_before`) or changed since
+  (`file_mtime_ns`). Open follow-ups: downloads overwrite an existing file
+  at the target path (#319), doi.org fallback after rejecting
+  every source (#320). Docs: `pdf_verification_guide.md`,
+  `pdf_verification_system.md`, `document_card_factory_system.md`.
+- **Find PDF runs on one shared, verified flow** (2026-10-21, PRs #313,
+  #316, closes #278, #279, #312). Card FETCH and Find, and the Paper Weight
+  Lab's "find full text online", all use the factory's
+  `discover_and_download()` (worker), `finalize_discovery_result()` (GUI
+  thread, verification prompt) and `record_find_pdf_outcome()` (saves
+  `pdf_filename`, and a CrossRef-discovered DOI only when `verified is
+  True`). A PDF matched only by the CrossRef DOI it was fetched with is
+  re-verified against the card's PMID/title. Closing the progress dialog
+  cancels the session.
 - **Fragments are widened to their complete sentence(s)** (2026-10-20,
   PRs #306/#311, merged, closes #304). Owner decision
   (2026-10-19): a verbatim fragment is cited as the abstract's enclosing

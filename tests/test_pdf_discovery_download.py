@@ -4,6 +4,7 @@ Tests the integrated workflow: discovery -> direct HTTP -> browser fallback
 """
 
 import pytest
+from dataclasses import replace
 import requests
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -99,6 +100,104 @@ class TestFullTextFinderBrowserFallback:
         assert result.success is True
 
 
+class TestExcludedSources:
+    """Sources the user rejected are not downloaded from again (#315)."""
+
+    def _sources(self):
+        """Two discovered sources, the rejected one first."""
+        return [
+            PDFSource(url="https://bad.example/a.pdf", source_type=SourceType.PMC,
+                      access_type=AccessType.OPEN, priority=1),
+            PDFSource(url="https://good.example/b.pdf", source_type=SourceType.UNPAYWALL,
+                      access_type=AccessType.OPEN, priority=2),
+        ]
+
+    def test_excluded_url_is_skipped(self, tmp_path):
+        """Only the source not rejected earlier is tried."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=self._sources(), resolution_results=[])), \
+             patch.object(finder, '_download_from_source',
+                          return_value=DownloadResult(success=True)) as download:
+            result = finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf", use_browser_fallback=False,
+                excluded_urls={"https://bad.example/a.pdf"},
+            )
+        assert result.success
+        assert [c.kwargs['source'].url for c in download.call_args_list] == [
+            "https://good.example/b.pdf"
+        ]
+
+    def test_excluded_doi_fallback_is_not_added(self, tmp_path):
+        """With nothing discovered, a rejected DOI fallback URL is not retried
+        and the error says why nothing was tried."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        fallback = finder._create_doi_fallback_url("10.1234/test")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=[], resolution_results=[])), \
+             patch.object(finder, '_download_from_source') as download:
+            result = finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf", excluded_urls={fallback},
+            )
+        download.assert_not_called()
+        assert not result.success
+        assert "excluded source" in result.error_message
+
+    def test_rejected_ncbi_https_url_skips_ftp_source(self, tmp_path):
+        """An NCBI FTP source is downloaded (and so rejected) under its HTTPS
+        URL; the next search still recognises it."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        sources = self._sources()
+        sources[0] = replace(sources[0], url="ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/x.pdf")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=sources, resolution_results=[])), \
+             patch.object(finder, '_download_from_source',
+                          return_value=DownloadResult(success=True)) as download:
+            finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf", use_browser_fallback=False,
+                excluded_urls={"https://ftp.ncbi.nlm.nih.gov/pub/pmc/x.pdf"},
+            )
+        assert [c.kwargs['source'].url for c in download.call_args_list] == [
+            "https://good.example/b.pdf"
+        ]
+
+    def test_all_excluded_message_omits_resolver_errors(self, tmp_path):
+        """Resolver errors ("timed out") are not appended when exclusions
+        emptied the list: they would be shown as a retryable network error."""
+        from bmlibrarian.discovery.data_types import ResolutionResult, ResolutionStatus
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        identifiers = DocumentIdentifiers()
+        failed = ResolutionResult(resolver_name="unpaywall", status=ResolutionStatus.ERROR,
+                                  error_message="Request timed out")
+        with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                identifiers=identifiers, sources=self._sources()[:1],
+                resolution_results=[failed])):
+            result = finder.discover_and_download(
+                identifiers, tmp_path / "p.pdf",
+                excluded_urls={"https://bad.example/a.pdf"},
+            )
+        assert result.error_message == "No PDF sources left after skipping 1 excluded source(s)"
+
+    def test_exclusions_disable_stop_on_first_oa(self, tmp_path):
+        """Without verification discovery normally stops at the first OA
+        source; with exclusions that source may be the excluded one."""
+        finder = FullTextFinder(unpaywall_email="test@example.com", prefer_open_access=True)
+        identifiers = DocumentIdentifiers(doi="10.1234/test")
+        for excluded, expected in [(None, True), ({"https://bad.example/a.pdf"}, False)]:
+            with patch.object(finder, 'discover', return_value=DiscoveryResult(
+                    identifiers=identifiers, sources=[], resolution_results=[])) as discover, \
+                 patch.object(finder, '_download_from_source',
+                              return_value=DownloadResult(success=False)):
+                finder.discover_and_download(
+                    identifiers, tmp_path / "p.pdf", use_browser_fallback=False,
+                    verify_content=False, excluded_urls=excluded,
+                )
+            assert discover.call_args.kwargs['stop_on_first_oa'] is expected
+
+
 class TestDownloadForDocument:
     """Test download_for_document convenience method."""
 
@@ -128,6 +227,50 @@ class TestDownloadForDocument:
             # Check that discover_and_download was called with correct path
             call_args = mock_dad.call_args
             assert call_args is not None
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_reports_whether_output_file_existed(self, tmp_path, existed):
+        """``file_existed_before`` tells callers if the PDF overwrote a file."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        document = {'id': 5, 'doi': '10.1234/test', 'publication_date': '2024'}
+        if existed:
+            target = finder._generate_output_path(document, tmp_path)
+            target.write_bytes(b"%PDF-1.4 old")
+        with patch.object(finder, 'discover_and_download',
+                          return_value=DownloadResult(success=True)):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.file_existed_before is existed
+
+    def test_records_downloaded_file_mtime(self, tmp_path):
+        """``file_mtime_ns`` is the downloaded file's mtime, None without a file."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        pdf = tmp_path / "got.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        document = {'id': 5, 'doi': '10.1234/test'}
+        with patch.object(finder, 'discover_and_download',
+                          return_value=DownloadResult(success=True, file_path=str(pdf))):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.file_mtime_ns == pdf.stat().st_mtime_ns
+        with patch.object(finder, 'discover_and_download',
+                          return_value=DownloadResult(success=False)):
+            result = finder.download_for_document(document, output_dir=tmp_path)
+        assert result.file_mtime_ns is None
+
+    def test_verifier_crash_sets_verification_error(self, tmp_path):
+        """A verifier that raises leaves ``verified`` None but records the
+        error, so the GUI prompts instead of attaching silently (#317)."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        pdf = tmp_path / "x.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        with patch('bmlibrarian.discovery.pdf_verifier.PDFVerifier.verify_pdf',
+                   side_effect=RuntimeError("bad xref")):
+            result = finder._verify_downloaded_pdf(
+                DownloadResult(success=True, file_path=str(pdf)),
+                DocumentIdentifiers(doi="10.1234/test"), delete_on_mismatch=True,
+            )
+        assert result.verified is None
+        assert result.verification_error == "bad xref"
+        assert pdf.exists()
 
     def test_download_for_document_generates_year_path(self):
         """Test that output path uses year-based directory structure."""

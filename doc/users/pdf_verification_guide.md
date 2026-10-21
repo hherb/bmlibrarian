@@ -21,6 +21,13 @@ The verification dialog appears when:
 3. Interactive mode is enabled (`prompt_on_mismatch=True`; document card
    Find buttons always prompt)
 
+On document cards and in the Paper Weight Lab it also appears, headed **PDF
+Could Not Be Checked**, when an error stopped the check of the PDF against
+your document (an unexpected verifier error; a PDF with no readable text
+counts as a mismatch instead). Without a check, nothing confirms it is the
+right paper, so you decide. If you accept it, it is attached as "content not
+verified", and a DOI guessed from the title is not saved.
+
 ## Dialog Layout
 
 The dialog has three main sections:
@@ -74,12 +81,16 @@ Save a copy of the downloaded PDF to a custom location. The dialog stays open.
 **Use when**: The PDF is useful but not for this document - save it for later.
 
 #### 🔄 Retry Search (Orange)
-Discard this PDF and try searching for the correct one again.
+Discard this PDF so you can search for the correct one again. On a document
+card, click **Find** again: the search skips the source this PDF came from
+and tries the others.
 
 **Use when**: The discovery system found the wrong PDF - try other sources.
 
 #### ✗ Reject (Red)
-Discard the downloaded PDF completely and close the dialog.
+Discard the downloaded PDF completely and close the dialog. Later searches
+for this document in the same view (for example the research tab, or the
+Paper Weight Lab) also skip its source, until you close that view or quit.
 
 **Use when**: The PDF is not useful at all.
 
@@ -105,7 +116,8 @@ Immediately assigns the PDF to the matching document. The dialog stays open so y
 ### Example 2: Wrong PDF - Retry
 1. Dialog shows: Completely different DOI and title
 2. The PDF is clearly for a different paper
-3. Click **Retry Search** to try other sources
+3. Click **Retry Search**, then **Find** again: the search tries the other
+   sources
 
 ### Example 3: PDF for Different Document
 1. Dialog shows: DOI mismatch

@@ -125,10 +125,17 @@ class PDFVerificationDialog(QDialog):
         layout.addWidget(icon_label)
 
         # Warning text
+        if self.data.unchecked:
+            heading = "<b>PDF Could Not Be Checked</b><br>"
+            explanation = (
+                "An error stopped the check of this PDF against the expected "
+                "document, so it may be the wrong paper. "
+            )
+        else:
+            heading = "<b>PDF Verification Failed</b><br>"
+            explanation = "The downloaded PDF does not match the expected document. "
         text_label = QLabel(
-            "<b>PDF Verification Failed</b><br>"
-            "The downloaded PDF does not match the expected document. "
-            "Please review and decide how to proceed."
+            heading + explanation + "Please review and decide how to proceed."
         )
         text_label.setStyleSheet("""
             background: transparent;
@@ -360,7 +367,10 @@ class PDFVerificationDialog(QDialog):
 
         layout = QVBoxLayout(frame)
 
-        title_label = QLabel("<b>Mismatch Analysis</b>")
+        title_label = QLabel(
+            "<b>Verification Details</b>" if self.data.unchecked
+            else "<b>Mismatch Analysis</b>"
+        )
         title_label.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(title_label)
 
