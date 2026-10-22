@@ -10,6 +10,18 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Undetected-Chrome fallback waits for slow downloads** (2026-10-22,
+  closes #327). The fixed `time.sleep(5)` after each PDF navigation is now
+  `wait_for_chrome_download`: it waits up to 5 s for a new file in the
+  per-call download dir; a started download gets up to the call's
+  `timeout` (default 120 s) in total for every new `*.crdownload` to
+  finish, or stops early after 30 s without growth (stalled). Files from an
+  earlier attempt are ignored. An unfinished download fails with
+  `download_unfinished` set (checked before the paywall guesses), and
+  `download_pdf_with_browser` returns that result instead of the OpenAthens
+  hint; no further iframe is tried after one. The function's other
+  sleeps and timeouts are named `CHROME_*` constants. Tests:
+  `TestWaitForChromeDownload` in `tests/test_undetected_chrome_download_dir.py`.
 - **Undetected-Chrome fallback only takes its own download** (2026-10-21,
   closes #325). `download_pdf_with_undetected_chrome` downloads into a
   fresh `<year>/.chrome-download-*` dir (`tempfile.mkdtemp`), promotes only
