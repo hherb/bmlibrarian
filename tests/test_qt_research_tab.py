@@ -18,6 +18,14 @@ from PySide6.QtCore import Qt
 
 # Import the widget to test
 from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
+from bmlibrarian.gui.qt.plugins.research.tab_updaters import clear_layout_widgets
+from bmlibrarian.gui.qt.widgets.citation_card import CitationCard
+
+# Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
+AGENT_NAMES = (
+    'query_agent', 'scoring_agent', 'citation_agent',
+    'reporting_agent', 'counterfactual_agent', 'editor_agent',
+)
 
 
 class TestResearchTabWidget(unittest.TestCase):
@@ -34,8 +42,17 @@ class TestResearchTabWidget(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Create widget
-        self.widget = ResearchTabWidget()
+        # Modal dialogs would block the test run
+        for module in ('research_tab', 'workflow_handlers'):
+            patcher = patch(
+                f'bmlibrarian.gui.qt.plugins.research.{module}.QMessageBox'
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        # Without agents the tab has no workflow executor
+        self.agents = {name: Mock() for name in AGENT_NAMES}
+        self.widget = ResearchTabWidget(agents=self.agents)
 
     def tearDown(self):
         """Clean up after each test."""
@@ -51,22 +68,30 @@ class TestResearchTabWidget(unittest.TestCase):
         """Test that widget initializes correctly."""
         self.assertIsNotNone(self.widget)
         self.assertIsNotNone(self.widget.workflow_executor)
-        self.assertIsNotNone(self.widget.literature_layout)
-        self.assertIsNotNone(self.widget.citations_layout)
+        self.assertIsNotNone(self.widget.literature_refs.widgets['layout'])
+        self.assertIsNotNone(self.widget.citations_refs.widgets['layout'])
+
+    def test_no_agents_disables_workflow(self):
+        """Test that the tab without agents has no workflow executor."""
+        widget = ResearchTabWidget()
+        try:
+            self.assertIsNone(widget.workflow_executor)
+        finally:
+            widget.deleteLater()
 
     def test_ui_components_exist(self):
         """Test that all UI components are created."""
         self.assertIsNotNone(self.widget.question_input)
         self.assertIsNotNone(self.widget.start_button)
         self.assertIsNotNone(self.widget.status_label)
-        self.assertIsNotNone(self.widget.tab_widget)
+        self.assertIsNotNone(self.widget.research_tabs)
 
     # ========================================================================
     # Widget Cleanup Tests
     # ========================================================================
 
     def test_clear_layout_widgets_removes_all_widgets(self):
-        """Test that _clear_layout_widgets removes all widgets from layout."""
+        """Test that clear_layout_widgets removes all widgets from layout."""
         # Setup: create test layout with widgets
         test_layout = QVBoxLayout()
         widgets = [QLabel(f"Label {i}") for i in range(5)]
@@ -77,13 +102,13 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertEqual(test_layout.count(), 5)
 
         # Test: clear layout
-        self.widget._clear_layout_widgets(test_layout)
+        clear_layout_widgets(test_layout)
 
         # Verify: layout is empty
         self.assertEqual(test_layout.count(), 0)
 
     def test_clear_layout_widgets_disconnects_signals_safely(self):
-        """Test that _clear_layout_widgets handles signal disconnection safely."""
+        """Test that clear_layout_widgets handles signal disconnection safely."""
         # Setup: create test layout with widget that has signals
         test_layout = QVBoxLayout()
         test_widget = QLabel("Test")
@@ -96,17 +121,17 @@ class TestResearchTabWidget(unittest.TestCase):
 
         # Test: clear layout (should not raise exception)
         try:
-            self.widget._clear_layout_widgets(test_layout)
+            clear_layout_widgets(test_layout)
             success = True
         except Exception as e:
             success = False
-            self.fail(f"_clear_layout_widgets raised exception: {e}")
+            self.fail(f"clear_layout_widgets raised exception: {e}")
 
         # Verify: no exception raised
         self.assertTrue(success)
 
     def test_clear_layout_widgets_handles_already_deleted_widget(self):
-        """Test that _clear_layout_widgets handles already-deleted widgets."""
+        """Test that clear_layout_widgets handles already-deleted widgets."""
         # Setup: create test layout
         test_layout = QVBoxLayout()
         test_widget = QLabel("Test")
@@ -118,7 +143,7 @@ class TestResearchTabWidget(unittest.TestCase):
 
         # Test: clear layout (should not raise exception)
         try:
-            self.widget._clear_layout_widgets(test_layout)
+            clear_layout_widgets(test_layout)
             success = True
         except RuntimeError:
             # RuntimeError is expected when widget is already deleted
@@ -130,36 +155,29 @@ class TestResearchTabWidget(unittest.TestCase):
         # Verify: handled gracefully
         self.assertTrue(success)
 
-    def test_update_literature_tab_clears_existing_widgets(self):
-        """Test that _update_literature_tab clears existing widgets."""
-        # Setup: add some widgets to literature layout
-        for i in range(3):
-            self.widget.literature_layout.addWidget(QLabel(f"Old {i}"))
+    def test_documents_found_replaces_literature_content(self):
+        """Test that documents_found replaces existing Literature tab content."""
+        layout = self.widget.literature_refs.widgets['layout']
+        old_labels = [QLabel(f"Old {i}") for i in range(3)]
+        for label in old_labels:
+            layout.addWidget(label)
 
-        initial_count = self.widget.literature_layout.count()
-        self.assertGreater(initial_count, 0)
+        docs = [{"id": 1, "title": "Test Paper 1", "abstract": "Abstract 1"}]
+        self.widget._on_documents_found(docs)
 
-        # Test: update with new data
-        scored_docs = [
-            ({"doc_id": 1, "title": "Test Paper 1", "abstract": "Abstract 1"},
-             {"score": 5, "reasoning": "Highly relevant"})
-        ]
-        self.widget._update_literature_tab(scored_docs)
+        # Old widgets removed: one card plus trailing stretch remain
+        remaining = [layout.itemAt(i).widget() for i in range(layout.count())]
+        for label in old_labels:
+            self.assertNotIn(label, remaining)
+        self.assertEqual(layout.count(), 2)
 
-        # Verify: old widgets removed and new widgets added
-        # Note: count may be different due to new content, but should not have old widgets
-        self.assertNotEqual(self.widget.literature_layout.count(), initial_count)
+    def test_documents_found_shows_empty_state(self):
+        """Test that documents_found shows empty state when no documents."""
+        self.widget._on_documents_found([])
 
-    def test_update_literature_tab_shows_empty_state(self):
-        """Test that _update_literature_tab shows empty state when no documents."""
-        # Test: update with empty list
-        self.widget._update_literature_tab([])
-
-        # Verify: layout has at least one widget (the empty state message)
-        self.assertGreater(self.widget.literature_layout.count(), 0)
-
-        # Verify: first widget is a label with empty message
-        first_widget = self.widget.literature_layout.itemAt(0).widget()
+        layout = self.widget.literature_refs.widgets['layout']
+        self.assertGreater(layout.count(), 0)
+        first_widget = layout.itemAt(0).widget()
         self.assertIsInstance(first_widget, QLabel)
         self.assertIn("No documents", first_widget.text())
 
@@ -167,68 +185,51 @@ class TestResearchTabWidget(unittest.TestCase):
     # Citation Tab Tests
     # ========================================================================
 
-    def test_update_citations_tab_clears_existing_widgets(self):
-        """Test that _update_citations_tab clears existing widgets."""
-        # Setup: add some widgets to citations layout
-        for i in range(3):
-            self.widget.citations_layout.addWidget(QLabel(f"Old {i}"))
-
-        initial_count = self.widget.citations_layout.count()
-        self.assertGreater(initial_count, 0)
-
-        # Test: update with new data
-        citations = [
-            {
-                "citation_id": 1,
-                "doc_id": 1,
-                "title": "Test Paper",
-                "passage": "Test passage",
-                "reasoning": "Test reasoning"
-            }
-        ]
-        self.widget._update_citations_tab(citations)
-
-        # Verify: old widgets removed
-        self.assertNotEqual(self.widget.citations_layout.count(), initial_count)
-
-    def test_update_citations_tab_shows_empty_state(self):
-        """Test that _update_citations_tab shows empty state when no citations."""
-        # Test: update with empty list
-        self.widget._update_citations_tab([])
-
-        # Verify: layout has at least one widget (the empty state message)
-        self.assertGreater(self.widget.citations_layout.count(), 0)
-
-        # Verify: first widget is a label with empty message
-        first_widget = self.widget.citations_layout.itemAt(0).widget()
+    def test_citations_tab_shows_empty_state_initially(self):
+        """Test that the Citations tab starts with an empty-state label."""
+        layout = self.widget.citations_refs.widgets['layout']
+        first_widget = layout.itemAt(0).widget()
         self.assertIsInstance(first_widget, QLabel)
-        self.assertIn("No citations", first_widget.text())
+        self.assertIs(first_widget, self.widget.citations_refs.widgets['empty_label'])
 
-    def test_update_citations_tab_creates_citation_cards(self):
-        """Test that _update_citations_tab creates citation cards."""
-        # Setup: test citations
+    def test_first_citation_replaces_empty_state(self):
+        """Test that the first extracted citation removes the empty state."""
+        empty_label = self.widget.citations_refs.widgets['empty_label']
+        citation = {
+            "document_id": 1,
+            "document_title": "Test Paper",
+            "passage": "Test passage",
+            "summary": "Test summary",
+            "relevance_score": 0.9,
+        }
+        self.widget._on_citation_extracted(citation, 1, 1)
+
+        layout = self.widget.citations_refs.widgets['layout']
+        widgets = [layout.itemAt(i).widget() for i in range(layout.count())]
+        self.assertNotIn(empty_label, widgets)
+        self.assertIsInstance(widgets[0], CitationCard)
+
+    def test_citations_extracted_creates_citation_cards(self):
+        """Test that each extracted citation adds a citation card."""
         citations = [
             {
-                "citation_id": 1,
-                "doc_id": 1,
-                "title": "Paper 1",
-                "passage": "Passage 1",
-                "reasoning": "Reason 1"
-            },
-            {
-                "citation_id": 2,
-                "doc_id": 2,
-                "title": "Paper 2",
-                "passage": "Passage 2",
-                "reasoning": "Reason 2"
+                "document_id": i,
+                "document_title": f"Paper {i}",
+                "passage": f"Passage {i}",
+                "summary": f"Summary {i}",
+                "relevance_score": 0.9,
             }
+            for i in (1, 2)
         ]
+        for index, citation in enumerate(citations, 1):
+            self.widget._on_citation_extracted(citation, index, len(citations))
 
-        # Test: update citations tab
-        self.widget._update_citations_tab(citations)
-
-        # Verify: layout has widgets (citation cards)
-        self.assertGreater(self.widget.citations_layout.count(), 0)
+        layout = self.widget.citations_refs.widgets['layout']
+        cards = [
+            layout.itemAt(i).widget() for i in range(layout.count())
+            if isinstance(layout.itemAt(i).widget(), CitationCard)
+        ]
+        self.assertEqual(len(cards), 2)
 
     # ========================================================================
     # Validation Tests
@@ -295,19 +296,24 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertEqual(status_received[0], test_message)
 
     def test_start_button_click_triggers_workflow(self):
-        """Test that start button click triggers workflow execution."""
+        """Test that start button click starts a background WorkflowThread."""
         # Setup: set question
         self.widget.question_input.setPlainText("Test research question")
 
-        # Mock workflow executor
-        self.widget.workflow_executor.execute_workflow = Mock()
+        # Test: click start button (thread mocked so no workflow really runs)
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.WorkflowThread'
+        ) as MockThread:
+            QTest.mouseClick(self.widget.start_button, Qt.LeftButton)
+            QApplication.processEvents()
 
-        # Test: click start button
-        QTest.mouseClick(self.widget.start_button, Qt.LeftButton)
-        QApplication.processEvents()
-
-        # Verify: workflow execute was called
-        self.widget.workflow_executor.execute_workflow.assert_called_once()
+        # Verify: thread created for the executor and question, then started
+        MockThread.assert_called_once()
+        kwargs = MockThread.call_args.kwargs
+        self.assertIs(kwargs['executor'], self.widget.workflow_executor)
+        self.assertEqual(kwargs['question'], "Test research question")
+        MockThread.return_value.start.assert_called_once()
+        self.assertTrue(self.widget.workflow_running)
 
 
 if __name__ == '__main__':

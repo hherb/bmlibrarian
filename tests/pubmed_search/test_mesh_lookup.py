@@ -12,6 +12,9 @@ from unittest.mock import patch, MagicMock
 from bmlibrarian.pubmed_search.mesh_lookup import MeSHLookup
 from bmlibrarian.pubmed_search.data_types import MeSHTerm
 
+# Every lookup here passes use_local_db=False: these test the cache and NLM API
+# paths, which a populated local mesh schema would otherwise short-circuit.
+
 
 class TestMeSHLookupInit:
     """Tests for MeSHLookup initialization."""
@@ -20,14 +23,14 @@ class TestMeSHLookupInit:
         """Test that initialization creates cache directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir) / "test_cache"
-            lookup = MeSHLookup(cache_dir=cache_dir)
+            lookup = MeSHLookup(use_local_db=False, cache_dir=cache_dir)
             assert cache_dir.exists()
 
     def test_init_creates_cache_db(self) -> None:
         """Test that initialization creates cache database."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir)
-            lookup = MeSHLookup(cache_dir=cache_dir)
+            lookup = MeSHLookup(use_local_db=False, cache_dir=cache_dir)
             cache_path = cache_dir / "mesh_cache.db"
             assert cache_path.exists()
 
@@ -39,7 +42,7 @@ class TestMeSHLookupValidation:
     def lookup(self) -> MeSHLookup:
         """Create a MeSHLookup with temporary cache."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            return MeSHLookup(cache_dir=Path(tmpdir))
+            return MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
     def test_validate_empty_term(self, lookup: MeSHLookup) -> None:
         """Test validation of empty term."""
@@ -141,7 +144,7 @@ class TestMeSHLookupCaching:
     def test_cache_hit(self) -> None:
         """Test that cached terms are returned without API call."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Manually save a term to cache
             term = MeSHTerm(
@@ -161,7 +164,7 @@ class TestMeSHLookupCaching:
     def test_cache_invalid_term(self) -> None:
         """Test that invalid terms are cached."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Save invalid term
             invalid_term = MeSHTerm(
@@ -178,7 +181,7 @@ class TestMeSHLookupCaching:
     def test_clear_cache(self) -> None:
         """Test cache clearing."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Add some cached terms
             term = MeSHTerm(
@@ -208,7 +211,7 @@ class TestMeSHLookupBatchValidation:
     def test_validate_terms_list(self, mock_validate: MagicMock) -> None:
         """Test validation of multiple terms."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Mock validate_term responses
             mock_validate.side_effect = [
@@ -232,7 +235,7 @@ class TestMeSHLookupExpansion:
     def test_expand_invalid_term(self) -> None:
         """Test expansion of invalid term returns original."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Save as invalid
             invalid = MeSHTerm("", "NotReal", is_valid=False)
@@ -244,7 +247,7 @@ class TestMeSHLookupExpansion:
     def test_expand_term_with_entry_terms(self) -> None:
         """Test expansion includes entry terms."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Save term with entry terms
             term = MeSHTerm(
@@ -267,7 +270,7 @@ class TestMeSHLookupStats:
     def test_get_cache_stats(self) -> None:
         """Test cache statistics retrieval."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             stats = lookup.get_cache_stats()
             assert "cached_terms" in stats
@@ -283,7 +286,7 @@ class TestMeSHLookupCacheCleanup:
     def test_cleanup_expired_cache_alias(self) -> None:
         """Test that cleanup_expired_cache is an alias for clear_expired_cache."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Both methods should exist and be callable
             assert hasattr(lookup, "cleanup_expired_cache")
@@ -294,7 +297,7 @@ class TestMeSHLookupCacheCleanup:
     def test_cleanup_expired_cache_empty(self) -> None:
         """Test cleanup with no expired entries."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir))
 
             # Add a fresh cache entry
             term = MeSHTerm(
@@ -319,7 +322,7 @@ class TestMeSHLookupCacheCleanup:
         import json
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            lookup = MeSHLookup(cache_dir=Path(tmpdir), cache_ttl_days=30)
+            lookup = MeSHLookup(use_local_db=False, cache_dir=Path(tmpdir), cache_ttl_days=30)
 
             # Add an entry directly with an old timestamp (expired)
             old_date = (datetime.now() - timedelta(days=60)).isoformat()

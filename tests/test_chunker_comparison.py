@@ -6,6 +6,13 @@ Tests both implementations on the same 1000 documents to compare:
 - Processing speed
 - Chunk quality
 - Output consistency
+
+Note: this is a benchmark script, run directly:
+
+    uv run python tests/test_chunker_comparison.py
+
+Its entry point benchmark_chunker is deliberately not named test_*:
+pytest would collect it and error on its required arguments.
 """
 
 import time
@@ -58,7 +65,7 @@ def fetch_test_documents(db: DatabaseManager, limit: int = 1000) -> List[Dict[st
     return documents
 
 
-def test_chunker(
+def benchmark_chunker(
     name: str,
     chunker_func,
     documents: List[Dict[str, Any]],
@@ -304,12 +311,12 @@ def main():
     # Test original implementation
     print("[2/5] ORIGINAL ADAPTIVE CHUNKER")
     print("=" * 80)
-    stats_original = test_chunker("Original", adaptive_original, documents)
+    stats_original = benchmark_chunker("Original", adaptive_original, documents)
 
     # Test optimized implementation
     print("[3/5] OPTIMIZED ADAPTIVE CHUNKER")
     print("=" * 80)
-    stats_optimized = test_chunker("Optimized", adaptive_optimized, documents)
+    stats_optimized = benchmark_chunker("Optimized", adaptive_optimized, documents)
 
     # Compare chunk quality
     quality_comparison = compare_chunk_quality(stats_original, stats_optimized)

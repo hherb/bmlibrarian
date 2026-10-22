@@ -121,13 +121,15 @@ class TestMedRxivImporter:
         assert importer.source_id == 42
 
     @patch('src.bmlibrarian.importers.medrxiv_importer.get_db_manager')
-    def test_initialization_with_custom_pdf_dir(self, mock_db):
+    def test_initialization_with_custom_pdf_dir(self, mock_db, tmp_path):
         """Test initialization with custom PDF directory."""
         mock_db.return_value.get_cached_source_ids.return_value = {'medrxiv': 1}
+        custom_dir = tmp_path / 'custom' / 'pdf' / 'dir'  # the importer creates it
 
-        importer = MedRxivImporter(pdf_base_dir='/custom/pdf/dir')
+        importer = MedRxivImporter(pdf_base_dir=str(custom_dir))
 
-        assert str(importer.pdf_base_dir) == '/custom/pdf/dir'
+        assert importer.pdf_base_dir == custom_dir
+        assert custom_dir.is_dir()
 
     @patch('src.bmlibrarian.importers.medrxiv_importer.get_db_manager')
     def test_initialization_with_env_var(self, mock_db):

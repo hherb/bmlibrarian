@@ -260,13 +260,14 @@ class TestTabBuilders(unittest.TestCase):
         self.assertIsInstance(widget, QWidget)
         self.assertIsInstance(refs, TabRefs)
 
-    def test_scoring_tab_is_placeholder(self):
-        """Test that scoring tab is a placeholder."""
+    def test_scoring_tab_has_required_widgets(self):
+        """Test that scoring tab exposes its progressive-display widgets."""
         widget, refs = build_scoring_tab(self.ui)
         self._track_widget(widget)
 
-        # Placeholder tabs have empty refs
-        self.assertEqual(len(refs.widgets), 0)
+        required = ['summary_label', 'progress_bar', 'container', 'layout', 'empty_label']
+        for key in required:
+            self.assertIn(key, refs.widgets, f"Missing widget: {key}")
 
     # ========================================================================
     # build_citations_tab Tests

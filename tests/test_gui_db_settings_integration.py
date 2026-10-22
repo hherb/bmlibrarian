@@ -31,6 +31,22 @@ skip_if_no_qt = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def qapp():
+    """Provide a real QApplication before any Qt code runs.
+
+    Without one, Qt aborts the whole interpreter (not just the test) on the
+    first font/widget use, e.g. get_font_scale() in BMLibrarianApplication,
+    whose own QApplication is patched out below. Other Qt test modules used
+    to create it first, so this module only passed in a full-suite run.
+    """
+    if not _check_pyside6_available():
+        yield None
+        return
+    from PySide6.QtWidgets import QApplication
+    yield QApplication.instance() or QApplication([])
+
+
 # ============================================================================
 # Tests that don't require Qt - Data classes only
 # ============================================================================
@@ -199,7 +215,8 @@ class TestBMLibrarianApplicationUserContext:
         from bmlibrarian.gui.qt.dialogs import LoginResult
 
         with patch('bmlibrarian.gui.qt.core.application.QApplication'):
-            with patch('bmlibrarian.gui.qt.core.application.get_config') as mock_get_config:
+            # _setup_user_context imports get_config locally from bmlibrarian.config
+            with patch('bmlibrarian.config.get_config') as mock_get_config:
                 mock_config = MagicMock()
                 mock_get_config.return_value = mock_config
 

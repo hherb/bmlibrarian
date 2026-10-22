@@ -110,7 +110,9 @@ class TestPaperCheckDBPasswordMasking:
 
     def test_get_safe_conninfo_without_password(self) -> None:
         """Test _get_safe_conninfo when no password is set."""
-        with patch("bmlibrarian.paperchecker.database.psycopg.connect") as mock_connect:
+        # POSTGRES_USER/PASSWORD from a loaded .env would otherwise fill the gaps
+        with patch.dict(os.environ, {}, clear=True), \
+                patch("bmlibrarian.paperchecker.database.psycopg.connect") as mock_connect:
             mock_conn = MagicMock()
             mock_connect.return_value = mock_conn
 

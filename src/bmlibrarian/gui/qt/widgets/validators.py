@@ -305,6 +305,14 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
     """
     error_str = str(error).lower()
 
+    # Database errors (before connection: "PostgreSQL connection failed" is not Ollama)
+    if 'database' in error_str or 'sql' in error_str or 'postgres' in error_str:
+        return (
+            "database",
+            "Database error occurred. "
+            "Please check the database connection and try again."
+        )
+
     # Connection errors (Ollama/network)
     if 'connect' in error_str or 'connection' in error_str:
         return (
@@ -314,7 +322,7 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
         )
 
     # Timeout errors
-    if 'timeout' in error_str:
+    if 'timeout' in error_str or 'timed out' in error_str:
         return (
             "timeout",
             "The AI service took too long to respond. "
@@ -362,14 +370,6 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
             "extraction",
             "Could not extract text from the PDF. "
             "The file may be scanned, image-based, or corrupted."
-        )
-
-    # Database errors
-    if 'database' in error_str or 'sql' in error_str or 'postgres' in error_str:
-        return (
-            "database",
-            "Database error occurred. "
-            "Please check the database connection and try again."
         )
 
     # Generic fallback

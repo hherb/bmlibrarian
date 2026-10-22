@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt
 
 # Import the widget to test
 from bmlibrarian.gui.qt.plugins.fact_checker.fact_checker_tab import FactCheckerTabWidget
+from bmlibrarian.gui.qt.resources.styles import get_font_scale
 
 
 class TestFactCheckerTabWidget(unittest.TestCase):
@@ -56,7 +57,7 @@ class TestFactCheckerTabWidget(unittest.TestCase):
     def test_ui_components_exist(self):
         """Test that all UI components are created."""
         self.assertIsNotNone(self.widget.status_label)
-        self.assertIsNotNone(self.widget.load_data_button)
+        self.assertIsNotNone(self.widget.username_field)
         self.assertIsNotNone(self.widget.statistics_button)
 
     def test_status_changed_signal(self):
@@ -75,14 +76,6 @@ class TestFactCheckerTabWidget(unittest.TestCase):
         # Verify signal was emitted
         self.assertEqual(len(signal_received), 1)
         self.assertEqual(signal_received[0], test_message)
-
-    def test_load_data_button_click(self):
-        """Test load data button click behavior."""
-        # Button should be enabled initially
-        self.assertTrue(self.widget.load_data_button.isEnabled())
-
-        # Test button is clickable
-        QTest.mouseClick(self.widget.load_data_button, Qt.LeftButton)
 
     def test_configuration_properties(self):
         """Test configuration property setters."""
@@ -145,13 +138,14 @@ class TestFactCheckerTabWidget(unittest.TestCase):
         layout = self.widget.layout()
         self.assertIsNotNone(layout)
 
-        # Check layout margins and spacing
+        # Margins and spacing are DPI-scaled (golden rule 10)
+        s = get_font_scale()
         margins = layout.contentsMargins()
-        self.assertEqual(margins.left(), 20)
-        self.assertEqual(margins.top(), 20)
-        self.assertEqual(margins.right(), 20)
-        self.assertEqual(margins.bottom(), 20)
-        self.assertEqual(layout.spacing(), 15)
+        self.assertEqual(margins.left(), s['padding_xlarge'])
+        self.assertEqual(margins.top(), s['padding_xlarge'])
+        self.assertEqual(margins.right(), s['padding_xlarge'])
+        self.assertEqual(margins.bottom(), s['padding_xlarge'])
+        self.assertEqual(layout.spacing(), s['spacing_xlarge'])
 
 
 class TestFactCheckerTabIntegration(unittest.TestCase):

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
 Test different HNSW ef_search values to see if they improve performance.
+
+Note: this is a benchmark script, run directly:
+
+    uv run python tests/test_ef_search.py "your query"
+
+Its entry point is deliberately named benchmark_* rather than test_*:
+pytest would collect it and error on its required arguments.
 """
 
 import os
@@ -25,7 +32,7 @@ def get_embedding(text: str, model: str = "snowflake-arctic-embed2:latest") -> L
     return result["embeddings"][0]
 
 
-def test_search_with_ef(search_phrase: str, ef_search: int, top_k: int = 10):
+def benchmark_search_with_ef(search_phrase: str, ef_search: int, top_k: int = 10):
     """Test search performance with a specific ef_search value."""
     db_params = {
         "dbname": os.getenv("POSTGRES_DB", "knowledgebase"),
@@ -103,7 +110,7 @@ if __name__ == "__main__":
 
     for ef in ef_values:
         try:
-            total_time, num_results = test_search_with_ef(search_phrase, ef, top_k=10)
+            total_time, num_results = benchmark_search_with_ef(search_phrase, ef, top_k=10)
             results[ef] = (total_time, num_results)
         except Exception as e:
             print(f"\nError with ef_search={ef}: {e}")

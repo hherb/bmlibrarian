@@ -1,30 +1,38 @@
 """Tests for database persistence in PaperWeightAssessmentAgent
 
 This test module covers:
-- Cache retrieval (_get_cached_assessment)
+- Cache retrieval (get_cached_assessment)
 - Cache invalidation on version change
-- Assessment storage (_store_assessment)
+- Assessment storage (store_assessment)
 - Final weight calculation
 - Error handling
 """
 
+import os
+
 import pytest
 from datetime import datetime
-from unittest.mock import patch, MagicMock
 from bmlibrarian.agents.paper_weight import (
     PaperWeightAssessmentAgent,
     PaperWeightResult,
     DimensionScore,
     AssessmentDetail,
+    calculate_methodological_quality_score,
+    calculate_risk_of_bias_score,
+    check_replication_status,
+    get_cached_assessment,
+    prepare_text_for_analysis,
+    store_assessment,
 )
+from bmlibrarian.db_test_guard import is_protected_database
+
+TRUNCATION_MARKER = "\n\n[Text truncated...]"
 
 
 @pytest.fixture
 def agent():
-    """Create agent instance for testing (mocked DB connection)"""
-    with patch.object(PaperWeightAssessmentAgent, '_get_db_connection'):
-        agent = PaperWeightAssessmentAgent(show_model_info=False)
-        return agent
+    """Create agent instance for testing (the constructor does not touch the database)"""
+    return PaperWeightAssessmentAgent(show_model_info=False)
 
 
 @pytest.fixture
@@ -253,7 +261,7 @@ class TestLLMJSONParsing:
     "blinding": {"score": 2.0, "evidence": "double-blind", "reasoning": "Participants and assessors"}
 }
 ```'''
-        result = agent._parse_llm_json_response(response)
+        result = agent._parse_json_response(response)
 
         assert result['randomization']['score'] == 2.0
         assert result['blinding']['score'] == 2.0
@@ -264,7 +272,7 @@ class TestLLMJSONParsing:
     "randomization": {"score": 2.0, "evidence": "test", "reasoning": "test"},
     "blinding": {"score": 3.0, "evidence": "test", "reasoning": "test"}
 }'''
-        result = agent._parse_llm_json_response(response)
+        result = agent._parse_json_response(response)
 
         assert result['randomization']['score'] == 2.0
         assert result['blinding']['score'] == 3.0
@@ -276,7 +284,7 @@ class TestLLMJSONParsing:
     "test_component": {"score": 1.5, "evidence": "found", "reasoning": "good"}
 }
 That concludes the assessment.'''
-        result = agent._parse_llm_json_response(response)
+        result = agent._parse_json_response(response)
 
         assert result['test_component']['score'] == 1.5
 
@@ -284,15 +292,15 @@ That concludes the assessment.'''
         """Test that invalid JSON raises ValueError"""
         response = "This is not JSON at all"
 
-        with pytest.raises(ValueError, match="Could not find JSON"):
-            agent._parse_llm_json_response(response)
+        with pytest.raises(ValueError, match="Could not parse JSON"):
+            agent._parse_json_response(response)
 
     def test_parse_malformed_json_raises(self, agent):
         """Test that malformed JSON raises ValueError"""
         response = '{"incomplete": {"score": '
 
         with pytest.raises(ValueError):
-            agent._parse_llm_json_response(response)
+            agent._parse_json_response(response)
 
 
 class TestMethodologicalQualityScoring:
@@ -309,7 +317,7 @@ class TestMethodologicalQualityScoring:
             "attrition_handling": {"score": 1.0, "evidence": "5%", "reasoning": "excellent"}
         }
 
-        result = agent._calculate_methodological_quality_score(components)
+        result = calculate_methodological_quality_score(components)
 
         assert result.dimension_name == 'methodological_quality'
         assert result.score == 10.0  # Perfect score (sum = 10.0)
@@ -323,7 +331,7 @@ class TestMethodologicalQualityScoring:
             "comp2": {"score": 6.0, "evidence": "test", "reasoning": "test"}
         }
 
-        result = agent._calculate_methodological_quality_score(components)
+        result = calculate_methodological_quality_score(components)
 
         assert result.score == 10.0  # Should be capped
 
@@ -340,7 +348,7 @@ class TestRiskOfBiasScoring:
             "reporting_bias": {"score": 2.5, "risk_level": "low", "evidence": "protocol", "reasoning": "good"}
         }
 
-        result = agent._calculate_risk_of_bias_score(components)
+        result = calculate_risk_of_bias_score(components)
 
         assert result.dimension_name == 'risk_of_bias'
         assert result.score == pytest.approx(9.5, abs=0.01)
@@ -361,7 +369,7 @@ class TestTextPreparation:
             'full_text': 'Long full text content here'
         }
 
-        text = agent._prepare_text_for_analysis(document)
+        text = prepare_text_for_analysis(document, agent.MAX_TEXT_LENGTH)
 
         assert 'TITLE: Test Paper' in text
         assert 'FULL TEXT:' in text
@@ -376,7 +384,7 @@ class TestTextPreparation:
             'full_text': ''
         }
 
-        text = agent._prepare_text_for_analysis(document)
+        text = prepare_text_for_analysis(document, agent.MAX_TEXT_LENGTH)
 
         assert 'TITLE: Test Paper' in text
         assert 'ABSTRACT:' in text
@@ -390,9 +398,10 @@ class TestTextPreparation:
             'full_text': ''
         }
 
-        text = agent._prepare_text_for_analysis(document)
+        text = prepare_text_for_analysis(document, agent.MAX_TEXT_LENGTH)
 
-        assert len(text) <= 8000
+        assert len(text) <= agent.MAX_TEXT_LENGTH + len(TRUNCATION_MARKER)
+        assert text.endswith(TRUNCATION_MARKER)
 
     def test_prepare_text_handles_none(self, agent):
         """Test text preparation handles None values"""
@@ -402,7 +411,7 @@ class TestTextPreparation:
             'full_text': None
         }
 
-        text = agent._prepare_text_for_analysis(document)
+        text = prepare_text_for_analysis(document, agent.MAX_TEXT_LENGTH)
 
         assert 'TITLE:' in text
         assert 'ABSTRACT:' in text
@@ -431,20 +440,28 @@ class TestGetDimensionWeights:
 
 @pytest.mark.requires_database
 class TestDatabasePersistence:
-    """Integration tests for database persistence (require live database)"""
+    """Integration tests for database persistence (require a writable dev database).
+
+    They write to paper_weights.assessments, so they only run when the configured
+    database (BMLIBRARIAN_ENV_FILE) is a development database; document 99999 must
+    exist there (foreign key to public.document).
+    """
 
     @pytest.fixture
     def db_agent(self):
-        """Create agent with real database connection"""
+        """Create agent with real database connection (skips on a protected database)"""
+        db_name = os.getenv("POSTGRES_DB", "knowledgebase")
+        if is_protected_database(db_name):
+            pytest.skip(f"needs a writable development database, {db_name!r} is protected")
         return PaperWeightAssessmentAgent(show_model_info=False)
 
     def test_store_and_retrieve_assessment(self, db_agent, sample_result):
         """Test storing and retrieving assessment from database"""
         # Store assessment
-        db_agent._store_assessment(sample_result)
+        store_assessment(sample_result)
 
         # Retrieve from cache
-        cached = db_agent._get_cached_assessment(sample_result.document_id)
+        cached = get_cached_assessment(sample_result.document_id, sample_result.assessor_version)
 
         assert cached is not None
         assert cached.document_id == sample_result.document_id
@@ -463,26 +480,20 @@ class TestDatabasePersistence:
     def test_cache_invalidation_on_version_change(self, db_agent, sample_result):
         """Test that cache is invalidated when version changes"""
         # Store with version 1.0.0
-        db_agent._store_assessment(sample_result)
+        store_assessment(sample_result)
 
         # Should retrieve with same version
-        cached = db_agent._get_cached_assessment(sample_result.document_id)
+        cached = get_cached_assessment(sample_result.document_id, sample_result.assessor_version)
         assert cached is not None
 
-        # Change version in config
-        db_agent.config['version'] = '2.0.0'
-
-        # Should NOT retrieve (version mismatch)
-        cached = db_agent._get_cached_assessment(sample_result.document_id)
+        # Should NOT retrieve with a different version
+        cached = get_cached_assessment(sample_result.document_id, '2.0.0')
         assert cached is None
-
-        # Restore version
-        db_agent.config['version'] = '1.0.0'
 
     def test_upsert_behavior(self, db_agent, sample_result):
         """Test that storing same document_id + version updates existing record"""
         # Store initial assessment
-        db_agent._store_assessment(sample_result)
+        store_assessment(sample_result)
 
         # Modify the result
         modified_result = sample_result
@@ -490,10 +501,10 @@ class TestDatabasePersistence:
         modified_result.assessed_at = datetime.now()
 
         # Store again (should update, not insert duplicate)
-        db_agent._store_assessment(modified_result)
+        store_assessment(modified_result)
 
         # Retrieve and verify it was updated
-        cached = db_agent._get_cached_assessment(sample_result.document_id)
+        cached = get_cached_assessment(sample_result.document_id, sample_result.assessor_version)
         assert cached is not None
         assert cached.final_weight == pytest.approx(8.5, abs=0.01)
 
@@ -510,7 +521,7 @@ class TestReplicationStatusLookup:
     def test_no_replications_returns_zero(self, db_agent):
         """Test that document with no replications returns 0 score"""
         # Use a document ID that likely has no replications
-        result = db_agent._check_replication_status(999999999)
+        result = check_replication_status(999999999)
 
         assert result.dimension_name == 'replication_status'
         assert result.score == 0.0

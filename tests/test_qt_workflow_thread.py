@@ -141,7 +141,7 @@ class TestWorkflowThread(unittest.TestCase):
         result = thread._check_cancellation("test_step")
 
         self.assertTrue(result)
-        self.assertEqual(len(spy), 1)
+        self.assertEqual(spy.count(), 1)
 
         thread.deleteLater()
 
@@ -179,10 +179,10 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify at least one step_started signal emitted
-        self.assertGreater(len(spy), 0)
+        self.assertGreater(spy.count(), 0)
 
         # First step should be "generate_query"
-        first_step = spy[0]
+        first_step = spy.at(0)
         self.assertEqual(first_step[0], "generate_query")
 
         thread.deleteLater()
@@ -204,8 +204,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify error signal emitted
-        self.assertEqual(len(spy), 1)
-        error = spy[0][0]
+        self.assertEqual(spy.count(), 1)
+        error = spy.at(0)[0]
         self.assertIsInstance(error, Exception)
         self.assertEqual(str(error), "Test error")
 
@@ -222,9 +222,10 @@ class TestWorkflowThread(unittest.TestCase):
             "score": 4.0,
             "reasoning": "Relevant"
         }
-        self.mock_executor.extract_citations.return_value = [
-            {"citation": "Test citation", "doc_id": 1}
-        ]
+        # The thread extracts citations per document via the citation agent
+        self.mock_executor.citation_agent.extract_citation_from_document.return_value = Mock(
+            passage="Test citation", document_id=1
+        )
         self.mock_executor.generate_preliminary_report.return_value = "# Test Report"
 
         thread = WorkflowThread(
@@ -240,8 +241,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify completion signal emitted
-        self.assertEqual(len(spy), 1)
-        results = spy[0][0]
+        self.assertEqual(spy.count(), 1)
+        results = spy.at(0)[0]
         self.assertEqual(results['question'], "Test question")
         self.assertIn('documents', results)
         self.assertIn('citations', results)
@@ -266,7 +267,7 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify status messages emitted
-        self.assertGreater(len(spy), 0)
+        self.assertGreater(spy.count(), 0)
 
         thread.deleteLater()
 
@@ -291,7 +292,7 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify error signal emitted
-        self.assertEqual(len(error_spy), 1)
+        self.assertEqual(error_spy.count(), 1)
 
         thread.deleteLater()
 
@@ -312,7 +313,7 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify error signal emitted
-        self.assertEqual(len(error_spy), 1)
+        self.assertEqual(error_spy.count(), 1)
 
         thread.deleteLater()
 
@@ -337,8 +338,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify error signal emitted
-        self.assertEqual(len(error_spy), 1)
-        error = error_spy[0][0]
+        self.assertEqual(error_spy.count(), 1)
+        error = error_spy.at(0)[0]
         self.assertIn("Scoring failed", str(error))
 
         thread.deleteLater()
@@ -406,8 +407,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify completion signal emitted with status 'no_documents'
-        self.assertEqual(len(completed_spy), 1)
-        results = completed_spy[0][0]
+        self.assertEqual(completed_spy.count(), 1)
+        results = completed_spy.at(0)[0]
         self.assertEqual(results['status'], 'no_documents')
 
         thread.deleteLater()
@@ -434,8 +435,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify completion signal emitted with status 'no_scores'
-        self.assertEqual(len(completed_spy), 1)
-        results = completed_spy[0][0]
+        self.assertEqual(completed_spy.count(), 1)
+        results = completed_spy.at(0)[0]
         self.assertEqual(results['status'], 'no_scores')
 
         thread.deleteLater()
@@ -451,7 +452,7 @@ class TestWorkflowThread(unittest.TestCase):
             "score": 4.0,
             "reasoning": "Relevant"
         }
-        self.mock_executor.extract_citations.return_value = []
+        self.mock_executor.citation_agent.extract_citation_from_document.return_value = None
 
         thread = WorkflowThread(
             executor=self.mock_executor,
@@ -465,8 +466,8 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify completion signal emitted with status 'no_citations'
-        self.assertEqual(len(completed_spy), 1)
-        results = completed_spy[0][0]
+        self.assertEqual(completed_spy.count(), 1)
+        results = completed_spy.at(0)[0]
         self.assertEqual(results['status'], 'no_citations')
 
         thread.deleteLater()
@@ -486,9 +487,10 @@ class TestWorkflowThread(unittest.TestCase):
             "score": 4.0,
             "reasoning": "Relevant"
         }
-        self.mock_executor.extract_citations.return_value = [
-            {"citation": "Test citation", "doc_id": 1}
-        ]
+        # The thread extracts citations per document via the citation agent
+        self.mock_executor.citation_agent.extract_citation_from_document.return_value = Mock(
+            passage="Test citation", document_id=1
+        )
         self.mock_executor.generate_preliminary_report.return_value = "# Test Report"
 
         thread = WorkflowThread(
@@ -505,13 +507,13 @@ class TestWorkflowThread(unittest.TestCase):
         thread.run()
 
         # Verify counterfactual signal NOT emitted
-        self.assertEqual(len(cf_spy), 0)
+        self.assertEqual(cf_spy.count(), 0)
 
         # But workflow completed
-        self.assertEqual(len(completed_spy), 1)
+        self.assertEqual(completed_spy.count(), 1)
 
         # Counterfactual results should be None
-        results = completed_spy[0][0]
+        results = completed_spy.at(0)[0]
         self.assertIsNone(results.get('counterfactual_results'))
 
         thread.deleteLater()
@@ -591,8 +593,8 @@ class TestWorkflowThreadIntegration(unittest.TestCase):
         thread.run()
 
         # Verify error signal emitted with appropriate error
-        self.assertEqual(len(error_spy), 1)
-        error = error_spy[0][0]
+        self.assertEqual(error_spy.count(), 1)
+        error = error_spy.at(0)[0]
         self.assertIn("not active", str(error))
 
         thread.deleteLater()

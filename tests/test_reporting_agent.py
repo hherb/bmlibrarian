@@ -26,7 +26,7 @@ class TestReportingAgent(unittest.TestCase):
         self.mock_orchestrator = Mock()
         self.agent = ReportingAgent(
             orchestrator=self.mock_orchestrator,
-            ollama_url="http://test:11434",
+            host="http://test:11434",
             model="test-model"
         )
         
@@ -116,7 +116,7 @@ class TestReportingAgent(unittest.TestCase):
         )
         
         formatted = reference.format_vancouver_style()
-        expected = "Smith, J., Johnson, A., Brown, K.. Test Study Title. 2023; PMID: 37123456"
+        expected = "Smith, J., Johnson, A., Brown, K.. Test Study Title. 2023. PMID: 37123456."
         self.assertEqual(formatted, expected)
     
     def test_vancouver_formatting_many_authors(self):
@@ -171,24 +171,18 @@ class TestReportingAgent(unittest.TestCase):
         strength = self.agent.assess_evidence_strength([])
         self.assertEqual(strength, "Insufficient")
     
-    @patch('requests.get')
-    def test_connection_success(self, mock_get):
-        """Test successful connection to Ollama."""
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
-        
-        result = self.agent.test_connection()
-        self.assertTrue(result)
-        mock_get.assert_called_once_with("http://test:11434/api/tags", timeout=5)
-    
-    @patch('requests.get')
-    def test_connection_failure(self, mock_get):
+    def test_connection_success(self):
+        """Test successful connection to Ollama with the model available."""
+        with patch.object(self.agent._llm_client, 'test_provider', return_value=True), \
+             patch.object(self.agent._llm_client, 'list_models',
+                          return_value={'ollama': ['test-model']}):
+            self.assertTrue(self.agent.test_connection())
+
+    def test_connection_failure(self):
         """Test failed connection to Ollama."""
-        mock_get.side_effect = Exception("Connection error")
-        
-        result = self.agent.test_connection()
-        self.assertFalse(result)
+        with patch.object(self.agent._llm_client, 'test_provider',
+                          side_effect=Exception("Connection error")):
+            self.assertFalse(self.agent.test_connection())
     
     def test_citation_validation_success(self):
         """Test validation of valid citations."""
@@ -215,25 +209,17 @@ class TestReportingAgent(unittest.TestCase):
         self.assertIn("Missing document title", errors[2])
         self.assertIn("Invalid relevance score", errors[3])
     
-    @patch('requests.post')
-    @patch('requests.get')
-    def test_synthesize_report_success(self, mock_get, mock_post):
+    def test_synthesize_report_success(self):
         """Test successful report synthesis."""
-        # Mock connection test
-        mock_get.return_value.status_code = 200
-        
-        # Mock Ollama response
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'synthesized_answer': 'COVID-19 vaccines demonstrate high effectiveness (95%) in preventing severe disease [1]. Safety profiles show mild side effects in less than 5% of recipients [2]. Booster shots maintain immunity levels above 85% after 6 months [3]. These findings support the continued use of vaccination programs for pandemic control.',
-                'methodology_note': 'Synthesis based on 3 high-quality citations from peer-reviewed studies with relevance scores ≥0.8.'
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        report = self.agent.synthesize_report(self.sample_question, self.sample_citations)
+        llm_response = json.dumps({
+            'introduction': 'COVID-19 vaccines demonstrate high effectiveness (95%) in preventing severe disease [1].',
+            'evidence_discussion': 'Safety profiles show mild side effects in less than 5% of recipients [2]. Booster shots maintain immunity levels above 85% after 6 months [3].',
+            'conclusion': 'These findings support the continued use of vaccination programs for pandemic control.',
+            'themes_identified': ['effectiveness', 'safety']
+        })
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch.object(self.agent, '_generate_from_prompt', return_value=llm_response):
+            report = self.agent.synthesize_report(self.sample_question, self.sample_citations)
         
         self.assertIsNotNone(report)
         self.assertIsInstance(report, Report)
@@ -257,12 +243,10 @@ class TestReportingAgent(unittest.TestCase):
         
         self.assertIsNone(report)
     
-    @patch('requests.get')
-    def test_synthesize_report_no_connection(self, mock_get):
+    def test_synthesize_report_no_connection(self):
         """Test report synthesis without Ollama connection."""
-        mock_get.side_effect = Exception("Connection failed")
-        
-        report = self.agent.synthesize_report(self.sample_question, self.sample_citations)
+        with patch.object(self.agent, 'test_connection', return_value=False):
+            report = self.agent.synthesize_report(self.sample_question, self.sample_citations)
         self.assertIsNone(report)
     
     def test_format_report_output(self):
@@ -297,42 +281,42 @@ class TestReportingAgent(unittest.TestCase):
         self.assertIn("Generated: 2023-06-15 12:00:00 UTC", formatted)
         self.assertIn("Citations analyzed: 3", formatted)
     
-    @patch('requests.post')
-    @patch('requests.get')
-    def test_generate_citation_based_report(self, mock_get, mock_post):
+    def test_generate_citation_based_report(self):
         """Test complete report generation workflow."""
         # Mock successful connection and synthesis
-        mock_get.return_value.status_code = 200
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'synthesized_answer': 'Test synthesis with citations [1][2][3].',
-                'methodology_note': 'Test methodology note.'
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        # Test formatted output
-        result = self.agent.generate_citation_based_report(
-            self.sample_question, 
-            self.sample_citations,
-            format_output=True
+        llm_response = json.dumps({
+            'introduction': 'Test synthesis with citations [1][2][3].',
+            'evidence_discussion': 'Test evidence discussion.',
+            'conclusion': 'Test conclusion.'
+        })
+        expected_answer = (
+            "Test synthesis with citations [1][2][3].\n\n"
+            "## Evidence and Discussion\n\nTest evidence discussion.\n\n"
+            "## Conclusion\n\nTest conclusion."
         )
-        
-        self.assertIsNotNone(result)
-        self.assertIn("Research Question:", result)
-        self.assertIn("REFERENCES", result)
-        
-        # Test unformatted output
-        result_unformatted = self.agent.generate_citation_based_report(
-            self.sample_question,
-            self.sample_citations, 
-            format_output=False
-        )
-        
+
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch.object(self.agent, '_generate_from_prompt', return_value=llm_response):
+            # Test formatted output
+            result = self.agent.generate_citation_based_report(
+                self.sample_question,
+                self.sample_citations,
+                format_output=True
+            )
+
+            self.assertIsNotNone(result)
+            self.assertIn("Research Question:", result)
+            self.assertIn("REFERENCES", result)
+
+            # Test unformatted output
+            result_unformatted = self.agent.generate_citation_based_report(
+                self.sample_question,
+                self.sample_citations,
+                format_output=False
+            )
+
         self.assertIsNotNone(result_unformatted)
-        self.assertEqual(result_unformatted, "Test synthesis with citations [1][2][3].")
+        self.assertEqual(result_unformatted, expected_answer)
         self.assertNotIn("Research Question:", result_unformatted)
 
 

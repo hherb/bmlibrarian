@@ -725,8 +725,17 @@ class TestConnectionTesting:
 
 # Integration Tests - These require a running database and Ollama server
 
+# Against a full-size database the live keyword and full searches take
+# ~150s each (each DB query may run up to the coordinator's 5-minute
+# query timeout), so the suite-wide 120s ceiling fails them spuriously.
+LIVE_SEARCH_TIMEOUT_SECONDS = 600
+
 
 @pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.requires_database
+@pytest.mark.requires_ollama
+@pytest.mark.timeout(LIVE_SEARCH_TIMEOUT_SECONDS)
 class TestIntegration:
     """Integration tests requiring running services."""
 

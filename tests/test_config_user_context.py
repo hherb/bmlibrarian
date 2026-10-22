@@ -19,6 +19,13 @@ from bmlibrarian.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_user_config_file():
+    """Keep the developer's ~/.bmlibrarian/config.json out of these tests."""
+    with patch('bmlibrarian.utils.config_loader.load_config_with_fallback', return_value={}):
+        yield
+
+
 class TestUserContext:
     """Tests for the UserContext dataclass."""
 
@@ -51,7 +58,8 @@ class TestValidSettingsCategories:
         """Test that VALID_SETTINGS_CATEGORIES contains expected categories."""
         expected = {
             'models', 'ollama', 'agents', 'database', 'search',
-            'query_generation', 'gui', 'openathens', 'pdf', 'general'
+            'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa',
+            'discovery', 'embeddings'
         }
         assert VALID_SETTINGS_CATEGORIES == expected
 
