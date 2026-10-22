@@ -181,8 +181,8 @@ class TestQtWorkflowExecutor(unittest.TestCase):
         result = self.executor.generate_query()
 
         # Verify: signal emitted with correct query
-        self.assertEqual(len(spy), 1)
-        self.assertEqual(spy[0][0], mock_query)
+        self.assertEqual(spy.count(), 1)
+        self.assertEqual(spy.at(0)[0], mock_query)
         self.assertEqual(result, mock_query)
 
     def test_status_message_signal_emission(self):
@@ -200,7 +200,7 @@ class TestQtWorkflowExecutor(unittest.TestCase):
         self.executor.execute_workflow()
 
         # Verify: at least one status message emitted
-        self.assertGreater(len(spy), 0)
+        self.assertGreater(spy.count(), 0)
 
     def test_workflow_error_signal_emission(self):
         """Test that workflow_error signal is emitted on error."""
@@ -216,8 +216,8 @@ class TestQtWorkflowExecutor(unittest.TestCase):
         self.executor.execute_workflow()
 
         # Verify: error signal emitted
-        self.assertEqual(len(spy), 1)
-        error = spy[0][0]
+        self.assertEqual(spy.count(), 1)
+        error = spy.at(0)[0]
         self.assertIsInstance(error, Exception)
         self.assertEqual(str(error), "Test error")
 
@@ -225,28 +225,30 @@ class TestQtWorkflowExecutor(unittest.TestCase):
     # Agent Initialization Tests
     # ========================================================================
 
-    def test_initialize_agents(self):
-        """Test that initialize_agents sets up all required agents."""
-        # Mock the agent constructors
-        with patch('bmlibrarian.gui.qt.plugins.research.workflow_executor.QueryAgent') as MockQueryAgent, \
-             patch('bmlibrarian.gui.qt.plugins.research.workflow_executor.DocumentScoringAgent') as MockScoringAgent, \
-             patch('bmlibrarian.gui.qt.plugins.research.workflow_executor.CitationFinderAgent') as MockCitationAgent, \
-             patch('bmlibrarian.gui.qt.plugins.research.workflow_executor.ReportingAgent') as MockReportingAgent:
+    def test_agents_injected_via_constructor(self):
+        """Test that agents passed to the constructor are wired up.
 
-            # Create mock instances
-            MockQueryAgent.return_value = Mock()
-            MockScoringAgent.return_value = Mock()
-            MockCitationAgent.return_value = Mock()
-            MockReportingAgent.return_value = Mock()
-
-            # Test: initialize agents
-            self.executor.initialize_agents()
-
-            # Verify: all agents initialized
-            self.assertIsNotNone(self.executor.query_agent)
-            self.assertIsNotNone(self.executor.scoring_agent)
-            self.assertIsNotNone(self.executor.citation_agent)
-            self.assertIsNotNone(self.executor.reporting_agent)
+        The executor no longer creates its own agents (initialize_agents()
+        was removed); the research tab injects an agents dict.
+        """
+        agents = {
+            name: Mock() for name in (
+                'query_agent', 'scoring_agent', 'citation_agent',
+                'reporting_agent', 'counterfactual_agent', 'editor_agent',
+            )
+        }
+        executor = QtWorkflowExecutor(agents=agents)
+        try:
+            self.assertIs(executor.query_agent, agents['query_agent'])
+            self.assertIs(executor.scoring_agent, agents['scoring_agent'])
+            self.assertIs(executor.citation_agent, agents['citation_agent'])
+            self.assertIs(executor.reporting_agent, agents['reporting_agent'])
+            self.assertTrue(executor.check_agents_ready())
+            # The default fixture has no agents
+            self.assertFalse(self.executor.check_agents_ready())
+        finally:
+            executor.cleanup()
+            executor.deleteLater()
 
     # ========================================================================
     # Query Validation Tests

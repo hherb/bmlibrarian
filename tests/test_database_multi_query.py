@@ -36,7 +36,9 @@ def test_find_abstract_ids_return_type():
     checking the old comment described is done, without a database, by
     test_find_abstract_ids_parameters below.
     """
-    ids = find_abstract_ids("test", max_rows=1)
+    # A rare term: a common one ("test") matches millions of rows on a full
+    # PubMed import, and sorting them all by date took minutes.
+    ids = find_abstract_ids("xylometazoline", max_rows=1)
     assert isinstance(ids, set)
 
 

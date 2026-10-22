@@ -323,14 +323,13 @@ class TestMigrationManager:
             
             assert result == 0
             mock_print.assert_any_call(f"Migrations directory does not exist: {non_existent_dir}")
-            mock_print.assert_any_call("Creating migrations directory...")
+            assert not non_existent_dir.exists()  # missing directory is reported, not created
 
-    @patch('sys.exit')
     @patch.object(MigrationManager, '_apply_sql_file')
     @patch.object(MigrationManager, '_get_applied_migrations')
     @patch.object(MigrationManager, '_create_migrations_table')
     def test_apply_pending_migrations_failure(self, mock_create_table, mock_get_applied,
-                                            mock_apply_sql, mock_exit):
+                                            mock_apply_sql):
         """Test handling migration application failure."""
         mock_get_applied.return_value = []
         mock_apply_sql.side_effect = Exception("SQL error")
@@ -341,9 +340,9 @@ class TestMigrationManager:
             migration.write_text("-- Test migration")
             
             with patch('builtins.print') as mock_print:
-                self.manager.apply_pending_migrations(migrations_dir)
+                with pytest.raises(RuntimeError, match="Failed to apply 001_test.sql: SQL error"):
+                    self.manager.apply_pending_migrations(migrations_dir)
             
-            mock_exit.assert_called_once_with(1)
             mock_print.assert_any_call("✗ Failed to apply 001_test.sql: SQL error")
 
 

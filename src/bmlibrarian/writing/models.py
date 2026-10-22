@@ -86,8 +86,9 @@ class DocumentMetadata:
         # Handle authors - could be string or list
         authors = data.get('authors', [])
         if isinstance(authors, str):
-            # Split string by common separators
-            authors = [a.strip() for a in authors.replace(';', ',').split(',') if a.strip()]
+            # ';' separates "Surname, Given" names, so only fall back to ',' without it
+            separator = ';' if ';' in authors else ','
+            authors = [a.strip() for a in authors.split(separator) if a.strip()]
 
         return cls(
             document_id=data.get('id') or data.get('document_id', 0),

@@ -19,6 +19,13 @@ from PySide6.QtTest import QSignalSpy
 # Import the classes to test
 from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
 from bmlibrarian.gui.qt.plugins.research.workflow_executor import QtWorkflowExecutor
+from bmlibrarian.gui.qt.plugins.research.workflow_thread import WorkflowThread
+
+# Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
+AGENT_NAMES = (
+    'query_agent', 'scoring_agent', 'citation_agent',
+    'reporting_agent', 'counterfactual_agent', 'editor_agent',
+)
 
 
 class TestQtIntegration(unittest.TestCase):
@@ -35,9 +42,26 @@ class TestQtIntegration(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Create research tab widget (includes workflow executor)
-        self.widget = ResearchTabWidget()
+        # Modal dialogs would block the test run
+        for module in ('research_tab', 'workflow_handlers'):
+            patcher = patch(
+                f'bmlibrarian.gui.qt.plugins.research.{module}.QMessageBox'
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        # Create research tab widget (creates the workflow executor from agents)
+        agents = {name: Mock() for name in AGENT_NAMES}
+        self.widget = ResearchTabWidget(agents=agents)
         self.executor = self.widget.workflow_executor
+
+    def _attach_workflow_thread(self) -> WorkflowThread:
+        """Wire a (not started) WorkflowThread to the tab as a real run would."""
+        thread = WorkflowThread(executor=self.executor, question="Test question")
+        self.widget.workflow_thread = thread
+        self.widget._connect_workflow_thread_signals()
+        self.addCleanup(thread.deleteLater)
+        return thread
 
     def tearDown(self):
         """Clean up after each test."""
@@ -53,8 +77,8 @@ class TestQtIntegration(unittest.TestCase):
 
     def test_workflow_executor_status_updates_ui(self):
         """Test that workflow executor status messages update UI."""
-        # Setup: track status label updates
-        initial_text = self.widget.status_label.text()
+        # Setup: track progress label updates
+        initial_text = self.widget.progress_label.text()
 
         # Test: emit status message from executor
         test_message = "Processing documents..."
@@ -63,71 +87,66 @@ class TestQtIntegration(unittest.TestCase):
         # Allow Qt to process events
         QApplication.processEvents()
 
-        # Verify: status label updated
-        self.assertNotEqual(self.widget.status_label.text(), initial_text)
-        self.assertIn(test_message, self.widget.status_label.text())
+        # Verify: progress label shows the status message
+        self.assertNotEqual(self.widget.progress_label.text(), initial_text)
+        self.assertIn(test_message, self.widget.progress_label.text())
 
     def test_query_generated_signal_updates_ui(self):
-        """Test that query_generated signal updates UI query field."""
-        # Setup: clear query input
-        self.widget.query_input.clear()
+        """Test that the thread's query_generated signal fills the Search tab."""
+        # Step results reach the tab from WorkflowThread, not the executor
+        thread = self._attach_workflow_thread()
+        query_display = self.widget.search_refs.widgets['query_text_display']
+        query_display.clear()
 
         # Test: emit query_generated signal
         test_query = "cardiovascular & exercise"
-        self.executor.query_generated.emit(test_query)
+        thread.query_generated.emit(test_query)
 
         # Allow Qt to process events
         QApplication.processEvents()
 
-        # Verify: query input updated
-        self.assertEqual(self.widget.query_input.text(), test_query)
+        # Verify: query display updated
+        self.assertEqual(query_display.toPlainText(), test_query)
 
-    def test_workflow_completed_updates_tabs(self):
-        """Test that workflow_completed signal updates tabs with results."""
-        # Setup: mock results
-        test_results = {
-            'phase': 3,
-            'milestone': 3,
-            'status': 'preliminary_report_completed',
+    def test_workflow_signals_update_tabs(self):
+        """Test that thread step and completion signals update the tabs."""
+        thread = self._attach_workflow_thread()
+        doc = {'id': 1, 'title': 'Paper 1', 'abstract': 'Abstract 1'}
+        citation = {
+            'document_id': 1,
+            'document_title': 'Paper 1',
+            'passage': 'Test passage',
+            'summary': 'Test summary',
+            'relevance_score': 0.9,
+        }
+        report = '# Test Report\n\nTest content'
+        results = {
+            'status': 'completed',
             'question': 'Test question',
-            'query': 'test & query',
-            'documents': [
-                {'doc_id': 1, 'title': 'Paper 1', 'abstract': 'Abstract 1'}
-            ],
-            'scored_documents': [
-                ({'doc_id': 1, 'title': 'Paper 1', 'abstract': 'Abstract 1'},
-                 {'score': 5, 'reasoning': 'Highly relevant'})
-            ],
-            'citations': [
-                {
-                    'citation_id': 1,
-                    'doc_id': 1,
-                    'title': 'Paper 1',
-                    'passage': 'Test passage',
-                    'reasoning': 'Test reasoning'
-                }
-            ],
-            'preliminary_report': '# Test Report\n\nTest content',
             'document_count': 1,
-            'high_scoring_count': 1,
             'citation_count': 1,
-            'report_length': 100
         }
 
-        # Test: emit workflow_completed signal
-        self.executor.workflow_completed.emit(test_results)
-
-        # Allow Qt to process events
+        # Test: emit the signals a successful run emits
+        thread.documents_found.emit([doc])
+        thread.citation_extracted.emit(citation, 1, 1)
+        thread.preliminary_report_generated.emit(report)
+        thread.workflow_completed.emit(results)
         QApplication.processEvents()
 
-        # Verify: literature tab updated
-        self.assertGreater(self.widget.literature_layout.count(), 0)
+        # Verify: literature tab has the document card (plus stretch)
+        literature_layout = self.widget.literature_refs.widgets['layout']
+        self.assertGreater(literature_layout.count(), 1)
 
-        # Verify: citations tab updated
-        self.assertGreater(self.widget.citations_layout.count(), 0)
+        # Verify: citations tab no longer shows its empty state
+        citations_layout = self.widget.citations_refs.widgets['layout']
+        empty_label = self.widget.citations_refs.widgets['empty_label']
+        widgets = [citations_layout.itemAt(i).widget() for i in range(citations_layout.count())]
+        self.assertNotIn(empty_label, widgets)
 
-        # Verify: report tab updated (markdown viewer should have content)
-        self.assertIsNotNone(self.widget.report_viewer.toPlainText())
+        # Verify: completion updates status and stores results
+        self.assertEqual(self.widget.status_label.text(), "Completed")
+        self.assertEqual(self.widget.current_results, results)
 
     def test_workflow_error_signal_displays_error(self):
         """Test that workflow_error signal displays error in UI."""
@@ -194,8 +213,8 @@ class TestQtIntegration(unittest.TestCase):
         self.executor.execute_workflow()
 
         # Verify: workflow_error signal emitted
-        self.assertEqual(len(spy), 1)
-        error = spy[0][0]
+        self.assertEqual(spy.count(), 1)
+        error = spy.at(0)[0]
         self.assertIsInstance(error, Exception)
         self.assertEqual(str(error), "Agent failed")
 
@@ -213,8 +232,8 @@ class TestQtIntegration(unittest.TestCase):
         self.executor.execute_workflow()
 
         # Verify: workflow_error signal emitted
-        self.assertEqual(len(spy), 1)
-        error = spy[0][0]
+        self.assertEqual(spy.count(), 1)
+        error = spy.at(0)[0]
         self.assertIsInstance(error, ValueError)
 
     # ========================================================================
@@ -235,7 +254,7 @@ class TestQtIntegration(unittest.TestCase):
         # Setup: mock all agents
         self.executor.query_agent = Mock()
         self.executor.query_agent.convert_question.return_value = "test & query"
-        self.executor.query_agent.search_documents.return_value = [
+        self.executor.query_agent.find_abstracts.return_value = [
             {'doc_id': 1, 'title': 'Paper 1', 'abstract': 'Abstract 1'}
         ]
 
@@ -246,16 +265,16 @@ class TestQtIntegration(unittest.TestCase):
         }
 
         self.executor.citation_agent = Mock()
-        self.executor.citation_agent.extract_citation.return_value = {
+        self.executor.citation_agent.process_scored_documents_for_citations.return_value = [{
             'citation_id': 1,
             'doc_id': 1,
             'title': 'Paper 1',
             'passage': 'Test passage',
             'reasoning': 'Test reasoning'
-        }
+        }]
 
         self.executor.reporting_agent = Mock()
-        self.executor.reporting_agent.generate_report.return_value = '# Test Report'
+        self.executor.reporting_agent.generate_citation_based_report.return_value = '# Test Report'
 
         self.executor.current_question = "Test question"
 
@@ -266,13 +285,13 @@ class TestQtIntegration(unittest.TestCase):
         QApplication.processEvents()
 
         # Verify: all major signals emitted
-        self.assertGreater(len(status_spy), 0, "Status messages should be emitted")
-        self.assertEqual(len(query_spy), 1, "Query should be generated once")
-        self.assertEqual(len(docs_spy), 1, "Documents should be found once")
-        self.assertEqual(len(scored_spy), 1, "Documents should be scored once")
-        self.assertEqual(len(citations_spy), 1, "Citations should be extracted once")
-        self.assertEqual(len(report_spy), 1, "Report should be generated once")
-        self.assertEqual(len(completed_spy), 1, "Workflow should complete once")
+        self.assertGreater(status_spy.count(), 0, "Status messages should be emitted")
+        self.assertEqual(query_spy.count(), 1, "Query should be generated once")
+        self.assertEqual(docs_spy.count(), 1, "Documents should be found once")
+        self.assertEqual(scored_spy.count(), 1, "Documents should be scored once")
+        self.assertEqual(citations_spy.count(), 1, "Citations should be extracted once")
+        self.assertEqual(report_spy.count(), 1, "Report should be generated once")
+        self.assertEqual(completed_spy.count(), 1, "Workflow should complete once")
 
 
 if __name__ == '__main__':

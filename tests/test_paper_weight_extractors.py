@@ -421,8 +421,8 @@ class TestConstants:
         assert STUDY_TYPE_PRIORITY[2] == 'quasi_experimental'
         assert STUDY_TYPE_PRIORITY[3] == 'rct'
         assert STUDY_TYPE_PRIORITY[4] == 'pilot_feasibility'
-        assert STUDY_TYPE_PRIORITY[2] == 'interventional_single_arm'
-        assert STUDY_TYPE_PRIORITY[4] == 'cohort_prospective'
+        assert STUDY_TYPE_PRIORITY[5] == 'interventional_single_arm'
+        assert STUDY_TYPE_PRIORITY[6] == 'cohort_prospective'
 
     def test_default_keywords_coverage(self):
         """Test that all priority types have keywords."""
@@ -684,12 +684,16 @@ class TestInterventionalSingleArmDetection:
         assert result.details[0].extracted_value == 'interventional_single_arm'
 
     def test_single_arm_trial_detection(self):
-        """Test detection of single-arm trial."""
+        """Test detection of single-arm trial.
+
+        'single-arm trial' is also a quasi_experimental keyword, which is checked
+        first (see TestKeywordCollisionFix); both types score 7.0.
+        """
         document = {'abstract': 'We conducted a single-arm trial to assess treatment effects.'}
         result = extract_study_type(document)
 
         assert result.score == 7.0
-        assert result.details[0].extracted_value == 'interventional_single_arm'
+        assert result.details[0].extracted_value == 'quasi_experimental'
 
     def test_single_arm_study_detection(self):
         """Test detection of single-arm study."""

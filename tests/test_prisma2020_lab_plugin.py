@@ -4,6 +4,8 @@ Unit tests for PRISMA 2020 Lab plugin.
 Tests the PRISMA2020LabTabWidget and PRISMA2020AssessmentWorker classes.
 """
 
+import dataclasses
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from PySide6.QtWidgets import QApplication
@@ -23,7 +25,19 @@ from bmlibrarian.gui.qt.plugins.prisma2020_lab.constants import (
     DEFAULT_MAX_TOKENS,
     MIN_CONFIDENCE_LAB_MODE
 )
+from bmlibrarian.gui.qt.plugins.prisma2020_lab.score_utils import (
+    get_score_color,
+    get_score_text,
+    get_compliance_color,
+)
+from bmlibrarian.gui.qt.plugins.prisma2020_lab.ui_builders import clear_layout
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
+
+# Patch targets in the tab module (documents come from get_document_details,
+# assessments run on a QThread worker that tests must not really start)
+TAB_MODULE = "bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab"
+GET_DOCUMENT_DETAILS = f"{TAB_MODULE}.get_document_details"
+ASSESSMENT_WORKER = f"{TAB_MODULE}.PRISMA2020AssessmentWorker"
 
 
 @pytest.fixture(autouse=True)
@@ -73,19 +87,34 @@ def mock_prisma_agent():
     agent = Mock()
     agent.get_available_models.return_value = ['gpt-oss:20b', 'medgemma4B_it_q8:latest']
 
-    # Create mock assessment
-    assessment = Mock(spec=PRISMA2020Assessment)
-    assessment.overall_compliance_percentage = 85.5
-    assessment.total_applicable_items = 27
-    assessment.fully_reported_items = 20
-    assessment.partially_reported_items = 5
-    assessment.not_reported_items = 2
-    assessment.is_systematic_review = True
-    assessment.is_meta_analysis = True
-    assessment.suitability_rationale = "This is a systematic review and meta-analysis."
-    assessment.get_compliance_category.return_value = "Good (75-89%)"
+    # Real assessment (the display code reads all 27 item scores/explanations)
+    item_fields = {
+        f.name: (2.0 if f.name.endswith('_score') else "Reported.")
+        for f in dataclasses.fields(PRISMA2020Assessment)
+        if f.name.endswith(('_score', '_explanation'))
+    }
+    assessment = PRISMA2020Assessment(
+        **item_fields,
+        is_systematic_review=True,
+        is_meta_analysis=True,
+        suitability_rationale="This is a systematic review and meta-analysis.",
+        overall_compliance_percentage=85.5,
+        total_applicable_items=27,
+        fully_reported_items=20,
+        partially_reported_items=5,
+        not_reported_items=2,
+        overall_confidence=0.9,
+        document_id="12345",
+        document_title="Test Systematic Review",
+        pmid=None,
+        doi=None,
+        created_at=None,
+    )
 
     agent.assess_prisma_compliance.return_value = assessment
+    agent.assess_prisma_compliance_with_semantic_search.return_value = assessment
+    # No text status: the worker skips the embedding step
+    agent.get_document_text_status.return_value = None
     return agent
 
 
@@ -106,37 +135,45 @@ class TestPRISMA2020LabTabWidget:
     def test_widget_creation(self, widget):
         """Test that widget is created successfully."""
         assert widget is not None
-        assert widget.scale > 0
+        assert isinstance(widget.scale, dict) and widget.scale
         assert widget.config is not None
 
     def test_ui_components_exist(self, widget):
         """Test that all UI components are created."""
-        assert widget.model_combo is not None
-        assert widget.doc_id_input is not None
-        assert widget.load_button is not None
-        assert widget.clear_button is not None
-        assert widget.refresh_button is not None
-        assert widget.doc_title_label is not None
-        assert widget.doc_metadata_label is not None
-        assert widget.doc_abstract_edit is not None
-        assert widget.assessment_scroll is not None
-        assert widget.status_label is not None
+        ui = widget.ui
+        assert ui.model_combo is not None
+        assert ui.doc_id_input is not None
+        assert ui.load_button is not None
+        assert ui.clear_button is not None
+        assert ui.refresh_button is not None
+        assert ui.document_view is not None
+        assert ui.assessment_scroll is not None
+        assert ui.status_label is not None
 
     def test_doc_id_validator(self, widget):
         """Test that document ID validator has correct limits."""
-        validator = widget.doc_id_input.validator()
+        validator = widget.ui.doc_id_input.validator()
         assert validator is not None
         assert validator.bottom() == DOC_ID_MIN_VALUE
         assert validator.top() == DOC_ID_MAX_VALUE
 
     def test_config_validation_missing_ollama_host(self, qapp):
-        """Test config validation fails with missing Ollama host."""
+        """Test missing Ollama host fails validation but still builds the tab.
+
+        _init_agent() catches the error so the tab degrades to "agent
+        unavailable" instead of failing the whole application.
+        """
         bad_config = Mock()
         bad_config.get_ollama_config.return_value = {}
 
         with patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.get_config', return_value=bad_config):
+            widget = PRISMA2020LabTabWidget()
+        try:
+            assert widget.prisma_agent is None
             with pytest.raises(ValueError, match="Missing required configuration: Ollama host"):
-                PRISMA2020LabTabWidget()
+                widget._validate_config()
+        finally:
+            widget.cleanup()
 
     def test_config_validation_success(self, widget):
         """Test config validation succeeds with valid config."""
@@ -146,19 +183,17 @@ class TestPRISMA2020LabTabWidget:
     def test_clear_all(self, widget):
         """Test clearing all fields."""
         # Set some values
-        widget.doc_id_input.setText("12345")
-        widget.doc_title_label.setText("Test Document")
-        widget.doc_metadata_label.setText("Year: 2023")
-        widget.doc_abstract_edit.setPlainText("Test abstract")
+        widget.ui.doc_id_input.setText("12345")
+        widget.current_document = {'id': 12345, 'title': 'Test Document', 'abstract': 'Test abstract'}
+        widget._display_document()
+        assert widget.ui.document_view.get_current_document_id() == 12345
 
         # Clear all
         widget._clear_all()
 
         # Verify all fields are cleared
-        assert widget.doc_id_input.text() == ""
-        assert widget.doc_title_label.text() == "No document loaded"
-        assert widget.doc_metadata_label.text() == ""
-        assert widget.doc_abstract_edit.toPlainText() == ""
+        assert widget.ui.doc_id_input.text() == ""
+        assert widget.ui.document_view.get_current_document_id() is None
         assert widget.current_document is None
         assert widget.current_assessment is None
 
@@ -173,78 +208,80 @@ class TestPRISMA2020LabTabWidget:
         test_layout.addWidget(QLabel("Test 2"))
 
         # Clear the layout
-        widget._clear_layout(test_layout)
+        clear_layout(test_layout)
 
         # Verify layout is empty
         assert test_layout.count() == 0
 
-    def test_score_color_thresholds(self, widget):
+    def test_score_color_thresholds(self):
         """Test score color mapping."""
         from bmlibrarian.gui.qt.plugins.prisma2020_lab.constants import SCORE_COLORS
 
         # Fully reported (≥1.9)
-        assert widget._get_score_color(2.0) == SCORE_COLORS[2.0]
-        assert widget._get_score_color(1.9) == SCORE_COLORS[2.0]
+        assert get_score_color(2.0) == SCORE_COLORS[2.0]
+        assert get_score_color(1.9) == SCORE_COLORS[2.0]
 
         # Partially reported (≥0.9)
-        assert widget._get_score_color(1.0) == SCORE_COLORS[1.0]
-        assert widget._get_score_color(0.9) == SCORE_COLORS[1.0]
+        assert get_score_color(1.0) == SCORE_COLORS[1.0]
+        assert get_score_color(0.9) == SCORE_COLORS[1.0]
 
         # Not reported (<0.9)
-        assert widget._get_score_color(0.0) == SCORE_COLORS[0.0]
-        assert widget._get_score_color(0.5) == SCORE_COLORS[0.0]
+        assert get_score_color(0.0) == SCORE_COLORS[0.0]
+        assert get_score_color(0.5) == SCORE_COLORS[0.0]
 
-    def test_score_text_caching(self, widget):
-        """Test score text display caching."""
+    def test_score_text_caching(self):
+        """Test score text display caching (lru_cache on get_score_text)."""
         # Clear cache first
-        widget._score_display_cache.clear()
+        get_score_text.cache_clear()
 
         # First call should cache
-        text1 = widget._get_score_text(2.0)
-        assert 2.0 in widget._score_display_cache
+        text1 = get_score_text(2.0)
+        assert get_score_text.cache_info().currsize == 1
 
         # Second call should use cache
-        text2 = widget._get_score_text(2.0)
+        text2 = get_score_text(2.0)
+        assert get_score_text.cache_info().hits == 1
         assert text1 == text2
         assert text1 == "✓ Fully Reported (2.0)"
 
-    def test_compliance_color_thresholds(self, widget):
+    def test_compliance_color_thresholds(self):
         """Test compliance color mapping."""
         from bmlibrarian.gui.qt.plugins.prisma2020_lab.constants import COMPLIANCE_COLORS
 
         # Excellent (≥90%)
-        assert widget._get_compliance_color(95.0) == COMPLIANCE_COLORS['excellent']
-        assert widget._get_compliance_color(90.0) == COMPLIANCE_COLORS['excellent']
+        assert get_compliance_color(95.0) == COMPLIANCE_COLORS['excellent']
+        assert get_compliance_color(90.0) == COMPLIANCE_COLORS['excellent']
 
         # Good (75-89%)
-        assert widget._get_compliance_color(80.0) == COMPLIANCE_COLORS['good']
-        assert widget._get_compliance_color(75.0) == COMPLIANCE_COLORS['good']
+        assert get_compliance_color(80.0) == COMPLIANCE_COLORS['good']
+        assert get_compliance_color(75.0) == COMPLIANCE_COLORS['good']
 
         # Adequate (60-74%)
-        assert widget._get_compliance_color(65.0) == COMPLIANCE_COLORS['adequate']
-        assert widget._get_compliance_color(60.0) == COMPLIANCE_COLORS['adequate']
+        assert get_compliance_color(65.0) == COMPLIANCE_COLORS['adequate']
+        assert get_compliance_color(60.0) == COMPLIANCE_COLORS['adequate']
 
         # Poor (40-59%)
-        assert widget._get_compliance_color(50.0) == COMPLIANCE_COLORS['poor']
-        assert widget._get_compliance_color(40.0) == COMPLIANCE_COLORS['poor']
+        assert get_compliance_color(50.0) == COMPLIANCE_COLORS['poor']
+        assert get_compliance_color(40.0) == COMPLIANCE_COLORS['poor']
 
         # Very poor (<40%)
-        assert widget._get_compliance_color(30.0) == COMPLIANCE_COLORS['very_poor']
+        assert get_compliance_color(30.0) == COMPLIANCE_COLORS['very_poor']
 
-    @patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.fetch_documents_by_ids')
+    @patch(GET_DOCUMENT_DETAILS)
     def test_load_document_not_found(self, mock_fetch, widget):
         """Test loading non-existent document."""
-        mock_fetch.return_value = []
+        mock_fetch.return_value = None
 
-        widget.doc_id_input.setText("99999")
+        widget.ui.doc_id_input.setText("99999")
+        widget._load_document()
 
-        with patch.object(widget, 'QMessageBox') as mock_msgbox:
-            widget._load_document()
-
+        mock_fetch.assert_called_once_with(99999)
         assert widget.current_document is None
+        assert widget.ui.load_button.isEnabled()
 
-    @patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.fetch_documents_by_ids')
-    def test_load_document_success(self, mock_fetch, widget):
+    @patch(ASSESSMENT_WORKER)
+    @patch(GET_DOCUMENT_DETAILS)
+    def test_load_document_success(self, mock_fetch, mock_worker_class, widget):
         """Test successful document loading."""
         test_doc = {
             'id': 12345,
@@ -254,18 +291,22 @@ class TestPRISMA2020LabTabWidget:
             'doi': '10.1234/test',
             'abstract': 'This is a test abstract for a systematic review.'
         }
-        mock_fetch.return_value = [test_doc]
+        mock_fetch.return_value = test_doc
 
-        widget.doc_id_input.setText("12345")
+        widget.ui.doc_id_input.setText("12345")
 
         # Mock the agent
         widget.prisma_agent = Mock()
-        widget.prisma_agent.assess_prisma_compliance = Mock()
 
         widget._load_document()
 
         assert widget.current_document == test_doc
-        assert widget.doc_title_label.text() == test_doc['title']
+        assert widget.ui.document_view.get_current_document_id() == 12345
+        # Assessment is started on the background worker
+        mock_worker_class.assert_called_once_with(
+            widget.prisma_agent, test_doc, use_semantic_search=True
+        )
+        mock_worker_class.return_value.start.assert_called_once()
 
     def test_display_document(self, widget):
         """Test document display."""
@@ -281,11 +322,14 @@ class TestPRISMA2020LabTabWidget:
         widget.current_document = test_doc
         widget._display_document()
 
-        assert widget.doc_title_label.text() == 'Test Document'
-        assert 'Year: 2023' in widget.doc_metadata_label.text()
-        assert 'PMID: 12345678' in widget.doc_metadata_label.text()
-        assert 'DOI: 10.1234/test' in widget.doc_metadata_label.text()
-        assert widget.doc_abstract_edit.toPlainText() == 'Test abstract'
+        # Shown in the shared DocumentViewWidget's metadata tab
+        view = widget.ui.document_view
+        assert view.get_current_document_id() == 12345
+        metadata = view.metadata_tab
+        assert metadata.title_label.text() == 'Test Document'
+        assert '(2023)' in metadata.journal_label.text()
+        assert 'PMID: 12345678' in metadata.ids_label.text()
+        assert 'DOI: 10.1234/test' in metadata.ids_label.text()
 
     def test_worker_cleanup_on_new_assessment(self, widget):
         """Test that previous worker is terminated before starting new one."""
@@ -299,9 +343,9 @@ class TestPRISMA2020LabTabWidget:
         widget.current_document = test_doc
         widget.prisma_agent = Mock()
 
-        with patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.fetch_documents_by_ids', return_value=[test_doc]):
-            with patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.PRISMA2020AssessmentWorker'):
-                widget.doc_id_input.setText("12345")
+        with patch(GET_DOCUMENT_DETAILS, return_value=test_doc):
+            with patch(ASSESSMENT_WORKER):
+                widget.ui.doc_id_input.setText("12345")
                 widget._load_document()
 
         # Verify old worker was terminated
@@ -315,16 +359,12 @@ class TestPRISMA2020LabTabWidget:
         mock_worker.isRunning.return_value = True
         widget.worker = mock_worker
 
-        # Setup mock orchestrator
-        mock_orchestrator = Mock()
-        widget.orchestrator = mock_orchestrator
-
         widget.cleanup()
 
-        # Verify cleanup
+        # Verify cleanup (AgentOrchestrator has no shutdown(); only the
+        # worker thread needs stopping)
         mock_worker.terminate.assert_called_once()
         mock_worker.wait.assert_called_once()
-        mock_orchestrator.shutdown.assert_called_once()
 
 
 class TestPRISMA2020AssessmentWorker:
@@ -349,14 +389,17 @@ class TestPRISMA2020AssessmentWorker:
         worker.result_ready.connect(result_ready_mock)
         worker.error_occurred.connect(error_occurred_mock)
 
-        # Run worker
+        # Run worker (default: enhanced assessment with semantic search)
         worker.run()
 
         # Verify assessment was called with correct parameters
-        mock_prisma_agent.assess_prisma_compliance.assert_called_once()
-        call_args = mock_prisma_agent.assess_prisma_compliance.call_args
+        assess = mock_prisma_agent.assess_prisma_compliance_with_semantic_search
+        assess.assert_called_once()
+        call_args = assess.call_args
         assert call_args[1]['document'] == test_doc
         assert call_args[1]['min_confidence'] == MIN_CONFIDENCE_LAB_MODE
+        result_ready_mock.assert_called_once_with(assess.return_value)
+        error_occurred_mock.assert_not_called()
 
     def test_worker_assessment_error(self, qapp):
         """Test assessment error handling."""
@@ -404,9 +447,10 @@ class TestPRISMA2020AssessmentWorker:
 class TestPRISMA2020LabPluginIntegration:
     """Integration tests for PRISMA 2020 Lab plugin."""
 
-    @patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.fetch_documents_by_ids')
+    @patch(ASSESSMENT_WORKER)
+    @patch(GET_DOCUMENT_DETAILS)
     @patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.PRISMA2020Agent')
-    def test_full_assessment_workflow(self, mock_agent_class, mock_fetch, widget, mock_prisma_agent):
+    def test_full_assessment_workflow(self, mock_agent_class, mock_fetch, mock_worker_class, widget, mock_prisma_agent):
         """Test complete assessment workflow from document load to display."""
         # Setup
         test_doc = {
@@ -415,11 +459,11 @@ class TestPRISMA2020LabPluginIntegration:
             'year': 2023,
             'abstract': 'Test abstract'
         }
-        mock_fetch.return_value = [test_doc]
+        mock_fetch.return_value = test_doc
         widget.prisma_agent = mock_prisma_agent
 
         # Load document
-        widget.doc_id_input.setText("12345")
+        widget.ui.doc_id_input.setText("12345")
         widget._load_document()
 
         # Verify document loaded
@@ -443,19 +487,19 @@ class TestPRISMA2020LabPluginIntegration:
         mock_prisma_agent.get_available_models.assert_called_once()
 
         # Verify combo box populated
-        assert widget.model_combo.count() > 0
+        assert widget.ui.model_combo.count() > 0
 
     def test_invalid_document_id_input(self, widget):
         """Test handling of invalid document ID input."""
         # Test empty input
-        widget.doc_id_input.setText("")
+        widget.ui.doc_id_input.setText("")
 
         with patch('bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.QMessageBox') as mock_msgbox:
             widget._load_document()
             # Should show warning (but we can't easily verify QMessageBox calls)
 
         # Test non-numeric input (validator should prevent this, but test anyway)
-        widget.doc_id_input.setText("abc")
+        widget.ui.doc_id_input.setText("abc")
         # Validator should reject non-numeric input
 
     def test_constants_usage(self, widget):

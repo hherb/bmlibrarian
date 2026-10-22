@@ -209,8 +209,9 @@ class TestPaperWeightResult:
         assert result['study_type'] == 'rct'
         assert result['sample_size'] == 450
 
-        weights = json.loads(result['dimension_weights'])
-        assert weights['study_design'] == 0.25
+        # to_dict() returns the weights as a dict (JSON-serialisable), not a JSON string
+        assert result['dimension_weights']['study_design'] == 0.25
+        json.dumps(result)
 
     def test_get_all_details(self, sample_result):
         """Test collecting all details from all dimensions."""

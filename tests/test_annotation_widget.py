@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt
 
 # Import the widget to test
 from bmlibrarian.gui.qt.plugins.fact_checker.annotation_widget import AnnotationWidget
+from bmlibrarian.gui.qt.resources.styles import get_font_scale
 
 
 class TestAnnotationWidget(unittest.TestCase):
@@ -167,23 +168,25 @@ class TestAnnotationWidget(unittest.TestCase):
         layout = self.widget.layout()
         self.assertIsNotNone(layout)
 
-        # Check layout margins
+        # Margins and spacing are DPI-scaled (golden rule 10)
+        s = get_font_scale()
         margins = layout.contentsMargins()
-        self.assertEqual(margins.left(), 15)
-        self.assertEqual(margins.top(), 15)
-        self.assertEqual(margins.right(), 15)
-        self.assertEqual(margins.bottom(), 15)
-
-        # Check spacing
-        self.assertEqual(layout.spacing(), 10)
+        self.assertEqual(margins.left(), s['spacing_xlarge'])
+        self.assertEqual(margins.top(), s['spacing_xlarge'])
+        self.assertEqual(margins.right(), s['spacing_xlarge'])
+        self.assertEqual(margins.bottom(), s['spacing_xlarge'])
+        self.assertEqual(layout.spacing(), s['spacing_medium'])
 
     def test_explanation_field_height_constraints(self):
         """Test explanation field height constraints."""
         min_height = self.widget.explanation_field.minimumHeight()
         max_height = self.widget.explanation_field.maximumHeight()
 
-        self.assertEqual(min_height, 80)
-        self.assertEqual(max_height, 120)
+        # Heights are derived from the DPI-scaled control height
+        control_height = get_font_scale()['control_height_medium']
+        self.assertEqual(min_height, int(control_height * 2.2))
+        self.assertEqual(max_height, int(control_height * 3.3))
+        self.assertLess(min_height, max_height)
 
 
 class TestAnnotationWidgetInteraction(unittest.TestCase):
@@ -232,7 +235,9 @@ class TestAnnotationWidgetInteraction(unittest.TestCase):
         """Test typing in explanation field."""
         field = self.widget.explanation_field
 
-        # Set focus
+        # Set focus (the window must be active first, also on offscreen)
+        self.widget.activateWindow()
+        self.assertTrue(QTest.qWaitForWindowActive(self.widget))
         field.setFocus()
         self.assertTrue(field.hasFocus())
 

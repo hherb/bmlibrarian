@@ -50,6 +50,28 @@ from bmlibrarian.agents.systematic_review import (
 # Fixtures
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def _no_results_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep QualityAssessor off the database-backed results cache.
+
+    Otherwise cached assessments in whatever database .env points at leak
+    into the assertions (and stores are attempted with Mock results).
+    """
+    config = get_systematic_review_config()
+    config.use_results_cache = False
+    monkeypatch.setattr(
+        "bmlibrarian.agents.systematic_review.quality.get_systematic_review_config",
+        lambda: config,
+    )
+
+
+def _suitability(is_suitable: bool) -> Mock:
+    """Mock a PICO/PRISMA check_suitability() result."""
+    result = Mock()
+    result.to_dict.return_value = {"is_suitable": is_suitable, "rationale": "test"}
+    return result
+
+
 @pytest.fixture
 def sample_paper() -> PaperData:
     """Create sample PaperData for testing."""
@@ -277,47 +299,13 @@ class TestQualityAssessor:
         assert assessor._pico_agent is None  # Lazy loading
         assert assessor._prisma_agent is None  # Lazy loading
 
-    def test_should_run_pico_for_rct(self):
-        """Test that PICO runs for RCTs."""
-        assessor = QualityAssessor()
-
-        assert assessor._should_run_pico("randomized controlled trial") is True
-        assert assessor._should_run_pico("rct") is True
-        assert assessor._should_run_pico("clinical trial") is True
-        assert assessor._should_run_pico("cohort study") is True
-        assert assessor._should_run_pico("case-control study") is True
-
-    def test_should_not_run_pico_for_review(self):
-        """Test that PICO doesn't run for reviews."""
-        assessor = QualityAssessor()
-
-        assert assessor._should_run_pico("systematic review") is False
-        assert assessor._should_run_pico("meta-analysis") is False
-        assert assessor._should_run_pico("narrative review") is False
-        assert assessor._should_run_pico("case report") is False
-
-    def test_should_run_prisma_for_systematic_review(self):
-        """Test that PRISMA runs for systematic reviews."""
-        assessor = QualityAssessor()
-
-        assert assessor._should_run_prisma("systematic review") is True
-        assert assessor._should_run_prisma("meta-analysis") is True
-        assert assessor._should_run_prisma("systematic review and meta-analysis") is True
-
-    def test_should_not_run_prisma_for_rct(self):
-        """Test that PRISMA doesn't run for RCTs."""
-        assessor = QualityAssessor()
-
-        assert assessor._should_run_prisma("randomized controlled trial") is False
-        assert assessor._should_run_prisma("rct") is False
-        assert assessor._should_run_prisma("cohort study") is False
-        assert assessor._should_run_prisma("case report") is False
-
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_study_agent')
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_pico_agent')
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_prisma_agent')
     def test_assess_single_rct(
         self,
+        mock_get_prisma,
         mock_get_pico,
         mock_get_weight,
         mock_get_study,
@@ -343,8 +331,13 @@ class TestQualityAssessor:
         mock_pico_agent = Mock()
         mock_pico_result = Mock()
         mock_pico_result.to_dict.return_value = mock_pico_extraction
-        mock_pico_agent.extract_pico.return_value = mock_pico_result
+        mock_pico_agent.check_suitability.return_value = _suitability(True)
+        mock_pico_agent.extract_pico_from_document.return_value = mock_pico_result
         mock_get_pico.return_value = mock_pico_agent
+
+        mock_prisma_agent = Mock()
+        mock_prisma_agent.check_suitability.return_value = _suitability(False)
+        mock_get_prisma.return_value = mock_prisma_agent
 
         # Run assessment
         assessor = QualityAssessor()
@@ -357,13 +350,16 @@ class TestQualityAssessor:
         assert assessed.paper_weight == mock_paper_weight
         assert assessed.pico_components == mock_pico_extraction  # PICO ran for RCT
         assert assessed.prisma_assessment is None  # PRISMA didn't run for RCT
+        mock_prisma_agent.assess_prisma_compliance.assert_not_called()
 
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_study_agent')
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_pico_agent')
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_prisma_agent')
     def test_assess_single_systematic_review(
         self,
         mock_get_prisma,
+        mock_get_pico,
         mock_get_weight,
         mock_get_study,
         scored_systematic_review,
@@ -393,8 +389,13 @@ class TestQualityAssessor:
         mock_prisma_agent = Mock()
         mock_prisma_result = Mock()
         mock_prisma_result.to_dict.return_value = mock_prisma_assessment
-        mock_prisma_agent.assess_document.return_value = mock_prisma_result
+        mock_prisma_agent.check_suitability.return_value = _suitability(True)
+        mock_prisma_agent.assess_prisma_compliance.return_value = mock_prisma_result
         mock_get_prisma.return_value = mock_prisma_agent
+
+        mock_pico_agent = Mock()
+        mock_pico_agent.check_suitability.return_value = _suitability(False)
+        mock_get_pico.return_value = mock_pico_agent
 
         # Run assessment
         assessor = QualityAssessor()
@@ -406,6 +407,7 @@ class TestQualityAssessor:
         assert assessed.study_assessment == sr_assessment
         assert assessed.paper_weight == mock_paper_weight
         assert assessed.pico_components is None  # PICO didn't run for systematic review
+        mock_pico_agent.extract_pico_from_document.assert_not_called()
         assert assessed.prisma_assessment == mock_prisma_assessment  # PRISMA ran
 
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._assess_single')
@@ -581,7 +583,7 @@ class TestQualityAssessor:
         """Test PICO extraction error handling."""
         # Mock agent to raise error
         mock_pico_agent = Mock()
-        mock_pico_agent.extract_pico.side_effect = Exception("Extraction error")
+        mock_pico_agent.extract_pico_from_document.side_effect = Exception("Extraction error")
         mock_get_pico.return_value = mock_pico_agent
 
         assessor = QualityAssessor()
@@ -676,7 +678,11 @@ class TestQualityAssessmentEndToEnd:
         mock_pico_agent = Mock()
         mock_pico_result = Mock()
         mock_pico_result.to_dict.return_value = mock_pico_extraction
-        mock_pico_agent.extract_pico.return_value = mock_pico_result
+        # PICO suits the RCT only, PRISMA the systematic review (id 54321) only
+        mock_pico_agent.check_suitability.side_effect = (
+            lambda document: _suitability(document["id"] != 54321)
+        )
+        mock_pico_agent.extract_pico_from_document.return_value = mock_pico_result
         mock_get_pico.return_value = mock_pico_agent
 
         # For systematic review, modify study assessment
@@ -686,7 +692,10 @@ class TestQualityAssessmentEndToEnd:
         mock_prisma_agent = Mock()
         mock_prisma_result = Mock()
         mock_prisma_result.to_dict.return_value = mock_prisma_assessment
-        mock_prisma_agent.assess_document.return_value = mock_prisma_result
+        mock_prisma_agent.check_suitability.side_effect = (
+            lambda document: _suitability(document["id"] == 54321)
+        )
+        mock_prisma_agent.assess_prisma_compliance.return_value = mock_prisma_result
         mock_get_prisma.return_value = mock_prisma_agent
 
         # Modify mock to return different study types

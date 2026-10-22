@@ -1,5 +1,6 @@
 """Unit tests for OpenAthens authentication module."""
 
+import asyncio
 import json
 import pytest
 import stat
@@ -56,8 +57,11 @@ class TestOpenAthensConfig:
 
     def test_url_validation_requires_valid_url(self):
         """Test that invalid URLs are rejected."""
-        with pytest.raises(ValueError, match="Invalid URL format"):
+        # A bare word has no scheme, so the HTTPS check rejects it first
+        with pytest.raises(ValueError, match="must use HTTPS"):
             OpenAthensConfig(institution_url='not-a-url')
+        with pytest.raises(ValueError, match="Invalid URL format"):
+            OpenAthensConfig(institution_url='https://')
 
     def test_url_validation_requires_non_empty(self):
         """Test that empty URLs are rejected."""
@@ -71,8 +75,10 @@ class TestOpenAthensConfig:
         )
         assert len(config.auth_cookie_patterns) > 0
         assert r'openathens.*session' in config.auth_cookie_patterns
-        assert r'_saml_.*' in config.auth_cookie_patterns
-        assert r'shib.*session' in config.auth_cookie_patterns
+        assert r'_saml_idp' in config.auth_cookie_patterns
+        assert r'_shibsession_' in config.auth_cookie_patterns
+        # Generic cookies set before login completes must not count as auth
+        assert r'_saml_.*' not in config.auth_cookie_patterns
 
 
 class TestOpenAthensAuth:
@@ -98,13 +104,21 @@ class TestOpenAthensAuth:
         """Create OpenAthensAuth instance."""
         return OpenAthensAuth(config, session_file=temp_session_file)
 
-    def test_init_creates_session_directory(self, config, tmp_path):
-        """Test that initialization creates session directory."""
+    def test_save_session_creates_session_directory(self, config, tmp_path):
+        """Test that saving a session creates the session directory."""
         session_file = tmp_path / 'sessions' / 'test.json'
         auth = OpenAthensAuth(config, session_file=session_file)
-
-        assert session_file.parent.exists()
         assert auth.session_file == session_file
+
+        auth.session_data = {
+            'cookies': [],
+            'created_at': datetime.now(),
+            'institution_url': config.institution_url,
+            'user_agent': 'Test',
+        }
+        auth._save_session()
+
+        assert session_file.exists()
 
     def test_serialize_deserialize_session_data(self, auth):
         """Test session data serialization/deserialization."""
@@ -373,15 +387,13 @@ class TestOpenAthensAuth:
         assert auth._last_validation_time is None
         assert not temp_session_file.exists()
 
-    @pytest.mark.asyncio
-    async def test_login_interactive_checks_network_first(self, auth):
+    def test_login_interactive_checks_network_first(self, auth):
         """Test that login checks network connectivity first."""
         with patch.object(auth, '_check_network_connectivity', return_value=False):
-            result = await auth.login_interactive()
+            result = asyncio.run(auth.login_interactive())
             assert result is False
 
-    @pytest.mark.asyncio
-    async def test_cleanup_browser_handles_exceptions(self, auth):
+    def test_cleanup_browser_handles_exceptions(self, auth):
         """Test that browser cleanup handles exceptions gracefully."""
         # Create mock browser that raises exception on close
         auth.browser = AsyncMock()
@@ -389,7 +401,7 @@ class TestOpenAthensAuth:
         auth.playwright = AsyncMock()
 
         # Should not raise exception
-        await auth._cleanup_browser()
+        asyncio.run(auth._cleanup_browser())
 
         # Should still attempt to close
         auth.browser.close.assert_called_once()

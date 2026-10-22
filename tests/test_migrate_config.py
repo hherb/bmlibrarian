@@ -105,7 +105,8 @@ class TestValidCategories:
 
         expected = {
             'models', 'ollama', 'agents', 'database', 'search',
-            'query_generation', 'gui', 'openathens', 'pdf', 'general'
+            'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa',
+            'discovery', 'embeddings'
         }
 
         assert VALID_CATEGORIES == expected

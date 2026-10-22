@@ -165,6 +165,16 @@ def run_benchmark(
     return benchmark_result
 
 
+def _fetch_all(db_manager: Any, query: str, params: tuple) -> List[Dict[str, Any]]:
+    """Run a read-only query through the DatabaseManager pool, rows as dicts."""
+    from psycopg.rows import dict_row
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
 def check_papers_in_database(
     db_manager,
     ground_truth: CochraneGroundTruth,
@@ -194,8 +204,13 @@ def check_papers_in_database(
         if paper.pmid:
             norm_pmid = normalize_pmid(paper.pmid)
             if norm_pmid:
-                query = "SELECT id, title FROM document WHERE pmid = %s LIMIT 1"
-                result = db_manager.execute_query(query, (norm_pmid,))
+                # PubMed documents store the PMID in external_id
+                query = (
+                    "SELECT d.id, d.title FROM document d "
+                    "JOIN sources s ON d.source_id = s.id "
+                    "WHERE LOWER(s.name) = 'pubmed' AND d.external_id = %s LIMIT 1"
+                )
+                result = _fetch_all(db_manager, query, (norm_pmid,))
                 if result:
                     found_papers.append({
                         "ground_truth": paper.to_dict(),
@@ -208,8 +223,12 @@ def check_papers_in_database(
         if not found and paper.doi:
             norm_doi = normalize_doi(paper.doi)
             if norm_doi:
-                query = "SELECT id, title FROM document WHERE LOWER(doi) = %s LIMIT 1"
-                result = db_manager.execute_query(query, (norm_doi,))
+                # shortcut: exact-match case variants so the doi index is used
+                # (LOWER(doi) seq-scans the whole table, ~1-2 min on a full
+                # PubMed import); misses DOIs stored in some other mixed case.
+                query = "SELECT id, title FROM document WHERE doi = ANY(%s) LIMIT 1"
+                candidates = list({norm_doi, norm_doi.upper(), paper.doi.strip()})
+                result = _fetch_all(db_manager, query, (candidates,))
                 if result:
                     found_papers.append({
                         "ground_truth": paper.to_dict(),
