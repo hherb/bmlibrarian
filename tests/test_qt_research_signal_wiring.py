@@ -51,3 +51,25 @@ def test_executor_step_signals_not_connected_to_tab(app):
         assert executor.receivers(SIGNAL("status_message(QString)")) == 1
     finally:
         widget.deleteLater()
+
+
+@pytest.mark.skipif(not HAS_QT, reason="Qt not available")
+def test_citation_summary_reaches_citations_tab(app):
+    """The thread's extraction summary replaces the plain count in the Citations tab (#292)."""
+    from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
+    from bmlibrarian.gui.qt.plugins.research.workflow_thread import WorkflowThread
+
+    widget = ResearchTabWidget(agents={'query_agent': MagicMock()})
+    thread = WorkflowThread(executor=MagicMock(), question="q")
+    try:
+        widget.workflow_thread = thread
+        widget._connect_workflow_thread_signals()
+        thread.citations_extracted.emit([])
+        thread.citation_summary.emit("Extracted 0 citations from 1 documents (1 rejected: x ×1)")
+        assert widget.citations_refs.widgets['summary_label'].text() == (
+            "Extracted 0 citations from 1 documents (1 rejected: x ×1)"
+        )
+    finally:
+        widget.workflow_thread = None
+        thread.deleteLater()
+        widget.deleteLater()

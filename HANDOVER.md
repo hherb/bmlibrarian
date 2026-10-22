@@ -15,9 +15,11 @@ off new work. Longer-term structural items live in
   public; `WorkflowThread._extract_citations_progressive` snapshots
   `failed_citations`/`errors` before its per-document loop and stores the
   summary in `citation_summary_text`; the `citation_summary` signal sets the
-  Citations tab's summary label, and the progress line shows it ("✓
-  Extracted 3 citations from 5 documents (2 rejected: …)", or "⚠️ No
-  citations could be extracted: …"). The CLI prints the summary after
+  Citations tab's summary label, and the progress line shows it ("⚠️
+  Extracted 3 citations from 5 documents (2 rejected: …)" — ✓ only when
+  nothing was rejected or failed — or "⚠️ No citations could be extracted:
+  …"). A failure in the thread's own per-document code is counted via the
+  now-public `record_error()`. The CLI prints the summary after
   extraction and lists rejected passages among the "Possible reasons". Also
   fixed: the CLI's citation progress callback took 2 arguments but the agent
   passes 3 (`current, total, title`), so **every CLI citation extraction

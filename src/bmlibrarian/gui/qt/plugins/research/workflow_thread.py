@@ -95,6 +95,7 @@ class WorkflowThread(QThread):
         self.scored_documents: List[Tuple[Dict, Dict]] = []
         self.citations: List[Dict[str, Any]] = []
         self.citation_summary_text: str = ""
+        self.citation_problems: bool = False  # passages rejected or documents failed this run
         self.preliminary_report: str = ""
         self.counterfactual_results: Optional[Dict[str, Any]] = None
         self.final_report: str = ""
@@ -264,7 +265,9 @@ class WorkflowThread(QThread):
                 self._emit_completion_no_citations()
                 return
 
-            self.status_message.emit(f"✓ {self.citation_summary_text}")
+            self.status_message.emit(
+                f"{'⚠️' if self.citation_problems else '✓'} {self.citation_summary_text}"
+            )
 
             # ==================================================================
             # Step 5: Generate Preliminary Report
@@ -564,8 +567,13 @@ class WorkflowThread(QThread):
                     self.citation_extracted.emit(citation_dict, citation_count, total_docs)
 
             except Exception as e:
-                self.logger.error(f"Error extracting citation from doc {doc.get('id')}: {e}")
+                self.logger.exception(f"Error extracting citation from doc {doc.get('id')}")
+                agent.record_error(doc.get('id'), f"unexpected error: {e}")
 
+        stats = agent.get_validation_stats()
+        self.citation_problems = (
+            len(stats['failed_citations']) > rejections_before or stats['errors'] > errors_before
+        )
         self.citation_summary_text = agent.extraction_summary(
             len(citations), processed, rejections_before, errors_before,
             widened=sum(c.widened_from is not None for c in citations),

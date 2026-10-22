@@ -435,8 +435,7 @@ class WorkflowHandlersMixin:
             self.citations_refs.widgets['summary_label'].setText(
                 f"{len(citations)} citations extracted from high-scoring documents"
             )
-
-        self.status_message.emit(f"Extracted {len(citations)} citations")
+        # The status line comes from the thread, with the rejection summary.
 
     @Slot(str)
     def _on_citation_summary(self: 'ResearchTabWidget', summary: str) -> None:

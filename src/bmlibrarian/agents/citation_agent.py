@@ -372,9 +372,12 @@ class CitationFinderAgent(BaseAgent):
             notes.append(f"{errors} failed with an error, see log")
         return f"{summary} ({'; '.join(notes)})" if notes else summary
 
-    def _record_error(self, document_id: Any, error: str) -> None:
+    def record_error(self, document_id: Any, error: str) -> None:
         """
         Count a document whose extraction failed (not a judgement about it).
+
+        Public so callers that extract one document at a time (the Qt
+        research tab) can count their own failures in ``extraction_summary``.
 
         Args:
             document_id: The document's ID.
@@ -479,7 +482,7 @@ class CitationFinderAgent(BaseAgent):
         try:
             self._ensure_connection(doc_id)
         except ConnectionError as e:
-            self._record_error(doc_id, str(e))
+            self.record_error(doc_id, str(e))
             logger.error(f"Cannot connect to the LLM server - citation extraction "
                          f"unavailable for document {doc_id}: {e}")
             return None
@@ -556,11 +559,11 @@ Respond only with valid JSON."""
                         base_delay=self.transient_retry_base_delay,
                     )
                 except json.JSONDecodeError as e:
-                    self._record_error(doc_id, f"unparseable LLM output: {e}")
+                    self.record_error(doc_id, f"unparseable LLM output: {e}")
                     logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
                     return None
                 except (ConnectionError, ValueError) as e:
-                    self._record_error(doc_id, str(e))
+                    self.record_error(doc_id, str(e))
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 
@@ -664,7 +667,7 @@ Respond only with valid JSON."""
                 return citation
 
             except Exception as e:
-                self._record_error(doc_id, f"unexpected error: {e}")
+                self.record_error(doc_id, f"unexpected error: {e}")
                 logger.exception(
                     f"Unexpected error extracting citation from document {doc_id} "
                     f"(attempt {attempt + 1})"

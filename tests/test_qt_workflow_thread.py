@@ -509,6 +509,86 @@ class TestWorkflowThread(unittest.TestCase):
         )
         thread.deleteLater()
 
+    def _run_with_real_citation_agent(self, passages: list) -> tuple:
+        """
+        Run the whole workflow with a real CitationFinderAgent, one LLM passage per document.
+
+        Returns:
+            ``(thread, status_spy, summary_spy)``.
+        """
+        from bmlibrarian.agents.citation_agent import CitationFinderAgent
+
+        abstract = "Aspirin reduces the risk of heart attack. It may increase bleeding."
+        agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=0)
+        self.mock_executor.citation_agent = agent
+        self.mock_executor.citation_extraction_threshold = 0.7
+        self.mock_executor.generate_query.return_value = "aspirin"
+        self.mock_executor.search_documents.return_value = [
+            {'id': i, 'title': 't', 'abstract': abstract} for i in range(len(passages))
+        ]
+        self.mock_executor.scoring_agent.evaluate_document.return_value = {'score': 4.0}
+        self.mock_executor.generate_preliminary_report.return_value = "# Report"
+        responses = [
+            {'has_relevant_content': True, 'relevant_passage': passage,
+             'summary': 'Aspirin helps.', 'relevance_score': 0.9}
+            for passage in passages
+        ]
+        thread = WorkflowThread(executor=self.mock_executor, question="q", enable_counterfactual=False)
+        status_spy = QSignalSpy(thread.status_message)
+        summary_spy = QSignalSpy(thread.citation_summary)
+        with patch.object(agent, 'test_connection', return_value=True), \
+                patch.object(agent, '_generate_and_parse_json', side_effect=responses):
+            thread.run()
+        return thread, status_spy, summary_spy
+
+    def test_run_reports_rejections_when_no_citations(self) -> None:
+        """With every passage rejected, the status line and Citations tab say why (#292)."""
+        from bmlibrarian.agents.citation_agent import REJECT_PASSAGE_NOT_FOUND
+
+        thread, status_spy, summary_spy = self._run_with_real_citation_agent(
+            ["Statins lower cholesterol."]
+        )
+
+        summary = f"Extracted 0 citations from 1 documents (1 rejected: {REJECT_PASSAGE_NOT_FOUND} ×1)"
+        self.assertEqual([summary_spy.at(i)[0] for i in range(summary_spy.count())], [summary])
+        statuses = [status_spy.at(i)[0] for i in range(status_spy.count())]
+        self.assertIn(f"⚠️ No citations could be extracted: {summary}", statuses)
+        thread.deleteLater()
+
+    def test_run_warns_when_some_passages_rejected(self) -> None:
+        """A run with citations but also rejections gets a warning, not a tick (#292)."""
+        from bmlibrarian.agents.citation_agent import REJECT_PASSAGE_NOT_FOUND
+
+        thread, status_spy, _ = self._run_with_real_citation_agent(
+            ["Aspirin reduces the risk of heart attack.", "Statins lower cholesterol."]
+        )
+
+        statuses = [status_spy.at(i)[0] for i in range(status_spy.count())]
+        self.assertIn(
+            f"⚠️ Extracted 1 citations from 2 documents (1 rejected: {REJECT_PASSAGE_NOT_FOUND} ×1)",
+            statuses
+        )
+        thread.deleteLater()
+
+    def test_citation_summary_counts_failures_in_the_thread(self) -> None:
+        """A document that fails in the thread's own code counts as an error in the summary."""
+        from bmlibrarian.agents.citation_agent import CitationFinderAgent
+
+        agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=0)
+        self.mock_executor.citation_agent = agent
+        broken = Mock(spec=['widened_from'])  # no .passage: building the display dict fails
+        broken.widened_from = None
+        thread = WorkflowThread(executor=self.mock_executor, question="q")
+        with patch.object(agent, 'extract_citation_from_document', return_value=broken):
+            thread._extract_citations_progressive(
+                [({'id': 7, 'title': 'a', 'abstract': 'x'}, {'score': 4.0})], score_threshold=3.0
+            )
+
+        self.assertIn("1 failed with an error, see log", thread.citation_summary_text)
+        self.assertTrue(thread.citation_problems)
+        self.assertEqual(agent.get_validation_stats()['errored_documents'][0]['document_id'], 7)
+        thread.deleteLater()
+
     # ========================================================================
     # Counterfactual Analysis Tests
     # ========================================================================
