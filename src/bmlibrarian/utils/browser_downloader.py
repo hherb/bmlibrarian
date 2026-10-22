@@ -1845,7 +1845,8 @@ def download_pdf_with_browser(
             cookies=cookies
         )
 
-        if uc_result.get('status') == 'success':
+        # A download that started but did not finish is not a paywall (#327)
+        if uc_result.get('status') == 'success' or uc_result.get('download_unfinished'):
             return uc_result
 
         # If undetected-chromedriver failed but got past Cloudflare,
@@ -1871,8 +1872,11 @@ def download_pdf_with_browser(
 CHROME_DOWNLOAD_DIR_PREFIX = '.chrome-download-'
 # Chrome names an unfinished download '<name>.crdownload'
 CHROME_PARTIAL_DOWNLOAD_GLOB = '*.crdownload'
-# A navigation that has not started a download by then is not going to
+# Assume no download is coming if none has appeared by then
 CHROME_DOWNLOAD_START_SECONDS = 5.0
+# Chrome keeps the .crdownload of an interrupted download; no growth for
+# this long means it has stopped, not that it is slow
+CHROME_DOWNLOAD_STALL_SECONDS = 30.0
 CHROME_DOWNLOAD_POLL_SECONDS = 0.5
 CHROME_COOKIE_PAGE_SETTLE_SECONDS = 1
 CHROME_CLOUDFLARE_MAX_WAIT_SECONDS = 60
@@ -1888,36 +1892,54 @@ def wait_for_chrome_download(
     already_there: frozenset[Path] = frozenset(),
     start_timeout: float = CHROME_DOWNLOAD_START_SECONDS,
     poll_interval: float = CHROME_DOWNLOAD_POLL_SECONDS,
+    stall_timeout: float = CHROME_DOWNLOAD_STALL_SECONDS,
 ) -> bool:
     """Wait until Chrome has finished (or never started) a download.
 
     Polls ``download_dir`` until a new file is there and no new
     ``*.crdownload`` remains. If nothing new appears within ``start_timeout``
     no download was started; a download in progress gets up to
-    ``finish_timeout`` in total.
+    ``finish_timeout`` in total, counted from the start of the wait, and
+    is given up on early once its partial files stop growing for
+    ``stall_timeout``.
 
     Args:
         download_dir: Directory Chrome downloads into for this call only.
-        finish_timeout: Seconds a started download may take to finish.
+        finish_timeout: Total seconds a started download may take to finish.
         already_there: Files in ``download_dir`` before the navigation
             (e.g. a rejected earlier download); they are ignored.
         start_timeout: Seconds to wait for a download to appear at all.
         poll_interval: Seconds between checks.
+        stall_timeout: Seconds without growth after which a download in
+            progress counts as interrupted.
 
     Returns:
-        False if a download was still in progress at ``finish_timeout``,
-        True otherwise (finished, or no download started).
+        False if a download was still in progress at ``finish_timeout`` or
+        had stalled, True otherwise (finished, or no download started).
     """
     # Elapsed time is counted in sleeps, so tests can stub time.sleep
     elapsed = 0.0
+    last_size: Optional[int] = None
+    last_growth = 0.0
     while True:
         new_files = [f for f in download_dir.iterdir() if f not in already_there]
-        partial = any(f.match(CHROME_PARTIAL_DOWNLOAD_GLOB) for f in new_files)
-        if new_files and not partial:
+        partials = [f for f in new_files if f.match(CHROME_PARTIAL_DOWNLOAD_GLOB)]
+        if new_files and not partials:
             return True
-        if partial and elapsed >= finish_timeout:
-            return False
-        if not partial and elapsed >= start_timeout:
+        if partials:
+            try:
+                size: Optional[int] = sum(f.stat().st_size for f in partials)
+            except FileNotFoundError:  # renamed to its final name since iterdir
+                size = None
+            if size != last_size:
+                last_size, last_growth = size, elapsed
+            if elapsed >= finish_timeout:
+                logger.warning(f"Chrome download did not finish within {finish_timeout} s")
+                return False
+            if elapsed - last_growth >= stall_timeout:
+                logger.warning(f"Chrome download stalled: no progress for {stall_timeout} s")
+                return False
+        elif elapsed >= start_timeout:
             return True
         time.sleep(poll_interval)
         elapsed += poll_interval
@@ -2380,6 +2402,8 @@ def download_pdf_with_undetected_chrome(
             # Check for embedded PDF viewer
             iframes = driver.find_elements(By.TAG_NAME, 'iframe')
             for iframe in iframes:
+                if download_unfinished:
+                    break  # Each wait may take the whole timeout; don't stack them
                 src = iframe.get_attribute('src') or ''
                 if '.pdf' in src.lower():
                     logger.info(f"Found PDF in iframe: {src}")
@@ -2402,9 +2426,14 @@ def download_pdf_with_undetected_chrome(
 
         # A started download beats any paywall guess below
         if download_unfinished:
+            logger.warning(f"PDF download from {url} started but did not finish")
             return {
                 'status': 'failed',
-                'error': f'PDF download did not finish within {timeout} s'
+                'download_unfinished': True,
+                'error': (
+                    f'PDF download did not finish (stalled, or still running '
+                    f'after {timeout} s)'
+                )
             }
 
         # If institutional login was needed but not successful

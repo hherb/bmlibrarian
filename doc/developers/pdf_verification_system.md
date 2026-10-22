@@ -251,11 +251,16 @@ downloads to `_<n>`. The undetected-Chrome fallback
 (`browser_downloader.download_pdf_with_undetected_chrome`) downloads into a
 fresh `<year>/.chrome-download-*` directory and promotes only a valid PDF
 from there onto the reserved path (`promote_downloaded_pdf`), then removes
-the directory on every exit path (#325). After each navigation it polls that
-directory (`wait_for_chrome_download`): it waits 5 s for a download to
-start, then up to the call's `timeout` for every `*.crdownload` to finish;
-a download that does not finish fails with "PDF download did not finish
-within N s" (#327). A hard kill (no `finally`) can
+the directory on every exit path (#325). After each PDF navigation it polls
+that directory (`wait_for_chrome_download`): it waits up to 5 s for a
+download to start; a started download gets up to the call's `timeout` in
+total for every new `*.crdownload` to finish, and is given up on once its
+partial files stop growing for 30 s (Chrome keeps the `.crdownload` of an
+interrupted download). Such a download fails with "PDF download did not
+finish (stalled, or still running after N s)" and `download_unfinished`
+set; `download_pdf_with_browser` passes that result on instead of guessing
+at a paywall. After one unfinished download no further PDF iframe is tried,
+so the waits never add up past one `timeout` (#327). A hard kill (no `finally`) can
 leave a `.chrome-download-*` directory behind; it is safe to delete, and
 recursive PDF imports (`PDFMatcher.match_and_import_directory`) skip it.
 
