@@ -10,85 +10,41 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Undetected-Chrome fallback waits for slow downloads** (2026-10-22,
-  closes #327). The fixed `time.sleep(5)` after each PDF navigation is now
-  `wait_for_chrome_download`: it waits up to 5 s for a new file in the
-  per-call download dir; a started download gets up to the call's
-  `timeout` (default 120 s) in total for every new `*.crdownload` to
-  finish, or stops early after 30 s without growth (stalled). Files from an
-  earlier attempt are ignored. An unfinished download fails with
-  `download_unfinished` set (checked before the paywall guesses), and
-  `download_pdf_with_browser` returns that result instead of the OpenAthens
-  hint; no further iframe is tried after one. The function's other
-  sleeps and timeouts are named `CHROME_*` constants. Tests:
-  `TestWaitForChromeDownload` in `tests/test_undetected_chrome_download_dir.py`.
-- **Undetected-Chrome fallback only takes its own download** (2026-10-21,
-  closes #325). `download_pdf_with_undetected_chrome` downloads into a
-  fresh `<year>/.chrome-download-*` dir (`tempfile.mkdtemp`), promotes only
-  a valid PDF from it onto the reserved path (`promote_downloaded_pdf`,
-  `os.replace`) and removes the dir in `finally`. Before, it moved the
-  newest `*.pdf` in the shared year folder, which could be another
-  document's PDF. Tests: `tests/test_undetected_chrome_download_dir.py`
-  (fake `undetected_chromedriver`/selenium). Review follow-ups (PR #326):
-  the newest *valid* PDF wins, a junk-only download fails with "not a valid
-  PDF", a failed move in the iframe branch is reported (was a debug log),
-  cleanup failures are logged, and recursive PDF imports skip leftover
-  `.chrome-download-*` dirs.
-- **Download names are reserved; DocumentQA downloads are linked**
-  (2026-10-21, closes #322, #323). `unused_download_path` now creates an
-  empty placeholder atomically (`O_CREAT | O_EXCL`), so concurrent Find PDF
-  searches for the same document get different files;
-  `download_for_document` removes the placeholder if nothing was written
-  (`discard_empty_reservation`). `qa/document_qa._download_fulltext_if_needed`
-  reads a linked PDF on disk instead of downloading, downloads with
-  `verify_content=True` and deletes anything not verified (`verified is
-  not True`: no one to prompt), then stores `full_text` (PMC XML text, else
-  `get_converter(DEFAULT_CONVERTER)`) and `pdf_filename` (linked even when
-  the PDF has no extractable text). Before, it stored nothing, so QA never
-  got full text from a download. Tests: `tests/qa/test_download_fulltext.py`,
-  `TestUnusedDownloadPath`. Review follow-ups (PR #324):
-  `_download_fulltext_if_needed` returns `FulltextOutcome`
-  (STORED/NO_TEXT/FAILED); NO_TEXT (linked PDF, no extractable text) skips
-  the proxy offer (`fallback_reason="pdf_has_no_text"`). A converter crash
-  still links the PDF. A mismatched PDF is emptied, not unlinked, so its
-  name stays reserved while the next source is tried. A "successful"
-  download that left only the placeholder is a failure (the undetected-Chrome
-  iframe branch now checks `is_pdf_file`). A failed manual-upload copy
-  removes its reserved file.
-- **Find PDF never overwrites an existing file** (2026-10-21, closes #319).
-  `FullTextFinder.download_for_document` downloads to the next free
-  `<stem>_<n>.pdf` when `<year>/<doi>.pdf` is taken
-  (`utils/download_utils.unused_download_path`), so a CrossRef-guessed DOI
-  can no longer overwrite (and REJECT then delete) another document's PDF.
-  `DownloadResult.file_existed_before` was removed (always False now);
-  `discard_abandoned_download` relies on `file_mtime_ns`. Manual upload from
-  the verification prompt (card factory and `PDFManager`) uses the same
-  helper. Accepting a better version of a document's own PDF leaves the old
-  file on disk, unlinked.
-- **Find PDF follow-ups** (2026-10-21, closes #314, #315, #317;
-  owner decisions 2026-10-21). A PDF whose verification *raised* (the
-  CrossRef-DOI re-check or `FullTextFinder`'s own check;
-  `DownloadResult.verification_error`) now goes to the verification prompt
-  (`VerificationPromptData.unchecked`, header "PDF Could Not Be Checked")
-  instead of being attached silently; verification switched off still
-  attaches without a prompt. RETRY/REJECT remember the PDF's source URL per
-  document (`QtDocumentCardFactory._remember_rejected_source`, in memory,
-  per factory); the next search passes them to `FullTextFinder` as
-  `excluded_urls` (DOI fallback URL included; NCBI FTP/HTTPS forms match
-  via `comparable_source_url`). A cancelled search deletes the PDF it
-  downloaded (`discard_abandoned_download`) unless it changed since
-  (`file_mtime_ns`; the `file_existed_before` check was dropped by #319). Open follow-up: doi.org fallback after rejecting
-  every source (#320). Docs: `pdf_verification_guide.md`,
-  `pdf_verification_system.md`, `document_card_factory_system.md`.
-- **Find PDF runs on one shared, verified flow** (2026-10-21, PRs #313,
-  #316, closes #278, #279, #312). Card FETCH and Find, and the Paper Weight
-  Lab's "find full text online", all use the factory's
-  `discover_and_download()` (worker), `finalize_discovery_result()` (GUI
-  thread, verification prompt) and `record_find_pdf_outcome()` (saves
-  `pdf_filename`, and a CrossRef-discovered DOI only when `verified is
-  True`). A PDF matched only by the CrossRef DOI it was fetched with is
-  re-verified against the card's PMID/title. Closing the progress dialog
-  cancels the session.
+- **Citation rejection counts reach the Qt research tab and CLI**
+  (2026-10-22, closes #292). `CitationFinderAgent.extraction_summary()` is
+  public; `WorkflowThread._extract_citations_progressive` snapshots
+  `failed_citations`/`errors` before its per-document loop and stores the
+  summary in `citation_summary_text`; the `citation_summary` signal sets the
+  Citations tab's summary label, and the progress line shows it ("✓
+  Extracted 3 citations from 5 documents (2 rejected: …)", or "⚠️ No
+  citations could be extracted: …"). The CLI prints the summary after
+  extraction and lists rejected passages among the "Possible reasons". Also
+  fixed: the CLI's citation progress callback took 2 arguments but the agent
+  passes 3 (`current, total, title`), so **every CLI citation extraction
+  failed** with "Error in citation extraction" (same bug fixed in
+  `examples/citation_demo.py`). Not done: marking individual widened
+  citations on their cards (`Citation.widened_from`; the summary counts them).
+- **Full test suite green** (2026-10-22, PR #336): the 160 failures + 19
+  errors were stale tests left by refactors, plus two production fixes
+  (`gui/qt/widgets/validators.classify_extraction_error`,
+  `writing/models.DocumentMetadata.from_dict` author splitting).
+- **Find PDF / PDF download hardening** (2026-10-21/22, PRs #313, #316,
+  #318, #321, #324, #326, #328; closes #278, #279, #312, #314, #315, #317,
+  #319, #322, #323, #325, #327). One shared verified flow for card
+  FETCH/Find and the Paper Weight Lab (`discover_and_download()` →
+  `finalize_discovery_result()` → `record_find_pdf_outcome()`); unchecked
+  PDFs (verification raised) go to the prompt; RETRY/REJECT exclude that
+  source URL on the next search (in memory, per factory); a cancelled
+  search deletes its download unless it changed (`file_mtime_ns`). Downloads
+  never overwrite: `unused_download_path` reserves `<stem>_<n>.pdf`
+  atomically (`O_CREAT | O_EXCL`), empty reservations are discarded.
+  DocumentQA links its downloads and stores `full_text` (`FulltextOutcome`).
+  The undetected-Chrome fallback downloads into its own
+  `.chrome-download-*` temp dir, promotes only a valid PDF, and waits for
+  slow downloads (`wait_for_chrome_download`, `download_unfinished`). Docs:
+  `pdf_verification_guide.md`, `pdf_verification_system.md`,
+  `document_card_factory_system.md`. Open: #320 (doi.org fallback after
+  rejecting every source; owner decision).
 - **Fragments are widened to their complete sentence(s)** (2026-10-20,
   PRs #306/#311, merged, closes #304). Owner decision
   (2026-10-19): a verbatim fragment is cited as the abstract's enclosing
@@ -176,11 +132,6 @@ off new work. Longer-term structural items live in
   LLM calls go through `bmlibrarian.llm` only (`tests/test_llm_layer_boundary.py`);
   `db_conninfo.build_conninfo()` builds libpq strings; archive extraction is
   guarded by `utils/path_utils.is_safe_archive_member()`.
-- **Known pre-existing red tests** (mock targets removed by refactors, not
-  regressions): `tests/paperchecker/test_search_coordinator.py::`
-  `TestEmbeddingGeneration`, `tests/test_paper_weight_persistence.py::TestLLMJSONParsing`,
-  `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
-
 ## Next up
 
 The 2026-07-19 review's imminent P1 items are done or deferred to
@@ -190,9 +141,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
-- #292 — show citation rejection counts in the Qt research tab and CLI
-  (and mark widened citations, `Citation.widened_from`); #310 — persist
-  `widened_from` (audit trail, `factcheck.evidence`; needs a migration).
+- #310 — persist `Citation.widened_from` (audit trail,
+  `factcheck.evidence`; needs a migration), then mark widened citations on
+  the Qt citation cards and in the review GUIs.
 - Widening decisions from the PR #306 review: #308 (widen one-word quotes,
   or require a minimum fragment size?), #309 (fragments still lost at text
   end without a full stop, inside broken-off sentences, past 400 chars).
@@ -240,40 +191,12 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ### Verify
 
-- The suite has a **large pre-existing failure baseline**, not "two". Measured
-  2026-10-16 with DB/Ollama/GUI-free markers deselected
-  (`.venv/bin/python -m pytest tests/ -m "not integration and not
-  requires_database and not requires_ollama and not slow"
-  --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
-  after PR #284 **156 failed, 3598 passed, 19 errors**;
-  `perf/citation-fuzzy-match` **152 failed + 19 errors, 3629 passed**
-  (the 4 stale `test_citation_agent.py` tests fixed; 0 regressions). After
-  the PR #288 review fixes (2026-10-17, `pytest tests/ --no-cov`):
-  **160 failed + 19 errors, 3713 passed**; the same 179 nodes fail when run
-  against the branch's previous code, so the 8 extra failures are
-  environment drift, not regressions. An unfiltered run
-  (`pytest tests/ --continue-on-collection-errors`, ~13 min) after the review
-  follow-up: 162 failed + 19 errors, identical node set to the PR's first
-  commit, 3647 passed. Most failures are Qt test files that
-  died at collection before the Flet removal and are stale against the
-  current API (e.g.
-  `test_qt_research_tab.py` targets `_update_citations_tab`, `query_input`;
-  `test_prisma2020_lab_plugin.py`, `test_qt_workflow_thread.py`,
-  `test_ollama_migration.py`). Compare against a `git worktree` of master run
-  with `PYTHONPATH=<worktree>/src` (the editable install otherwise imports
-  your tree).
-  Do NOT eyeball the count — it's meaningless against that baseline. To check
-  for regressions, capture the failing node-ID set (`grep -E '^(FAILED|ERROR)
-  tests/'`), `git stash`, re-run, and `diff` the two sets: the gate is **zero
-  nodes failing in your tree that pass on `master`**. (This is why ROADMAP §2
-  "make the test suite protect you" matters — there is no CI and the baseline
-  is badly broken.) Pre-existing clusters: `prisma2020_lab`, `paperchecker/
-  search_coordinator`, `paper_weight*`, `reporting_agent`,
-  `qt_*`, `ollama_migration`, `openathens_auth`,
-  `europe_pmc_pdf_downloader`.
-- Full-tree runs need `--continue-on-collection-errors` (still ~6 collection
-  errors) and, per the 2026-07-20 fix, avoid the `requires_database`/
-  `integration` hangs by keeping those markers deselected.
+- **The full suite is green** since PR #336: `uv run python -m pytest tests/
+  -p no:cacheprovider --no-cov -q` on master 2026-10-22: **4385 passed, 47
+  skipped, 0 failed** in ~8 min (no `--continue-on-collection-errors` or
+  marker deselection needed). Any failure is now a regression. Save the
+  output to a file in the scratchpad (don't just tail it), and don't edit or
+  `git stash` the tree while it runs.
 - `ruff check .` / `mypy src/` carry pre-existing debt (~1,745 ruff findings);
   the gate is **no new errors**, not a clean baseline. Quick regression check:
   `git stash`, run `ruff check --select F401,F811,F821,F841 <touched files>`,

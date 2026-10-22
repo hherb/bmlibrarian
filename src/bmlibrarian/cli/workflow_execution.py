@@ -209,22 +209,33 @@ class WorkflowExecutionManager:
                 self.ui.show_info_message("This may take several minutes...")
                 
                 # Extract citations with progress indication
-                def progress_callback(current, total):
+                def progress_callback(current: int, total: int, doc_title: str = "") -> None:
+                    """Print extraction progress (the agent also passes the document title)."""
                     if self.config.show_progress:
                         percentage = (current / total) * 100
                         print(f"   Progress: {current}/{total} documents ({percentage:.1f}%)")
                 
-                citations = self.agent_manager.citation_agent.process_scored_documents_for_citations(
+                citation_agent = self.agent_manager.citation_agent
+                stats = citation_agent.get_validation_stats()
+                rejections_before, errors_before = len(stats['failed_citations']), stats['errors']
+                citations = citation_agent.process_scored_documents_for_citations(
                     user_question=question,
                     scored_documents=qualifying_docs,
                     score_threshold=self.config.default_score_threshold,
                     min_relevance=self.config.default_min_relevance,
                     progress_callback=progress_callback
                 )
+                rejected = len(citation_agent.get_validation_stats()['failed_citations']) - rejections_before
+                self.ui.show_info_message(citation_agent.extraction_summary(
+                    len(citations), len(qualifying_docs), rejections_before, errors_before,
+                    widened=sum(c.widened_from is not None for c in citations),
+                ))
                 
                 if not citations:
                     self.ui.show_error_message("No citations extracted.")
                     print("\nPossible reasons:")
+                    if rejected:
+                        print(f"• Passages could not be verified against the abstract ({rejected} rejected)")
                     print("• Score threshold too high")
                     print("• Minimum relevance threshold too high")
                     print("• Documents don't contain relevant passages")

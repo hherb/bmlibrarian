@@ -46,6 +46,7 @@ class WorkflowThread(QThread):
     document_scored = Signal(object, object, int, int)  # (doc, score_result, current, total)
     citation_progress = Signal(int, int)  # (current, total) - for progress bar
     citation_extracted = Signal(object, int, int)  # (citation, current, total) - per citation
+    citation_summary = Signal(str)  # extracted/widened/rejected counts, after citations_extracted
 
     # Completion signals
     workflow_completed = Signal(dict)  # Final results dictionary
@@ -93,6 +94,7 @@ class WorkflowThread(QThread):
         self.documents: List[Dict[str, Any]] = []
         self.scored_documents: List[Tuple[Dict, Dict]] = []
         self.citations: List[Dict[str, Any]] = []
+        self.citation_summary_text: str = ""
         self.preliminary_report: str = ""
         self.counterfactual_results: Optional[Dict[str, Any]] = None
         self.final_report: str = ""
@@ -250,14 +252,19 @@ class WorkflowThread(QThread):
                 score_threshold=self.score_threshold
             )
             self.citations_extracted.emit(self.citations)
+            if self.citation_summary_text:
+                self.citation_summary.emit(self.citation_summary_text)
             self.step_completed.emit(step_name)
 
             if not self.citations:
-                self.status_message.emit("⚠️ No citations could be extracted")
+                self.status_message.emit(
+                    f"⚠️ No citations could be extracted: {self.citation_summary_text}"
+                    if self.citation_summary_text else "⚠️ No citations could be extracted"
+                )
                 self._emit_completion_no_citations()
                 return
 
-            self.status_message.emit(f"✓ Extracted {len(self.citations)} citations")
+            self.status_message.emit(f"✓ {self.citation_summary_text}")
 
             # ==================================================================
             # Step 5: Generate Preliminary Report
@@ -503,6 +510,11 @@ class WorkflowThread(QThread):
         total_docs = len(high_scoring)
         citations: List[Citation] = []
         citation_count = 0
+        processed = 0
+        agent = self.executor.citation_agent
+        stats = agent.get_validation_stats()
+        rejections_before = len(stats['failed_citations'])
+        errors_before = stats['errors']
 
         self.logger.info(f"Extracting citations from {total_docs} high-scoring documents")
 
@@ -513,6 +525,7 @@ class WorkflowThread(QThread):
 
             # Emit progress for progress bar
             self.citation_progress.emit(i, total_docs)
+            processed = i
 
             try:
                 # Extract citation from this document
@@ -553,7 +566,11 @@ class WorkflowThread(QThread):
             except Exception as e:
                 self.logger.error(f"Error extracting citation from doc {doc.get('id')}: {e}")
 
-        self.logger.info(f"Extracted {len(citations)} citations from {total_docs} documents")
+        self.citation_summary_text = agent.extraction_summary(
+            len(citations), processed, rejections_before, errors_before,
+            widened=sum(c.widened_from is not None for c in citations),
+        )
+        self.logger.info(self.citation_summary_text)
         return citations
 
     def _emit_completion_no_documents(self) -> None:

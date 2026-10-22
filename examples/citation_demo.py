@@ -137,7 +137,7 @@ def demo_direct_citation_extraction():
             scored_documents=scored_documents,
             score_threshold=3.0,  # Only documents scoring > 3.0
             min_relevance=0.7,
-            progress_callback=lambda current, total: print(f"   📊 Progress: {current}/{total}")
+            progress_callback=lambda current, total, title="": print(f"   📊 Progress: {current}/{total}")
         )
         
         print(f"\n✅ Extracted {len(citations)} citations")

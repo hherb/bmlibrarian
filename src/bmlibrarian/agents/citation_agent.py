@@ -328,7 +328,7 @@ class CitationFinderAgent(BaseAgent):
             widened=widened,
         )
 
-    def _extraction_summary(
+    def extraction_summary(
         self,
         extracted: int,
         documents: int,
@@ -338,6 +338,10 @@ class CitationFinderAgent(BaseAgent):
     ) -> str:
         """
         Describe a batch extraction, including rejected passages and errors.
+
+        Callers that extract one document at a time (the Qt research tab)
+        take ``rejections_before`` and ``errors_before`` from
+        ``get_validation_stats()`` before the batch starts.
 
         Args:
             extracted: Citations extracted in this batch.
@@ -722,7 +726,7 @@ Respond only with valid JSON."""
                 citations.append(citation)
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
 
-        summary = self._extraction_summary(
+        summary = self.extraction_summary(
             len(citations), len(qualifying_docs), rejections_before, errors_before,
             widened=sum(c.widened_from is not None for c in citations),
         )
@@ -1125,7 +1129,7 @@ Respond only with valid JSON."""
         total_extracted = len(results)
         self._call_callback(
             "citation_extraction_completed",
-            self._extraction_summary(
+            self.extraction_summary(
                 total_extracted, len(qualifying_docs), failed_before, errors_before,
                 widened=sum(c.widened_from is not None for c, _ in results),
             )

@@ -66,6 +66,10 @@ class TestWorkflowThread(unittest.TestCase):
         self.mock_executor.query_agent = Mock()
         self.mock_executor.scoring_agent = Mock()
         self.mock_executor.citation_agent = Mock()
+        self.mock_executor.citation_agent.get_validation_stats.return_value = {
+            'failed_citations': [], 'errors': 0
+        }
+        self.mock_executor.citation_agent.extraction_summary.return_value = "Extracted citations"
         self.mock_executor.reporting_agent = Mock()
         self.mock_executor.counterfactual_agent = Mock()
         self.mock_executor.editor_agent = Mock()
@@ -470,6 +474,39 @@ class TestWorkflowThread(unittest.TestCase):
         results = completed_spy.at(0)[0]
         self.assertEqual(results['status'], 'no_citations')
 
+        thread.deleteLater()
+
+    def test_citation_summary_reports_rejections(self) -> None:
+        """The thread reports rejected passages from this run only (#292)."""
+        from bmlibrarian.agents.citation_agent import (
+            REJECT_PASSAGE_EMPTY, REJECT_PASSAGE_NOT_FOUND, CitationFinderAgent,
+        )
+
+        abstract = "Aspirin reduces the risk of heart attack. It may increase bleeding."
+        agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=0)
+        # A rejection from an earlier run must not be counted again.
+        agent._validation_stats['failed_citations'].append({'reason': REJECT_PASSAGE_EMPTY})
+        self.mock_executor.citation_agent = agent
+        self.mock_executor.citation_extraction_threshold = 0.7
+        documents = [
+            ({'id': 1, 'title': 'a', 'abstract': abstract}, {'score': 4.0}),
+            ({'id': 2, 'title': 'b', 'abstract': abstract}, {'score': 4.0}),
+        ]
+        responses = [
+            {'has_relevant_content': True, 'relevant_passage': passage,
+             'summary': 'Aspirin helps.', 'relevance_score': 0.9}
+            for passage in ("Aspirin reduces the risk of heart attack.", "Statins lower cholesterol.")
+        ]
+        thread = WorkflowThread(executor=self.mock_executor, question="q")
+        with patch.object(agent, 'test_connection', return_value=True), \
+                patch.object(agent, '_generate_and_parse_json', side_effect=responses):
+            citations = thread._extract_citations_progressive(documents, score_threshold=3.0)
+
+        self.assertEqual(len(citations), 1)
+        self.assertEqual(
+            thread.citation_summary_text,
+            f"Extracted 1 citations from 2 documents (1 rejected: {REJECT_PASSAGE_NOT_FOUND} ×1)"
+        )
         thread.deleteLater()
 
     # ========================================================================
