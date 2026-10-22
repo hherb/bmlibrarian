@@ -18,6 +18,7 @@ from bmlibrarian.utils.browser_downloader import (
     CHROME_DOWNLOAD_DIR_PREFIX,
     download_pdf_with_undetected_chrome,
     promote_downloaded_pdf,
+    wait_for_chrome_download,
 )
 
 PDF_BYTES = b"%PDF-1.4\n% test\n"
@@ -88,6 +89,127 @@ class TestPromoteDownloadedPdf:
         assert not save_path.exists()
 
 
+class TestWaitForChromeDownload:
+    """wait_for_chrome_download waits for a started download, not a fixed time."""
+
+    def test_waits_until_partial_download_finishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A download slower than the start window is still waited for (#327)."""
+        partial = tmp_path / "article.pdf.crdownload"
+        partial.write_bytes(b"%PDF")
+        sleeps: List[float] = []
+
+        def fake_sleep(seconds: float) -> None:
+            """Chrome finishes the download after 20 polls (10 s)."""
+            sleeps.append(seconds)
+            if len(sleeps) == 20:
+                partial.rename(tmp_path / "article.pdf")
+
+        monkeypatch.setattr(browser_downloader.time, "sleep", fake_sleep)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=60, start_timeout=5, poll_interval=0.5
+        ) is True
+        assert len(sleeps) == 20
+
+    def test_placeholder_next_to_partial_keeps_waiting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty final-name file beside a .crdownload is not a finished download."""
+        (tmp_path / "article.pdf").touch()
+        partial = tmp_path / "article.pdf.crdownload"
+        partial.write_bytes(b"%PDF")
+        sleeps: List[float] = []
+
+        def fake_sleep(seconds: float) -> None:
+            """Chrome finishes the download after 3 polls."""
+            sleeps.append(seconds)
+            if len(sleeps) == 3:
+                partial.replace(tmp_path / "article.pdf")
+
+        monkeypatch.setattr(browser_downloader.time, "sleep", fake_sleep)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=60, poll_interval=1
+        ) is True
+        assert len(sleeps) == 3
+
+    def test_stalled_download_gives_up_early(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A .crdownload that stops growing fails before the finish timeout."""
+        (tmp_path / "article.pdf.crdownload").write_bytes(b"%PDF")
+        sleeps: List[float] = []
+        monkeypatch.setattr(browser_downloader.time, "sleep", sleeps.append)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=60, poll_interval=1, stall_timeout=3
+        ) is False
+        assert sum(sleeps) == 3
+
+    def test_growing_download_is_not_stalled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slow download that keeps growing waits for the finish timeout."""
+        partial = tmp_path / "article.pdf.crdownload"
+        partial.write_bytes(b"%PDF")
+        sleeps: List[float] = []
+
+        def fake_sleep(seconds: float) -> None:
+            """Chrome writes another chunk every poll."""
+            sleeps.append(seconds)
+            with partial.open("ab") as f:
+                f.write(b"x")
+
+        monkeypatch.setattr(browser_downloader.time, "sleep", fake_sleep)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=5, poll_interval=1, stall_timeout=2
+        ) is False
+        assert sum(sleeps) == 5
+
+    def test_unfinished_download_times_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A download still in progress at the finish timeout returns False."""
+        (tmp_path / "article.pdf.crdownload").write_bytes(b"%PDF")
+        sleeps: List[float] = []
+        monkeypatch.setattr(browser_downloader.time, "sleep", sleeps.append)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=3, poll_interval=1
+        ) is False
+        assert sum(sleeps) == 3
+
+    def test_no_download_gives_up_after_start_window(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing downloaded: stop after start_timeout, not finish_timeout."""
+        sleeps: List[float] = []
+        monkeypatch.setattr(browser_downloader.time, "sleep", sleeps.append)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=60, start_timeout=2, poll_interval=1
+        ) is True
+        assert sum(sleeps) == 2
+
+    def test_earlier_files_are_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected earlier download does not end the wait for a new one."""
+        old = tmp_path / "login.pdf"
+        old.write_bytes(b"<html>login</html>")
+        sleeps: List[float] = []
+        monkeypatch.setattr(browser_downloader.time, "sleep", sleeps.append)
+
+        assert wait_for_chrome_download(
+            tmp_path, finish_timeout=60, already_there=frozenset({old}),
+            start_timeout=2, poll_interval=1,
+        ) is True
+        assert sum(sleeps) == 2
+
+
 class _FakeOptions:
     """Stands in for uc.ChromeOptions and records the prefs."""
 
@@ -136,15 +258,18 @@ class _FakeDriver:
         options: _FakeOptions,
         download_bytes: Optional[bytes],
         meta_pdf_url: Optional[str],
+        never_finishes: bool = False,
     ) -> None:
         """Keep the download dir from the prefs and what a PDF fetch saves.
 
         With ``meta_pdf_url`` the page has a citation_pdf_url meta tag and no
-        iframe; otherwise it has a PDF iframe and no meta tag.
+        iframe; otherwise it has a PDF iframe and no meta tag. With
+        ``never_finishes`` a PDF fetch only leaves a ``.crdownload`` file.
         """
         self.download_dir = Path(options.prefs["download.default_directory"])
         self.download_bytes = download_bytes
         self.meta_pdf_url = meta_pdf_url
+        self.never_finishes = never_finishes
         self.title = "Article"
         self.page_source = "<html>article</html>"
         self.current_url = "https://publisher.example/article"
@@ -153,8 +278,10 @@ class _FakeDriver:
         """Ignore the timeout."""
 
     def get(self, url: str) -> None:
-        """Navigating to a PDF downloads it, if this driver has bytes to save."""
-        if url.endswith(".pdf") and self.download_bytes is not None:
+        """Navigating to a PDF downloads it, or leaves a never-finishing partial."""
+        if url.endswith(".pdf") and self.never_finishes:
+            (self.download_dir / "download.pdf.crdownload").write_bytes(b"%PDF")
+        elif url.endswith(".pdf") and self.download_bytes is not None:
             (self.download_dir / "download.pdf").write_bytes(self.download_bytes)
 
     def find_elements(self, by: str, value: str) -> List[_FakeIframe]:
@@ -182,6 +309,7 @@ def _install_fake_chrome(
     download_bytes: Optional[bytes],
     meta_pdf_url: Optional[str] = None,
     fail_on_start: bool = False,
+    never_finishes: bool = False,
 ) -> List[_FakeDriver]:
     """Replace undetected_chromedriver and selenium with fakes, and no-op time.sleep.
 
@@ -190,6 +318,7 @@ def _install_fake_chrome(
         download_bytes: What navigating to a PDF URL saves, or None for nothing.
         meta_pdf_url: Give the page a citation_pdf_url meta tag with this URL.
         fail_on_start: Make launching Chrome raise (e.g. a driver mismatch).
+        never_finishes: A PDF fetch leaves only an unfinished download.
 
     Returns:
         A list that receives each driver created.
@@ -200,7 +329,7 @@ def _install_fake_chrome(
         """Create a fake driver, or fail like a Chrome/driver version mismatch."""
         if fail_on_start:
             raise RuntimeError("session not created: Chrome version mismatch")
-        driver = _FakeDriver(options, download_bytes, meta_pdf_url)
+        driver = _FakeDriver(options, download_bytes, meta_pdf_url, never_finishes)
         drivers.append(driver)
         return driver
 
@@ -364,3 +493,93 @@ class TestUndetectedChromeDownloadDir:
         assert download_dir.parent == year_dir.absolute()
         assert download_dir.name.startswith(CHROME_DOWNLOAD_DIR_PREFIX)
         assert not download_dir.exists()
+
+    def test_unfinished_download_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A download that never finishes fails with its own error (#327)."""
+        _install_fake_chrome(monkeypatch, download_bytes=None, never_finishes=True)
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path, timeout=2
+        )
+
+        assert result["status"] == "failed"
+        assert result["download_unfinished"] is True
+        assert "did not finish" in result["error"]
+        assert "after 2 s" in result["error"]
+        assert save_path.read_bytes() == b""
+        assert not list(year_dir.glob(CHROME_DOWNLOAD_DIR_PREFIX + "*"))
+
+    def test_unfinished_meta_link_download_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The direct-navigation branch also reports an unfinished download."""
+        _install_fake_chrome(
+            monkeypatch, download_bytes=None, never_finishes=True,
+            meta_pdf_url="https://publisher.example/article.pdf",
+        )
+        year_dir = tmp_path / "2024"
+        year_dir.mkdir()
+        save_path = year_dir / "10.1000_target.pdf"
+        save_path.touch()
+
+        result = download_pdf_with_undetected_chrome(
+            "https://publisher.example/article", save_path, timeout=2
+        )
+
+        assert result["status"] == "failed"
+        assert result["download_unfinished"] is True
+        assert save_path.read_bytes() == b""
+
+
+class TestDownloadPdfWithBrowserFallback:
+    """download_pdf_with_browser passes on the undetected-Chrome outcome."""
+
+    @staticmethod
+    def _cloudflare_blocked(coro: Any) -> Dict[str, Any]:
+        """Stand in for asyncio.run: Playwright was blocked by Cloudflare."""
+        coro.close()
+        return {"status": "failed", "cloudflare_blocked": True, "error": "blocked"}
+
+    def test_unfinished_download_is_not_called_a_paywall(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The 'did not finish' error reaches the caller, not the OpenAthens guess."""
+        unfinished = {
+            "status": "failed",
+            "download_unfinished": True,
+            "error": "PDF download did not finish (stalled, or still running after 120 s)",
+        }
+        monkeypatch.setattr(browser_downloader.asyncio, "run", self._cloudflare_blocked)
+        monkeypatch.setattr(
+            browser_downloader, "download_pdf_with_undetected_chrome",
+            lambda **kwargs: unfinished,
+        )
+
+        result = browser_downloader.download_pdf_with_browser(
+            "https://publisher.example/article", tmp_path / "target.pdf"
+        )
+
+        assert result == unfinished
+
+    def test_other_failure_keeps_paywall_hint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No PDF found after the bypass still suggests institutional access."""
+        monkeypatch.setattr(browser_downloader.asyncio, "run", self._cloudflare_blocked)
+        monkeypatch.setattr(
+            browser_downloader, "download_pdf_with_undetected_chrome",
+            lambda **kwargs: {"status": "failed", "error": "Could not find PDF"},
+        )
+
+        result = browser_downloader.download_pdf_with_browser(
+            "https://publisher.example/article", tmp_path / "target.pdf"
+        )
+
+        assert result["status"] == "failed"
+        assert "OpenAthens" in result["error"]
