@@ -14,7 +14,7 @@ The Fact-Checker Review GUI is a desktop application for human reviewers to anno
 - **Multi-User Support**: Username tracking for human annotations with annotator profiles
 - **Statement-by-Statement Review**: Navigate through statements with clear progress tracking
 - **Annotation Comparison**: View original annotations, AI evaluations, and provide human annotations side-by-side
-- **Evidence Review**: Examine supporting citations with stance indicators and full abstracts
+- **Evidence Review**: Examine cited passages highlighted in their full abstracts
 - **Incremental Mode**: Filter to show only statements you haven't annotated yet
 - **Blind Mode**: Hide original and AI annotations for unbiased human review
 - **Real-Time Persistence**: All annotations saved directly to PostgreSQL as you review
@@ -105,19 +105,22 @@ The review interface displays:
 - **Always visible** (even in blind mode)
 
 #### Citations Section
-- Scrollable list of supporting evidence with **expandable citation cards**
+- Scrollable list of the evidence the AI cited, one **expandable citation card** per document
 - Each citation card shows:
-  - **Collapsed view**:
-    - Citation number and truncated text
-    - **Stance badge**: ✓ Supports | ✗ Contradicts | ? Neutral
-    - **Relevance score badge**: Color-coded relevance rating (1-5)
-    - **Identifiers**: PMID, DOI, Document ID
+  - **Collapsed view**: citation number, title, authors, journal and year,
+    plus the AI's judgement of the citation while the AI review is shown:
+    relevance score (1-5; green ≥ 4, blue ≥ 2.5, grey below) and stance
+    (✓ Supports / ✗ Contradicts / ? Neutral). Both are hidden in blind mode
+    and while "Show Review" is off, like the AI evaluation column
   - **Expanded view** (click to expand):
-    - **Metadata**: Full stance, relevance score, document identifiers
-    - **Extracted Citation**: The specific passage cited (highlighted in yellow)
-    - **Full Abstract with Highlighting**: Complete abstract from PostgreSQL with the cited passage highlighted in yellow (like a text marker)
-    - Text highlighting helps verify context and accuracy of citations
-- Fetched in real-time from `public.document` table via foreign key
+    - **Widened note** (orange) when the AI quoted only a fragment and the
+      stored passage was widened to its complete sentence(s); the note quotes
+      the original fragment
+    - **Abstract with the cited passage highlighted** in yellow between 📌
+      markers; ⚠️ markers mean the passage was only approximately located,
+      and a passage that can't be found is shown above the abstract
+    - **PDF buttons**: View / Upload / Find PDF
+- Document details are loaded from the database (or the review package) by document ID
 
 ### 3. Provide Human Annotations
 
@@ -269,31 +272,17 @@ Citations use expandable cards (similar to main research GUI):
 - **Collapsible design** saves screen space while reviewing
 - **Progressive disclosure**: See summary first, expand for details
 
-### Citation Stance Indicators
+### Passage Highlighting
 
-- **Green badge (✓)**: Supports the statement
-- **Red badge (✗)**: Contradicts the statement
-- **Grey badge (?)**: Neutral or unclear stance
-
-### Relevance Scoring
-
-Color-coded relevance scores (1-5 scale):
-- **Red (1-2)**: Low relevance
-- **Yellow (3)**: Medium relevance
-- **Green (4-5)**: High relevance
-
-### Abstract Highlighting
-
-**Real-Time Abstract Fetching:**
-- Full abstracts fetched from `public.document` table via foreign key
-- No duplicate storage of abstract text
-- Efficient database queries with connection pooling
-
-**Citation Highlighting:**
-- Cited passages highlighted in **yellow** (like text marker)
-- 📌 markers indicate exact citation location in abstract
-- ⚠️ markers indicate approximate/fuzzy matches
-- Helps verify citations are used in proper context
+- Cited passages are highlighted in **yellow** (like a text marker)
+- 📌 markers indicate the exact citation location in the abstract
+- ⚠️ markers indicate approximate matches
+- An orange "Widened to the complete sentence(s)" note means the AI quoted a
+  shorter fragment; judge the whole highlighted sentence, but keep in mind the
+  AI's reasoning was about the fragment
+- Stance and relevance badges follow the AI evaluation column: never shown in
+  blind mode, hidden while the review is hidden (toggling re-draws the cards
+  collapsed)
 
 ## Tips for Effective Review
 
@@ -453,7 +442,7 @@ WHERE e.evaluation_id = %s;
 
 Built with PySide6/Qt (`src/bmlibrarian/gui/qt/plugins/fact_checker/`):
 - **FactCheckerTabWidget** (`fact_checker_tab.py`): Main review widget (PostgreSQL or SQLite review package)
-- **CitationListWidget** (`citation_widget.py`): Evidence citation cards
+- **CitationListWidget** (`citation_widget.py`): Evidence citation cards (`widgets/citation_card.CitationCard`, passage highlighted in the abstract)
 - **TimerWidget** (`timer_widget.py`): Review time tracking
 
 The statement, annotation and navigation areas are built directly in `FactCheckerTabWidget`; blind mode is applied by `FactCheckerTabWidget._apply_blind_mode`.
@@ -461,7 +450,7 @@ The statement, annotation and navigation areas are built directly in `FactChecke
 ### Performance Optimization
 
 - **Connection Pooling**: Reuses database connections for efficiency
-- **Lazy Loading**: Abstracts fetched only when citations are expanded
+- **On-Demand Loading**: Abstracts fetched when a statement is shown, not stored with the evidence
 - **Batch Queries**: Multiple evidence items fetched in single query
 - **Caching**: User profile cached for session duration
 

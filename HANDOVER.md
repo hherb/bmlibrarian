@@ -10,6 +10,17 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Fact-checker review GUI shows the cited passage** (2026-10-23, closes
+  #338). `CitationListWidget` now renders each evidence row as a
+  `widgets/citation_card.CitationCard` (passage highlighted in the abstract,
+  `widened_note()` when `widened_from` is set; `fact_checker_tab.py` passes
+  it through) with the factory's PDF buttons
+  (`_create_pdf_button_for_card`). Pure helper `citation_card_fields()`;
+  a placeholder abstract shows the passage on its own. The AI's stance
+  (`supports_statement`) and relevance score are shown as badges only while
+  the AI column is (`_show_citations`: never in blind mode, re-rendered on
+  the Show/Hide Review toggle). Tests in
+  `tests/test_citation_widened_storage.py`, `tests/test_fact_checker_tab.py`.
 - **`Citation.widened_from` is persisted and shown** (2026-10-23, closes
   #310). **Migration 035** adds nullable `widened_from TEXT` to
   `audit.extracted_citations` and `factcheck.evidence` (applied and re-run
@@ -21,7 +32,7 @@ off new work. Longer-term structural items live in
   (`export_review_package.py`; older packages read as NULL) and the CLI
   citation CSV/JSON exports. Marked via `card_utils.widened_note()` on the
   research tab's citation cards and in the audit validation GUI. The
-  fact-checker review GUI shows no cited passage at all → #338. Tests:
+  fact-checker review GUI: see the #338 entry above. Tests:
   `tests/test_citation_widened_storage.py`.
 - **Citation rejection counts reach the Qt research tab and CLI**
   (2026-10-22, closes #292). `CitationFinderAgent.extraction_summary()` is
@@ -155,9 +166,6 @@ value — pick one, or pull an item from ROADMAP.md:
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
-- #338 — the fact-checker review GUI never shows the cited passage (so
-  it can't mark widened ones either); highlight it in the abstract like
-  `widgets/citation_card.py`.
 - Widening decisions from the PR #306 review: #308 (widen one-word quotes,
   or require a minimum fragment size?), #309 (fragments still lost at text
   end without a full stop, inside broken-off sentences, past 400 chars).
@@ -210,8 +218,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `uv run python -m pytest tests/
-  -p no:cacheprovider --no-cov -q` on master 2026-10-22: **4385 passed, 47
-  skipped, 0 failed** in ~8 min (no `--continue-on-collection-errors` or
+  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#338 branch): **4421 passed, 47
+  skipped, 0 failed** in ~10 min (no `--continue-on-collection-errors` or
   marker deselection needed). Any failure is now a regression. Save the
   output to a file in the scratchpad (don't just tail it), and don't edit or
   `git stash` the tree while it runs.

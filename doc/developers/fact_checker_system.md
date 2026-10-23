@@ -760,7 +760,7 @@ the same review widget that the main Qt application (`bmlibrarian_qt.py`) shows 
 **Location**: `src/bmlibrarian/gui/qt/plugins/fact_checker/`
 
 - `fact_checker_tab.py` - `FactCheckerTabWidget` (main review widget; PostgreSQL or SQLite review package). Builds the statement, annotation and navigation areas itself; blind mode is applied in `FactCheckerTabWidget._apply_blind_mode`
-- `citation_widget.py` - `CitationListWidget` (evidence citation cards)
+- `citation_widget.py` - `CitationListWidget` (evidence as `CitationCard`s: cited passage highlighted in the abstract, `widened_note()` for widened passages, PDF buttons from `QtDocumentCardFactory`; stance/relevance badges only when `set_citations(..., show_ai_judgement=True)`, which `FactCheckerTabWidget._show_citations` passes only while the AI column is visible and never in blind mode)
 - `timer_widget.py` - `TimerWidget` (review time tracking)
 - `plugin.py` - `FactCheckerPlugin` (registers the tab in the main Qt app)
 
