@@ -19,7 +19,7 @@ BEGIN
             ADD COLUMN IF NOT EXISTS widened_from TEXT;
 
         COMMENT ON COLUMN audit.extracted_citations.widened_from IS
-            'Fragment the model quoted, when passage was widened to its complete sentence(s); NULL = quoted as a whole';
+            'The quoted fragment as it appears in the abstract, when passage was widened to its complete sentence(s); NULL = quoted as a whole';
     END IF;
 
     IF EXISTS (SELECT 1 FROM information_schema.tables
@@ -28,6 +28,6 @@ BEGIN
             ADD COLUMN IF NOT EXISTS widened_from TEXT;
 
         COMMENT ON COLUMN factcheck.evidence.widened_from IS
-            'Fragment the model quoted, when citation_text was widened to its complete sentence(s); NULL = quoted as a whole';
+            'The quoted fragment as it appears in the abstract, when citation_text was widened to its complete sentence(s); NULL = quoted as a whole';
     END IF;
 END $$;

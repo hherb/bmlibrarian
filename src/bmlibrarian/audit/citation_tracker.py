@@ -57,7 +57,7 @@ class CitationTracker:
             passage: Extracted passage text
             summary: AI-generated summary
             relevance_confidence: Optional confidence score (0.0-1.0)
-            widened_from: The fragment the model quoted, when ``passage`` was
+            widened_from: The quoted fragment as it appears in the abstract, when ``passage`` was
                 widened to its complete sentence(s); None if quoted as a whole
 
         Returns:

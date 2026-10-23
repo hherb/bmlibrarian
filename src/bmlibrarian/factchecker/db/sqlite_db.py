@@ -105,6 +105,13 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
 
         logger.info(f"SQLite database opened: {db_path}")
 
+        # Packages exported before migration 035 have no widened_from.
+        self._has_widened_from = self._has_column("evidence", "widened_from")
+        if not self._has_widened_from:
+            logger.info(
+                "Review package predates migration 035: widened passages are not marked"
+            )
+
     def get_all_statements_with_evaluations(self) -> List[Dict[str, Any]]:
         """
         Get all statements with their latest AI evaluations and evidence.
@@ -204,10 +211,7 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
 
     def _get_evidence_for_evaluation(self, evaluation_id: int) -> List[Dict[str, Any]]:
         """Get evidence for an AI evaluation."""
-        # Packages exported before migration 035 have no widened_from.
-        widened_column = (
-            "widened_from" if self._has_column("evidence", "widened_from") else "NULL"
-        )
+        widened_column = "widened_from" if self._has_widened_from else "NULL"
         cursor = self.conn.cursor()
         cursor.execute(f"""
             SELECT

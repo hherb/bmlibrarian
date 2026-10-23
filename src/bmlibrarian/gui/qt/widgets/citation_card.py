@@ -23,7 +23,7 @@ import logging
 from .card_utils import html_escape, widened_note
 from ..resources.styles import get_font_scale
 from ..resources.styles.stylesheet_generator import get_stylesheet_generator
-from ..resources.styles.theme_colors import MaterialColors
+from ..resources.styles.theme_colors import ThemeColors
 from ..resources.constants import DocumentCardColors, DefaultLimits
 from ..core.document_receiver_registry import DocumentReceiverRegistry
 from ..core.event_bus import EventBus
@@ -324,7 +324,7 @@ class CitationCard(QFrame):
             widened_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             widened_label.setStyleSheet(
                 get_stylesheet_generator().label_stylesheet(
-                    font_size_key='font_small', color=MaterialColors.WARNING_800
+                    font_size_key='font_small', color=ThemeColors.WARNING_TEXT
                 )
             )
             self.details_layout.addWidget(widened_label)

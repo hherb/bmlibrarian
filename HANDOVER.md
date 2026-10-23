@@ -16,8 +16,8 @@ off new work. Longer-term structural items live in
   on `bmlibrarian_dev`; it reaches `knowledgebase` on the app's next
   connection, like 034). Writers: `CitationTracker.record_citation`,
   `EvidenceReference` → `Evidence` → `insert_evidence`; read back by
-  `get_evidence_for_evaluation`, fact-checker JSON export/import
-  (`"widened_from"`, omitted when NULL), SQLite review packages
+  `get_evidence_for_evaluation`, fact-checker JSON (`to_dict`
+  omits `"widened_from"` when NULL; DB `export_to_json` writes `null`), SQLite review packages
   (`export_review_package.py`; older packages read as NULL) and the CLI
   citation CSV/JSON exports. Marked via `card_utils.widened_note()` on the
   research tab's citation cards and in the audit validation GUI. The
@@ -202,6 +202,10 @@ have drifted since the 2026-07-19 review. Full details, including the
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
+- #340–#342 (from the PR #339 review; matter only if a migration fails to
+  apply): fact-checker stores a verdict without its evidence when an
+  evidence insert fails; audit trackers never roll back a failed write;
+  a failed auto-migration is only a log warning.
 
 ### Verify
 

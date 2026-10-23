@@ -342,13 +342,14 @@ def widened_note(fragment: str) -> str:
     stored passage is its complete enclosing sentence(s), so reviewers see both.
 
     Args:
-        fragment: The fragment the model quoted (``Citation.widened_from``)
+        fragment: The quoted fragment as it appears in the abstract
+            (``Citation.widened_from``)
 
     Returns:
         Plain-text note for display
 
     Examples:
         >>> widened_note("reduced mortality")
-        'Widened to the complete sentence; the model quoted: "reduced mortality"'
+        'Widened to the complete sentence(s); the model quoted: "reduced mortality"'
     """
-    return f'Widened to the complete sentence; the model quoted: "{fragment}"'
+    return f'Widened to the complete sentence(s); the model quoted: "{fragment}"'

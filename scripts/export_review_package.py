@@ -19,14 +19,16 @@ import sqlite3
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Set, Dict, Any
+from typing import Set
 import json
 
 # Add src directory to path
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 from bmlibrarian.factchecker.db.database import FactCheckerDB
-from bmlibrarian.database import get_db_manager
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCHEMA_PATH = REPO_ROOT / 'src' / 'bmlibrarian' / 'factchecker' / 'db' / 'sqlite_schema.sql'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,11 +39,10 @@ logger = logging.getLogger(__name__)
 
 def read_schema_file() -> str:
     """Read the SQLite schema file."""
-    schema_path = Path(__file__).parent / 'src' / 'bmlibrarian' / 'factchecker' / 'db' / 'sqlite_schema.sql'
-    if not schema_path.exists():
-        raise FileNotFoundError(f"Schema file not found: {schema_path}")
+    if not SCHEMA_PATH.exists():
+        raise FileNotFoundError(f"Schema file not found: {SCHEMA_PATH}")
 
-    with open(schema_path, 'r') as f:
+    with open(SCHEMA_PATH, 'r') as f:
         return f.read()
 
 

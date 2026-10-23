@@ -422,8 +422,9 @@ that could not be examined); the widening is in the log and the stats.
 and `factcheck.evidence.widened_from` (`EvidenceReference` → `Evidence`),
 both nullable TEXT (NULL = quoted whole, or stored before 035). It travels
 into SQLite review packages (`export_review_package.py`; older packages
-without the column read as NULL), fact-checker JSON exports/imports
-(`"widened_from"` key, omitted when NULL) and the CLI citation CSV/JSON
+without the column read as NULL), fact-checker JSON (the agent's results
+JSON via `EvidenceReference.to_dict` omits the key when NULL; the DB's
+`export_to_json` always writes it, `null` when not widened; both import) and the CLI citation CSV/JSON
 exports. Where a passage is displayed, `card_utils.widened_note()` marks it:
 the research tab's citation cards and the audit validation GUI. The
 fact-checker review GUI does not show cited passages at all, so it has
