@@ -290,8 +290,20 @@ class ResultsTab(QWidget):
         Args:
             document_id: Document ID to load
         """
-        meta = get_document_metadata(document_id)
+        try:
+            meta = get_document_metadata(document_id)
+        except Exception as e:
+            logger.error(f"Could not load document {document_id}: {e}")
+            # Don't leave the previous document active for the Assess button.
+            self.clear()
+            QMessageBox.critical(
+                self,
+                "Could Not Load Document",
+                f"Could not load document {document_id}:\n{e}"
+            )
+            return
         if not meta:
+            self.clear()
             QMessageBox.warning(
                 self,
                 "Document Not Found",

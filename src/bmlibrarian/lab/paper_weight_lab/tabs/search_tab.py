@@ -224,7 +224,13 @@ class SearchTab(QWidget):
         self.recent_combo.clear()
         self.recent_combo.addItem("-- Select recent assessment --", None)
 
-        recent = get_recent_assessments()
+        try:
+            recent = get_recent_assessments()
+        except Exception as e:
+            logger.error(f"Could not load recent assessments: {e}")
+            # Non-modal: this runs at startup and after every selection.
+            self.recent_combo.setItemText(0, "-- Could not load recent assessments (see log) --")
+            return
         for item in recent:
             display_text = format_recent_assessment_display(
                 item['title'], item['final_weight']
@@ -259,10 +265,16 @@ class SearchTab(QWidget):
         self.select_btn.setEnabled(False)
 
         search_type = self.search_type_combo.currentData()
-        if search_type == "semantic":
-            self.search_results = semantic_search_documents(query)
-        else:
-            self.search_results = search_documents(query)
+        try:
+            if search_type == "semantic":
+                self.search_results = semantic_search_documents(query)
+            else:
+                self.search_results = search_documents(query)
+        except Exception as e:
+            logger.error(f"Document search failed: {e}")
+            self.search_results = []
+            QMessageBox.critical(self, "Search Failed", f"The search failed:\n{e}")
+            return
 
         for doc in self.search_results:
             # Add similarity score for semantic search results
