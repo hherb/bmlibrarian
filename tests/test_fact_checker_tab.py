@@ -179,6 +179,36 @@ class TestFactCheckerTabIntegration(unittest.TestCase):
         # This will trigger the file dialog
         # Note: Actual implementation depends on the widget's load data method
 
+    def _citation_calls_with_ai_judgement(self, widget):
+        """Show one statement's citations and return set_citations' flag."""
+        widget.results = [{'evidence_list': [{'document_id': 1, 'stance': 'supports'}]}]
+        widget.current_index = 0
+        widget.citation_widget.set_citations = Mock()
+        widget._show_citations()
+        return widget.citation_widget.set_citations.call_args.kwargs['show_ai_judgement']
+
+    def test_citations_show_ai_judgement_with_review_column(self):
+        """Stance and relevance badges are shown while the AI column is."""
+        self.assertTrue(self._citation_calls_with_ai_judgement(self.widget))
+
+    def test_citations_hide_ai_judgement_in_blind_mode(self):
+        """Blind mode never shows the AI's stance or relevance (#338)."""
+        with patch('bmlibrarian.gui.qt.plugins.fact_checker.fact_checker_tab.get_fact_checker_db'):
+            blind = FactCheckerTabWidget(blind_mode=True)
+        try:
+            self.assertFalse(self._citation_calls_with_ai_judgement(blind))
+        finally:
+            blind.deleteLater()
+
+    def test_hiding_review_rerenders_citations_without_ai_judgement(self):
+        """Hiding the AI review also hides the citations' stance and relevance."""
+        self._citation_calls_with_ai_judgement(self.widget)
+        self.widget.show_review_toggle.setChecked(True)  # checked = hidden
+        self.widget._on_toggle_review()
+        self.assertFalse(
+            self.widget.citation_widget.set_citations.call_args.kwargs['show_ai_judgement']
+        )
+
     def test_multiple_widgets(self):
         """Test creating multiple widget instances."""
         with patch('bmlibrarian.gui.qt.plugins.fact_checker.fact_checker_tab.get_fact_checker_db'):

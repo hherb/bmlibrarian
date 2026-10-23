@@ -372,3 +372,41 @@ def test_fact_checker_card_fields_drop_placeholder_abstract() -> None:
     assert fields['abstract'] is None
     assert fields['passage'] == 'P.'
     assert fields['widened_from'] is None
+
+
+@pytest.mark.parametrize("show_ai_judgement", [True, False])
+def test_fact_checker_card_fields_ai_judgement_is_opt_in(show_ai_judgement: bool) -> None:
+    """Stance and relevance reach the card only when the UI allows it (blind mode)."""
+    from bmlibrarian.gui.document_card_factory_base import DocumentCardData
+    from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
+        citation_card_fields,
+    )
+
+    citation = {'passage': 'P.', 'stance': 'contradicts', 'relevance_score': 4.0}
+    fields = citation_card_fields(
+        citation, DocumentCardData(doc_id=1, title='T'), show_ai_judgement
+    )
+
+    assert ('stance' in fields) == show_ai_judgement
+    assert ('relevance_score' in fields) == show_ai_judgement
+
+
+@pytest.mark.parametrize("stance, shown", [
+    ('supports', '✓ Supports'), ('contradicts', '✗ Contradicts'),
+    ('neutral', '? Neutral'), (None, None), ('bogus', None),
+])
+def test_citation_card_stance_badge(stance: Optional[str], shown: Optional[str]) -> None:
+    """Known stances get a badge; missing or unknown ones get none."""
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from bmlibrarian.gui.qt.widgets.citation_card import STANCE_BADGES, CitationCard
+
+    _app = QApplication.instance() or QApplication([])
+    card = CitationCard({'title': 'T', 'passage': 'P.', 'stance': stance}, index=1)
+    try:
+        texts = [label.text() for label in card.findChildren(QLabel)]
+    finally:
+        card.deleteLater()
+
+    badges = {text for text, _ in STANCE_BADGES.values()}
+    assert [t for t in texts if t in badges] == ([shown] if shown else [])

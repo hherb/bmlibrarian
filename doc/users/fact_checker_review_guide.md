@@ -107,7 +107,11 @@ The review interface displays:
 #### Citations Section
 - Scrollable list of the evidence the AI cited, one **expandable citation card** per document
 - Each citation card shows:
-  - **Collapsed view**: citation number, title, authors, journal and year
+  - **Collapsed view**: citation number, title, authors, journal and year,
+    plus the AI's judgement of the citation while the AI review is shown:
+    relevance score (1-5; green ≥ 4, blue ≥ 2.5, grey below) and stance
+    (✓ Supports / ✗ Contradicts / ? Neutral). Both are hidden in blind mode
+    and while "Show Review" is off, like the AI evaluation column
   - **Expanded view** (click to expand):
     - **Widened note** (orange) when the AI quoted only a fragment and the
       stored passage was widened to its complete sentence(s); the note quotes
@@ -276,7 +280,9 @@ Citations use expandable cards (similar to main research GUI):
 - An orange "Widened to the complete sentence(s)" note means the AI quoted a
   shorter fragment; judge the whole highlighted sentence, but keep in mind the
   AI's reasoning was about the fragment
-- Stance and relevance scores are stored with the evidence but not shown
+- Stance and relevance badges follow the AI evaluation column: never shown in
+  blind mode, hidden while the review is hidden (toggling re-draws the cards
+  collapsed)
 
 ## Tips for Effective Review
 

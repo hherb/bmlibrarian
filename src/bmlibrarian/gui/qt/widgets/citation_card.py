@@ -51,6 +51,13 @@ COLOR_BACKGROUND_EXPANDED = "#ffffff"
 COLOR_BACKGROUND_EXPANDED_HOVER = "#f8f9fa"
 COLOR_BORDER_NEUTRAL = "#dee2e6"
 
+# Fact-checker evidence stance (``supports_statement``) -> badge text and color
+STANCE_BADGES = {
+    'supports': ('✓ Supports', ThemeColors.SUCCESS_TEXT),
+    'contradicts': ('✗ Contradicts', ThemeColors.ERROR_TEXT),
+    'neutral': ('? Neutral', ThemeColors.TEXT_SECONDARY),
+}
+
 # Highlight color for passages
 COLOR_PASSAGE_BG = "#FFD54F"
 COLOR_PASSAGE_APPROX_BG = "#FFB74D"
@@ -180,6 +187,10 @@ class CitationCard(QFrame):
         if self.score_tag:
             title_row.addWidget(self.score_tag)
 
+        stance_tag = self._create_stance_tag()
+        if stance_tag:
+            title_row.addWidget(stance_tag)
+
         header_section_layout.addLayout(title_row)
 
         # Row 2: Metadata line (authors / journal / year)
@@ -255,6 +266,24 @@ class CitationCard(QFrame):
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         return label
+
+    def _create_stance_tag(self) -> Optional[QLabel]:
+        """
+        Create the stance badge for fact-checker evidence.
+
+        Returns:
+            QLabel for a known ``stance`` value, or None (no or unknown stance)
+        """
+        stance = self.citation_data.get('stance')
+        badge = STANCE_BADGES.get(stance) if isinstance(stance, str) else None
+        if badge is None:
+            return None
+        text, color = badge
+        tag = QLabel(text)
+        tag.setStyleSheet(
+            get_stylesheet_generator().label_stylesheet(color=color, bold=True)
+        )
+        return tag
 
     def _create_score_tag(self) -> Optional[QLabel]:
         """

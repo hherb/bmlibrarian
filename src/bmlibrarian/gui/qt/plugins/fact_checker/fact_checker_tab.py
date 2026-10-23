@@ -979,6 +979,8 @@ class FactCheckerTabWidget(QWidget):
                         'doi': ev.get('doi'),
                         'passage': ev.get('citation_text', ''),
                         'widened_from': ev.get('widened_from'),
+                        'stance': ev.get('supports_statement'),
+                        'relevance_score': ev.get('relevance_score'),
                         # Leave these empty/None to trigger enrichment
                         'title': None,
                         'abstract': None,
@@ -1138,9 +1140,7 @@ class FactCheckerTabWidget(QWidget):
                 article_context = "No abstract/context available"
         self.article_text.setPlainText(article_context)
 
-        # Update citations (with database enrichment if needed)
-        citations = result.get('evidence_list', [])
-        self.citation_widget.set_citations(citations, self.fact_checker_db)
+        self._show_citations()
 
         # Update navigation buttons
         self.prev_button.setEnabled(self.current_index > 0)
@@ -1343,6 +1343,25 @@ Progress: {(annotated / total * 100):.1f}%
         if self.original_col and self.ai_col:
             self.original_col.setVisible(self.show_review_enabled)
             self.ai_col.setVisible(self.show_review_enabled)
+
+        # The citations' stance and relevance badges follow the AI column
+        if self.results and self.current_index < len(self.results):
+            self._show_citations()
+
+    def _show_citations(self) -> None:
+        """Show the current statement's citations (enriched from the database).
+
+        The AI's stance and relevance score per citation are shown only while
+        its review column is: never in blind mode.
+        """
+        if self.citation_widget is None:  # UI not built yet
+            return
+        citations = self.results[self.current_index].get('evidence_list', [])
+        self.citation_widget.set_citations(
+            citations,
+            self.fact_checker_db,
+            show_ai_judgement=not self.blind_mode and self.show_review_enabled,
+        )
 
     @Slot()
     def _on_toggle_citations(self):

@@ -117,19 +117,22 @@ def merge_document_details(
 
 def citation_card_fields(
     citation: Dict[str, Any],
-    card_data: DocumentCardData
+    card_data: DocumentCardData,
+    show_ai_judgement: bool = False
 ) -> Dict[str, Any]:
     """Build the ``CitationCard`` data for a fact-checker citation.
 
     Args:
         citation: Citation in fact-checker format (``passage`` is the stored
-            ``citation_text``, ``widened_from`` the quoted fragment if any)
+            ``citation_text``, ``widened_from`` the quoted fragment if any,
+            ``stance`` and ``relevance_score`` the AI's judgement)
         card_data: The citation's converted document card data
+        show_ai_judgement: Include the AI's stance and relevance score
 
     Returns:
         Dictionary in the format ``CitationCard`` reads
     """
-    return {
+    fields = {
         'document_id': card_data.doc_id,
         'document_title': card_data.title,
         'authors': card_data.authors or [],
@@ -140,6 +143,10 @@ def citation_card_fields(
         'passage': citation.get('passage') or '',
         'widened_from': citation.get('widened_from'),
     }
+    if show_ai_judgement:
+        fields['stance'] = citation.get('stance')
+        fields['relevance_score'] = citation.get('relevance_score')
+    return fields
 
 
 class CitationListWidget(QWidget):
@@ -196,7 +203,8 @@ class CitationListWidget(QWidget):
     def set_citations(
         self,
         citations: List[Dict[str, Any]],
-        db: Optional["AbstractFactCheckerDB"] = None
+        db: Optional["AbstractFactCheckerDB"] = None,
+        show_ai_judgement: bool = False
     ) -> None:
         """
         Set the list of citations to display.
@@ -205,6 +213,8 @@ class CitationListWidget(QWidget):
             citations: List of citation dictionaries (fact-checker format)
             db: Fact-checker database (AbstractFactCheckerDB) used to fill in
                 missing citation fields, or None
+            show_ai_judgement: Show the AI's stance and relevance score badges
+                (off in blind mode and while the AI review is hidden)
         """
         s = self.scale
 
@@ -244,7 +254,7 @@ class CitationListWidget(QWidget):
             for index, enriched_citation in enumerate(enriched_citations, start=1):
                 card_data = self._convert_to_card_data(enriched_citation)
                 card = CitationCard(
-                    citation_card_fields(enriched_citation, card_data),
+                    citation_card_fields(enriched_citation, card_data, show_ai_judgement),
                     index=index,
                     pdf_button_widget=self.card_factory._create_pdf_button_for_card(card_data),
                 )

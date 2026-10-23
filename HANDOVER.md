@@ -16,9 +16,11 @@ off new work. Longer-term structural items live in
   `widened_note()` when `widened_from` is set; `fact_checker_tab.py` passes
   it through) with the factory's PDF buttons
   (`_create_pdf_button_for_card`). Pure helper `citation_card_fields()`;
-  a placeholder abstract shows the passage on its own. Stance and relevance
-  are stored but still not shown (the user guide claimed badges that never
-  existed; corrected). Tests in `tests/test_citation_widened_storage.py`.
+  a placeholder abstract shows the passage on its own. The AI's stance
+  (`supports_statement`) and relevance score are shown as badges only while
+  the AI column is (`_show_citations`: never in blind mode, re-rendered on
+  the Show/Hide Review toggle). Tests in
+  `tests/test_citation_widened_storage.py`, `tests/test_fact_checker_tab.py`.
 - **`Citation.widened_from` is persisted and shown** (2026-10-23, closes
   #310). **Migration 035** adds nullable `widened_from TEXT` to
   `audit.extracted_citations` and `factcheck.evidence` (applied and re-run
@@ -216,7 +218,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `uv run python -m pytest tests/
-  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#338 branch): **4411 passed, 47
+  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#338 branch): **4421 passed, 47
   skipped, 0 failed** in ~10 min (no `--continue-on-collection-errors` or
   marker deselection needed). Any failure is now a regression. Save the
   output to a file in the scratchpad (don't just tail it), and don't edit or
