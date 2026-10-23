@@ -56,6 +56,10 @@ def get_cached_assessment(
 
     Returns:
         PaperWeightResult if cached, None otherwise
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -108,7 +112,7 @@ def get_cached_assessment(
 
     except Exception as e:
         logger.error(f"Error fetching cached assessment: {e}", exc_info=True)
-        return None
+        raise
 
 
 def _reconstruct_result_from_db(
@@ -361,6 +365,10 @@ def check_replication_status(document_id: int) -> DimensionScore:
 
     Returns:
         DimensionScore for replication status
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -417,19 +425,7 @@ def check_replication_status(document_id: int) -> DimensionScore:
 
     except Exception as e:
         logger.error(f"Error checking replication status: {e}", exc_info=True)
-
-        # Return zero score on error
-        dimension_score = DimensionScore(
-            dimension_name=DIMENSION_REPLICATION_STATUS,
-            score=0.0
-        )
-        dimension_score.add_detail(
-            component='error',
-            value='query_failed',
-            contribution=0.0,
-            reasoning=f'Database query failed: {str(e)}'
-        )
-        return dimension_score
+        raise
 
 
 def _calculate_replication_score(replication_count: int, quality_comparison: str) -> float:
@@ -538,6 +534,10 @@ def semantic_search_documents(
         List of document dictionaries with id, title, pmid, doi, year, similarity,
         has_pdf, has_full_text, pdf_filename. ``pmid`` is ``None`` for
         non-PubMed rows.
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -579,7 +579,7 @@ def semantic_search_documents(
 
     except Exception as e:
         logger.error(f"Error in semantic search: {e}", exc_info=True)
-        return []
+        raise
 
 
 def search_documents(
@@ -601,6 +601,10 @@ def search_documents(
         List of document dictionaries with id, title, pmid, doi, year,
         has_pdf, has_full_text, pdf_filename, pdf_url. ``pmid`` is ``None``
         for non-PubMed rows.
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -661,7 +665,7 @@ def search_documents(
 
     except Exception as e:
         logger.error(f"Error searching documents: {e}", exc_info=True)
-        return []
+        raise
 
 
 def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
@@ -674,6 +678,10 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
     Returns:
         List of dictionaries with assessment info and document metadata
         (``pmid`` is ``None`` for non-PubMed documents)
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -710,7 +718,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
 
     except Exception as e:
         logger.error(f"Error fetching recent assessments: {e}", exc_info=True)
-        return []
+        raise
 
 
 def get_document_for_viewer(document_id: int) -> Optional[Dict]:
@@ -725,6 +733,10 @@ def get_document_for_viewer(document_id: int) -> Optional[Dict]:
 
     Returns:
         Document dict with viewer-relevant fields, or None if not found
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -751,7 +763,7 @@ def get_document_for_viewer(document_id: int) -> Optional[Dict]:
 
     except Exception as e:
         logger.error(f"Error fetching document for viewer: {e}", exc_info=True)
-        return None
+        raise
 
 
 def get_document_metadata(document_id: int) -> Optional[Dict]:
@@ -764,6 +776,10 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
     Returns:
         Document metadata dictionary or None if not found (``pmid`` is
         ``None`` for non-PubMed documents)
+
+    Raises:
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     try:
         db_manager = get_db_manager()
@@ -792,7 +808,7 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
 
     except Exception as e:
         logger.error(f"Error fetching document metadata: {e}", exc_info=True)
-        return None
+        raise
 
 
 __all__ = [

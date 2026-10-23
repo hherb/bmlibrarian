@@ -4,6 +4,7 @@ Paper Weight Laboratory - Dialog Classes
 Reusable dialog classes for the Paper Weight Assessment Laboratory.
 """
 
+import logging
 from typing import Optional, Dict, List
 
 from PySide6.QtWidgets import (
@@ -28,6 +29,8 @@ from .utils import (
     slider_value_to_weight,
     weight_to_slider_value,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DimensionWeightDialog(QDialog):
@@ -274,10 +277,16 @@ class DocumentSearchDialog(QDialog):
         self.results_list.clear()
 
         search_type = self.search_type_combo.currentData()
-        if search_type == "semantic":
-            self.search_results = semantic_search_documents(query)
-        else:
-            self.search_results = search_documents(query)
+        try:
+            if search_type == "semantic":
+                self.search_results = semantic_search_documents(query)
+            else:
+                self.search_results = search_documents(query)
+        except Exception as e:
+            logger.error(f"Document search failed: {e}")
+            self.search_results = []
+            QMessageBox.critical(self, "Search Failed", f"The database search failed:\n{e}")
+            return
 
         for doc in self.search_results:
             # Add similarity score for semantic search results

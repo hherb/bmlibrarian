@@ -180,7 +180,11 @@ If you see "Paper weight assessment agent is not initialized":
 - Ensure the required model is available
 
 ### Database Connection Errors
-If searches return no results or assessments fail:
+A database failure is reported as such: a "Search Failed" or "Database
+Error" message with the error text, or "Could not load recent assessments
+(database error)" in the recent-assessments list. "No Results" and
+"Document Not Found" mean the query ran and matched nothing. On a database
+error:
 - Verify PostgreSQL is running
 - Check database credentials in your environment
 - Ensure the `paper_weights` schema exists

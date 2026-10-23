@@ -10,6 +10,19 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Paper-weight DB helpers raise instead of returning `[]`/`None`**
+  (2026-10-23, closes #275). `search_documents`,
+  `semantic_search_documents`, `get_recent_assessments`,
+  `get_document_for_viewer`, `get_document_metadata`,
+  `get_cached_assessment` and `check_replication_status` (which used to
+  return a stored replication score of 0 on a query failure) log and
+  re-raise. The Paper Weight Lab reports "Search Failed" / "Database Error"
+  (search tab, search dialog, results tab) and marks the recent-assessments
+  combo non-modally; `assess_paper` turns the error into its (unstored)
+  error result. Tests: `tests/test_paper_weight_lab.py::TestDatabaseErrorsPropagate`.
+  Follow-ups filed: #344 (hardcoded PubMed `source_id = 1` elsewhere), #345
+  (failed assessment shown as "complete 0.0/10"; LLM assessor failures
+  stored as scores).
 - **Fact-checker review GUI shows the cited passage** (2026-10-23, closes
   #338). `CitationListWidget` now renders each evidence row as a
   `widgets/citation_card.CitationCard` (passage highlighted in the abstract,
@@ -172,9 +185,10 @@ value — pick one, or pull an item from ROADMAP.md:
 - #320 — after rejecting every discovered source, the doi.org fallback may
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
-- Open bugs from recent slices: #285–#287 (systematic review follow-ups), #274 / #275 (the same
-  "failure looks like no result" pattern in TransparencyAgent and
-  `paper_weight/db.py`).
+- Open bugs from recent slices: #285–#287 (systematic review follow-ups),
+  #274 and #345 (the same "failure looks like a result" pattern in
+  TransparencyAgent and `PaperWeightAssessmentAgent`), #344 (hardcoded
+  PubMed `source_id = 1`; move `pmid_select_expr` into `bmlibrarian.database`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -218,7 +232,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `uv run python -m pytest tests/
-  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#338 branch): **4421 passed, 47
+  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#275 branch): **4425 passed, 47
   skipped, 0 failed** in ~10 min (no `--continue-on-collection-errors` or
   marker deselection needed). Any failure is now a regression. Save the
   output to a file in the scratchpad (don't just tail it), and don't edit or

@@ -17,8 +17,12 @@ from datetime import datetime
 
 from bmlibrarian.agents.paper_weight import (
     search_documents,
+    semantic_search_documents,
     get_recent_assessments,
     get_document_metadata,
+    get_document_for_viewer,
+    get_cached_assessment,
+    check_replication_status,
     SEARCH_RESULT_LIMIT,
     RECENT_ASSESSMENTS_LIMIT,
 )
@@ -118,13 +122,6 @@ class TestSearchDocuments:
 
         assert results == []
 
-    def test_search_database_error(self):
-        """Test search with database error returns empty list."""
-        with failing_db("Database connection failed"):
-            results = search_documents('test')
-
-        assert results == []
-
     def test_search_respects_custom_limit(self):
         """Test that search respects custom limit parameter."""
         mock_cursor = MagicMock()
@@ -138,6 +135,30 @@ class TestSearchDocuments:
         call_args = mock_cursor.execute.call_args
         # The second parameter should be a tuple containing the limit
         assert 10 in call_args[0][1]
+
+
+class TestDatabaseErrorsPropagate:
+    """A database error must reach the caller, not look like "no results" (#275)."""
+
+    @pytest.mark.parametrize("call", [
+        lambda: search_documents('test'),
+        lambda: semantic_search_documents('test'),
+        lambda: get_recent_assessments(),
+        lambda: get_document_metadata(12345),
+        lambda: get_document_for_viewer(12345),
+        lambda: get_cached_assessment(12345, '1.0.0'),
+        lambda: check_replication_status(12345),
+    ], ids=[
+        'search_documents', 'semantic_search_documents',
+        'get_recent_assessments', 'get_document_metadata',
+        'get_document_for_viewer', 'get_cached_assessment',
+        'check_replication_status',
+    ])
+    def test_database_error_is_raised(self, call):
+        """Each helper re-raises the database error after logging it."""
+        with failing_db("Database connection failed"):
+            with pytest.raises(Exception, match="Database connection failed"):
+                call()
 
 
 class TestGetRecentAssessments:
@@ -188,13 +209,6 @@ class TestGetRecentAssessments:
 
         assert results == []
 
-    def test_get_recent_assessments_database_error(self):
-        """Test get_recent_assessments with database error."""
-        with failing_db("Database error"):
-            results = get_recent_assessments()
-
-        assert results == []
-
 
 class TestGetDocumentMetadata:
     """Tests for get_document_metadata function."""
@@ -231,13 +245,6 @@ class TestGetDocumentMetadata:
 
         with mock_db(mock_cursor):
             result = get_document_metadata(99999)
-
-        assert result is None
-
-    def test_get_document_metadata_database_error(self):
-        """Test get_document_metadata with database error."""
-        with failing_db("Connection failed"):
-            result = get_document_metadata(12345)
 
         assert result is None
 

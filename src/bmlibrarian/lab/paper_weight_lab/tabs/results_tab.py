@@ -290,7 +290,16 @@ class ResultsTab(QWidget):
         Args:
             document_id: Document ID to load
         """
-        meta = get_document_metadata(document_id)
+        try:
+            meta = get_document_metadata(document_id)
+        except Exception as e:
+            logger.error(f"Could not load document {document_id}: {e}")
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Could not load document {document_id}:\n{e}"
+            )
+            return
         if not meta:
             QMessageBox.warning(
                 self,
