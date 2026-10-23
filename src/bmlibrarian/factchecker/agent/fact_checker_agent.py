@@ -213,6 +213,7 @@ class EvidenceReference:
     document_id: Optional[str] = None
     relevance_score: Optional[float] = None
     supports_statement: Optional[bool] = None  # True=supports, False=contradicts, None=neutral
+    widened_from: Optional[str] = None  # quoted fragment, when citation_text was widened
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -229,6 +230,8 @@ class EvidenceReference:
             result["relevance_score"] = self.relevance_score
         if self.supports_statement is not None:
             result["stance"] = "supports" if self.supports_statement else "contradicts"
+        if self.widened_from is not None:
+            result["widened_from"] = self.widened_from
         return result
 
 
@@ -1276,7 +1279,8 @@ Respond ONLY with the JSON object, no additional text."""
                 doi=citation.doi,
                 document_id=citation.document_id,
                 relevance_score=relevance_score,
-                supports_statement=supports
+                supports_statement=supports,
+                widened_from=citation.widened_from
             ))
 
         return evidence_refs
@@ -1663,7 +1667,8 @@ Respond ONLY with the JSON object, no additional text."""
                     relevance_score=evidence_ref.relevance_score,
                     supports_statement="supports" if evidence_ref.supports_statement is True else
                                       "contradicts" if evidence_ref.supports_statement is False else
-                                      "neutral"
+                                      "neutral",
+                    widened_from=evidence_ref.widened_from
                 )
                 self.db.insert_evidence(evidence)
 

@@ -94,6 +94,8 @@ class Evidence:
     relevance_score: Optional[float] = None
     supports_statement: Optional[str] = None  # 'supports', 'contradicts', 'neutral'
     created_at: Optional[str] = None
+    # The quoted fragment, when citation_text was widened to its sentence(s)
+    widened_from: Optional[str] = None
 
 
 @dataclass
@@ -365,11 +367,12 @@ class FactCheckerDB:
                 cur.execute("""
                     INSERT INTO factcheck.evidence (
                         evaluation_id, citation_text, document_id, pmid, doi,
-                        relevance_score, supports_statement
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        relevance_score, supports_statement, widened_from
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING evidence_id
                 """, (evidence.evaluation_id, evidence.citation_text, evidence.document_id,
-                      evidence.pmid, evidence.doi, evidence.relevance_score, evidence.supports_statement))
+                      evidence.pmid, evidence.doi, evidence.relevance_score, evidence.supports_statement,
+                      evidence.widened_from))
                 return cur.fetchone()[0]
 
     def get_evidence_for_evaluation(self, evaluation_id: int) -> List[Evidence]:
@@ -378,7 +381,7 @@ class FactCheckerDB:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT evidence_id, evaluation_id, citation_text, document_id, pmid, doi,
-                           relevance_score, supports_statement, created_at
+                           relevance_score, supports_statement, created_at, widened_from
                     FROM factcheck.evidence
                     WHERE evaluation_id = %s
                 """, (evaluation_id,))
@@ -393,7 +396,8 @@ class FactCheckerDB:
                         doi=row[5],
                         relevance_score=row[6],
                         supports_statement=row[7],
-                        created_at=row[8].isoformat() if row[8] else None
+                        created_at=row[8].isoformat() if row[8] else None,
+                        widened_from=row[9]
                     ))
                 return results
 
@@ -814,7 +818,8 @@ class FactCheckerDB:
                                             pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
                                             doi=evidence_data.get('doi', '').replace('DOI:', ''),
                                             relevance_score=evidence_data.get('relevance_score'),
-                                            supports_statement=evidence_data.get('stance')
+                                            supports_statement=evidence_data.get('stance'),
+                                            widened_from=evidence_data.get('widened_from')
                                         )
                                         self.insert_evidence(evidence)
                                         stats['imported_evidence'] += 1

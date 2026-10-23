@@ -271,7 +271,8 @@ CREATE TABLE factcheck.evidence (
     doi TEXT,
     relevance_score FLOAT,
     supports_statement TEXT CHECK (supports_statement IN ('supports', 'contradicts', 'neutral')),
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    widened_from TEXT                     -- Migration 035: quoted fragment when citation_text was widened (NULL = quoted whole)
 );
 
 -- Human annotations (multi-user support)

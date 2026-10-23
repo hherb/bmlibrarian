@@ -24,6 +24,7 @@ from bmlibrarian.audit import (
 from bmlibrarian.database import get_document_details
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import StylesheetGenerator
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+from bmlibrarian.gui.qt.widgets.card_utils import widened_note
 from bmlibrarian.gui.qt.widgets.document_view_widget import DocumentViewWidget, DocumentViewData
 
 from .data_manager import (
@@ -249,6 +250,7 @@ class ValidationTabWidget(QWidget):
         audit_info_layout.addWidget(self.audit_header_label)
 
         self.audit_details_label = QLabel()
+        self.audit_details_label.setTextFormat(Qt.TextFormat.PlainText)  # passages are abstract text, not markup
         self.audit_details_label.setWordWrap(True)
         self.audit_details_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
             font_size_key='font_small'
@@ -717,6 +719,8 @@ class ValidationTabWidget(QWidget):
             details.append(f"Review Status: {item.human_review_status}")
         details.append(f"Extracted At: {item.extracted_at.strftime('%Y-%m-%d %H:%M')}")
         details.append(f"\nExtracted Passage:\n{item.passage}")
+        if item.widened_from:
+            details.append(f"\n{widened_note(item.widened_from)}")
         details.append(f"\nAI Summary:\n{item.summary}")
 
         self.audit_details_label.setText("\n".join(details))

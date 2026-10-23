@@ -42,7 +42,8 @@ class CitationTracker:
         evaluator_id: int,
         passage: str,
         summary: str,
-        relevance_confidence: Optional[float] = None
+        relevance_confidence: Optional[float] = None,
+        widened_from: Optional[str] = None
     ) -> int:
         """
         Record an extracted citation.
@@ -56,6 +57,8 @@ class CitationTracker:
             passage: Extracted passage text
             summary: AI-generated summary
             relevance_confidence: Optional confidence score (0.0-1.0)
+            widened_from: The fragment the model quoted, when ``passage`` was
+                widened to its complete sentence(s); None if quoted as a whole
 
         Returns:
             citation_id (BIGINT)
@@ -64,12 +67,14 @@ class CitationTracker:
             cur.execute("""
                 INSERT INTO audit.extracted_citations (
                     research_question_id, document_id, session_id, scoring_id,
-                    evaluator_id, passage, summary, relevance_confidence
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    evaluator_id, passage, summary, relevance_confidence,
+                    widened_from
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING citation_id
             """, (
                 research_question_id, document_id, session_id, scoring_id,
-                evaluator_id, passage, summary, relevance_confidence
+                evaluator_id, passage, summary, relevance_confidence,
+                widened_from
             ))
             citation_id = cur.fetchone()[0]
             self.conn.commit()

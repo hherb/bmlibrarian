@@ -38,6 +38,7 @@ class CitationData(TypedDict, total=False):
     quote: str
     journal: str
     relevance_score: float
+    widened_from: str
 
 
 def validate_document_data(data: Any) -> DocumentData:
@@ -331,3 +332,23 @@ def format_similarity_score(score: Optional[float]) -> str:
 
     percentage = score * 100
     return f"Similarity: {percentage:.0f}%"
+
+
+def widened_note(fragment: str) -> str:
+    """
+    Describe a citation whose passage was widened from a quoted fragment.
+
+    The model's summary and relevance score describe the fragment, while the
+    stored passage is its complete enclosing sentence(s), so reviewers see both.
+
+    Args:
+        fragment: The fragment the model quoted (``Citation.widened_from``)
+
+    Returns:
+        Plain-text note for display
+
+    Examples:
+        >>> widened_note("reduced mortality")
+        'Widened to the complete sentence; the model quoted: "reduced mortality"'
+    """
+    return f'Widened to the complete sentence; the model quoted: "{fragment}"'

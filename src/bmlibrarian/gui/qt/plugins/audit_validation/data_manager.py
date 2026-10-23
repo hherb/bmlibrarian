@@ -97,6 +97,8 @@ class CitationAuditItem:
     document_title: Optional[str] = None
     document_authors: Optional[str] = None
     validation: Optional[HumanValidation] = None
+    # The quoted fragment, when passage was widened to its complete sentence(s)
+    widened_from: Optional[str] = None
 
 
 @dataclass
@@ -376,6 +378,7 @@ class AuditValidationDataManager:
                 ec.relevance_confidence,
                 ec.human_review_status,
                 ec.extracted_at,
+                ec.widened_from,
                 d.title as document_title,
                 d.authors as document_authors
             FROM audit.extracted_citations ec
@@ -406,7 +409,8 @@ class AuditValidationDataManager:
                     document_authors=row.get('document_authors'),
                     validation=self.validation_tracker.get_validation(
                         TargetType.CITATION, row['citation_id']
-                    )
+                    ),
+                    widened_from=row.get('widened_from')
                 )
                 if include_validated or item.validation is None:
                     items.append(item)

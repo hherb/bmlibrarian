@@ -10,6 +10,19 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **`Citation.widened_from` is persisted and shown** (2026-10-23, closes
+  #310). **Migration 035** adds nullable `widened_from TEXT` to
+  `audit.extracted_citations` and `factcheck.evidence` (applied and re-run
+  on `bmlibrarian_dev`; it reaches `knowledgebase` on the app's next
+  connection, like 034). Writers: `CitationTracker.record_citation`,
+  `EvidenceReference` → `Evidence` → `insert_evidence`; read back by
+  `get_evidence_for_evaluation`, fact-checker JSON export/import
+  (`"widened_from"`, omitted when NULL), SQLite review packages
+  (`export_review_package.py`; older packages read as NULL) and the CLI
+  citation CSV/JSON exports. Marked via `card_utils.widened_note()` on the
+  research tab's citation cards and in the audit validation GUI. The
+  fact-checker review GUI shows no cited passage at all → #338. Tests:
+  `tests/test_citation_widened_storage.py`.
 - **Citation rejection counts reach the Qt research tab and CLI**
   (2026-10-22, closes #292). `CitationFinderAgent.extraction_summary()` is
   public; `WorkflowThread._extract_citations_progressive` snapshots
@@ -24,8 +37,7 @@ off new work. Longer-term structural items live in
   fixed: the CLI's citation progress callback took 2 arguments but the agent
   passes 3 (`current, total, title`), so **every CLI citation extraction
   failed** with "Error in citation extraction" (same bug fixed in
-  `examples/citation_demo.py`). Not done: marking individual widened
-  citations on their cards (`Citation.widened_from`; the summary counts them).
+  `examples/citation_demo.py`).
 - **Full test suite green** (2026-10-22, PR #336): the 160 failures + 19
   errors were stale tests left by refactors, plus two production fixes
   (`gui/qt/widgets/validators.classify_extraction_error`,
@@ -143,9 +155,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
-- #310 — persist `Citation.widened_from` (audit trail,
-  `factcheck.evidence`; needs a migration), then mark widened citations on
-  the Qt citation cards and in the review GUIs.
+- #338 — the fact-checker review GUI never shows the cited passage (so
+  it can't mark widened ones either); highlight it in the abstract like
+  `widgets/citation_card.py`.
 - Widening decisions from the PR #306 review: #308 (widen one-word quotes,
   or require a minimum fragment size?), #309 (fragments still lost at text
   end without a full stop, inside broken-off sentences, past 400 chars).

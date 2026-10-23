@@ -205,7 +205,8 @@ def export_evidence(pg_db: FactCheckerDB, sqlite_conn: sqlite3.Connection, evalu
             pg_cursor.execute("""
                 SELECT
                     evidence_id, evaluation_id, citation_text, document_id,
-                    pmid, doi, relevance_score, supports_statement, created_at
+                    pmid, doi, relevance_score, supports_statement, created_at,
+                    widened_from
                 FROM factcheck.evidence
                 WHERE evaluation_id = ANY(%s)
             """, (list(evaluation_ids),))
@@ -221,16 +222,18 @@ def export_evidence(pg_db: FactCheckerDB, sqlite_conn: sqlite3.Connection, evalu
             document_ids = set()
 
             for row in evidence_rows:
-                (ev_id, eval_id, citation, doc_id, pmid, doi, score, stance, created_at) = row
+                (ev_id, eval_id, citation, doc_id, pmid, doi, score, stance, created_at,
+                 widened_from) = row
 
                 sqlite_cursor.execute("""
                     INSERT OR IGNORE INTO evidence (
                         evidence_id, evaluation_id, citation_text, document_id,
-                        pmid, doi, relevance_score, supports_statement, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        pmid, doi, relevance_score, supports_statement, created_at,
+                        widened_from
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     ev_id, eval_id, citation, doc_id, pmid, doi, score, stance,
-                    created_at.isoformat() if created_at else None
+                    created_at.isoformat() if created_at else None, widened_from
                 ))
 
                 if sqlite_cursor.rowcount > 0:

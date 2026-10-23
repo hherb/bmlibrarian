@@ -20,8 +20,10 @@ from typing import Optional, Dict, Any, List
 import re
 import logging
 
-from .card_utils import html_escape
+from .card_utils import html_escape, widened_note
 from ..resources.styles import get_font_scale
+from ..resources.styles.stylesheet_generator import get_stylesheet_generator
+from ..resources.styles.theme_colors import MaterialColors
 from ..resources.constants import DocumentCardColors, DefaultLimits
 from ..core.document_receiver_registry import DocumentReceiverRegistry
 from ..core.event_bus import EventBus
@@ -110,6 +112,7 @@ class CitationCard(QFrame):
                 'summary': getattr(citation_data, 'summary', ''),
                 'abstract': getattr(citation_data, 'abstract', None),
                 'passage': getattr(citation_data, 'passage', ''),
+                'widened_from': getattr(citation_data, 'widened_from', None),
                 'pdf_url': getattr(citation_data, 'pdf_url', None),
                 'pdf_path': getattr(citation_data, 'pdf_path', None),
             }
@@ -311,6 +314,20 @@ class CitationCard(QFrame):
         summary = self.citation_data.get('summary', '')
         if summary:
             self._create_summary_section(summary)
+
+        # The summary describes the quoted fragment, not the whole passage
+        widened_from = self.citation_data.get('widened_from')
+        if widened_from:
+            widened_label = QLabel(widened_note(widened_from))
+            widened_label.setTextFormat(Qt.TextFormat.PlainText)  # abstract text, not markup
+            widened_label.setWordWrap(True)
+            widened_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            widened_label.setStyleSheet(
+                get_stylesheet_generator().label_stylesheet(
+                    font_size_key='font_small', color=MaterialColors.WARNING_800
+                )
+            )
+            self.details_layout.addWidget(widened_label)
 
         # Abstract with highlighted passage
         abstract = self.citation_data.get('abstract')
