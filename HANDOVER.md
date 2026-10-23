@@ -16,13 +16,19 @@ off new work. Longer-term structural items live in
   `get_document_for_viewer`, `get_document_metadata`,
   `get_cached_assessment` and `check_replication_status` (which used to
   return a stored replication score of 0 on a query failure) log and
-  re-raise. The Paper Weight Lab reports "Search Failed" / "Database Error"
-  (search tab, search dialog, results tab) and marks the recent-assessments
-  combo non-modally; `assess_paper` turns the error into its (unstored)
-  error result. Tests: `tests/test_paper_weight_lab.py::TestDatabaseErrorsPropagate`.
+  re-raise. The Paper Weight Lab reports "Search Failed" / "Could Not Load
+  Document" (search tab, search dialog, results tab; a failed load also
+  clears the results tab so Assess can't act on the previous paper) and
+  marks the recent-assessments combo non-modally; `assess_paper` turns the
+  error into its (unstored) error result. Tests:
+  `tests/test_paper_weight_lab.py::TestDatabaseErrorsPropagate`,
+  `tests/test_paper_weight_persistence.py::TestErrorHandling`,
+  `tests/test_paper_weight_lab_gui_errors.py`.
   Follow-ups filed: #344 (hardcoded PubMed `source_id = 1` elsewhere), #345
   (failed assessment shown as "complete 0.0/10"; LLM assessor failures
-  stored as scores).
+  stored as scores; systematic review caches the error result), #347
+  (chunk-search DB errors in `paper_weight/validators.py` stored as a
+  neutral 5.0 score).
 - **Fact-checker review GUI shows the cited passage** (2026-10-23, closes
   #338). `CitationListWidget` now renders each evidence row as a
   `widgets/citation_card.CitationCard` (passage highlighted in the abstract,
@@ -186,7 +192,7 @@ value — pick one, or pull an item from ROADMAP.md:
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
-  #274 and #345 (the same "failure looks like a result" pattern in
+  #274, #345 and #347 (the same "failure looks like a result" pattern in
   TransparencyAgent and `PaperWeightAssessmentAgent`), #344 (hardcoded
   PubMed `source_id = 1`; move `pmid_select_expr` into `bmlibrarian.database`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
@@ -232,9 +238,13 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `uv run python -m pytest tests/
-  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#275 branch): **4425 passed, 47
-  skipped, 0 failed** in ~10 min (no `--continue-on-collection-errors` or
-  marker deselection needed). Any failure is now a regression. Save the
+  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#275 branch, after review
+  fixes): **4432 passed, 47 skipped, 1 failed** in ~9 min. The one failure,
+  `test_annotation_widget.py::...::test_explanation_field_typing`, needs the
+  test window to get OS focus (`qWaitForWindowActive`); it passes with
+  `QT_QPA_PLATFORM=offscreen` and failed only because another app held
+  focus. No `--continue-on-collection-errors` or marker deselection needed;
+  any other failure is a regression. Save the
   output to a file in the scratchpad (don't just tail it), and don't edit or
   `git stash` the tree while it runs.
 - `ruff check .` / `mypy src/` carry pre-existing debt (~1,745 ruff findings);

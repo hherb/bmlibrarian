@@ -180,14 +180,18 @@ If you see "Paper weight assessment agent is not initialized":
 - Ensure the required model is available
 
 ### Database Connection Errors
-A database failure is reported as such: a "Search Failed" or "Database
-Error" message with the error text, or "Could not load recent assessments
-(database error)" in the recent-assessments list. "No Results" and
+A database failure is reported as such: a "Search Failed" or "Could Not
+Load Document" message with the error text, or "Could not load recent
+assessments (see log)" in the recent-assessments list. "No Results" and
 "Document Not Found" mean the query ran and matched nothing. On a database
 error:
 - Verify PostgreSQL is running
 - Check database credentials in your environment
 - Ensure the `paper_weights` schema exists
+
+If reading a cached assessment fails (for example a damaged stored row),
+**Assess Paper Weight** reports the error instead of silently re-assessing;
+use **Force Re-assess** to bypass the cache and replace the stored result.
 
 ### LLM Timeout
 If assessments take too long or timeout:

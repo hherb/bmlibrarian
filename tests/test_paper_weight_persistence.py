@@ -9,9 +9,11 @@ This test module covers:
 """
 
 import os
+from typing import Any
 
 import pytest
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 from bmlibrarian.agents.paper_weight import (
     PaperWeightAssessmentAgent,
     PaperWeightResult,
@@ -27,6 +29,14 @@ from bmlibrarian.agents.paper_weight import (
 from bmlibrarian.db_test_guard import is_protected_database
 
 TRUNCATION_MARKER = "\n\n[Text truncated...]"
+AGENT_MODULE = 'bmlibrarian.agents.paper_weight.agent'
+
+
+def failing_db() -> Any:
+    """Patch the paper-weight DB layer so every connection attempt fails."""
+    manager = MagicMock()
+    manager.get_connection.side_effect = Exception('Database connection failed')
+    return patch('bmlibrarian.agents.paper_weight.db.get_db_manager', return_value=manager)
 
 
 @pytest.fixture
@@ -248,6 +258,41 @@ class TestErrorHandling:
         # Check error detail is present
         assert len(error_result.study_design.details) == 1
         assert error_result.study_design.details[0].reasoning == 'Test error message'
+
+    def test_cache_lookup_db_failure_is_unstored_error_result(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """A failed cache read is reported, not followed by a fresh assessment (#275)."""
+        with failing_db(), \
+             patch(f'{AGENT_MODULE}.get_document') as get_doc, \
+             patch(f'{AGENT_MODULE}.store_assessment') as store:
+            result = agent.assess_paper(42)
+
+        get_doc.assert_not_called()
+        store.assert_not_called()
+        assert result.final_weight == 0.0
+        assert 'Database connection failed' in result.study_design.details[0].reasoning
+
+    def test_replication_db_failure_is_not_stored_as_score(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """A failed replication query no longer becomes a stored 0 score (#275)."""
+        def score(name: str) -> DimensionScore:
+            return DimensionScore(name, 7.0)
+
+        with failing_db(), \
+             patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
+             patch(f'{AGENT_MODULE}.extract_study_type_llm', return_value=score('study_design')), \
+             patch(f'{AGENT_MODULE}.extract_sample_size_llm', return_value=score('sample_size')), \
+             patch.object(agent, '_assess_methodological_quality',
+                          return_value=score('methodological_quality')), \
+             patch.object(agent, '_assess_risk_of_bias', return_value=score('risk_of_bias')), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store:
+            result = agent.assess_paper(42, force_reassess=True)
+
+        store.assert_not_called()
+        assert result.final_weight == 0.0
+        assert 'Database connection failed' in result.study_design.details[0].reasoning
 
 
 class TestLLMJSONParsing:

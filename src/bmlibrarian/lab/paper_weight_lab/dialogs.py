@@ -285,7 +285,7 @@ class DocumentSearchDialog(QDialog):
         except Exception as e:
             logger.error(f"Document search failed: {e}")
             self.search_results = []
-            QMessageBox.critical(self, "Search Failed", f"The database search failed:\n{e}")
+            QMessageBox.critical(self, "Search Failed", f"The search failed:\n{e}")
             return
 
         for doc in self.search_results:

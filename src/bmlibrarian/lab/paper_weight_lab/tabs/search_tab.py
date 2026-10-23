@@ -229,7 +229,7 @@ class SearchTab(QWidget):
         except Exception as e:
             logger.error(f"Could not load recent assessments: {e}")
             # Non-modal: this runs at startup and after every selection.
-            self.recent_combo.setItemText(0, "-- Could not load recent assessments (database error) --")
+            self.recent_combo.setItemText(0, "-- Could not load recent assessments (see log) --")
             return
         for item in recent:
             display_text = format_recent_assessment_display(
@@ -273,7 +273,7 @@ class SearchTab(QWidget):
         except Exception as e:
             logger.error(f"Document search failed: {e}")
             self.search_results = []
-            QMessageBox.critical(self, "Search Failed", f"The database search failed:\n{e}")
+            QMessageBox.critical(self, "Search Failed", f"The search failed:\n{e}")
             return
 
         for doc in self.search_results:
