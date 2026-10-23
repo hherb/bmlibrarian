@@ -13,6 +13,7 @@ import os
 
 # Import document card factory
 from ...qt_document_card_factory import QtDocumentCardFactory
+from ...widgets.citation_card import CitationCard
 from bmlibrarian.gui.document_card_factory_base import DocumentCardData
 
 # Import PDF manager
@@ -114,6 +115,33 @@ def merge_document_details(
     return enriched
 
 
+def citation_card_fields(
+    citation: Dict[str, Any],
+    card_data: DocumentCardData
+) -> Dict[str, Any]:
+    """Build the ``CitationCard`` data for a fact-checker citation.
+
+    Args:
+        citation: Citation in fact-checker format (``passage`` is the stored
+            ``citation_text``, ``widened_from`` the quoted fragment if any)
+        card_data: The citation's converted document card data
+
+    Returns:
+        Dictionary in the format ``CitationCard`` reads
+    """
+    return {
+        'document_id': card_data.doc_id,
+        'document_title': card_data.title,
+        'authors': card_data.authors or [],
+        'publication': card_data.journal,
+        'publication_date': card_data.year or '',
+        # A placeholder is not an abstract: show the passage on its own instead
+        'abstract': None if _is_missing(citation, 'abstract') else citation['abstract'],
+        'passage': citation.get('passage') or '',
+        'widened_from': citation.get('widened_from'),
+    }
+
+
 class CitationListWidget(QWidget):
     """Widget for displaying a list of citations using standard CitationCard widgets."""
 
@@ -211,10 +239,15 @@ class CitationListWidget(QWidget):
                     self._create_enrichment_warning(enrichment_failures)
                 )
 
-            # Create citation cards using document card factory
-            for enriched_citation in enriched_citations:
+            # Citation cards highlight the cited passage in the abstract; the
+            # factory supplies the same PDF buttons as its document cards
+            for index, enriched_citation in enumerate(enriched_citations, start=1):
                 card_data = self._convert_to_card_data(enriched_citation)
-                card = self.card_factory.create_card(card_data)
+                card = CitationCard(
+                    citation_card_fields(enriched_citation, card_data),
+                    index=index,
+                    pdf_button_widget=self.card_factory._create_pdf_button_for_card(card_data),
+                )
                 self.layout.addWidget(card)
 
             # Add stretch at the end

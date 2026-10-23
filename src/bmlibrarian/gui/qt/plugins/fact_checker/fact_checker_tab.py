@@ -970,7 +970,7 @@ class FactCheckerTabWidget(QWidget):
                 }
 
                 # Convert evidence
-                # Note: Evidence table only has document_id, pmid, doi, citation_text
+                # Note: Evidence table only has document_id, pmid, doi, citation_text, widened_from
                 # The citation widget will enrich from the main document table using document_id
                 for ev in row.get('evidence', []):
                     result['evidence_list'].append({
@@ -978,6 +978,7 @@ class FactCheckerTabWidget(QWidget):
                         'pmid': ev.get('pmid'),
                         'doi': ev.get('doi'),
                         'passage': ev.get('citation_text', ''),
+                        'widened_from': ev.get('widened_from'),
                         # Leave these empty/None to trigger enrichment
                         'title': None,
                         'abstract': None,

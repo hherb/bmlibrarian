@@ -328,3 +328,47 @@ def test_citation_card_marks_a_widened_passage(
         card.deleteLater()
 
     assert (widened_note(FRAGMENT) in texts) == (widened_from is not None)
+
+
+def test_fact_checker_review_card_highlights_a_widened_passage(tmp_path: Path) -> None:
+    """The fact-checker review GUI shows the cited passage and its widening (#338)."""
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
+        CitationListWidget,
+    )
+    from bmlibrarian.gui.qt.widgets.citation_card import CitationCard
+
+    _app = QApplication.instance() or QApplication([])
+    passage = "Treatment reduced mortality in older adults."
+    widget = CitationListWidget(pdf_base_dir=tmp_path)
+    try:
+        widget.set_citations([{
+            'document_id': 7, 'title': 'T', 'authors': 'A B', 'journal': 'J',
+            'pub_year': 2020, 'pmid': '1',
+            'abstract': f"Background. {passage} Conclusion.",
+            'passage': passage, 'widened_from': FRAGMENT,
+        }])
+        cards = widget.findChildren(CitationCard)
+        texts = [label.text() for label in widget.findChildren(QLabel)]
+    finally:
+        widget.deleteLater()
+
+    assert len(cards) == 1
+    assert widened_note(FRAGMENT) in texts
+    assert any(f"📌 {passage} 📌" in text for text in texts)
+
+
+def test_fact_checker_card_fields_drop_placeholder_abstract() -> None:
+    """A placeholder abstract is not highlighted into; the passage shows alone."""
+    from bmlibrarian.gui.document_card_factory_base import DocumentCardData
+    from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
+        citation_card_fields,
+    )
+
+    citation = {'abstract': 'No abstract available', 'passage': 'P.'}
+    fields = citation_card_fields(citation, DocumentCardData(doc_id=1, title='T'))
+
+    assert fields['abstract'] is None
+    assert fields['passage'] == 'P.'
+    assert fields['widened_from'] is None
