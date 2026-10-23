@@ -194,6 +194,7 @@ class WorkflowHandlersMixin:
         self.workflow_thread.document_scored.connect(self._on_document_scored)
         self.workflow_thread.citation_progress.connect(self._on_citation_progress)
         self.workflow_thread.citation_extracted.connect(self._on_citation_extracted)
+        self.workflow_thread.citation_summary.connect(self._on_citation_summary)
 
         # Counterfactual analysis signals
         self.workflow_thread.counterfactual_analysis_complete.connect(self._on_counterfactual_analysis_complete)
@@ -434,8 +435,18 @@ class WorkflowHandlersMixin:
             self.citations_refs.widgets['summary_label'].setText(
                 f"{len(citations)} citations extracted from high-scoring documents"
             )
+        # The status line comes from the thread, with the rejection summary.
 
-        self.status_message.emit(f"Extracted {len(citations)} citations")
+    @Slot(str)
+    def _on_citation_summary(self: 'ResearchTabWidget', summary: str) -> None:
+        """
+        Show the extraction summary (widened and rejected passages) in the Citations tab.
+
+        Args:
+            summary: ``CitationFinderAgent.extraction_summary`` text.
+        """
+        if hasattr(self, 'citations_refs') and self.citations_refs and 'summary_label' in self.citations_refs.widgets:
+            self.citations_refs.widgets['summary_label'].setText(summary)
 
     # ========================================================================
     # Progressive Display Signal Handlers

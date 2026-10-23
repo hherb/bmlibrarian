@@ -454,9 +454,20 @@ callback whose message gives the widened passages, the rejections broken
 down by reason and the number of errors, e.g. `Extracted 1 citations from 3
 documents (1 widened from a fragment to complete sentences; 2 rejected:
 passage not found in abstract ×1, passage is not one or more complete
-sentences ×1)`.
+sentences ×1)`. The message comes from the public `extraction_summary()`.
+Callers that extract one document at a time call it themselves with the
+`failed_citations` length and `errors` count taken before the batch: the Qt
+research tab's `WorkflowThread._extract_citations_progressive` (shown in the
+Citations tab via its `citation_summary` signal and in the progress line,
+prefixed ⚠️ instead of ✓ when passages were rejected or documents failed; a
+failure in the thread's own per-document code is counted with the public
+`record_error()`),
+and the CLI's `WorkflowExecutionManager.execute_citation_extraction` prints
+it after `process_scored_documents_for_citations`.
 
-Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`.
+Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`,
+`tests/test_qt_workflow_thread.py` (`test_citation_summary_*`, `test_run_*`),
+`tests/test_qt_research_signal_wiring.py::test_citation_summary_reaches_citations_tab`.
 
 ### Document Verification
 

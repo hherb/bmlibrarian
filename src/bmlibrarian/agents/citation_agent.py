@@ -328,7 +328,7 @@ class CitationFinderAgent(BaseAgent):
             widened=widened,
         )
 
-    def _extraction_summary(
+    def extraction_summary(
         self,
         extracted: int,
         documents: int,
@@ -338,6 +338,10 @@ class CitationFinderAgent(BaseAgent):
     ) -> str:
         """
         Describe a batch extraction, including rejected passages and errors.
+
+        Callers that extract one document at a time (the Qt research tab)
+        take ``rejections_before`` and ``errors_before`` from
+        ``get_validation_stats()`` before the batch starts.
 
         Args:
             extracted: Citations extracted in this batch.
@@ -368,9 +372,12 @@ class CitationFinderAgent(BaseAgent):
             notes.append(f"{errors} failed with an error, see log")
         return f"{summary} ({'; '.join(notes)})" if notes else summary
 
-    def _record_error(self, document_id: Any, error: str) -> None:
+    def record_error(self, document_id: Any, error: str) -> None:
         """
         Count a document whose extraction failed (not a judgement about it).
+
+        Public so callers that extract one document at a time (the Qt
+        research tab) can count their own failures in ``extraction_summary``.
 
         Args:
             document_id: The document's ID.
@@ -475,7 +482,7 @@ class CitationFinderAgent(BaseAgent):
         try:
             self._ensure_connection(doc_id)
         except ConnectionError as e:
-            self._record_error(doc_id, str(e))
+            self.record_error(doc_id, str(e))
             logger.error(f"Cannot connect to the LLM server - citation extraction "
                          f"unavailable for document {doc_id}: {e}")
             return None
@@ -552,11 +559,11 @@ Respond only with valid JSON."""
                         base_delay=self.transient_retry_base_delay,
                     )
                 except json.JSONDecodeError as e:
-                    self._record_error(doc_id, f"unparseable LLM output: {e}")
+                    self.record_error(doc_id, f"unparseable LLM output: {e}")
                     logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
                     return None
                 except (ConnectionError, ValueError) as e:
-                    self._record_error(doc_id, str(e))
+                    self.record_error(doc_id, str(e))
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
                     return None
 
@@ -660,7 +667,7 @@ Respond only with valid JSON."""
                 return citation
 
             except Exception as e:
-                self._record_error(doc_id, f"unexpected error: {e}")
+                self.record_error(doc_id, f"unexpected error: {e}")
                 logger.exception(
                     f"Unexpected error extracting citation from document {doc_id} "
                     f"(attempt {attempt + 1})"
@@ -722,7 +729,7 @@ Respond only with valid JSON."""
                 citations.append(citation)
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
 
-        summary = self._extraction_summary(
+        summary = self.extraction_summary(
             len(citations), len(qualifying_docs), rejections_before, errors_before,
             widened=sum(c.widened_from is not None for c in citations),
         )
@@ -1125,7 +1132,7 @@ Respond only with valid JSON."""
         total_extracted = len(results)
         self._call_callback(
             "citation_extraction_completed",
-            self._extraction_summary(
+            self.extraction_summary(
                 total_extracted, len(qualifying_docs), failed_before, errors_before,
                 widened=sum(c.widened_from is not None for c, _ in results),
             )

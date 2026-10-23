@@ -649,6 +649,55 @@ def test_persistent_outage_is_one_error_naming_the_document(_no_backoff_waits: l
     assert "Ollama down" in stats["errored_documents"][0]["error"]
     assert len(_no_backoff_waits) == 2
 
+def _run_cli_extraction(passages: list) -> tuple:
+    """
+    Run the CLI's citation extraction on two documents, one LLM passage each.
+
+    A rejection from an earlier batch is planted first; it must not be counted.
+
+    Returns:
+        ``(citations, ui)``: the extracted citations and the mocked UI.
+    """
+    from unittest.mock import Mock
+
+    from bmlibrarian.cli.workflow_execution import WorkflowExecutionManager
+
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=0)
+    agent._validation_stats["failed_citations"].append({"reason": REJECT_PASSAGE_EMPTY})
+    config = Mock(default_score_threshold=2.0, default_min_relevance=0.7, show_progress=True)
+    ui = Mock()
+    ui.display_citations.return_value = "1"
+    manager = WorkflowExecutionManager(config, ui, Mock(), Mock(citation_agent=agent), Mock())
+    documents = [
+        ({"id": 1, "title": "a", "abstract": ABSTRACT}, {"score": 4}),
+        ({"id": 2, "title": "b", "abstract": ABSTRACT}, {"score": 4}),
+    ]
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=[_llm_response(p) for p in passages]
+    ):
+        return manager.execute_citation_extraction("q", documents), ui
+
+
+def test_cli_extraction_shows_batch_summary() -> None:
+    """The CLI shows how many passages were rejected, counting this batch only (#292)."""
+    citations, ui = _run_cli_extraction([GOOD_PASSAGE, "Statins lower cholesterol."])
+
+    assert len(citations) == 1, ui.mock_calls  # was a TypeError in progress_callback
+    ui.show_info_message.assert_any_call(
+        "Extracted 1 citations from 2 documents "
+        f"(1 rejected: {REJECT_PASSAGE_NOT_FOUND} ×1)"
+    )
+
+
+def test_cli_no_citations_names_rejected_passages(capsys: pytest.CaptureFixture) -> None:
+    """With every passage rejected, the CLI lists that among the possible reasons (#292)."""
+    citations, ui = _run_cli_extraction(["Statins lower cholesterol.", "Beta blockers slow the heart."])
+
+    assert citations == []
+    ui.show_error_message.assert_any_call("No citations extracted.")
+    assert "could not be verified against the abstract (2 rejected)" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     # Run tests
     print("Testing citation validation...")

@@ -189,7 +189,9 @@ the document counts as an error.
 
 When a batch finishes, the log (and the agent's
 `citation_extraction_completed` progress callback) says how many documents
-were skipped this way and why, for example "Extracted 12 citations from 20
+were skipped this way and why; the Qt research tab shows the same line at
+the top of its Citations tab and in the progress line, and the CLI prints it
+after extraction, for example "Extracted 12 citations from 20
 documents (2 widened from a fragment to complete sentences; 3 rejected:
 passage not found in abstract ×1, passage is not one or more complete
 sentences ×2)". From Python,
