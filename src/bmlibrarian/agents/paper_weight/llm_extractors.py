@@ -182,6 +182,10 @@ def extract_study_type_llm(
 
     Returns:
         DimensionScore for study design with audit trail
+
+    Raises:
+        Exception: Chunk-search and LLM errors, and an unparseable LLM
+            response, are logged and re-raised: a failure must not be scored.
     """
     if hierarchy_config is None:
         hierarchy_config = DEFAULT_STUDY_TYPE_HIERARCHY
@@ -323,24 +327,12 @@ def extract_study_type_llm(
 
             return dimension_score
 
-        else:
-            logger.warning(f"Could not parse LLM response: {response_text[:200]}")
+        raise ValueError(f"Could not parse LLM study type response: {response_text[:200]}")
 
     except Exception as e:
+        # Re-raise: a neutral fallback score would be stored as the verdict (#345).
         logger.error(f"Error in LLM study type extraction: {e}")
-
-    # Fallback on error
-    dimension_score = DimensionScore(
-        dimension_name=DIMENSION_STUDY_DESIGN,
-        score=5.0
-    )
-    dimension_score.add_detail(
-        component='study_type',
-        value='unknown',
-        contribution=5.0,
-        reasoning='LLM extraction failed, assigned neutral score'
-    )
-    return dimension_score
+        raise
 
 
 def extract_sample_size_llm(
@@ -365,6 +357,10 @@ def extract_sample_size_llm(
 
     Returns:
         DimensionScore for sample size with audit trail
+
+    Raises:
+        Exception: Chunk-search and LLM errors, and an unparseable LLM
+            response, are logged and re-raised: a failure must not be scored.
     """
     if scoring_config is None:
         scoring_config = {
@@ -546,24 +542,12 @@ def extract_sample_size_llm(
 
             return dimension_score
 
-        else:
-            logger.warning(f"Could not parse LLM response: {response_text[:200]}")
+        raise ValueError(f"Could not parse LLM sample size response: {response_text[:200]}")
 
     except Exception as e:
+        # Re-raise: a neutral fallback score would be stored as the verdict (#345).
         logger.error(f"Error in LLM sample size extraction: {e}")
-
-    # Fallback on error
-    dimension_score = DimensionScore(
-        dimension_name=DIMENSION_SAMPLE_SIZE,
-        score=0.0
-    )
-    dimension_score.add_detail(
-        component='extracted_n',
-        value='not_found',
-        contribution=0.0,
-        reasoning='LLM extraction failed'
-    )
-    return dimension_score
+        raise
 
 
 def ensure_document_embeddings(
@@ -583,6 +567,10 @@ def ensure_document_embeddings(
 
     Returns:
         True if embeddings exist or were created, False otherwise
+
+    Raises:
+        Exception: Database and embedding errors are logged and re-raised, so
+            the caller reports the real cause.
     """
     from ...database import get_db_manager
     from ...embeddings.chunk_embedder import ChunkEmbedder
@@ -646,7 +634,7 @@ def ensure_document_embeddings(
 
     except Exception as e:
         logger.error(f"Error ensuring embeddings for document {document_id}: {e}")
-        return False
+        raise
 
 
 __all__ = [

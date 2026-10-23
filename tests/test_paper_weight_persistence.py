@@ -238,48 +238,31 @@ class TestDimensionScore:
 
 
 class TestErrorHandling:
-    """Tests for error handling methods"""
+    """A failed assessment raises and is never stored (#275, #345, #347)."""
 
-    def test_create_error_result(self, agent):
-        """Test creation of error result"""
-        error_result = agent._create_error_result(
-            document_id=12345,
-            error_message="Test error message"
-        )
+    @staticmethod
+    def _score(name: str) -> DimensionScore:
+        """Return a valid dimension score for patched assessment steps."""
+        return DimensionScore(name, 7.0)
 
-        assert error_result.document_id == 12345
-        assert error_result.final_weight == 0.0
-        assert error_result.assessor_version == agent.config.get('version', '1.0.0')
-
-        # All dimension scores should be error scores
-        assert error_result.study_design.dimension_name == 'error'
-        assert error_result.sample_size.dimension_name == 'error'
-
-        # Check error detail is present
-        assert len(error_result.study_design.details) == 1
-        assert error_result.study_design.details[0].reasoning == 'Test error message'
-
-    def test_cache_lookup_db_failure_is_unstored_error_result(
+    def test_cache_lookup_db_failure_raises(
         self, agent: PaperWeightAssessmentAgent
     ) -> None:
         """A failed cache read is reported, not followed by a fresh assessment (#275)."""
         with failing_db(), \
              patch(f'{AGENT_MODULE}.get_document') as get_doc, \
-             patch(f'{AGENT_MODULE}.store_assessment') as store:
-            result = agent.assess_paper(42)
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(Exception, match='Database connection failed'):
+            agent.assess_paper(42)
 
         get_doc.assert_not_called()
         store.assert_not_called()
-        assert result.final_weight == 0.0
-        assert 'Database connection failed' in result.study_design.details[0].reasoning
 
     def test_replication_db_failure_is_not_stored_as_score(
         self, agent: PaperWeightAssessmentAgent
     ) -> None:
         """A failed replication query no longer becomes a stored 0 score (#275)."""
-        def score(name: str) -> DimensionScore:
-            return DimensionScore(name, 7.0)
-
+        score = self._score
         with failing_db(), \
              patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
              patch(f'{AGENT_MODULE}.extract_study_type_llm', return_value=score('study_design')), \
@@ -287,12 +270,82 @@ class TestErrorHandling:
              patch.object(agent, '_assess_methodological_quality',
                           return_value=score('methodological_quality')), \
              patch.object(agent, '_assess_risk_of_bias', return_value=score('risk_of_bias')), \
-             patch(f'{AGENT_MODULE}.store_assessment') as store:
-            result = agent.assess_paper(42, force_reassess=True)
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(Exception, match='Database connection failed'):
+            agent.assess_paper(42, force_reassess=True)
 
         store.assert_not_called()
-        assert result.final_weight == 0.0
-        assert 'Database connection failed' in result.study_design.details[0].reasoning
+
+    @pytest.mark.parametrize('failing_step', ['methodological quality', 'risk of bias'])
+    def test_llm_assessor_failure_is_not_stored(
+        self, agent: PaperWeightAssessmentAgent, failing_step: str
+    ) -> None:
+        """An LLM assessor failure is no longer stored as a neutral 5.0 score (#345)."""
+        score = self._score
+
+        def generate(prompt: str, retry_context: str, **kwargs: Any) -> dict:
+            """Fail only the step under test."""
+            if retry_context.startswith(failing_step):
+                raise RuntimeError('LLM timeout')
+            return {}
+
+        with patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
+             patch(f'{AGENT_MODULE}.extract_study_type_llm', return_value=score('study_design')), \
+             patch(f'{AGENT_MODULE}.extract_sample_size_llm', return_value=score('sample_size')), \
+             patch(f'{AGENT_MODULE}.check_replication_status',
+                   return_value=score('replication_status')), \
+             patch.object(agent, '_generate_and_parse_json', side_effect=generate), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(RuntimeError, match='LLM timeout'):
+            agent.assess_paper(42)
+
+        store.assert_not_called()
+
+    def test_embedding_db_failure_names_real_cause(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """A DB error while checking chunks is not reported as 'embedding failed' (#347)."""
+        manager = MagicMock()
+        manager.get_connection.side_effect = Exception('Database connection failed')
+        with patch('bmlibrarian.database.get_db_manager', return_value=manager), \
+             patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document',
+                   return_value={'id': 42, 'abstract': 'x', 'full_text': 'body'}), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(Exception, match='Database connection failed'):
+            agent.assess_paper(42)
+
+        store.assert_not_called()
+
+    def test_legacy_validation_db_failure_is_not_stored(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """Legacy mode: a chunk-query failure aborts instead of storing unvalidated (#347)."""
+        manager = MagicMock()
+        manager.get_connection.side_effect = Exception('Database connection failed')
+        with patch('bmlibrarian.database.get_db_manager', return_value=manager), \
+             patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document',
+                   return_value={'id': 42, 'abstract': 'A randomized controlled trial.'}), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(Exception, match='Database connection failed'):
+            agent.assess_paper(42, use_llm_extraction=False)
+
+        store.assert_not_called()
+
+    def test_full_paper_ingestion_failure_raises(
+        self, agent: PaperWeightAssessmentAgent, tmp_path: Any
+    ) -> None:
+        """A failed PDF ingestion raises instead of returning a 0.0 result."""
+        ingestor = MagicMock()
+        ingestor.ingest_pdf_immediate.return_value = MagicMock(
+            success=False, error_message='bad pdf'
+        )
+        with patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42}), \
+             patch('bmlibrarian.importers.pdf_ingestor.PDFIngestor', return_value=ingestor), \
+             pytest.raises(RuntimeError, match='PDF ingestion failed: bad pdf'):
+            agent.assess_full_paper(42, pdf_path=tmp_path / 'paper.pdf')
 
 
 class TestLLMJSONParsing:

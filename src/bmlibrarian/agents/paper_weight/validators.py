@@ -92,6 +92,8 @@ def search_chunks_by_query(
 
     Raises:
         ValueError: If inputs are invalid
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     # Input validation
     if document_id <= 0:
@@ -176,8 +178,9 @@ def search_chunks_by_query(
         return []
 
     except Exception as e:
-        logger.warning(f"Error in semantic chunk search: {e}")
-        return []
+        # Re-raise: an empty list would read as "no relevant text" and be scored (#347).
+        logger.error(f"Error in semantic chunk search for document {document_id}: {e}")
+        raise
 
 
 DEFAULT_CHUNK_LIMIT = 20  # Default limit for get_all_document_chunks
@@ -201,6 +204,8 @@ def get_all_document_chunks(
 
     Raises:
         ValueError: If inputs are invalid
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     # Input validation
     if document_id <= 0:
@@ -236,8 +241,8 @@ def get_all_document_chunks(
                 return results
 
     except Exception as e:
-        logger.warning(f"Error getting document chunks: {e}")
-        return []
+        logger.error(f"Error getting chunks for document {document_id}: {e}")
+        raise
 
 
 def _build_study_type_validation_prompt(

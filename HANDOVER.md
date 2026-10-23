@@ -10,6 +10,26 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Paper-weight failures raise instead of becoming scores** (2026-10-23,
+  closes #345, #347). `assess_paper` / `assess_full_paper` log and re-raise
+  (the 0.0/10 `_create_error_result` is gone); the MQ/RoB assessors no
+  longer return a neutral 5.0 (`create_error_dimension_score` removed);
+  `extract_study_type_llm` / `extract_sample_size_llm` raise on an LLM error
+  or unparseable reply (were 5.0 / 0.0); `search_chunks_by_query`,
+  `get_all_document_chunks`, `_search_document_chunks` and
+  `ensure_document_embeddings` re-raise DB errors; legacy
+  `_validate_extractions` no longer swallows them (LLM validation failures
+  are still recorded in the audit trail by the validators). Nothing failed
+  is stored or cached, so a re-run retries: the lab shows "Assessment
+  Error", the systematic review gets its `"error"` dict (not cached), the
+  paper reviewer marks the step FAILED. `knowledgebase` had no stored
+  failure scores (117 assessments, read-only check). Tests:
+  `tests/test_paper_weight_persistence.py::TestErrorHandling`,
+  `tests/test_paper_weight_llm_extractors.py`,
+  `tests/test_systematic_review_quality.py::...::test_failed_paper_weight_is_not_cached`.
+  Follow-up filed: #348 (systematic review scorer reads `composite_score`,
+  `PaperWeightResult.to_dict()` emits `final_weight`: every paper scores
+  neutral on paper weight and replication).
 - **Paper-weight DB helpers raise instead of returning `[]`/`None`**
   (2026-10-23, closes #275). `search_documents`,
   `semantic_search_documents`, `get_recent_assessments`,
@@ -24,11 +44,7 @@ off new work. Longer-term structural items live in
   `tests/test_paper_weight_lab.py::TestDatabaseErrorsPropagate`,
   `tests/test_paper_weight_persistence.py::TestErrorHandling`,
   `tests/test_paper_weight_lab_gui_errors.py`.
-  Follow-ups filed: #344 (hardcoded PubMed `source_id = 1` elsewhere), #345
-  (failed assessment shown as "complete 0.0/10"; LLM assessor failures
-  stored as scores; systematic review caches the error result), #347
-  (chunk-search DB errors in `paper_weight/validators.py` stored as a
-  neutral 5.0 score).
+  Follow-up: #344 (hardcoded PubMed `source_id = 1` elsewhere).
 - **Fact-checker review GUI shows the cited passage** (2026-10-23, closes
   #338). `CitationListWidget` now renders each evidence row as a
   `widgets/citation_card.CitationCard` (passage highlighted in the abstract,
@@ -43,8 +59,7 @@ off new work. Longer-term structural items live in
 - **`Citation.widened_from` is persisted and shown** (2026-10-23, closes
   #310). **Migration 035** adds nullable `widened_from TEXT` to
   `audit.extracted_citations` and `factcheck.evidence` (applied and re-run
-  on `bmlibrarian_dev`; it reaches `knowledgebase` on the app's next
-  connection, like 034). Writers: `CitationTracker.record_citation`,
+  on `bmlibrarian_dev`; auto-applied to `knowledgebase` on 2026-10-23). Writers: `CitationTracker.record_citation`,
   `EvidenceReference` → `Evidence` → `insert_evidence`; read back by
   `get_evidence_for_evaluation`, fact-checker JSON (`to_dict`
   omits `"widened_from"` when NULL; DB `export_to_json` writes `null`), SQLite review packages
@@ -191,10 +206,12 @@ value — pick one, or pull an item from ROADMAP.md:
 - #320 — after rejecting every discovered source, the doi.org fallback may
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
+- #348 — systematic review ignores paper-weight scores (key mismatch;
+  changes rankings, check with the owner).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
-  #274, #345 and #347 (the same "failure looks like a result" pattern in
-  TransparencyAgent and `PaperWeightAssessmentAgent`), #344 (hardcoded
-  PubMed `source_id = 1`; move `pmid_select_expr` into `bmlibrarian.database`).
+  #274 (the "failure looks like a result" pattern in TransparencyAgent),
+  #344 (hardcoded PubMed `source_id = 1`; move `pmid_select_expr` into
+  `bmlibrarian.database`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -237,13 +254,11 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ### Verify
 
-- **The full suite is green** since PR #336: `uv run python -m pytest tests/
-  -p no:cacheprovider --no-cov -q` on 2026-10-23 (#275 branch, after review
-  fixes): **4432 passed, 47 skipped, 1 failed** in ~9 min. The one failure,
-  `test_annotation_widget.py::...::test_explanation_field_typing`, needs the
-  test window to get OS focus (`qWaitForWindowActive`); it passes with
-  `QT_QPA_PLATFORM=offscreen` and failed only because another app held
-  focus. No `--continue-on-collection-errors` or marker deselection needed;
+- **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-23
+  (#345/#347 branch): **4446 passed, 47 skipped** in ~12 min. Without
+  `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
+  can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
   output to a file in the scratchpad (don't just tail it), and don't edit or
   `git stash` the tree while it runs.

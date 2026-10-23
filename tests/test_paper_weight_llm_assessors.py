@@ -24,7 +24,6 @@ from bmlibrarian.agents.paper_weight.llm_assessors import (
     calculate_risk_of_bias_score,
     extract_mq_from_study_assessment,
     extract_rob_from_study_assessment,
-    create_error_dimension_score,
 )
 from bmlibrarian.agents.paper_weight import (
     DIMENSION_METHODOLOGICAL_QUALITY,
@@ -335,33 +334,6 @@ class TestExtractROBFromStudyAssessment:
         result = extract_rob_from_study_assessment(study_assessment)
         
         assert result is not None
-
-
-class TestCreateErrorDimensionScore:
-    """Tests for create_error_dimension_score function."""
-
-    def test_basic_error_score(self):
-        """Test creating error dimension score."""
-        result = create_error_dimension_score(
-            DIMENSION_METHODOLOGICAL_QUALITY,
-            'LLM timeout'
-        )
-        
-        assert result.dimension_name == DIMENSION_METHODOLOGICAL_QUALITY
-        assert result.score == 5.0  # Default neutral score
-        assert len(result.details) == 1
-        assert result.details[0].component == 'error'
-        assert 'LLM timeout' in result.details[0].reasoning
-
-    def test_custom_default_score(self):
-        """Test with custom default score."""
-        result = create_error_dimension_score(
-            DIMENSION_RISK_OF_BIAS,
-            'Connection failed',
-            default_score=3.0
-        )
-        
-        assert result.score == 3.0
 
 
 class TestConstants:

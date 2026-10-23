@@ -354,35 +354,6 @@ def extract_rob_from_study_assessment(
         return None
 
 
-def create_error_dimension_score(
-    dimension_name: str,
-    error_message: str,
-    default_score: float = 5.0
-) -> DimensionScore:
-    """
-    Create a dimension score indicating an error occurred.
-
-    Args:
-        dimension_name: Name of the dimension
-        error_message: Error message to include
-        default_score: Default score to assign (default: 5.0 neutral)
-
-    Returns:
-        DimensionScore with error information
-    """
-    dimension_score = DimensionScore(
-        dimension_name=dimension_name,
-        score=default_score
-    )
-    dimension_score.add_detail(
-        component='error',
-        value='assessment_failed',
-        contribution=default_score,
-        reasoning=f'LLM assessment failed: {error_message}'
-    )
-    return dimension_score
-
-
 __all__ = [
     'DEFAULT_MAX_TEXT_LENGTH',
     'RISK_LEVEL_SCORES',
@@ -393,5 +364,4 @@ __all__ = [
     'calculate_risk_of_bias_score',
     'extract_mq_from_study_assessment',
     'extract_rob_from_study_assessment',
-    'create_error_dimension_score',
 ]

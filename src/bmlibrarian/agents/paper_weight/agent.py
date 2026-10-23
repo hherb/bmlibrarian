@@ -52,7 +52,6 @@ from .llm_assessors import (
     calculate_risk_of_bias_score,
     extract_mq_from_study_assessment,
     extract_rob_from_study_assessment,
-    create_error_dimension_score,
 )
 
 # Import database operations
@@ -257,6 +256,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Returns:
             DimensionScore for methodological quality with detailed audit trail
+
+        Raises:
+            Exception: LLM errors are logged and re-raised.
         """
         # Try to leverage StudyAssessmentAgent output first
         if study_assessment:
@@ -289,11 +291,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
             return dimension_score
 
         except Exception as e:
+            # Re-raise: a neutral error score would be stored as the verdict (#345).
             logger.error(f"Error in methodological quality assessment: {e}")
-            return create_error_dimension_score(
-                DIMENSION_METHODOLOGICAL_QUALITY,
-                str(e)
-            )
+            raise
 
     def _assess_risk_of_bias(
         self,
@@ -309,6 +309,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Returns:
             DimensionScore for risk of bias with detailed audit trail
+
+        Raises:
+            Exception: LLM errors are logged and re-raised.
         """
         # Try to leverage StudyAssessmentAgent output first
         if study_assessment:
@@ -341,11 +344,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
             return dimension_score
 
         except Exception as e:
+            # Re-raise: a neutral error score would be stored as the verdict (#345).
             logger.error(f"Error in risk of bias assessment: {e}")
-            return create_error_dimension_score(
-                DIMENSION_RISK_OF_BIAS,
-                str(e)
-            )
+            raise
 
     def _compute_final_weight(self, dimension_scores: Dict[str, DimensionScore]) -> float:
         """
@@ -367,33 +368,6 @@ class PaperWeightAssessmentAgent(BaseAgent):
             final_weight += dim_score.score * weight
 
         return min(10.0, max(0.0, final_weight))
-
-    def _create_error_result(self, document_id: int, error_message: str) -> PaperWeightResult:
-        """
-        Create minimal result on error.
-
-        Args:
-            document_id: Database ID of document
-            error_message: Error message to include
-
-        Returns:
-            PaperWeightResult with error information
-        """
-        error_score = DimensionScore('error', 0.0)
-        error_score.add_detail('error', 'assessment_failed', 0.0, reasoning=error_message)
-
-        return PaperWeightResult(
-            document_id=document_id,
-            assessor_version=self.version,
-            assessed_at=datetime.now(),
-            study_design=error_score,
-            sample_size=error_score,
-            methodological_quality=error_score,
-            risk_of_bias=error_score,
-            replication_status=error_score,
-            final_weight=0.0,
-            dimension_weights=self.get_dimension_weights()
-        )
 
     def _validate_extractions(
         self,
@@ -418,6 +392,11 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Returns:
             List of conflict descriptions (empty if no conflicts)
+
+        Raises:
+            Exception: Database errors propagate, so the assessment fails
+                instead of being stored unvalidated. LLM validation failures
+                are recorded in the validation result by the validators.
         """
         conflicts = []
 
@@ -455,61 +434,56 @@ class PaperWeightAssessmentAgent(BaseAgent):
             logger.debug(f"No chunks or text available for document {document_id}, skipping validation")
             return conflicts
 
-        try:
-            # Get configured model for validation
-            model = self.model  # Use the agent's configured model
+        # Get configured model for validation
+        model = self.model  # Use the agent's configured model
 
-            # Validate study type
-            study_validation = validate_study_type_extraction(
-                document_id=document_id,
-                dimension_score=study_design_score,
-                llm_client=self._llm_client,
-                model=model,
-                fallback_chunks=chunks,
+        # Validate study type
+        study_validation = validate_study_type_extraction(
+            document_id=document_id,
+            dimension_score=study_design_score,
+            llm_client=self._llm_client,
+            model=model,
+            fallback_chunks=chunks,
+        )
+
+        if study_validation.has_conflict:
+            conflict_msg = (
+                f"Study type conflict: Rule-based extracted '{study_validation.rule_based_value}', "
+                f"but LLM assessment suggests '{study_validation.llm_assessed_value}'. "
+                f"{study_validation.conflict_details}"
             )
+            conflicts.append(conflict_msg)
+            logger.warning(f"Document {document_id}: {conflict_msg}")
 
-            if study_validation.has_conflict:
-                conflict_msg = (
-                    f"Study type conflict: Rule-based extracted '{study_validation.rule_based_value}', "
-                    f"but LLM assessment suggests '{study_validation.llm_assessed_value}'. "
-                    f"{study_validation.conflict_details}"
-                )
-                conflicts.append(conflict_msg)
-                logger.warning(f"Document {document_id}: {conflict_msg}")
+            # Add validation info to dimension score
+            add_validation_to_dimension_score(study_design_score, study_validation)
+        else:
+            # Even when no conflict, add the validation info for audit trail
+            add_validation_to_dimension_score(study_design_score, study_validation)
 
-                # Add validation info to dimension score
-                add_validation_to_dimension_score(study_design_score, study_validation)
-            else:
-                # Even when no conflict, add the validation info for audit trail
-                add_validation_to_dimension_score(study_design_score, study_validation)
+        # Validate sample size
+        sample_validation = validate_sample_size_extraction(
+            document_id=document_id,
+            dimension_score=sample_size_score,
+            llm_client=self._llm_client,
+            model=model,
+            fallback_chunks=chunks,
+        )
 
-            # Validate sample size
-            sample_validation = validate_sample_size_extraction(
-                document_id=document_id,
-                dimension_score=sample_size_score,
-                llm_client=self._llm_client,
-                model=model,
-                fallback_chunks=chunks,
+        if sample_validation.has_conflict:
+            conflict_msg = (
+                f"Sample size conflict: Rule-based extracted '{sample_validation.rule_based_value}', "
+                f"but LLM assessment suggests '{sample_validation.llm_assessed_value}'. "
+                f"{sample_validation.conflict_details}"
             )
+            conflicts.append(conflict_msg)
+            logger.warning(f"Document {document_id}: {conflict_msg}")
 
-            if sample_validation.has_conflict:
-                conflict_msg = (
-                    f"Sample size conflict: Rule-based extracted '{sample_validation.rule_based_value}', "
-                    f"but LLM assessment suggests '{sample_validation.llm_assessed_value}'. "
-                    f"{sample_validation.conflict_details}"
-                )
-                conflicts.append(conflict_msg)
-                logger.warning(f"Document {document_id}: {conflict_msg}")
-
-                # Add validation info to dimension score
-                add_validation_to_dimension_score(sample_size_score, sample_validation)
-            else:
-                # Even when no conflict, add the validation info for audit trail
-                add_validation_to_dimension_score(sample_size_score, sample_validation)
-
-        except Exception as e:
-            logger.error(f"Error during extraction validation for document {document_id}: {e}")
-            # Don't add to conflicts on error - validation is optional enhancement
+            # Add validation info to dimension score
+            add_validation_to_dimension_score(sample_size_score, sample_validation)
+        else:
+            # Even when no conflict, add the validation info for audit trail
+            add_validation_to_dimension_score(sample_size_score, sample_validation)
 
         return conflicts
 
@@ -535,6 +509,10 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Returns:
             PaperWeightResult with full audit trail
+
+        Raises:
+            Exception: Any database, embedding or LLM failure is logged and
+                re-raised; a failed assessment is never stored or cached.
 
         Workflow (LLM-first mode - default):
             1. Check cache (unless force_reassess=True)
@@ -676,8 +654,10 @@ class PaperWeightAssessmentAgent(BaseAgent):
             return result
 
         except Exception as e:
+            # Re-raise: a 0.0 "error result" read as a weightless paper (#345).
+            # Nothing is stored, so a re-run retries.
             logger.error(f"Error assessing paper {document_id}: {e}")
-            return self._create_error_result(document_id, str(e))
+            raise
 
     def assess_full_paper(
         self,
@@ -706,6 +686,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Raises:
             FileNotFoundError: If pdf_path provided but file doesn't exist
+            Exception: Ingestion, database and LLM failures are logged and
+                re-raised (see assess_paper).
         """
         from ...database import get_db_manager
 
@@ -731,11 +713,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 )
 
                 if not ingest_result.success:
-                    logger.error(f"PDF ingestion failed: {ingest_result.error_message}")
-                    return self._create_error_result(
-                        document_id,
-                        f"PDF ingestion failed: {ingest_result.error_message}"
-                    )
+                    raise RuntimeError(f"PDF ingestion failed: {ingest_result.error_message}")
 
                 # Refresh document data
                 document = get_document(document_id)
@@ -773,11 +751,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
             return result
 
-        except FileNotFoundError:
-            raise
         except Exception as e:
             logger.error(f"Error in full paper assessment for {document_id}: {e}")
-            return self._create_error_result(document_id, str(e))
+            raise
 
     def _search_document_chunks(
         self,
@@ -827,8 +803,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
                     return results
 
         except Exception as e:
-            logger.warning(f"Error searching document chunks: {e}")
-            return []
+            logger.error(f"Error searching chunks for document {document_id}: {e}")
+            raise
 
     def _combine_chunks_for_analysis(
         self,
