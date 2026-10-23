@@ -49,7 +49,7 @@ Five tabs organize items by workflow step:
 |-----|-------------|------------------|
 | **Queries** | Generated database queries | SQL syntax, search term relevance |
 | **Scores** | Document relevance scores (0-5) | Whether the score matches document relevance |
-| **Citations** | Extracted passages and summaries | Accuracy of passage selection and interpretation |
+| **Citations** | Extracted passages and summaries (a passage widened from a quoted fragment shows the fragment) | Accuracy of passage selection and interpretation |
 | **Reports** | Generated research reports | Evidence synthesis quality |
 | **Counterfactuals** | Questions for finding contradictory evidence | Question relevance and framing |
 

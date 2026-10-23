@@ -160,8 +160,12 @@ term, a phrase, or a quote that starts or stops mid-sentence (even
 mid-word), the citation stores the **complete sentence(s) of the abstract
 that contain it** instead, and keeps the matched fragment (the abstract's
 own text for it) in `Citation.widened_from` so you can see that it was
-widened. The fragment is rejected instead when the sentence around it is
-uncertain: it occurs more than once in the abstract (ignoring differences in
+widened. The fragment is also stored with the citation in the audit trail
+and with fact-check evidence, included in citation exports, and shown on the
+research tab's citation cards and in the audit validation tool ("Widened to
+the complete sentence(s); the model quoted: …"). Keep in mind that the
+model's summary and relevance score describe the fragment it quoted. The
+fragment is rejected instead when the sentence around it is uncertain: it occurs more than once in the abstract (ignoring differences in
 case, spacing and invisible characters), its sentence never ends (a truncated abstract, a
 keyword list, text the source lost), or the sentence is more than 400
 characters longer than the fragment. A one-word sentence ("Aspirin."), a

@@ -550,6 +550,7 @@ class WorkflowThread(QThread):
                     # Create dict for signal emission (UI display)
                     citation_dict = {
                         'passage': citation.passage,
+                        'widened_from': citation.widened_from,
                         'summary': citation.summary,
                         'relevance_score': citation.relevance_score,
                         'document_id': citation.document_id,

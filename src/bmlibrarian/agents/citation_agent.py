@@ -1114,7 +1114,8 @@ Respond only with valid JSON."""
                     evaluator_id=self._evaluator_id,
                     passage=citation.passage,
                     summary=citation.summary,
-                    relevance_confidence=citation.relevance_score
+                    relevance_confidence=citation.relevance_score,
+                    widened_from=citation.widened_from
                 )
 
                 results.append((citation, citation_id))

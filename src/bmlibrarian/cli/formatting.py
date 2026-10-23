@@ -583,7 +583,7 @@ class ReportFormatter:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
                 fieldnames = [
                     'document_id', 'document_title', 'authors', 'publication_date',
-                    'passage', 'summary', 'relevance_score'
+                    'passage', 'widened_from', 'summary', 'relevance_score'
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
@@ -595,6 +595,7 @@ class ReportFormatter:
                         'authors': '; '.join(citation.authors),
                         'publication_date': citation.publication_date,
                         'passage': citation.passage,
+                        'widened_from': citation.widened_from or '',
                         'summary': citation.summary,
                         'relevance_score': citation.relevance_score
                     })
@@ -623,6 +624,7 @@ class ReportFormatter:
                     'authors': citation.authors,
                     'publication_date': citation.publication_date,
                     'passage': citation.passage,
+                    'widened_from': citation.widened_from,
                     'summary': citation.summary,
                     'relevance_score': citation.relevance_score
                 })

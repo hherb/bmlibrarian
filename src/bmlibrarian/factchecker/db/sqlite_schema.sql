@@ -135,7 +135,8 @@ CREATE TABLE evidence (
     doi TEXT,
     relevance_score REAL CHECK (relevance_score BETWEEN 0.0 AND 5.0),
     supports_statement TEXT CHECK (supports_statement IN ('supports', 'contradicts', 'neutral')),
-    created_at TEXT  -- ISO 8601 timestamp
+    created_at TEXT,  -- ISO 8601 timestamp
+    widened_from TEXT  -- quoted fragment, when citation_text was widened to its sentence(s)
 );
 
 CREATE INDEX idx_evidence_evaluation ON evidence(evaluation_id);
