@@ -101,6 +101,19 @@ what the report contains:
   saved: scoring failures from a search-strategy or initial-results resume,
   assessment failures from any later resume.
 
+## Study assessment in the composite score
+
+`AssessedPaper.study_assessment` is `StudyAssessment.to_dict()`. Study
+quality reads `quality_score`. Methodological rigor is the worst rated of
+the five `*_bias_risk` fields (`BIAS_RISK_SCORES`: low 8, moderate 5,
+high 2; "unclear" and missing skipped). Sample size parses the free-text
+`sample_size` with the paper-weight `find_sample_size()` patterns
+(thousands separators stripped first; a bare number or JSON integer is
+accepted) and scores it in `SAMPLE_SIZE_SCORE_STEPS`. Rigor and sample size
+are None (left out, as below) when nothing is rated or parsable; before
+#356 they read keys `StudyAssessment` never had and were always 5.0. A
+missing study assessment still gives `NEUTRAL_SCORE` for all three.
+
 ## Paper weight in the composite score
 
 `AssessedPaper.paper_weight` is `PaperWeightResult.to_dict()` (or a

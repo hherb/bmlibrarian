@@ -10,6 +10,24 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Systematic-review rigor and sample size score real study assessments**
+  (2026-10-24, closes #356; owner decision this session: rigor = worst rated
+  domain). `CompositeScorer._extract_methodological_rigor` now uses the
+  worst rated of `StudyAssessment`'s five `*_bias_risk` fields
+  (`BIAS_RISK_SCORES` low 8 / moderate 5 / high 2; "unclear" skipped);
+  `_extract_sample_size_score` parses the free-text `sample_size` with
+  `paper_weight/extractors.find_sample_size` (thousands separators stripped
+  first: #358; bare number or JSON int accepted) and scores it in
+  `SAMPLE_SIZE_SCORE_STEPS` (<30: 2, <100: 4, <500: 6, <1000: 8, else 10).
+  Nothing rated or parsable → None → left out and rescaled like paper
+  weight. Before, both read keys `StudyAssessment` never had and were a
+  constant 5.0 (20% of default weight). A missing study assessment still
+  gives `NEUTRAL_SCORE` for all three study dimensions (unchanged; consider
+  making it None for consistency). **Rankings of new and resumed
+  systematic reviews change again.** Docs: `systematic_review_pipeline.md`
+  "Study assessment in the composite score", `systematic_review_guide.md`
+  §6. Tests: `test_composite_scorer_weights.py` (built from a real
+  `StudyAssessment(...).to_dict()`).
 - **Paper weight counts in systematic-review rankings; stale placeholders
   are re-assessed** (2026-10-24, closes #348, #351; owner decisions in this
   session). The scorer reads `final_weight` / `replication_status_score`
@@ -39,7 +57,7 @@ off new work. Longer-term structural items live in
   #349 can still hold paper-weight placeholders (`final_weight` 0.0, no
   `error` key; now skipped as above) → #286. Unmarked placeholders in
   `paper_weights.assessments` → #357; scorer's rigor/sample-size dimensions
-  are a constant 5.0 (same bug class) → #356. Docs: `systematic_review_pipeline.md` "Paper weight
+  were a constant 5.0 (same bug class) → #356, done (entry above). Docs: `systematic_review_pipeline.md` "Paper weight
   in the composite score". Tests: `test_composite_scorer_weights.py`,
   `test_paper_weight_persistence.py::TestPlaceholderCacheRows`,
   `test_systematic_review_quality.py::...::test_paper_weight_comes_from_agent_not_results_cache`.
@@ -246,6 +264,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - #320 — after rejecting every discovered source, the doi.org fallback may
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
+- #357 (unmarked pre-#349 paper-weight placeholders still served from the
+  cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
+  whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
   #344 (hardcoded PubMed `source_id = 1`; move `pmid_select_expr` into
@@ -294,7 +315,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-24
-  (#348/#351 branch): **4480 passed, 47 skipped** in ~9 min. Without
+  (#356 branch): **4515 passed, 47 skipped** in ~8.5 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
