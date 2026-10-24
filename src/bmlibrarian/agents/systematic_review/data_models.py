@@ -21,6 +21,7 @@ All models provide:
 from __future__ import annotations
 
 import json
+import math
 import uuid
 import logging
 from dataclasses import dataclass, field
@@ -1289,6 +1290,55 @@ ASSESSMENT_ERROR_KEY = "error"
 # Score keys of a paper weight assessment (PaperWeightResult.to_dict()).
 PAPER_WEIGHT_SCORE_KEY = "final_weight"
 REPLICATION_SCORE_KEY = "replication_status_score"
+PAPER_WEIGHT_DIMENSION_SCORE_KEYS = (
+    "study_design_score",
+    "sample_size_score",
+    "methodological_quality_score",
+    "risk_of_bias_score",
+    REPLICATION_SCORE_KEY,
+)
+
+# Replication score paper_weight.db.check_replication_status gives a paper
+# with no confirming replication on record. The replications table is filled
+# by hand only, so this means "no data", not "not replicated".
+REPLICATION_NONE_RECORDED_SCORE = 0.0
+
+
+def _numeric(value: Any) -> Optional[float]:
+    """
+    A finite number as float, clamped to the 0-10 quality scale.
+
+    Args:
+        value: Any stored value
+
+    Returns:
+        The clamped float, or None for non-numbers, booleans and NaN/inf
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return min(max(float(value), MIN_QUALITY_SCORE), MAX_QUALITY_SCORE)
+
+
+def is_paper_weight_placeholder(paper_weight: Optional[Dict[str, Any]]) -> bool:
+    """
+    Whether a saved paper weight is a pre-#349 failure placeholder.
+
+    Before #349 a failed assessment was saved as a result with every score
+    0.0 and no ``error`` key. A real assessment never scores 0 on every
+    dimension (study design scores at least 1.0), so such a dict is a failure.
+
+    Args:
+        paper_weight: ``AssessedPaper.paper_weight``
+
+    Returns:
+        True if every dimension score and the final weight are 0
+    """
+    if not isinstance(paper_weight, dict):
+        return False
+    keys = (PAPER_WEIGHT_SCORE_KEY,) + PAPER_WEIGHT_DIMENSION_SCORE_KEYS
+    return all(_numeric(paper_weight.get(k)) == 0.0 for k in keys)
 
 
 def paper_weight_score(
@@ -1300,19 +1350,21 @@ def paper_weight_score(
 
     Args:
         paper_weight: ``AssessedPaper.paper_weight`` (may be None, a failed
-            assessment with an ``error`` key, or disabled with no scores)
+            assessment with an ``error`` key, disabled with no scores, or a
+            pre-#349 placeholder, see ``is_paper_weight_placeholder``)
         key: Score to read: ``PAPER_WEIGHT_SCORE_KEY`` or ``REPLICATION_SCORE_KEY``
 
     Returns:
-        The score, or None when the assessment is missing, failed, disabled
-        or has no numeric value for ``key``.
+        The score clamped to 0-10, or None when the assessment is missing,
+        failed, disabled, a placeholder, or has no finite number for ``key``.
     """
-    if not isinstance(paper_weight, dict) or paper_weight.get(ASSESSMENT_ERROR_KEY):
+    if (
+        not isinstance(paper_weight, dict)
+        or ASSESSMENT_ERROR_KEY in paper_weight
+        or is_paper_weight_placeholder(paper_weight)
+    ):
         return None
-    value = paper_weight.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
+    return _numeric(paper_weight.get(key))
 
 
 @dataclass
@@ -1335,7 +1387,7 @@ class AssessedPaper:
 
     scored_paper: ScoredPaper
     study_assessment: Dict[str, Any]  # StudyAssessment.to_dict()
-    paper_weight: Dict[str, Any]  # PaperWeightResult.to_dict()
+    paper_weight: Dict[str, Any]  # PaperWeightResult.to_dict(), or an error/disabled placeholder (see paper_weight_score)
     pico_components: Optional[Dict[str, Any]] = None
     prisma_assessment: Optional[Dict[str, Any]] = None
     composite_score: Optional[float] = None

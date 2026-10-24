@@ -215,6 +215,12 @@ class PaperWeightAssessmentAgent(BaseAgent):
         top_p = self.config.get('top_p', 0.9)
         self.max_tokens = self.config.get('max_tokens', 3000)
         self.version = self.VERSION
+        if 'version' in self.config:
+            logger.warning(
+                f"Ignoring paper_weight_assessment.version "
+                f"{self.config['version']!r} from config: the methodology "
+                f"version is {self.VERSION} (remove the key to silence this)"
+            )
 
         super().__init__(
             model=model,
@@ -525,7 +531,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Workflow (LLM-first mode - default):
             1. Check cache (unless force_reassess=True)
-            2. If cached and version matches, return cached result
+            2. If cached, version matches and the row is not a pre-#349
+               failure placeholder (db.is_failure_placeholder), return it
             3. Otherwise, perform full assessment:
                a. Fetch document from database
                b. Ensure embeddings exist (create if full_text available but no chunks)

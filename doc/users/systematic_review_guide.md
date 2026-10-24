@@ -202,9 +202,15 @@ Calculates weighted composite scores for ranking:
 
 - Combines relevance, quality, and other metrics
 - Paper weight and replication come from the paper weight assessment's
-  final weight and replication score. When a paper has none (assessment
-  disabled, failed, or missing), those two dimensions are left out and the
-  other weights scaled up, so the paper is neither rewarded nor penalised
+  final weight and replication score. When a paper has no paper weight
+  (assessment disabled in configuration, or missing from a run saved before
+  this version), those two dimensions are left out and the other weights
+  scaled up, so the missing part counts as the average of the paper's other
+  scores. The inclusion rationale then says "Paper weight: not assessed".
+  Replication is left out the same way when no replication is on record
+  (replications are entered by hand)
+- If a paper's paper weight assessment fails during the review, the paper
+  is listed as a failed assessment and not ranked
 - Applies quality gate threshold
 - Generates final ranking
 

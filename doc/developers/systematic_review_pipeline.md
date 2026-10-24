@@ -103,13 +103,25 @@ what the report contains:
 
 ## Paper weight in the composite score
 
-`AssessedPaper.paper_weight` is `PaperWeightResult.to_dict()`. The scorer,
-reporter and results cache read its `final_weight` and
-`replication_status_score` through `data_models.paper_weight_score()`, which
-returns None for a missing, failed (`error` key) or disabled assessment.
+`AssessedPaper.paper_weight` is `PaperWeightResult.to_dict()` (or a
+failed/disabled placeholder). The scorer reads its `final_weight` and
+`replication_status_score`, the reporter and results cache its
+`final_weight`, all through `data_models.paper_weight_score()`. It clamps to
+0-10 and returns None for a missing, failed (`error` key), disabled or
+pre-#349 placeholder assessment (every score 0.0 and no `error` key, as saved
+evaluation runs from before #349 may hold; `is_paper_weight_placeholder`,
+logged as a warning when scored), and for a non-finite value. The scorer also
+treats a replication score of 0.0 as no data: `check_replication_status`
+gives 0.0 only when `paper_weights.replications` (filled by hand) has no
+confirming row (`REPLICATION_NONE_RECORDED_SCORE`).
+
 `CompositeScorer.score` leaves None dimensions out and scales the remaining
-weights up to the configured total (#348), so a missing paper weight neither
-raises nor lowers a score.
+weights up to the configured total (#348). That counts the missing
+dimensions as the weighted mean of the scored ones, with no pull toward 5.0.
+A paper with no score on any weighted dimension gets `NEUTRAL_SCORE` (with a
+warning). The inclusion rationale says when a paper was ranked without paper
+weight. A paper whose paper-weight assessment *fails* during the run is not
+ranked at all: `assessment_error` moves it to `failed_papers`.
 
 `QualityAssessor._run_paper_weight_assessment` writes
 `results_cache.paper_weight_cache` but never reads it back: its flat result
@@ -119,8 +131,9 @@ paper weight agent's own cache (`paper_weights.assessments`, keyed by
 treats rows whose audit trail carries a failure marker
 (`db.is_failure_placeholder`) as not cached, so they are re-assessed and
 overwritten (#351). `force_recompute` is passed on as `force_reassess`.
-Saved evaluation runs from before #349 may still hold such placeholders
-(#286).
+`ResultsCacheManager` has no paper-weight getter. A placeholder without such
+a marker (written before #349's scoring fixes under the same version) is
+still served: #357.
 
 ## Run outcome and evaluation-run status
 

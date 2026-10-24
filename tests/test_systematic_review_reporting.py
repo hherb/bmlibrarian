@@ -16,7 +16,7 @@ import pytest
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from bmlibrarian.agents.systematic_review import (
     # Enums
@@ -651,6 +651,25 @@ class TestStatisticsCalculation:
 
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
+
+    @pytest.mark.parametrize("paper_weight, expected", [
+        ({"final_weight": 7.5}, 7.5),
+        ({"document_id": 1, "error": "LLM timeout"}, None),
+        ({"document_id": 1, "note": "Assessment disabled in configuration"}, None),
+    ])
+    def test_paper_weight_score_in_json(
+        self,
+        reporter: Reporter,
+        sample_assessed_paper: AssessedPaper,
+        paper_weight: Dict[str, Any],
+        expected: Optional[float],
+    ):
+        """The reported score is the final weight, or null when there is none (#348)."""
+        sample_assessed_paper.paper_weight = paper_weight
+
+        paper_dict = reporter._assessed_paper_to_dict(sample_assessed_paper)
+
+        assert paper_dict["scores"]["paper_weight"] == expected
 
     def test_empty_papers(self, reporter: Reporter, sample_statistics: ReviewStatistics):
         """Test handling of empty paper lists."""

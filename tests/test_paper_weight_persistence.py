@@ -734,11 +734,30 @@ class TestPlaceholderCacheRows:
         assert cached is not None and cached.final_weight == 3.5
 
     def test_agent_version_is_the_class_version(
-        self, agent: PaperWeightAssessmentAgent
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Cache keys use VERSION, which QualityAssessor's cache key reads too."""
         from bmlibrarian.agents.systematic_review.quality import QualityAssessor
 
-        assert agent.version == PaperWeightAssessmentAgent.VERSION
-        QualityAssessor._agent_version_cache.pop('paper_weight', None)
-        assert QualityAssessor()._get_agent_version('paper_weight') == agent.version
+        # A value no fallback or config default produces
+        monkeypatch.setattr(PaperWeightAssessmentAgent, 'VERSION', '9.9.9')
+        monkeypatch.setattr(QualityAssessor, '_agent_version_cache', {})
+
+        assert PaperWeightAssessmentAgent(show_model_info=False).version == '9.9.9'
+        assert QualityAssessor()._get_agent_version('paper_weight') == '9.9.9'
+
+    def test_store_replaces_old_details(self, sample_result: PaperWeightResult) -> None:
+        """Re-storing deletes the old detail rows first, so a placeholder can't survive."""
+        with self._db([]) as get_manager:
+            cur = (get_manager.return_value.get_connection.return_value
+                   .__enter__.return_value.cursor.return_value.__enter__.return_value)
+            store_assessment(sample_result)
+
+        statements = [c.args[0] for c in cur.execute.call_args_list]
+        delete_at = next(i for i, sql in enumerate(statements)
+                         if 'DELETE FROM paper_weights.assessment_details' in sql)
+        first_insert = next(i for i, sql in enumerate(statements)
+                            if 'INSERT INTO paper_weights.assessment_details' in sql)
+        assert delete_at < first_insert
+        # the id the upsert returned (first column of the fetched row)
+        assert cur.execute.call_args_list[delete_at].args[1] == (self.ASSESSMENT_ROW[0],)

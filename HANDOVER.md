@@ -12,25 +12,34 @@ off new work. Longer-term structural items live in
 
 - **Paper weight counts in systematic-review rankings; stale placeholders
   are re-assessed** (2026-10-24, closes #348, #351; owner decisions in this
-  session). The scorer, reporter and results cache read
-  `final_weight` / `replication_status_score` (what
-  `PaperWeightResult.to_dict()` emits) via
-  `systematic_review/data_models.paper_weight_score()`; before, every paper
-  got a neutral 5.0 for both dimensions. A paper with no paper-weight score
-  (missing, failed, disabled) has those dimensions **left out and the other
-  weights scaled up** (`CompositeScorer.score`). `get_cached_assessment`
+  session). The scorer reads `final_weight` / `replication_status_score`
+  (what `PaperWeightResult.to_dict()` emits), the reporter and results cache
+  `final_weight`, via `systematic_review/data_models.paper_weight_score()`
+  (clamped 0-10, NaN rejected); before, every paper got a neutral 5.0 for
+  both dimensions. A paper with no paper-weight score (missing, disabled, or
+  a saved pre-#349 placeholder with every score 0.0:
+  `is_paper_weight_placeholder`, warned) has those dimensions **left out and
+  the other weights scaled up** (`CompositeScorer.score`); so does a
+  replication score of 0.0 (`REPLICATION_NONE_RECORDED_SCORE`: no
+  replication on record, the table is hand-filled). No scored weighted
+  dimension → `NEUTRAL_SCORE` with a warning. A paper-weight assessment that
+  fails in the run still puts the paper in `failed_papers`; an exception
+  with an empty message now counts too (`quality.error_message`). `get_cached_assessment`
   treats rows whose audit trail carries a pre-#349 failure marker
   (`paper_weight/db.is_failure_placeholder`) as not cached, so they are
   re-assessed and overwritten; `QualityAssessor` no longer reads
   `results_cache.paper_weight_cache` (a flat dict can't reveal a
-  placeholder) and passes `force_recompute` on as `force_reassess`. The
+  placeholder; `ResultsCacheManager.get_paper_weight` is removed) and passes `force_recompute` on as `force_reassess`. The
   methodology version is now the class attribute
   `PaperWeightAssessmentAgent.VERSION` (still `1.0.0`; no full re-run), read
   by the agent and `QualityAssessor._get_agent_version`; the
-  `paper_weight_assessment.version` config key is gone. **Rankings of new
+  `paper_weight_assessment.version` config key is gone (a saved one is
+  ignored with a warning). **Rankings of new
   and resumed systematic reviews change.** Saved evaluation runs from before
   #349 can still hold paper-weight placeholders (`final_weight` 0.0, no
-  `error` key) → #286. Docs: `systematic_review_pipeline.md` "Paper weight
+  `error` key; now skipped as above) → #286. Unmarked placeholders in
+  `paper_weights.assessments` → #357; scorer's rigor/sample-size dimensions
+  are a constant 5.0 (same bug class) → #356. Docs: `systematic_review_pipeline.md` "Paper weight
   in the composite score". Tests: `test_composite_scorer_weights.py`,
   `test_paper_weight_persistence.py::TestPlaceholderCacheRows`,
   `test_systematic_review_quality.py::...::test_paper_weight_comes_from_agent_not_results_cache`.

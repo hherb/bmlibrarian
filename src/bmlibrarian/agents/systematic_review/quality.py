@@ -56,6 +56,22 @@ logger = logging.getLogger(__name__)
 # Pure helpers
 # =============================================================================
 
+def error_message(error: BaseException) -> str:
+    """
+    A non-empty description of an exception.
+
+    ``str()`` of an exception raised without a message is ``""``, which the
+    failure checks would read as "no error".
+
+    Args:
+        error: The exception.
+
+    Returns:
+        Its message, or its type name when the message is empty.
+    """
+    return str(error) or type(error).__name__
+
+
 def assessment_error(assessed_paper: AssessedPaper) -> Optional[str]:
     """
     Why a quality assessment failed, if it did.
@@ -77,7 +93,7 @@ def assessment_error(assessed_paper: AssessedPaper) -> Optional[str]:
             ("study assessment", assessed_paper.study_assessment),
             ("paper weight", assessed_paper.paper_weight),
         )
-        if isinstance(part, dict) and part.get(ASSESSMENT_ERROR_KEY)
+        if isinstance(part, dict) and ASSESSMENT_ERROR_KEY in part
     ]
     return "; ".join(errors) if errors else None
 
@@ -470,7 +486,7 @@ class QualityAssessor:
                 assessed_paper = self._assess_single(paper)
                 error = assessment_error(assessed_paper)
             except Exception as e:
-                error = str(e)
+                error = error_message(e)
 
             if error:
                 # A failed assessment is reported, never saved: a saved
@@ -726,7 +742,7 @@ class QualityAssessor:
             return result_dict
 
         except Exception as e:
-            logger.error(f"Study assessment failed for {document_id}: {e}")
+            logger.error(f"Study assessment failed for {document_id}: {e}", exc_info=True)
             # Return minimal assessment on error (with 'error' field for detection)
             return {
                 "study_type": "unknown",
@@ -739,7 +755,7 @@ class QualityAssessor:
                 "evidence_level": "unknown",
                 "document_id": str(document_id),
                 "document_title": document.get("title", ""),
-                "error": str(e),
+                ASSESSMENT_ERROR_KEY: error_message(e),
             }
 
     def _run_paper_weight_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
@@ -756,8 +772,9 @@ class QualityAssessor:
             document: Document dictionary with at minimum 'id'
 
         Returns:
-            ``PaperWeightResult.to_dict()``: per-dimension ``*_score`` fields,
-            ``final_weight`` (0.0 to 10.0), ``study_type``, ``sample_size``.
+            ``PaperWeightResult.to_dict()``, including per-dimension
+            ``*_score`` fields, ``final_weight`` (0.0 to 10.0),
+            ``study_type`` and ``sample_size`` (the extracted N).
 
             On error, a dict with ``document_id`` and an ``error`` message
             (see ``assessment_error``) and no scores.
@@ -779,21 +796,20 @@ class QualityAssessor:
 
             # Store in ResultsCacheManager for unified tracking
             if version_id and self._cache_manager:
-                # Get assessment_id from result if available
-                assessment_id = result_dict.get('assessment_id')
                 self._cache_manager.store_paper_weight(
                     document_id, version_id, result_dict,
-                    paper_weight_assessment_id=assessment_id,
                     execution_time_ms=execution_time_ms
                 )
 
             return result_dict
 
         except Exception as e:
-            logger.error(f"Paper weight assessment failed for {document_id}: {e}")
+            logger.error(
+                f"Paper weight assessment failed for {document_id}: {e}", exc_info=True
+            )
             return {
                 "document_id": document_id,
-                ASSESSMENT_ERROR_KEY: str(e),
+                ASSESSMENT_ERROR_KEY: error_message(e),
             }
 
     def _run_pico_extraction(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:

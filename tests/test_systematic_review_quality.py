@@ -44,6 +44,8 @@ from bmlibrarian.agents.systematic_review import (
     SystematicReviewConfig,
     get_systematic_review_config,
 )
+from bmlibrarian.agents.systematic_review.cache_manager import ResultsCacheManager
+from bmlibrarian.agents.systematic_review.quality import assessment_error
 
 
 # =============================================================================
@@ -494,6 +496,20 @@ class TestQualityAssessor:
         assert result.total_processed == 2
         assert result.success_rate == 0.5
 
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._assess_single')
+    def test_exception_without_message_is_reported_not_dropped(
+        self,
+        mock_assess_single,
+        scored_rct_paper,
+    ):
+        """str(RuntimeError()) is "": the paper must still count as failed."""
+        mock_assess_single.side_effect = RuntimeError()
+
+        result = QualityAssessor().assess_batch([scored_rct_paper])
+
+        assert result.assessed_papers == []
+        assert result.failed_papers == [(scored_rct_paper, "RuntimeError")]
+
     def test_get_assessment_statistics(
         self,
         scored_rct_paper,
@@ -607,13 +623,32 @@ class TestQualityAssessor:
 
         assessor = QualityAssessor()
         assessor._cache_manager = Mock()
-        assessor._cache_manager.get_paper_weight.return_value = None
         document = assessor._paper_to_document(sample_paper)
         with patch.object(assessor, '_get_version_id', return_value=1):
             result = assessor._run_paper_weight_assessment(document)
 
         assert result["error"] == "LLM timeout"
         assessor._cache_manager.store_paper_weight.assert_not_called()
+
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
+    def test_paper_weight_failure_without_message_is_flagged(
+        self,
+        mock_get_weight,
+        sample_paper,
+    ):
+        """An exception with no message still marks the assessment as failed."""
+        mock_get_weight.return_value.assess_paper.side_effect = RuntimeError()
+
+        assessor = QualityAssessor()
+        result = assessor._run_paper_weight_assessment(
+            assessor._paper_to_document(sample_paper)
+        )
+
+        assert result["error"] == "RuntimeError"
+        assessed = AssessedPaper(
+            scored_paper=Mock(), study_assessment={}, paper_weight=result
+        )
+        assert assessment_error(assessed) == "paper weight: RuntimeError"
 
     @pytest.mark.parametrize("force_recompute", [False, True])
     @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
@@ -630,14 +665,13 @@ class TestQualityAssessor:
 
         assessor = QualityAssessor()
         assessor._config.force_recompute = force_recompute
-        assessor._cache_manager = Mock()
-        assessor._cache_manager.get_paper_weight.return_value = {"final_weight": 0.0}
+        # spec: the results cache has no paper-weight getter to read from
+        assessor._cache_manager = Mock(spec=ResultsCacheManager)
         document = assessor._paper_to_document(sample_paper)
         with patch.object(assessor, '_get_version_id', return_value=1):
             result = assessor._run_paper_weight_assessment(document)
 
         assert result == {"final_weight": 6.0}
-        assessor._cache_manager.get_paper_weight.assert_not_called()
         mock_weight_agent.assess_paper.assert_called_once_with(
             document_id=sample_paper.document_id, force_reassess=force_recompute,
         )

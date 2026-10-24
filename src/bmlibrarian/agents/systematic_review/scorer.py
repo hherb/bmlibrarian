@@ -36,7 +36,9 @@ from .data_models import (
     QueryEffectiveness,
     QueryFeedback,
     ExecutedQuery,
+    REPLICATION_NONE_RECORDED_SCORE,
     REPLICATION_SCORE_KEY,
+    is_paper_weight_placeholder,
     paper_weight_score,
 )
 from .config import (
@@ -68,7 +70,8 @@ QUALITY_SCORE_MAX = 10
 # Neutral mid-scale score used when an assessment dimension has no data
 # (e.g. study assessment unavailable for a paper, or no producer exists yet
 # for the dimension). Keeps configured weights applied without rewarding or
-# penalizing missing information.
+# penalizing missing information. The paper-weight dimensions instead are left
+# out when missing (see CompositeScorer.score).
 NEUTRAL_SCORE = 5.0
 
 # Recency calculation
@@ -761,6 +764,10 @@ class CompositeScorer:
     - sample_size: Sample size adequacy (0-10)
     - recency: Publication recency (0-10)
     - replication_status: Replication evidence (0-10)
+    - paper_weight: Paper weight assessment's final weight (0-10)
+    - source_reliability: Source/journal reliability (0-10)
+
+    A dimension with no score is left out and the other weights scaled up.
 
     Attributes:
         weights: ScoringWeights for composite calculation
@@ -830,13 +837,24 @@ class CompositeScorer:
             "source_reliability": self._extract_source_reliability(paper),
         }
 
-        # A dimension with no score (paper weight missing, failed or disabled)
-        # is left out and the remaining weights scaled up to the same total,
-        # so it neither raises nor lowers the composite.
+        if is_paper_weight_placeholder(paper.paper_weight):
+            logger.warning(
+                f"Paper {paper.document_id} has a saved pre-#349 paper weight "
+                f"placeholder (all scores 0); ranking it without paper weight"
+            )
+
+        # A dimension with no score (paper weight missing, failed, disabled
+        # or a placeholder; no replication on record) is left out and the
+        # remaining weights scaled up to the same total: the missing
+        # dimensions count as the weighted mean of the scored ones.
         scored = {k: v for k, v in dimension_scores.items() if v is not None}
         scored_weight = sum(weights_dict[k] for k in scored)
         if scored_weight <= 0:
-            return 0.0
+            logger.warning(
+                f"Paper {paper.document_id} has no score on any weighted "
+                f"dimension; giving it the neutral score {NEUTRAL_SCORE}"
+            )
+            return NEUTRAL_SCORE
         total_weight = sum(weights_dict[k] for k in dimension_scores)
         composite = (
             sum(weights_dict[k] * v for k, v in scored.items())
@@ -1008,10 +1026,11 @@ class CompositeScorer:
             if quality > 0:
                 parts.append(f"Study quality: {quality:.1f}/10.")
 
-        # Add paper weight info if available
         weight = paper_weight_score(paper.paper_weight)
         if weight is not None:
             parts.append(f"Paper weight: {weight:.1f}/10.")
+        else:
+            parts.append("Paper weight: not assessed (ranked without it).")
 
         return " ".join(parts)
 
@@ -1165,10 +1184,11 @@ class CompositeScorer:
 
         Returns:
             Replication score (0-10); None when the assessment is missing,
-            failed or disabled (the dimension is then left out)
+            failed or disabled, or no replication is on record (the
+            dimension is then left out)
         """
         value = paper_weight_score(paper_weight, REPLICATION_SCORE_KEY)
-        return None if value is None else min(max(value, 0.0), QUALITY_SCORE_MAX)
+        return None if value == REPLICATION_NONE_RECORDED_SCORE else value
 
     def _extract_paper_weight_score(
         self, paper_weight: Optional[Dict[str, Any]]
@@ -1184,8 +1204,7 @@ class CompositeScorer:
             Final evidence weight (0-10); None when the assessment is
             missing, failed or disabled (the dimension is then left out)
         """
-        value = paper_weight_score(paper_weight)
-        return None if value is None else min(max(value, 0.0), QUALITY_SCORE_MAX)
+        return paper_weight_score(paper_weight)
 
     def _extract_source_reliability(self, paper: AssessedPaper) -> float:
         """
