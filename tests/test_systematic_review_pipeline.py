@@ -1449,12 +1449,12 @@ class TestQualityAssessorBatch:
         """A runner's error placeholder is a failure, not a mid-range score."""
         good = AssessedPaper(
             scored_paper=make_scored(1), study_assessment={"quality_score": 8.0},
-            paper_weight={"composite_score": 7.0},
+            paper_weight={"final_weight": 7.0},
         )
         placeholder = AssessedPaper(
             scored_paper=make_scored(2),
             study_assessment={"quality_score": 5.0, "error": "LLM down"},
-            paper_weight={"composite_score": 7.0},
+            paper_weight={"final_weight": 7.0},
         )
         saved: List[int] = []
         result = self._assessor([good, placeholder]).assess_batch(
@@ -1549,7 +1549,7 @@ class TestHelpers:
             """An assessment with the given parts."""
             return AssessedPaper(scored_paper=make_scored(1), study_assessment=study, paper_weight=weight)
 
-        assert assessment_error(assessed({"quality_score": 8}, {"composite_score": 7})) is None
+        assert assessment_error(assessed({"quality_score": 8}, {"final_weight": 7})) is None
         assert assessment_error(assessed({"error": "a"}, {})) == "study assessment: a"
         assert assessment_error(assessed({"error": "a"}, {"error": "b"})) == (
             "study assessment: a; paper weight: b"
