@@ -407,13 +407,9 @@ class PaperReviewerAgent(BaseAgent):
                     )
                     paper_weight = pw_agent.assess_paper(document_id)
                     result.paper_weight = paper_weight
-                    if paper_weight:
-                        update_step("paper_weight", ReviewStepStatus.COMPLETED,
-                                   f"Weight: {paper_weight.final_weight:.1f}/10",
-                                   paper_weight.to_dict())
-                    else:
-                        update_step("paper_weight", ReviewStepStatus.COMPLETED,
-                                   "Paper weight assessment returned no results", {})
+                    update_step("paper_weight", ReviewStepStatus.COMPLETED,
+                               f"Weight: {paper_weight.final_weight:.1f}/10",
+                               paper_weight.to_dict())
                 except Exception as e:
                     update_step("paper_weight", ReviewStepStatus.FAILED, str(e))
                     logger.error(f"Paper weight assessment failed: {e}")

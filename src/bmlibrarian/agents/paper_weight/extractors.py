@@ -108,6 +108,9 @@ DEFAULT_STUDY_TYPE_HIERARCHY = {
     'case_report': 1.0
 }
 
+# Score for a study type that cannot be determined from the text (neutral)
+UNKNOWN_STUDY_TYPE_SCORE = 5.0
+
 # Sample size regex patterns
 SAMPLE_SIZE_PATTERNS = [
     r'n\s*=\s*(\d+)',  # n = 450
@@ -393,7 +396,7 @@ def extract_study_type(
                     continue
 
                 # Found valid match - get score from hierarchy
-                score = hierarchy_config.get(study_type, 5.0)
+                score = hierarchy_config.get(study_type, UNKNOWN_STUDY_TYPE_SCORE)
 
                 # Create dimension score with audit trail
                 dimension_score = DimensionScore(
@@ -417,12 +420,12 @@ def extract_study_type(
     # No match found - default to unknown
     dimension_score = DimensionScore(
         dimension_name=DIMENSION_STUDY_DESIGN,
-        score=5.0  # Neutral score
+        score=UNKNOWN_STUDY_TYPE_SCORE
     )
     dimension_score.add_detail(
         component='study_type',
         value='unknown',
-        contribution=5.0,
+        contribution=UNKNOWN_STUDY_TYPE_SCORE,
         reasoning='No study type keywords matched - assigned neutral score'
     )
 

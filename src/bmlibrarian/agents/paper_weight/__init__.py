@@ -121,7 +121,6 @@ from .llm_assessors import (
     extract_mq_from_study_assessment,
     extract_rob_from_study_assessment,
     prepare_text_for_analysis,
-    create_error_dimension_score,
     DEFAULT_MAX_TEXT_LENGTH,
 )
 
@@ -198,7 +197,6 @@ __all__ = [
     "extract_mq_from_study_assessment",
     "extract_rob_from_study_assessment",
     "prepare_text_for_analysis",
-    "create_error_dimension_score",
     "DEFAULT_MAX_TEXT_LENGTH",
     # Prompts
     "build_methodological_quality_prompt",
