@@ -17,6 +17,7 @@ Features:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,6 +51,7 @@ from .config import (
 )
 from .exceptions import EvaluationSaveError, ScoringError
 from .filters import InclusionEvaluator
+from ..paper_weight.extractors import find_sample_size
 
 if TYPE_CHECKING:
     from ..scoring_agent import DocumentScoringAgent
@@ -70,9 +72,29 @@ QUALITY_SCORE_MAX = 10
 # Neutral mid-scale score used when an assessment dimension has no data
 # (e.g. study assessment unavailable for a paper, or no producer exists yet
 # for the dimension). Keeps configured weights applied without rewarding or
-# penalizing missing information. The paper-weight dimensions instead are left
-# out when missing (see CompositeScorer.score).
+# penalizing missing information. The paper-weight dimensions, and rigor and
+# sample size of an assessment that rates neither, are instead left out (see
+# CompositeScorer.score).
 NEUTRAL_SCORE = 5.0
+
+# Methodological rigor from StudyAssessment's per-domain bias ratings: the
+# worst rated domain sets the score (Cochrane-style overall risk of bias).
+# "unclear" and missing ratings are skipped.
+BIAS_RISK_FIELDS = (
+    "selection_bias_risk",
+    "performance_bias_risk",
+    "detection_bias_risk",
+    "attrition_bias_risk",
+    "reporting_bias_risk",
+)
+BIAS_RISK_SCORES = {"low": 8.0, "moderate": 5.0, "high": 2.0}
+
+# Sample size score steps: (exclusive upper bound of N, score); larger N
+# scores SAMPLE_SIZE_TOP_SCORE.
+SAMPLE_SIZE_SCORE_STEPS = ((30, 2.0), (100, 4.0), (500, 6.0), (1000, 8.0))
+SAMPLE_SIZE_TOP_SCORE = 10.0
+# Thousands separator inside a number ("1,234 patients")
+THOUSANDS_SEPARATOR_PATTERN = re.compile(r"(?<=\d),(?=\d{3}\b)")
 
 # Recency calculation
 RECENCY_BASE_YEAR = 2000  # Papers before this get minimum recency score
@@ -844,7 +866,8 @@ class CompositeScorer:
             )
 
         # A dimension with no score (paper weight missing, failed, disabled
-        # or a placeholder; no replication on record) is left out and the
+        # or a placeholder; no replication on record; no bias domain rated;
+        # no parsable sample size) is left out and the
         # remaining weights scaled up to the same total: the missing
         # dimensions count as the weighted mean of the scored ones.
         scored = {k: v for k, v in dimension_scores.items() if v is not None}
@@ -1076,73 +1099,68 @@ class CompositeScorer:
         # Default to moderate quality if not found
         return 5.0
 
-    def _extract_methodological_rigor(self, study_assessment: Optional[Dict[str, Any]]) -> float:
+    def _extract_methodological_rigor(
+        self, study_assessment: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
         """
-        Extract methodological rigor score from assessment.
+        Score methodological rigor from the assessment's bias-risk ratings.
+
+        The worst rated of the five ``*_bias_risk`` domains sets the score
+        (low 8, moderate 5, high 2); "unclear" and missing ratings are skipped.
 
         Args:
-            study_assessment: StudyAssessmentAgent output, or None when the
-                assessment could not be performed
+            study_assessment: StudyAssessment.to_dict() output, or None when
+                the assessment could not be performed
 
         Returns:
-            Rigor score (0-10); NEUTRAL_SCORE when no assessment exists
+            Rigor score (0-10); NEUTRAL_SCORE when no assessment exists; None
+            when no domain is rated (the dimension is then left out)
         """
         if not study_assessment:
             return NEUTRAL_SCORE
 
-        for key in ["methodological_rigor", "rigor_score", "methodology_quality"]:
-            if key in study_assessment:
-                value = study_assessment[key]
-                if isinstance(value, (int, float)):
-                    return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
+        rated = [
+            BIAS_RISK_SCORES[risk.strip().lower()]
+            for risk in (study_assessment.get(f) for f in BIAS_RISK_FIELDS)
+            if isinstance(risk, str) and risk.strip().lower() in BIAS_RISK_SCORES
+        ]
+        return min(rated) if rated else None
 
-        # Try to derive from bias risk
-        if "bias_risk" in study_assessment:
-            bias = study_assessment["bias_risk"]
-            if isinstance(bias, str):
-                # Convert bias risk to score
-                bias_scores = {"low": 8.0, "moderate": 5.0, "high": 2.0}
-                return bias_scores.get(bias.lower(), 5.0)
-
-        return 5.0
-
-    def _extract_sample_size_score(self, study_assessment: Optional[Dict[str, Any]]) -> float:
+    def _extract_sample_size_score(
+        self, study_assessment: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
         """
-        Extract sample size adequacy score from assessment.
+        Score sample size from the assessment's free-text ``sample_size``.
+
+        The participant count is parsed with the paper-weight sample-size
+        patterns ("N=120", "120 participants", ...) and scored in steps
+        (SAMPLE_SIZE_SCORE_STEPS).
 
         Args:
-            study_assessment: StudyAssessmentAgent output, or None when the
-                assessment could not be performed
+            study_assessment: StudyAssessment.to_dict() output, or None when
+                the assessment could not be performed
 
         Returns:
-            Sample size score (0-10); NEUTRAL_SCORE when no assessment exists
+            Sample size score (0-10); NEUTRAL_SCORE when no assessment exists;
+            None when no count can be parsed (the dimension is then left out)
         """
         if not study_assessment:
             return NEUTRAL_SCORE
 
-        for key in ["sample_size_score", "sample_adequacy", "statistical_power"]:
-            if key in study_assessment:
-                value = study_assessment[key]
-                if isinstance(value, (int, float)):
-                    return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
-
-        # Try to get raw sample size and estimate score
-        if "sample_size" in study_assessment:
-            n = study_assessment["sample_size"]
-            if isinstance(n, int):
-                # Simple heuristic: log scale scoring
-                if n < 30:
-                    return 2.0
-                elif n < 100:
-                    return 4.0
-                elif n < 500:
-                    return 6.0
-                elif n < 1000:
-                    return 8.0
-                else:
-                    return 10.0
-
-        return 5.0
+        text = study_assessment.get("sample_size")
+        if isinstance(text, int) and not isinstance(text, bool):
+            text = str(text)  # a JSON number from the LLM despite the str field
+        if not isinstance(text, str):
+            return None
+        if text.strip().isdigit():
+            text = f"n={text.strip()}"
+        n = find_sample_size(THOUSANDS_SEPARATOR_PATTERN.sub("", text))
+        if n is None:
+            return None
+        for upper_bound, step_score in SAMPLE_SIZE_SCORE_STEPS:
+            if n < upper_bound:
+                return step_score
+        return SAMPLE_SIZE_TOP_SCORE
 
     def _calculate_recency_score(self, year: int) -> float:
         """

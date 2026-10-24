@@ -23,6 +23,7 @@ from bmlibrarian.agents.systematic_review.data_models import (
     paper_weight_score,
 )
 from bmlibrarian.agents.systematic_review.scorer import (
+    BIAS_RISK_FIELDS,
     NEUTRAL_SCORE,
     RECENCY_CURRENT_YEAR,
     CompositeScorer,
@@ -72,6 +73,26 @@ def _real_paper_weight(
     ).to_dict()
 
 
+def _real_study_assessment(**overrides) -> dict:
+    """StudyAssessment.to_dict() output, as QualityAssessor stores it."""
+    from bmlibrarian.agents.study_assessment_agent import StudyAssessment
+
+    fields = dict(
+        study_type="RCT",
+        study_design="prospective, double-blinded",
+        quality_score=10.0,
+        strengths=[],
+        limitations=[],
+        overall_confidence=0.9,
+        confidence_explanation="",
+        evidence_level="Level 1 (high)",
+        document_id="1",
+        document_title="Study",
+    )
+    fields.update(overrides)
+    return StudyAssessment(**fields).to_dict()
+
+
 def test_paper_weight_and_source_reliability_weights_are_applied() -> None:
     """A weights profile concentrated on the two forgotten dimensions must score > 0."""
     weights = ScoringWeights(
@@ -101,11 +122,10 @@ def test_perfect_paper_with_default_weights_exceeds_old_cap() -> None:
     scorer = CompositeScorer()  # default weights sum to 1.0 across 8 dims
     paper = _make_paper(
         relevance=5.0,
-        study_assessment={
-            "overall_quality": 10.0,
-            "methodological_rigor": 10.0,
-            "sample_size_score": 10.0,
-        },
+        study_assessment=_real_study_assessment(
+            sample_size="N=5000 participants",
+            **{f: "low" for f in BIAS_RISK_FIELDS},
+        ),
         paper_weight={
             "final_weight": 10.0,
             "replication_status_score": 10.0,
@@ -279,3 +299,76 @@ def test_real_paper_weight_ranks_papers() -> None:
     high = _make_paper(paper_weight=_real_paper_weight(final_weight=9.0, replication=5.0))
 
     assert scorer.score(high) > scorer.score(low)
+
+
+@pytest.mark.parametrize("risks, expected", [
+    ({"selection_bias_risk": "low", "detection_bias_risk": "moderate",
+      "reporting_bias_risk": "high"}, 2.0),
+    ({"selection_bias_risk": "low", "attrition_bias_risk": "unclear"}, 8.0),
+    ({"performance_bias_risk": " Moderate "}, 5.0),
+    ({"selection_bias_risk": "unclear"}, None),
+    ({}, None),
+])
+def test_rigor_is_worst_rated_bias_domain(risks, expected) -> None:
+    """Rigor comes from StudyAssessment's bias ratings: the worst rated domain (#356)."""
+    scorer = CompositeScorer()
+
+    assert scorer._extract_methodological_rigor(_real_study_assessment(**risks)) == expected
+
+
+@pytest.mark.parametrize("sample_size, expected", [
+    ("N=25 participants", 2.0),
+    ("N=120 participants", 6.0),
+    ("850 patients", 8.0),
+    ("1,234 patients", 10.0),
+    ("450", 6.0),
+    (450, 6.0),
+    ("not reported", None),
+    (None, None),
+])
+def test_sample_size_is_parsed_from_assessment_text(sample_size, expected) -> None:
+    """Sample size comes from StudyAssessment's free-text count (#356)."""
+    scorer = CompositeScorer()
+    assessment = _real_study_assessment(sample_size=sample_size)
+
+    assert scorer._extract_sample_size_score(assessment) == expected
+
+
+def test_unrated_rigor_and_sample_size_are_left_out() -> None:
+    """An assessment rating neither dimension neither raises nor lowers the score."""
+    weights = ScoringWeights(
+        relevance=0.5,
+        study_quality=0.0,
+        methodological_rigor=0.25,
+        sample_size=0.25,
+        recency=0.0,
+        replication_status=0.0,
+        paper_weight=0.0,
+        source_reliability=0.0,
+    )
+    scorer = CompositeScorer(weights=weights)
+    paper = _make_paper(
+        relevance=5.0,
+        study_assessment=_real_study_assessment(selection_bias_risk="unclear"),
+    )
+
+    assert scorer.score(paper) == pytest.approx(10.0)
+
+
+def test_bias_ratings_rank_papers() -> None:
+    """Otherwise identical papers are ranked by their worst bias rating (#356)."""
+    weights = ScoringWeights(
+        relevance=0.5,
+        study_quality=0.0,
+        methodological_rigor=0.5,
+        sample_size=0.0,
+        recency=0.0,
+        replication_status=0.0,
+        paper_weight=0.0,
+        source_reliability=0.0,
+    )
+    scorer = CompositeScorer(weights=weights)
+    low = _make_paper(study_assessment=_real_study_assessment(selection_bias_risk="low"))
+    high = _make_paper(study_assessment=_real_study_assessment(selection_bias_risk="high"))
+
+    assert scorer.score(low) > scorer.score(high)
