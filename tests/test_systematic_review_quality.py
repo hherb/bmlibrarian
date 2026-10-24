@@ -593,6 +593,27 @@ class TestQualityAssessor:
         # Should return None on error
         assert result is None
 
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
+    def test_failed_paper_weight_is_not_cached(
+        self,
+        mock_get_weight,
+        sample_paper,
+    ):
+        """A failed paper-weight assessment is flagged and not cached (#345)."""
+        mock_weight_agent = Mock()
+        mock_weight_agent.assess_paper.side_effect = RuntimeError("LLM timeout")
+        mock_get_weight.return_value = mock_weight_agent
+
+        assessor = QualityAssessor()
+        assessor._cache_manager = Mock()
+        assessor._cache_manager.get_paper_weight.return_value = None
+        document = assessor._paper_to_document(sample_paper)
+        with patch.object(assessor, '_get_version_id', return_value=1):
+            result = assessor._run_paper_weight_assessment(document)
+
+        assert result["error"] == "LLM timeout"
+        assessor._cache_manager.store_paper_weight.assert_not_called()
+
 
 # =============================================================================
 # Integration with CompositeScorer Tests
