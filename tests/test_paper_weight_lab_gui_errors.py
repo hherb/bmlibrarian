@@ -6,7 +6,7 @@ Qt test suite.
 """
 
 from typing import TYPE_CHECKING, Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -114,3 +114,21 @@ def test_failed_load_does_not_keep_previous_document(
     getattr(box, dialog).assert_called_once()
     assert tab.current_document_id is None
     assert tab.current_document_meta is None
+
+
+def test_loading_another_document_drops_previous_result(app: "QApplication") -> None:
+    """Export must not write paper 1's result under paper 2's ID (e.g. after 2 fails)."""
+    from bmlibrarian.lab.paper_weight_lab.tabs.results_tab import ResultsTab
+    tab = ResultsTab(agent=None)
+    tab.current_result = MagicMock()
+    tab.export_report_button.setEnabled(True)
+    tab.export_json_button.setEnabled(True)
+
+    meta = {'title': 'Paper 2', 'authors': None, 'year': 2020,
+            'pmid': None, 'doi': None, 'abstract': 'new'}
+    with patch(f'{PKG}.tabs.results_tab.get_document_metadata', return_value=meta):
+        tab.load_document(2)
+
+    assert tab.current_result is None
+    assert not tab.export_report_button.isEnabled()
+    assert not tab.export_json_button.isEnabled()

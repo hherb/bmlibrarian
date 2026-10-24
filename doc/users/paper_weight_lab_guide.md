@@ -193,6 +193,22 @@ If reading a cached assessment fails (for example a damaged stored row),
 **Assess Paper Weight** reports the error instead of silently re-assessing;
 use **Force Re-assess** to bypass the cache and replace the stored result.
 
+### Assessment Errors
+If any step fails (a database query, creating the document's embeddings,
+an LLM call, or an LLM reply that cannot be parsed or lacks the requested
+fields), the assessment stops and an "Assessment Error" message shows the
+cause. A document with no abstract and no full text cannot be assessed and
+fails the same way. Nothing is stored, so running **Assess Paper Weight**
+again retries it. A failed step is never filled in with a neutral or zero
+score; a study type the LLM reports as "unknown" still gets the neutral
+study-design score.
+
+Assessments stored before this fix may contain such placeholder scores.
+Their audit trail says "LLM assessment failed", "LLM extraction failed" or
+"No document text available for LLM extraction" (the last also appeared
+when a database error hid the document's text). Use **Force Re-assess** to
+replace them; if in doubt, re-assess.
+
 ### LLM Timeout
 If assessments take too long or timeout:
 - Check Ollama server status

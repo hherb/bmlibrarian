@@ -74,7 +74,7 @@ class AssessmentWorker(QThread):
             self.assessment_complete.emit(result)
 
         except Exception as e:
-            logger.error(f"Assessment worker error: {e}")
+            logger.exception(f"Assessment worker error: {e}")
             self.assessment_error.emit(str(e))
 
 

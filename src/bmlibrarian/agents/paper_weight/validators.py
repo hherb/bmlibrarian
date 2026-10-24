@@ -44,6 +44,7 @@ class ValidationResult:
         reasoning: Explanation of the validation result
         conflict_details: Details about the conflict if has_conflict is True
         supporting_quote: Exact verbatim quote from text supporting the LLM assessment
+        validation_failed: The LLM validation itself failed (error or unparseable reply)
     """
 
     is_valid: bool = True
@@ -55,6 +56,7 @@ class ValidationResult:
     reasoning: str = ""
     conflict_details: str = ""
     supporting_quote: str = ""
+    validation_failed: bool = False
 
 
 def search_chunks_by_query(
@@ -92,6 +94,8 @@ def search_chunks_by_query(
 
     Raises:
         ValueError: If inputs are invalid
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     # Input validation
     if document_id <= 0:
@@ -176,8 +180,9 @@ def search_chunks_by_query(
         return []
 
     except Exception as e:
-        logger.warning(f"Error in semantic chunk search: {e}")
-        return []
+        # Re-raise: an empty list would read as "no relevant text" and be scored (#347).
+        logger.error(f"Error in semantic chunk search for document {document_id}: {e}")
+        raise
 
 
 DEFAULT_CHUNK_LIMIT = 20  # Default limit for get_all_document_chunks
@@ -190,7 +195,7 @@ def get_all_document_chunks(
     """
     Get all chunks for a document ordered by position.
 
-    Fallback when semantic search is unavailable or for comprehensive analysis.
+    Fallback when semantic search finds no chunks, or for comprehensive analysis.
 
     Args:
         document_id: Database ID of the document (must be positive)
@@ -201,6 +206,8 @@ def get_all_document_chunks(
 
     Raises:
         ValueError: If inputs are invalid
+        Exception: Database errors are logged and re-raised, so callers can
+            tell a failure from an empty result.
     """
     # Input validation
     if document_id <= 0:
@@ -236,8 +243,8 @@ def get_all_document_chunks(
                 return results
 
     except Exception as e:
-        logger.warning(f"Error getting document chunks: {e}")
-        return []
+        logger.error(f"Error getting chunks for document {document_id}: {e}")
+        raise
 
 
 def _build_study_type_validation_prompt(
@@ -364,10 +371,14 @@ def validate_study_type_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
-        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
+        fallback_chunks: Optional pre-computed chunks to use if the document has no stored chunks
 
     Returns:
-        ValidationResult with validation details and conflict flags
+        ValidationResult with validation details and conflict flags; an LLM
+        error or unparseable reply sets validation_failed instead of raising
+
+    Raises:
+        Exception: Chunk-query database errors propagate.
     """
     import json
 
@@ -455,11 +466,13 @@ def validate_study_type_extraction(
                     )
 
         else:
+            result.validation_failed = True
             result.reasoning = "Could not parse LLM response"
             logger.warning(f"Failed to parse study type validation response: {response_text[:200]}")
 
     except Exception as e:
         logger.error(f"Error in study type validation: {e}")
+        result.validation_failed = True
         result.reasoning = f"Validation error: {str(e)}"
 
     return result
@@ -480,10 +493,14 @@ def validate_sample_size_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
-        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
+        fallback_chunks: Optional pre-computed chunks to use if the document has no stored chunks
 
     Returns:
-        ValidationResult with validation details and conflict flags
+        ValidationResult with validation details and conflict flags; an LLM
+        error or unparseable reply sets validation_failed instead of raising
+
+    Raises:
+        Exception: Chunk-query database errors propagate.
     """
     import json
 
@@ -576,11 +593,13 @@ def validate_sample_size_extraction(
                         )
 
         else:
+            result.validation_failed = True
             result.reasoning = "Could not parse LLM response"
             logger.warning(f"Failed to parse sample size validation response: {response_text[:200]}")
 
     except Exception as e:
         logger.error(f"Error in sample size validation: {e}")
+        result.validation_failed = True
         result.reasoning = f"Validation error: {str(e)}"
 
     return result
@@ -622,6 +641,8 @@ def add_validation_to_dimension_score(
     validation_status = "valid" if validation_result.is_valid else "invalid"
     if validation_result.has_conflict:
         validation_status = "CONFLICT"
+    if validation_result.validation_failed:
+        validation_status = "validation_failed"
 
     # Use the LLM-extracted supporting quote as evidence if available,
     # otherwise fall back to the first relevant passage
