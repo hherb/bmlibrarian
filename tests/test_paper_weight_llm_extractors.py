@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from bmlibrarian.agents.paper_weight.extractors import UNKNOWN_STUDY_TYPE_SCORE
 from bmlibrarian.agents.paper_weight.llm_extractors import (
     extract_sample_size_llm,
     extract_study_type_llm,
@@ -70,6 +71,20 @@ class TestExtractorsRaise:
              pytest.raises(ValueError, match='Could not parse LLM'):
             extract(document_id=1, llm_client=llm_returning('I cannot tell.'), model='m')
 
+    def test_empty_json_raises(self, extract: Any) -> None:
+        """A JSON reply without the requested field raises instead of defaulting (#345)."""
+        with patch(f'{EXTRACTORS_MODULE}.search_chunks_by_query', return_value=CHUNKS), \
+             pytest.raises(ValueError):
+            extract(document_id=1, llm_client=llm_returning('{}'), model='m')
+
+    def test_no_text_raises(self, extract: Any) -> None:
+        """A document with no chunks and no abstract raises instead of a placeholder score."""
+        with patch(f'{EXTRACTORS_MODULE}.search_chunks_by_query', return_value=[]), \
+             patch(f'{EXTRACTORS_MODULE}.get_all_document_chunks', return_value=[]), \
+             pytest.raises(ValueError, match='No text available'):
+            extract(document_id=1, llm_client=llm_returning('{}'), model='m',
+                    document={'title': 'Only a title'})
+
     def test_llm_error_propagates(self, extract: Any) -> None:
         """An LLM call failure propagates."""
         client = MagicMock()
@@ -90,6 +105,14 @@ class TestExtractorsSucceed:
                                            hierarchy_config={'rct': 8.0})
         assert score.score == 8.0
 
+    def test_study_type_unknown_is_neutral(self) -> None:
+        """'unknown' is an answer the prompt offers; it gets the neutral score."""
+        client = llm_returning('{"study_type": "unknown", "confidence": 0.3}')
+        with patch(f'{EXTRACTORS_MODULE}.search_chunks_by_query', return_value=CHUNKS):
+            score = extract_study_type_llm(document_id=1, llm_client=client, model='m',
+                                           hierarchy_config={'rct': 8.0})
+        assert score.score == UNKNOWN_STUDY_TYPE_SCORE
+
     def test_sample_size_not_reported(self) -> None:
         """'No sample size reported' is a real finding, not a failure."""
         client = llm_returning('{"sample_size": null, "reasoning": "not stated"}')
@@ -97,3 +120,12 @@ class TestExtractorsSucceed:
             score = extract_sample_size_llm(document_id=1, llm_client=client, model='m')
         assert score.score == 0.0
         assert 'not stated' in score.details[0].reasoning
+
+
+def test_off_list_study_type_raises() -> None:
+    """A study type outside the hierarchy is a bad reply, not a neutral 5.0 (#345)."""
+    client = llm_returning('{"study_type": "randomized controlled trial", "confidence": 0.9}')
+    with patch(f'{EXTRACTORS_MODULE}.search_chunks_by_query', return_value=CHUNKS), \
+         pytest.raises(ValueError, match='invalid study type'):
+        extract_study_type_llm(document_id=1, llm_client=client, model='m',
+                               hierarchy_config={'rct': 8.0})

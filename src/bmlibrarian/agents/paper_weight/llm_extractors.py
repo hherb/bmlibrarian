@@ -26,6 +26,7 @@ from .models import (
 )
 from .extractors import (
     DEFAULT_STUDY_TYPE_HIERARCHY,
+    UNKNOWN_STUDY_TYPE_SCORE,
     calculate_sample_size_score,
 )
 from .validators import (
@@ -184,8 +185,10 @@ def extract_study_type_llm(
         DimensionScore for study design with audit trail
 
     Raises:
-        Exception: Chunk-search and LLM errors, and an unparseable LLM
-            response, are logged and re-raised: a failure must not be scored.
+        ValueError: If no text is available, or the LLM reply is unparseable
+            or malformed: a failure must not be scored (#345).
+        Exception: Chunk-search errors propagate; LLM errors are logged and
+            re-raised.
     """
     if hierarchy_config is None:
         hierarchy_config = DEFAULT_STUDY_TYPE_HIERARCHY
@@ -242,19 +245,9 @@ def extract_study_type_llm(
             chunks = synthetic_chunks
             logger.info(f"Using {len(chunks)} synthetic chunks from abstract for study type extraction")
 
-    # If still no text available, return unknown
+    # No text is a failure, not an "unknown" study type to be scored (#345)
     if not chunks:
-        dimension_score = DimensionScore(
-            dimension_name=DIMENSION_STUDY_DESIGN,
-            score=5.0  # Neutral score
-        )
-        dimension_score.add_detail(
-            component='study_type',
-            value='unknown',
-            contribution=5.0,
-            reasoning='No document text available for LLM extraction'
-        )
-        return dimension_score
+        raise ValueError(f"No text available to extract the study type of document {document_id}")
 
     # Extract passage texts
     passages = [c.get('chunk_text', '') for c in chunks if c.get('chunk_text')]
@@ -290,13 +283,18 @@ def extract_study_type_llm(
             json_str = response_text[json_start:json_end]
             parsed = json.loads(json_str)
 
-            study_type = parsed.get('study_type', 'unknown')
+            study_type = parsed.get('study_type')
             confidence = parsed.get('confidence', 0.5)
             reasoning = parsed.get('reasoning', '')
             supporting_quote = parsed.get('supporting_quote', '')
 
-            # Get score from hierarchy
-            score = hierarchy_config.get(study_type, 5.0)
+            # 'unknown' is an answer the prompt offers; anything else off-list is a bad reply
+            if study_type == 'unknown':
+                score = UNKNOWN_STUDY_TYPE_SCORE
+            elif study_type in hierarchy_config:
+                score = hierarchy_config[study_type]
+            else:
+                raise ValueError(f"LLM returned an invalid study type {study_type!r}: {json_str[:200]}")
 
             # Create dimension score with audit trail
             dimension_score = DimensionScore(
@@ -359,8 +357,10 @@ def extract_sample_size_llm(
         DimensionScore for sample size with audit trail
 
     Raises:
-        Exception: Chunk-search and LLM errors, and an unparseable LLM
-            response, are logged and re-raised: a failure must not be scored.
+        ValueError: If no text is available, or the LLM reply is unparseable
+            or malformed: a failure must not be scored (#345).
+        Exception: Chunk-search errors propagate; LLM errors are logged and
+            re-raised.
     """
     if scoring_config is None:
         scoring_config = {
@@ -418,19 +418,9 @@ def extract_sample_size_llm(
             chunks = synthetic_chunks
             logger.info(f"Using {len(chunks)} synthetic chunks from abstract for sample size extraction")
 
-    # If still no text available, return zero score
+    # No text is a failure, not "sample size not reported" (#345)
     if not chunks:
-        dimension_score = DimensionScore(
-            dimension_name=DIMENSION_SAMPLE_SIZE,
-            score=0.0
-        )
-        dimension_score.add_detail(
-            component='extracted_n',
-            value='not_found',
-            contribution=0.0,
-            reasoning='No document text available for LLM extraction'
-        )
-        return dimension_score
+        raise ValueError(f"No text available to extract the sample size of document {document_id}")
 
     # Extract passage texts
     passages = [c.get('chunk_text', '') for c in chunks if c.get('chunk_text')]
@@ -466,7 +456,10 @@ def extract_sample_size_llm(
             json_str = response_text[json_start:json_end]
             parsed = json.loads(json_str)
 
-            sample_size = parsed.get('sample_size')
+            # null means "not reported" (a finding); a missing key is a bad reply
+            if 'sample_size' not in parsed:
+                raise ValueError(f"LLM sample size response has no sample_size: {json_str[:200]}")
+            sample_size = parsed['sample_size']
             confidence = parsed.get('confidence', 0.5)
             reasoning = parsed.get('reasoning', '')
             supporting_quote = parsed.get('supporting_quote', '')

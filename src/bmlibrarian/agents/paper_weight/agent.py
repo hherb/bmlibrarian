@@ -2,16 +2,19 @@
 Paper Weight Assessment Agent
 
 Multi-dimensional paper quality assessment agent that coordinates:
-- Rule-based extractors for study type and sample size
+- LLM extraction of study type and sample size (default; rule-based extraction
+  with LLM validation is the legacy mode)
 - LLM-based assessors for methodological quality and risk of bias
 - Database persistence with caching
 
 This module provides the main PaperWeightAssessmentAgent class that orchestrates
 all assessment components. The actual implementations are in separate modules:
-- paper_weight_models.py: Data models (dataclasses)
-- paper_weight_extractors.py: Rule-based extraction functions
-- paper_weight_llm_assessors.py: LLM-based assessment functions
-- paper_weight_db.py: Database operations
+- models.py: Data models (dataclasses)
+- llm_extractors.py: LLM study type / sample size extraction
+- extractors.py: Rule-based extraction functions (legacy mode)
+- validators.py: Chunk search and LLM validation of rule-based extractions
+- llm_assessors.py: LLM-based assessment functions
+- db.py: Database operations
 """
 
 import logging
@@ -258,7 +261,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
             DimensionScore for methodological quality with detailed audit trail
 
         Raises:
-            Exception: LLM errors are logged and re-raised.
+            Exception: LLM errors and malformed replies (ValueError) are
+                logged and re-raised.
         """
         # Try to leverage StudyAssessmentAgent output first
         if study_assessment:
@@ -311,7 +315,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
             DimensionScore for risk of bias with detailed audit trail
 
         Raises:
-            Exception: LLM errors are logged and re-raised.
+            Exception: LLM errors and malformed replies (ValueError) are
+                logged and re-raised.
         """
         # Try to leverage StudyAssessmentAgent output first
         if study_assessment:
@@ -396,7 +401,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Raises:
             Exception: Database errors propagate, so the assessment fails
                 instead of being stored unvalidated. LLM validation failures
-                are recorded in the validation result by the validators.
+                are recorded in the audit trail as 'validation_failed'.
         """
         conflicts = []
 
@@ -530,7 +535,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             4. Return result
 
         Workflow (legacy mode):
-            Uses keyword/regex extraction with LLM validation fallback.
+            Uses keyword/regex extraction followed by LLM validation.
         """
         try:
             # Check cache
@@ -671,23 +676,24 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         This method extends assess_paper() to work with full papers:
         - If pdf_path is provided and document has no full_text, ingests the PDF
-        - Uses semantic chunk search to retrieve relevant passages
-        - Performs LLM assessment on the most relevant chunks
+        - Logs how many chunks the document has (a DB error here fails the run)
+        - Runs assess_paper(), which searches the chunks semantically
 
         Args:
             document_id: Database ID of document to assess
             pdf_path: Optional path to PDF file (will be ingested if provided)
             force_reassess: If True, skip cache and re-assess
             progress_callback: Optional callback(stage, current, total) for progress.
-                              Stages: "ingesting", "searching", "assessing"
+                              Stages: "ingesting", "searching", "assessing", plus
+                              the ingestor's own stages (e.g. "storing", "embedding")
 
         Returns:
             PaperWeightResult with full audit trail
 
         Raises:
-            FileNotFoundError: If pdf_path provided but file doesn't exist
-            Exception: Ingestion, database and LLM failures are logged and
-                re-raised (see assess_paper).
+            RuntimeError: If PDF ingestion fails (including a missing pdf_path)
+            Exception: Database and LLM failures are logged and re-raised
+                (see assess_paper).
         """
         from ...database import get_db_manager
 
@@ -725,15 +731,12 @@ class PaperWeightAssessmentAgent(BaseAgent):
             if progress_callback:
                 progress_callback("searching", 0, 1)
 
-            # Use semantic chunk search to get relevant content
             relevant_chunks = self._search_document_chunks(document_id)
 
             if progress_callback:
                 progress_callback("searching", 1, 1)
 
-            # Step 3: Log chunk availability (chunks provide semantic search capability)
-            # Note: assess_paper() uses full_text from database directly.
-            # Chunks are stored for future semantic search enhancement.
+            # Step 3: Log chunk availability (assess_paper() runs its own chunk search)
             if relevant_chunks:
                 logger.info(f"Document {document_id} has {len(relevant_chunks)} semantic chunks available")
 
@@ -761,7 +764,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """
-        Search for semantic chunks belonging to a specific document.
+        Fetch a document's first chunks, ordered by position.
 
         Args:
             document_id: Document database ID
@@ -769,6 +772,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Returns:
             List of chunk dicts with 'chunk_no', 'chunk_text', 'start_pos', 'end_pos'
+
+        Raises:
+            Exception: Database errors are logged and re-raised.
         """
         from ...database import get_db_manager
 

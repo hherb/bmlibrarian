@@ -792,10 +792,6 @@ class QualityAssessor:
                 force_reassess=False,
             )
 
-            if result is None:
-                logger.warning(f"Paper weight assessment returned None for document {document_id}")
-                return None
-
             result_dict = result.to_dict()
             execution_time_ms = int((time.time() - start_time) * 1000)
 

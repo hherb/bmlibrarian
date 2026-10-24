@@ -26,10 +26,13 @@ from bmlibrarian.agents.paper_weight import (
     prepare_text_for_analysis,
     store_assessment,
 )
+from bmlibrarian.agents.paper_weight.llm_assessors import MQ_COMPONENTS, ROB_COMPONENTS
 from bmlibrarian.db_test_guard import is_protected_database
 
 TRUNCATION_MARKER = "\n\n[Text truncated...]"
 AGENT_MODULE = 'bmlibrarian.agents.paper_weight.agent'
+# One reply that satisfies both the MQ and the RoB component checks
+ASSESSOR_REPLY = {name: {'score': 1.0} for name in MQ_COMPONENTS + ROB_COMPONENTS}
 
 
 def failing_db() -> Any:
@@ -287,7 +290,7 @@ class TestErrorHandling:
             """Fail only the step under test."""
             if retry_context.startswith(failing_step):
                 raise RuntimeError('LLM timeout')
-            return {}
+            return ASSESSOR_REPLY
 
         with patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
              patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
@@ -333,6 +336,66 @@ class TestErrorHandling:
             agent.assess_paper(42, use_llm_extraction=False)
 
         store.assert_not_called()
+
+    def test_successful_assessment_is_stored(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """Positive control: a successful run is stored once, so the not-stored tests mean something."""
+        score = self._score
+        with patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
+             patch(f'{AGENT_MODULE}.extract_study_type_llm', return_value=score('study_design')), \
+             patch(f'{AGENT_MODULE}.extract_sample_size_llm', return_value=score('sample_size')), \
+             patch(f'{AGENT_MODULE}.check_replication_status',
+                   return_value=score('replication_status')), \
+             patch.object(agent, '_generate_and_parse_json', return_value=ASSESSOR_REPLY), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store:
+            result = agent.assess_paper(42)
+
+        store.assert_called_once_with(result)
+        assert result.methodological_quality.score == len(MQ_COMPONENTS)
+
+    def test_malformed_assessor_reply_is_not_stored(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """Valid JSON without the requested components is not stored as a 0 score (#345)."""
+        score = self._score
+        with patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document', return_value={'id': 42, 'abstract': 'x'}), \
+             patch(f'{AGENT_MODULE}.extract_study_type_llm', return_value=score('study_design')), \
+             patch(f'{AGENT_MODULE}.extract_sample_size_llm', return_value=score('sample_size')), \
+             patch.object(agent, '_generate_and_parse_json', return_value={}), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store, \
+             pytest.raises(ValueError, match='missing a numeric score'):
+            agent.assess_paper(42)
+
+        store.assert_not_called()
+
+    def test_legacy_validation_llm_failure_is_recorded(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """Legacy mode: an LLM validation error is audited as 'validation_failed', not 'valid'."""
+        score = self._score
+        agent._llm_client = MagicMock()
+        agent._llm_client.generate.side_effect = RuntimeError('LLM timeout')
+        validators = 'bmlibrarian.agents.paper_weight.validators'
+        with patch(f'{AGENT_MODULE}.get_cached_assessment', return_value=None), \
+             patch(f'{AGENT_MODULE}.get_document',
+                   return_value={'id': 42, 'abstract': 'A randomized controlled trial of 120 adults.'}), \
+             patch(f'{AGENT_MODULE}.get_all_document_chunks', return_value=[]), \
+             patch(f'{validators}.search_chunks_by_query', return_value=[]), \
+             patch(f'{validators}.get_all_document_chunks', return_value=[]), \
+             patch.object(agent, '_generate_and_parse_json', return_value=ASSESSOR_REPLY), \
+             patch(f'{AGENT_MODULE}.check_replication_status',
+                   return_value=score('replication_status')), \
+             patch(f'{AGENT_MODULE}.store_assessment') as store:
+            result = agent.assess_paper(42, use_llm_extraction=False)
+
+        store.assert_called_once()
+        for dimension in (result.study_design, result.sample_size):
+            validation = next(d for d in dimension.details if d.component == 'llm_validation')
+            assert validation.extracted_value == 'validation_failed'
+            assert 'LLM timeout' in validation.reasoning
 
     def test_full_paper_ingestion_failure_raises(
         self, agent: PaperWeightAssessmentAgent, tmp_path: Any
@@ -424,10 +487,7 @@ class TestMethodologicalQualityScoring:
     def test_calculate_mq_score_capped(self, agent):
         """Test that MQ score is capped at 10.0"""
         # Artificially high scores that would sum > 10
-        components = {
-            "comp1": {"score": 6.0, "evidence": "test", "reasoning": "test"},
-            "comp2": {"score": 6.0, "evidence": "test", "reasoning": "test"}
-        }
+        components = {name: {"score": 6.0} for name in MQ_COMPONENTS}
 
         result = calculate_methodological_quality_score(components)
 

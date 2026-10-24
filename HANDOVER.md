@@ -14,22 +14,33 @@ off new work. Longer-term structural items live in
   closes #345, #347). `assess_paper` / `assess_full_paper` log and re-raise
   (the 0.0/10 `_create_error_result` is gone); the MQ/RoB assessors no
   longer return a neutral 5.0 (`create_error_dimension_score` removed);
-  `extract_study_type_llm` / `extract_sample_size_llm` raise on an LLM error
-  or unparseable reply (were 5.0 / 0.0); `search_chunks_by_query`,
+  `extract_study_type_llm` / `extract_sample_size_llm` raise on an LLM error,
+  an unparseable reply, a reply missing `study_type` / `sample_size`, an
+  off-hierarchy study type, or a document with no text (were 5.0 / 0.0;
+  `"unknown"` and `sample_size: null` remain real findings); the MQ/RoB
+  calculators require every prompted component (`MQ_COMPONENTS` /
+  `ROB_COMPONENTS`) with a numeric score and sum only those;
+  `search_chunks_by_query`,
   `get_all_document_chunks`, `_search_document_chunks` and
   `ensure_document_embeddings` re-raise DB errors; legacy
   `_validate_extractions` no longer swallows them (LLM validation failures
-  are still recorded in the audit trail by the validators). Nothing failed
+  are recorded in the audit trail as `validation_failed`, no longer as
+  `valid`). The lab drops the previous result (and disables export) on
+  loading a document or starting an assessment. Nothing failed
   is stored or cached, so a re-run retries: the lab shows "Assessment
   Error", the systematic review gets its `"error"` dict (not cached), the
   paper reviewer marks the step FAILED. `knowledgebase` had no stored
   failure scores (117 assessments, read-only check). Tests:
   `tests/test_paper_weight_persistence.py::TestErrorHandling`,
   `tests/test_paper_weight_llm_extractors.py`,
+  `tests/test_paper_weight_llm_assessors.py` (malformed replies),
+  `tests/test_paper_weight_lab_gui_errors.py` (stale export),
   `tests/test_systematic_review_quality.py::...::test_failed_paper_weight_is_not_cached`.
-  Follow-up filed: #348 (systematic review scorer reads `composite_score`,
+  Follow-ups filed: #348 (systematic review scorer reads `composite_score`,
   `PaperWeightResult.to_dict()` emits `final_weight`: every paper scores
-  neutral on paper weight and replication).
+  neutral on paper weight and replication), #351 (placeholder scores stored
+  before this fix can still be served from the assessment and
+  systematic-review caches; version plumbing).
 - **Paper-weight DB helpers raise instead of returning `[]`/`None`**
   (2026-10-23, closes #275). `search_documents`,
   `semantic_search_documents`, `get_recent_assessments`,
@@ -207,7 +218,8 @@ value — pick one, or pull an item from ROADMAP.md:
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
 - #348 — systematic review ignores paper-weight scores (key mismatch;
-  changes rankings, check with the owner).
+  changes rankings, check with the owner). Do #351 (stale cached
+  placeholders) with or before it.
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
   #344 (hardcoded PubMed `source_id = 1`; move `pmid_select_expr` into
@@ -256,7 +268,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-23
-  (#345/#347 branch): **4446 passed, 47 skipped** in ~12 min. Without
+  (#345/#347 branch, after review fixes): **4465 passed, 47 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -37,6 +37,38 @@ SINGLE_BLIND_SCORE = 1.0   # Points for single-blind design
 REMAINING_COMPONENTS_MAX = 5.0  # Max points for other MQ components (allocation, protocol, ITT, attrition)
 QUALITY_SCORE_MAX = 10.0   # Maximum quality score from StudyAssessmentAgent
 
+# Components the LLM prompts ask for (see prompts.py); a reply missing any is malformed
+MQ_COMPONENTS = (
+    'randomization', 'blinding', 'allocation_concealment',
+    'protocol_preregistration', 'itt_analysis', 'attrition_handling',
+)
+ROB_COMPONENTS = ('selection_bias', 'performance_bias', 'detection_bias', 'reporting_bias')
+
+
+def _require_scored_components(components: Any, expected: tuple[str, ...], label: str) -> None:
+    """
+    Check an LLM reply has every expected component with a numeric score.
+
+    Args:
+        components: Parsed LLM reply
+        expected: Component names the prompt asks for
+        label: Assessment name for the error message
+
+    Raises:
+        ValueError: If the reply is not a dict, or a component is missing or
+            has no numeric score; scoring it would store a failure as 0 (#345).
+    """
+    if not isinstance(components, dict):
+        raise ValueError(f"LLM {label} reply is not a JSON object: {components!r:.200}")
+    bad = [
+        name for name in expected
+        if not isinstance(components.get(name), dict)
+        or isinstance(components[name].get('score'), bool)
+        or not isinstance(components[name].get('score'), (int, float))
+    ]
+    if bad:
+        raise ValueError(f"LLM {label} reply is missing a numeric score for: {', '.join(bad)}")
+
 
 def prepare_text_for_analysis(
     document: Dict[str, Any],
@@ -82,17 +114,20 @@ def calculate_methodological_quality_score(components: Dict[str, Any]) -> Dimens
 
     Returns:
         DimensionScore with full audit trail
+
+    Raises:
+        ValueError: If any of MQ_COMPONENTS is missing or has no numeric score
     """
+    _require_scored_components(components, MQ_COMPONENTS, 'methodological quality')
     dimension_score = DimensionScore(
         dimension_name=DIMENSION_METHODOLOGICAL_QUALITY,
         score=0.0
     )
 
-    for component_name, component_data in components.items():
-        if not isinstance(component_data, dict):
-            continue
-
-        score_contribution = float(component_data.get('score', 0.0))
+    # Only the requested components count: extra keys in the reply must not add points
+    for component_name in MQ_COMPONENTS:
+        component_data = components[component_name]
+        score_contribution = float(component_data['score'])
         evidence = component_data.get('evidence', '')
         reasoning = component_data.get('reasoning', '')
 
@@ -128,17 +163,20 @@ def calculate_risk_of_bias_score(components: Dict[str, Any]) -> DimensionScore:
 
     Returns:
         DimensionScore with full audit trail
+
+    Raises:
+        ValueError: If any of ROB_COMPONENTS is missing or has no numeric score
     """
+    _require_scored_components(components, ROB_COMPONENTS, 'risk of bias')
     dimension_score = DimensionScore(
         dimension_name=DIMENSION_RISK_OF_BIAS,
         score=0.0
     )
 
-    for component_name, component_data in components.items():
-        if not isinstance(component_data, dict):
-            continue
-
-        score_contribution = float(component_data.get('score', 0.0))
+    # Only the requested components count: extra keys in the reply must not add points
+    for component_name in ROB_COMPONENTS:
+        component_data = components[component_name]
+        score_contribution = float(component_data['score'])
         risk_level = component_data.get('risk_level', 'unknown')
         evidence = component_data.get('evidence', '')
         reasoning = component_data.get('reasoning', '')
@@ -356,6 +394,8 @@ def extract_rob_from_study_assessment(
 
 __all__ = [
     'DEFAULT_MAX_TEXT_LENGTH',
+    'MQ_COMPONENTS',
+    'ROB_COMPONENTS',
     'RISK_LEVEL_SCORES',
     'prepare_text_for_analysis',
     'build_methodological_quality_prompt',

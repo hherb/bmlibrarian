@@ -333,6 +333,7 @@ class ResultsTab(QWidget):
         self._update_button_states()
 
         # Hide previous results
+        self._discard_result()
         self.results_section.hide()
         self.audit_section.clear()
 
@@ -406,6 +407,7 @@ class ResultsTab(QWidget):
         self.status_spinner.set_status("Starting assessment...")
 
         # Hide previous results
+        self._discard_result()
         self.results_section.hide()
         self.audit_section.clear()
 
@@ -468,6 +470,12 @@ class ResultsTab(QWidget):
         self._update_button_states()
         self.export_report_button.setEnabled(True)
         self.export_json_button.setEnabled(True)
+
+    def _discard_result(self) -> None:
+        """Drop the shown result so it cannot be exported under another document's ID."""
+        self.current_result = None
+        self.export_report_button.setEnabled(False)
+        self.export_json_button.setEnabled(False)
 
     def _on_assessment_error(self, error_message: str) -> None:
         """Handle assessment error."""

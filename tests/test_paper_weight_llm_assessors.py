@@ -9,10 +9,14 @@ Tests cover:
 - Error handling and edge cases
 """
 
+from typing import Any, Dict
+
 import pytest
 
 from bmlibrarian.agents.paper_weight.llm_assessors import (
     DEFAULT_MAX_TEXT_LENGTH,
+    MQ_COMPONENTS,
+    ROB_COMPONENTS,
     RISK_LEVEL_SCORES,
     RANDOMIZATION_SCORE,
     DOUBLE_BLIND_SCORE,
@@ -29,6 +33,23 @@ from bmlibrarian.agents.paper_weight import (
     DIMENSION_METHODOLOGICAL_QUALITY,
     DIMENSION_RISK_OF_BIAS,
 )
+
+
+def mq_reply(**overrides: Any) -> Dict[str, Any]:
+    """Return a complete MQ reply scoring 0 everywhere, with ``overrides`` applied."""
+    reply: Dict[str, Any] = {name: {'score': 0.0, 'evidence': '', 'reasoning': ''}
+                             for name in MQ_COMPONENTS}
+    reply.update(overrides)
+    return reply
+
+
+def rob_reply(**overrides: Any) -> Dict[str, Any]:
+    """Return a complete RoB reply scoring 0 everywhere, with ``overrides`` applied."""
+    reply: Dict[str, Any] = {name: {'score': 0.0, 'risk_level': 'high', 'evidence': '',
+                                    'reasoning': ''}
+                             for name in ROB_COMPONENTS}
+    reply.update(overrides)
+    return reply
 
 
 class TestPrepareTextForAnalysis:
@@ -115,44 +136,48 @@ class TestCalculateMethodologicalQualityScore:
         assert result.score == 10.0  # Capped at 10
         assert len(result.details) == 6
 
-    def test_partial_components(self):
-        """Test with partial components."""
-        components = {
-            'randomization': {'score': 2.0, 'evidence': '', 'reasoning': ''},
-            'blinding': {'score': 1.0, 'evidence': '', 'reasoning': ''}
-        }
+    def test_scores_are_summed(self) -> None:
+        """Component scores add up."""
+        components = mq_reply(randomization={'score': 2.0}, blinding={'score': 1.0})
         result = calculate_methodological_quality_score(components)
-        
+
         assert result.score == 3.0
-        assert len(result.details) == 2
+        assert len(result.details) == len(MQ_COMPONENTS)
 
-    def test_empty_components(self):
-        """Test with empty components dict."""
-        result = calculate_methodological_quality_score({})
-        
-        assert result.score == 0.0
-        assert len(result.details) == 0
-
-    def test_attrition_rate_in_value(self):
+    def test_attrition_rate_in_value(self) -> None:
         """Test that attrition rate appears in value field."""
-        components = {
-            'attrition_handling': {'score': 0.5, 'attrition_rate': 0.15, 'evidence': '', 'reasoning': ''}
-        }
+        components = mq_reply(attrition_handling={'score': 0.5, 'attrition_rate': 0.15})
         result = calculate_methodological_quality_score(components)
-        
-        assert 'attrition rate: 0.15' in result.details[0].extracted_value
 
-    def test_non_dict_components_skipped(self):
-        """Test that non-dict component values are skipped."""
-        components = {
-            'randomization': {'score': 2.0, 'evidence': '', 'reasoning': ''},
-            'invalid': 'not a dict',
-            'also_invalid': 123
-        }
+        detail = next(d for d in result.details if d.component == 'attrition_handling')
+        assert 'attrition rate: 0.15' in detail.extracted_value
+
+    def test_extra_keys_ignored(self) -> None:
+        """Keys the prompt did not ask for neither break nor inflate the score."""
+        components = mq_reply(randomization={'score': 2.0}, invalid='not a dict',
+                              bonus={'score': 5.0})
         result = calculate_methodological_quality_score(components)
-        
+
         assert result.score == 2.0
-        assert len(result.details) == 1
+        assert len(result.details) == len(MQ_COMPONENTS)
+
+    @pytest.mark.parametrize('reply', [
+        {},
+        mq_reply(blinding='not a dict'),
+        mq_reply(blinding={'evidence': 'no score'}),
+        mq_reply(blinding={'score': 'high'}),
+        mq_reply(blinding={'score': True}),
+        {'components': mq_reply()},
+    ], ids=['empty', 'non_dict', 'no_score', 'text_score', 'bool_score', 'wrapped'])
+    def test_malformed_reply_raises(self, reply: Dict[str, Any]) -> None:
+        """A malformed reply raises instead of scoring missing parts as 0 (#345)."""
+        with pytest.raises(ValueError, match='methodological quality'):
+            calculate_methodological_quality_score(reply)
+
+    def test_non_object_reply_raises(self) -> None:
+        """A JSON array reply raises."""
+        with pytest.raises(ValueError, match='not a JSON object'):
+            calculate_methodological_quality_score([])  # type: ignore[arg-type]
 
 
 class TestCalculateRiskOfBiasScore:
@@ -172,35 +197,35 @@ class TestCalculateRiskOfBiasScore:
         assert result.score == 10.0
         assert len(result.details) == 4
 
-    def test_high_risk_components(self):
-        """Test with high risk components."""
-        components = {
-            'selection_bias': {'score': 0.0, 'risk_level': 'high', 'evidence': '', 'reasoning': ''},
-            'performance_bias': {'score': 0.0, 'risk_level': 'high', 'evidence': '', 'reasoning': ''}
-        }
-        result = calculate_risk_of_bias_score(components)
-        
+    def test_high_risk_components(self) -> None:
+        """A complete all-high-risk reply scores 0 (a real finding)."""
+        result = calculate_risk_of_bias_score(rob_reply())
+
         assert result.score == 0.0
 
-    def test_risk_level_in_value(self):
+    def test_risk_level_in_value(self) -> None:
         """Test that risk level appears in value field."""
-        components = {
-            'selection_bias': {'score': 1.25, 'risk_level': 'moderate', 'evidence': '', 'reasoning': ''}
-        }
+        components = rob_reply(selection_bias={'score': 1.25, 'risk_level': 'moderate'})
         result = calculate_risk_of_bias_score(components)
-        
+
         assert 'moderate risk' in result.details[0].extracted_value
 
-    def test_score_capped_at_10(self):
+    def test_score_capped_at_10(self) -> None:
         """Test that score is capped at 10."""
-        components = {
-            'selection_bias': {'score': 5.0, 'risk_level': 'low', 'evidence': '', 'reasoning': ''},
-            'performance_bias': {'score': 5.0, 'risk_level': 'low', 'evidence': '', 'reasoning': ''},
-            'detection_bias': {'score': 5.0, 'risk_level': 'low', 'evidence': '', 'reasoning': ''}
-        }
+        components = rob_reply(**{name: {'score': 5.0} for name in ROB_COMPONENTS})
         result = calculate_risk_of_bias_score(components)
-        
+
         assert result.score == 10.0
+
+    @pytest.mark.parametrize('reply', [
+        {},
+        {'selection_bias': 2, 'performance_bias': 2, 'detection_bias': 2, 'reporting_bias': 2},
+        rob_reply(reporting_bias={'risk_level': 'low'}),
+    ], ids=['empty', 'flat', 'no_score'])
+    def test_malformed_reply_raises(self, reply: Dict[str, Any]) -> None:
+        """A malformed reply raises instead of scoring missing parts as 0 (#345)."""
+        with pytest.raises(ValueError, match='risk of bias'):
+            calculate_risk_of_bias_score(reply)
 
 
 class TestExtractMQFromStudyAssessment:
