@@ -36,6 +36,10 @@ from .data_models import (
     QueryEffectiveness,
     QueryFeedback,
     ExecutedQuery,
+    REPLICATION_NONE_RECORDED_SCORE,
+    REPLICATION_SCORE_KEY,
+    is_paper_weight_placeholder,
+    paper_weight_score,
 )
 from .config import (
     SystematicReviewConfig,
@@ -66,7 +70,8 @@ QUALITY_SCORE_MAX = 10
 # Neutral mid-scale score used when an assessment dimension has no data
 # (e.g. study assessment unavailable for a paper, or no producer exists yet
 # for the dimension). Keeps configured weights applied without rewarding or
-# penalizing missing information.
+# penalizing missing information. The paper-weight dimensions instead are left
+# out when missing (see CompositeScorer.score).
 NEUTRAL_SCORE = 5.0
 
 # Recency calculation
@@ -759,6 +764,10 @@ class CompositeScorer:
     - sample_size: Sample size adequacy (0-10)
     - recency: Publication recency (0-10)
     - replication_status: Replication evidence (0-10)
+    - paper_weight: Paper weight assessment's final weight (0-10)
+    - source_reliability: Source/journal reliability (0-10)
+
+    A dimension with no score is left out and the other weights scaled up.
 
     Attributes:
         weights: ScoringWeights for composite calculation
@@ -817,20 +826,39 @@ class CompositeScorer:
         methodological_rigor = self._extract_methodological_rigor(paper.study_assessment)
         sample_size = self._extract_sample_size_score(paper.study_assessment)
         recency = self._calculate_recency_score(paper.scored_paper.paper.year)
-        replication = self._extract_replication_score(paper.paper_weight)
-        paper_weight_score = self._extract_paper_weight_score(paper.paper_weight)
-        source_reliability = self._extract_source_reliability(paper)
+        dimension_scores = {
+            "relevance": relevance,
+            "study_quality": study_quality,
+            "methodological_rigor": methodological_rigor,
+            "sample_size": sample_size,
+            "recency": recency,
+            "replication_status": self._extract_replication_score(paper.paper_weight),
+            "paper_weight": self._extract_paper_weight_score(paper.paper_weight),
+            "source_reliability": self._extract_source_reliability(paper),
+        }
 
-        # Calculate weighted composite across all eight configured dimensions
+        if is_paper_weight_placeholder(paper.paper_weight):
+            logger.warning(
+                f"Paper {paper.document_id} has a saved pre-#349 paper weight "
+                f"placeholder (all scores 0); ranking it without paper weight"
+            )
+
+        # A dimension with no score (paper weight missing, failed, disabled
+        # or a placeholder; no replication on record) is left out and the
+        # remaining weights scaled up to the same total: the missing
+        # dimensions count as the weighted mean of the scored ones.
+        scored = {k: v for k, v in dimension_scores.items() if v is not None}
+        scored_weight = sum(weights_dict[k] for k in scored)
+        if scored_weight <= 0:
+            logger.warning(
+                f"Paper {paper.document_id} has no score on any weighted "
+                f"dimension; giving it the neutral score {NEUTRAL_SCORE}"
+            )
+            return NEUTRAL_SCORE
+        total_weight = sum(weights_dict[k] for k in dimension_scores)
         composite = (
-            weights_dict["relevance"] * relevance +
-            weights_dict["study_quality"] * study_quality +
-            weights_dict["methodological_rigor"] * methodological_rigor +
-            weights_dict["sample_size"] * sample_size +
-            weights_dict["recency"] * recency +
-            weights_dict["replication_status"] * replication +
-            weights_dict["paper_weight"] * paper_weight_score +
-            weights_dict["source_reliability"] * source_reliability
+            sum(weights_dict[k] * v for k, v in scored.items())
+            * total_weight / scored_weight
         )
 
         # Normalize to 0-10 scale
@@ -998,11 +1026,11 @@ class CompositeScorer:
             if quality > 0:
                 parts.append(f"Study quality: {quality:.1f}/10.")
 
-        # Add paper weight info if available
-        if paper.paper_weight:
-            weight = paper.paper_weight.get("composite_score", 0)
-            if weight > 0:
-                parts.append(f"Paper weight: {weight:.1f}/10.")
+        weight = paper_weight_score(paper.paper_weight)
+        if weight is not None:
+            parts.append(f"Paper weight: {weight:.1f}/10.")
+        else:
+            parts.append("Paper weight: not assessed (ranked without it).")
 
         return " ".join(parts)
 
@@ -1144,59 +1172,39 @@ class CompositeScorer:
         else:
             return 1.0
 
-    def _extract_replication_score(self, paper_weight: Optional[Dict[str, Any]]) -> float:
+    def _extract_replication_score(
+        self, paper_weight: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
         """
         Extract replication status score from paper weight assessment.
 
         Args:
-            paper_weight: PaperWeightAssessmentAgent output, or None when the
-                assessment could not be performed
+            paper_weight: PaperWeightAssessmentAgent output (``to_dict()``),
+                or None when the assessment could not be performed
 
         Returns:
-            Replication score (0-10); NEUTRAL_SCORE when no assessment exists
+            Replication score (0-10); None when the assessment is missing,
+            failed or disabled, or no replication is on record (the
+            dimension is then left out)
         """
-        if not paper_weight:
-            return NEUTRAL_SCORE
+        value = paper_weight_score(paper_weight, REPLICATION_SCORE_KEY)
+        return None if value == REPLICATION_NONE_RECORDED_SCORE else value
 
-        for key in ["replication_status", "replication_score", "reproducibility"]:
-            if key in paper_weight:
-                value = paper_weight[key]
-                if isinstance(value, (int, float)):
-                    return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
-                elif isinstance(value, str):
-                    # Convert status to score
-                    status_scores = {
-                        "replicated": 10.0,
-                        "partially_replicated": 7.0,
-                        "not_replicated": 3.0,
-                        "not_attempted": 5.0,
-                        "unknown": 5.0,
-                    }
-                    return status_scores.get(value.lower(), 5.0)
-
-        # Default: assume no replication data
-        return 5.0
-
-    def _extract_paper_weight_score(self, paper_weight: Optional[Dict[str, Any]]) -> float:
+    def _extract_paper_weight_score(
+        self, paper_weight: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
         """
         Extract the overall BMLibrarian paper weight (evidence weight) score.
 
         Args:
-            paper_weight: PaperWeightAssessmentAgent output, or None when the
-                assessment could not be performed
+            paper_weight: PaperWeightAssessmentAgent output (``to_dict()``),
+                or None when the assessment could not be performed
 
         Returns:
-            Composite evidence weight (0-10); NEUTRAL_SCORE when no
-            assessment exists
+            Final evidence weight (0-10); None when the assessment is
+            missing, failed or disabled (the dimension is then left out)
         """
-        if not paper_weight:
-            return NEUTRAL_SCORE
-
-        value = paper_weight.get("composite_score")
-        if isinstance(value, (int, float)):
-            return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
-
-        return NEUTRAL_SCORE
+        return paper_weight_score(paper_weight)
 
     def _extract_source_reliability(self, paper: AssessedPaper) -> float:
         """

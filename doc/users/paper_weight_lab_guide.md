@@ -206,8 +206,10 @@ study-design score.
 Assessments stored before this fix may contain such placeholder scores.
 Their audit trail says "LLM assessment failed", "LLM extraction failed" or
 "No document text available for LLM extraction" (the last also appeared
-when a database error hid the document's text). Use **Force Re-assess** to
-replace them; if in doubt, re-assess.
+when a database error hid the document's text), or has an "error" entry.
+Such a stored assessment is no longer reused: **Assess Paper Weight** (and
+a systematic review) re-assesses the paper and replaces it. Until then it
+may still appear in **Recent Assessments** with its old weight (#357).
 
 ### LLM Timeout
 If assessments take too long or timeout:

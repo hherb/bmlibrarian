@@ -6,7 +6,8 @@ for reproducibility, performance optimization, and model training data collectio
 
 Features:
 - Automatic version tracking (model, parameters, agent version)
-- Check-before-assess pattern to avoid redundant LLM calls
+- Check-before-assess pattern to avoid redundant LLM calls (except paper
+  weight, which is only stored: its flat result can't reveal a placeholder, #351)
 - Force flag to bypass cache when needed
 - Database-backed storage for durability
 - Cache maintenance methods (cleanup, size metrics, integrity validation)
@@ -24,6 +25,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, date, timezone
 
 from bmlibrarian.evaluations.store import DateTimeEncoder
+
+from .data_models import paper_weight_score
 
 logger = logging.getLogger(__name__)
 
@@ -505,48 +508,6 @@ class ResultsCacheManager:
     # Paper Weight Caching
     # =========================================================================
 
-    def get_paper_weight(
-        self,
-        document_id: int,
-        version_id: int
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve cached paper weight assessment.
-
-        Args:
-            document_id: Document ID
-            version_id: Assessment version ID
-
-        Returns:
-            Cached paper weight result dictionary, or None if not cached
-        """
-        try:
-            with self.db_manager.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        SELECT result, assessed_at
-                        FROM results_cache.paper_weight_cache
-                        WHERE document_id = %s AND version_id = %s
-                        """,
-                        (document_id, version_id)
-                    )
-                    row = cursor.fetchone()
-
-            if row:
-                logger.debug(
-                    f"Cache HIT: Paper weight assessment for document {document_id} "
-                    f"(assessed {row[1]})"
-                )
-                return row[0]
-
-            logger.debug(f"Cache MISS: Paper weight assessment for document {document_id}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Failed to retrieve cached paper weight assessment: {e}")
-            return None
-
     def store_paper_weight(
         self,
         document_id: int,
@@ -569,7 +530,7 @@ class ResultsCacheManager:
             True if stored successfully, False otherwise
         """
         try:
-            composite_score = result.get('composite_score')
+            composite_score = paper_weight_score(result)
 
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:

@@ -100,7 +100,7 @@ def sample_paper_weight() -> Dict[str, Any]:
     """Create sample paper weight result."""
     return {
         "document_id": 12345,
-        "composite_score": 7.8,
+        "final_weight": 7.8,
         "dimensions": [
             {"dimension": "study_design", "score": 9.0, "weight": 0.25},
             {"dimension": "sample_size", "score": 8.0, "weight": 0.15},
@@ -350,26 +350,6 @@ class TestPRISMAAssessmentCaching:
 class TestPaperWeightCaching:
     """Tests for paper weight caching."""
 
-    def test_get_paper_weight_cache_hit(
-        self, cache_manager, mock_db_manager, sample_paper_weight
-    ):
-        """Test cache hit for paper weight."""
-        _, cursor = mock_db_manager
-        cursor.fetchone.return_value = (sample_paper_weight, datetime.now())
-
-        result = cache_manager.get_paper_weight(document_id=12345, version_id=1)
-
-        assert result == sample_paper_weight
-
-    def test_get_paper_weight_cache_miss(self, cache_manager, mock_db_manager):
-        """Test cache miss for paper weight."""
-        _, cursor = mock_db_manager
-        cursor.fetchone.return_value = None
-
-        result = cache_manager.get_paper_weight(document_id=12345, version_id=1)
-
-        assert result is None
-
     def test_store_paper_weight_success(
         self, cache_manager, mock_db_manager, sample_paper_weight
     ):
@@ -387,6 +367,8 @@ class TestPaperWeightCaching:
         assert result is True
         call_args = cursor.execute.call_args
         assert "INSERT INTO results_cache.paper_weight_cache" in call_args[0][0]
+        # composite_score column holds the result's final_weight (#348)
+        assert call_args[0][1][3] == sample_paper_weight["final_weight"]
 
     def test_store_paper_weight_handles_error(
         self, cache_manager, mock_db_manager, sample_paper_weight
@@ -513,7 +495,6 @@ class TestGracefulDegradation:
         assert cache_manager.get_study_assessment(1, 1) is None
         assert cache_manager.get_pico_extraction(1, 1) is None
         assert cache_manager.get_prisma_assessment(1, 1) is None
-        assert cache_manager.get_paper_weight(1, 1) is None
         assert cache_manager.get_suitability_check(1, "pico", 1) is None
 
     def test_db_error_on_get_returns_none(self, cache_manager, mock_db_manager):
@@ -525,7 +506,6 @@ class TestGracefulDegradation:
         assert cache_manager.get_study_assessment(1, 1) is None
         assert cache_manager.get_pico_extraction(1, 1) is None
         assert cache_manager.get_prisma_assessment(1, 1) is None
-        assert cache_manager.get_paper_weight(1, 1) is None
         assert cache_manager.get_suitability_check(1, "pico", 1) is None
 
     def test_db_error_on_store_returns_false(
