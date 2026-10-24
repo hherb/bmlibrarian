@@ -14,16 +14,20 @@ off new work. Longer-term structural items live in
   (2026-10-24, closes #356; owner decision this session: rigor = worst rated
   domain). `CompositeScorer._extract_methodological_rigor` now uses the
   worst rated of `StudyAssessment`'s five `*_bias_risk` fields
-  (`BIAS_RISK_SCORES` low 8 / moderate 5 / high 2; "unclear" skipped);
-  `_extract_sample_size_score` parses the free-text `sample_size` with
-  `paper_weight/extractors.find_sample_size` (thousands separators stripped
-  first: #358; bare number or JSON int accepted) and scores it in
-  `SAMPLE_SIZE_SCORE_STEPS` (<30: 2, <100: 4, <500: 6, <1000: 8, else 10).
-  Nothing rated or parsable → None → left out and rescaled like paper
-  weight. Before, both read keys `StudyAssessment` never had and were a
-  constant 5.0 (20% of default weight). A missing study assessment still
-  gives `NEUTRAL_SCORE` for all three study dimensions (unchanged; consider
-  making it None for consistency). **Rankings of new and resumed
+  (`BIAS_RISK_SCORES` low 8 / moderate 5 / high 2; other ratings skipped,
+  unexpected ones logged); `_extract_sample_size_score` parses the
+  free-text `sample_size` with `paper_weight/extractors.find_sample_size`
+  (thousands separators stripped first, a scorer-side workaround for #358;
+  `find_sample_size` itself unchanged; bare number or JSON int accepted;
+  N from 1 to 10^9) and scores it in `SAMPLE_SIZE_SCORE_STEPS` (<30: 2,
+  <100: 4, <500: 6, <1000: 8, else 10). A count of studies ("N=8 studies",
+  18/196 cached assessments in `knowledgebase`) is not scored. Nothing rated
+  or parsable → None → left out and rescaled like paper weight (rigor is
+  left out for ~60% of cached assessments: all domains "unclear"). Before,
+  both read keys `StudyAssessment` never had and were a constant 5.0 (20%
+  of default weight). A missing, empty, failed or disabled study assessment
+  gives `NEUTRAL_SCORE` for all three study dimensions
+  (`data_models.has_study_assessment`). **Rankings of new and resumed
   systematic reviews change again.** Docs: `systematic_review_pipeline.md`
   "Study assessment in the composite score", `systematic_review_guide.md`
   §6. Tests: `test_composite_scorer_weights.py` (built from a real
@@ -315,7 +319,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-24
-  (#356 branch): **4515 passed, 47 skipped** in ~8.5 min. Without
+  (#356 branch): **4532 passed, 47 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

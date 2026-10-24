@@ -106,13 +106,19 @@ what the report contains:
 `AssessedPaper.study_assessment` is `StudyAssessment.to_dict()`. Study
 quality reads `quality_score`. Methodological rigor is the worst rated of
 the five `*_bias_risk` fields (`BIAS_RISK_SCORES`: low 8, moderate 5,
-high 2; "unclear" and missing skipped). Sample size parses the free-text
-`sample_size` with the paper-weight `find_sample_size()` patterns
-(thousands separators stripped first; a bare number or JSON integer is
-accepted) and scores it in `SAMPLE_SIZE_SCORE_STEPS`. Rigor and sample size
-are None (left out, as below) when nothing is rated or parsable; before
-#356 they read keys `StudyAssessment` never had and were always 5.0. A
-missing study assessment still gives `NEUTRAL_SCORE` for all three.
+high 2; any other rating, e.g. "unclear", is skipped and an unexpected
+one logged). Sample size parses the free-text `sample_size` with the
+paper-weight `find_sample_size()` patterns (thousands separators stripped
+first; a bare number or JSON integer is accepted; counts from
+`SAMPLE_SIZE_MIN_N` 1 to `SAMPLE_SIZE_MAX_N` 10^9) and scores it in
+`SAMPLE_SIZE_SCORE_STEPS`. A count of studies (`STUDY_COUNT_PATTERN`:
+"N=8 studies", "18 RCTs", as reviews report) is not a participant count
+and is not scored. Each of rigor and sample size is None (left out, as
+below) when nothing is rated or parsable; before #356 they read keys
+`StudyAssessment` never had and were always 5.0. A missing, empty, failed
+(`error` key) or disabled (`study_type` `STUDY_NOT_ASSESSED`) study
+assessment gives `NEUTRAL_SCORE` for all three (`has_study_assessment()`).
+The dimensions left out of a paper's score are logged at debug level.
 
 ## Paper weight in the composite score
 

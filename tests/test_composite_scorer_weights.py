@@ -17,7 +17,9 @@ from types import SimpleNamespace
 import pytest
 
 from bmlibrarian.agents.systematic_review.data_models import (
+    ASSESSMENT_ERROR_KEY,
     REPLICATION_NONE_RECORDED_SCORE,
+    STUDY_NOT_ASSESSED,
     ScoringWeights,
     is_paper_weight_placeholder,
     paper_weight_score,
@@ -307,6 +309,7 @@ def test_real_paper_weight_ranks_papers() -> None:
     ({"selection_bias_risk": "low", "attrition_bias_risk": "unclear"}, 8.0),
     ({"performance_bias_risk": " Moderate "}, 5.0),
     ({"selection_bias_risk": "unclear"}, None),
+    ({"selection_bias_risk": "low risk of bias"}, None),
     ({}, None),
 ])
 def test_rigor_is_worst_rated_bias_domain(risks, expected) -> None:
@@ -321,8 +324,19 @@ def test_rigor_is_worst_rated_bias_domain(risks, expected) -> None:
     ("N=120 participants", 6.0),
     ("850 patients", 8.0),
     ("1,234 patients", 10.0),
+    ("1,234", 10.0),
+    ("N=2,345,678 participants", 10.0),
+    ("N=1", 2.0),
+    ("N=29", 2.0),
+    ("N=30", 4.0),
+    ("N=999", 8.0),
+    ("N=1000", 10.0),
     ("450", 6.0),
     (450, 6.0),
+    ("N=60 study participants", 4.0),
+    ("N=8 studies", None),
+    ("N=44 systematic reviews", None),
+    ("18 RCTs (2,400 patients)", None),
     ("not reported", None),
     (None, None),
 ])
@@ -372,3 +386,42 @@ def test_bias_ratings_rank_papers() -> None:
     high = _make_paper(study_assessment=_real_study_assessment(selection_bias_risk="high"))
 
     assert scorer.score(low) > scorer.score(high)
+
+
+@pytest.mark.parametrize("assessment", [
+    None,
+    {},
+    {"study_type": STUDY_NOT_ASSESSED, "quality_score": 5.0},
+    {"study_type": "unknown", "quality_score": 5.0, ASSESSMENT_ERROR_KEY: "boom"},
+])
+def test_missing_failed_or_disabled_assessment_scores_neutral(assessment) -> None:
+    """No real assessment gives the neutral score on every study dimension (#356)."""
+    scorer = CompositeScorer()
+
+    assert scorer._extract_study_quality(assessment) == NEUTRAL_SCORE
+    assert scorer._extract_methodological_rigor(assessment) == NEUTRAL_SCORE
+    assert scorer._extract_sample_size_score(assessment) == NEUTRAL_SCORE
+
+
+def test_rated_rigor_counts_when_sample_size_is_unparsable() -> None:
+    """Each study dimension is left out on its own, not only both together."""
+    weights = ScoringWeights(
+        relevance=0.5,
+        study_quality=0.0,
+        methodological_rigor=0.25,
+        sample_size=0.25,
+        recency=0.0,
+        replication_status=0.0,
+        paper_weight=0.0,
+        source_reliability=0.0,
+    )
+    scorer = CompositeScorer(weights=weights)
+    paper = _make_paper(
+        relevance=5.0,
+        study_assessment=_real_study_assessment(
+            selection_bias_risk="high", sample_size="not reported"
+        ),
+    )
+
+    # relevance 10 (weight 0.5) and rigor 2 (0.25), rescaled to the full 1.0
+    assert scorer.score(paper) == pytest.approx((0.5 * 10.0 + 0.25 * 2.0) / 0.75)

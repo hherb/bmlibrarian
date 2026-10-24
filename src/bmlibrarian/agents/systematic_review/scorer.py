@@ -39,6 +39,7 @@ from .data_models import (
     ExecutedQuery,
     REPLICATION_NONE_RECORDED_SCORE,
     REPLICATION_SCORE_KEY,
+    has_study_assessment,
     is_paper_weight_placeholder,
     paper_weight_score,
 )
@@ -72,14 +73,14 @@ QUALITY_SCORE_MAX = 10
 # Neutral mid-scale score used when an assessment dimension has no data
 # (e.g. study assessment unavailable for a paper, or no producer exists yet
 # for the dimension). Keeps configured weights applied without rewarding or
-# penalizing missing information. The paper-weight dimensions, and rigor and
-# sample size of an assessment that rates neither, are instead left out (see
-# CompositeScorer.score).
+# penalizing missing information. The paper-weight dimensions, rigor when no
+# bias domain is rated, and sample size when no participant count parses, are
+# instead left out (see CompositeScorer.score).
 NEUTRAL_SCORE = 5.0
 
 # Methodological rigor from StudyAssessment's per-domain bias ratings: the
 # worst rated domain sets the score (Cochrane-style overall risk of bias).
-# "unclear" and missing ratings are skipped.
+# "unclear", missing and unexpected ratings are skipped.
 BIAS_RISK_FIELDS = (
     "selection_bias_risk",
     "performance_bias_risk",
@@ -88,13 +89,27 @@ BIAS_RISK_FIELDS = (
     "reporting_bias_risk",
 )
 BIAS_RISK_SCORES = {"low": 8.0, "moderate": 5.0, "high": 2.0}
+# The rating the assessment prompt asks for when a domain cannot be judged
+BIAS_RISK_UNCLEAR = "unclear"
 
 # Sample size score steps: (exclusive upper bound of N, score); larger N
 # scores SAMPLE_SIZE_TOP_SCORE.
 SAMPLE_SIZE_SCORE_STEPS = ((30, 2.0), (100, 4.0), (500, 6.0), (1000, 8.0))
 SAMPLE_SIZE_TOP_SCORE = 10.0
+# Participant counts read: a single case report up to national registries
+# (find_sample_size's own defaults, 5 to 1,000,000, would drop both ends).
+SAMPLE_SIZE_MIN_N = 1
+SAMPLE_SIZE_MAX_N = 1_000_000_000
 # Thousands separator inside a number ("1,234 patients")
 THOUSANDS_SEPARATOR_PATTERN = re.compile(r"(?<=\d),(?=\d{3}\b)")
+# A count of studies rather than participants ("N=8 studies", "18 RCTs",
+# "44 systematic reviews", "12 included trials")
+STUDY_COUNT_PATTERN = re.compile(
+    r"\d+\s+(?:[a-z-]+\s+)?(?:stud(?:y|ies)|trials?|rcts?|reviews?|"
+    r"meta-analys[ie]s|papers?|articles?|publications?)\b"
+    r"(?!\s+(?:participants|subjects|patients))",
+    re.IGNORECASE,
+)
 
 # Recency calculation
 RECENCY_BASE_YEAR = 2000  # Papers before this get minimum recency score
@@ -871,6 +886,11 @@ class CompositeScorer:
         # remaining weights scaled up to the same total: the missing
         # dimensions count as the weighted mean of the scored ones.
         scored = {k: v for k, v in dimension_scores.items() if v is not None}
+        unscored = dimension_scores.keys() - scored.keys()
+        if unscored:
+            logger.debug(
+                f"Paper {paper.document_id} scored without: {', '.join(sorted(unscored))}"
+            )
         scored_weight = sum(weights_dict[k] for k in scored)
         if scored_weight <= 0:
             logger.warning(
@@ -1086,7 +1106,7 @@ class CompositeScorer:
         Returns:
             Quality score (0-10); NEUTRAL_SCORE when no assessment exists
         """
-        if not study_assessment:
+        if not has_study_assessment(study_assessment):
             return NEUTRAL_SCORE
 
         # Try various keys that might contain quality scores
@@ -1096,8 +1116,7 @@ class CompositeScorer:
                 if isinstance(value, (int, float)):
                     return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
 
-        # Default to moderate quality if not found
-        return 5.0
+        return NEUTRAL_SCORE
 
     def _extract_methodological_rigor(
         self, study_assessment: Optional[Dict[str, Any]]
@@ -1106,24 +1125,33 @@ class CompositeScorer:
         Score methodological rigor from the assessment's bias-risk ratings.
 
         The worst rated of the five ``*_bias_risk`` domains sets the score
-        (low 8, moderate 5, high 2); "unclear" and missing ratings are skipped.
+        (low 8, moderate 5, high 2); ratings other than low/moderate/high
+        ("unclear", missing, unexpected wording) are skipped.
 
         Args:
-            study_assessment: StudyAssessment.to_dict() output, or None when
-                the assessment could not be performed
+            study_assessment: StudyAssessment.to_dict() output; None, empty,
+                failed or disabled when no assessment exists
 
         Returns:
             Rigor score (0-10); NEUTRAL_SCORE when no assessment exists; None
             when no domain is rated (the dimension is then left out)
         """
-        if not study_assessment:
+        if not has_study_assessment(study_assessment):
             return NEUTRAL_SCORE
 
-        rated = [
-            BIAS_RISK_SCORES[risk.strip().lower()]
-            for risk in (study_assessment.get(f) for f in BIAS_RISK_FIELDS)
-            if isinstance(risk, str) and risk.strip().lower() in BIAS_RISK_SCORES
-        ]
+        rated = []
+        for field_name in BIAS_RISK_FIELDS:
+            risk = study_assessment.get(field_name)
+            if not isinstance(risk, str):
+                continue
+            risk = risk.strip().lower()
+            if risk in BIAS_RISK_SCORES:
+                rated.append(BIAS_RISK_SCORES[risk])
+            elif risk and risk != BIAS_RISK_UNCLEAR:
+                logger.warning(
+                    f"Unexpected {field_name} rating {risk!r} for document "
+                    f"{study_assessment.get('document_id')}; skipping it"
+                )
         return min(rated) if rated else None
 
     def _extract_sample_size_score(
@@ -1134,17 +1162,20 @@ class CompositeScorer:
 
         The participant count is parsed with the paper-weight sample-size
         patterns ("N=120", "120 participants", ...) and scored in steps
-        (SAMPLE_SIZE_SCORE_STEPS).
+        (SAMPLE_SIZE_SCORE_STEPS). A bare number ("450", "1,234", or a JSON
+        int) is read as the count. A count of studies ("N=8 studies", as a
+        review reports) is not a participant count and is not scored.
 
         Args:
-            study_assessment: StudyAssessment.to_dict() output, or None when
-                the assessment could not be performed
+            study_assessment: StudyAssessment.to_dict() output; None, empty,
+                failed or disabled when no assessment exists
 
         Returns:
             Sample size score (0-10); NEUTRAL_SCORE when no assessment exists;
-            None when no count can be parsed (the dimension is then left out)
+            None when no participant count can be parsed (the dimension is
+            then left out)
         """
-        if not study_assessment:
+        if not has_study_assessment(study_assessment):
             return NEUTRAL_SCORE
 
         text = study_assessment.get("sample_size")
@@ -1152,9 +1183,12 @@ class CompositeScorer:
             text = str(text)  # a JSON number from the LLM despite the str field
         if not isinstance(text, str):
             return None
-        if text.strip().isdigit():
-            text = f"n={text.strip()}"
-        n = find_sample_size(THOUSANDS_SEPARATOR_PATTERN.sub("", text))
+        text = THOUSANDS_SEPARATOR_PATTERN.sub("", text).strip()
+        if STUDY_COUNT_PATTERN.search(text):
+            return None
+        if text.isdigit():
+            text = f"n={text}"
+        n = find_sample_size(text, min_n=SAMPLE_SIZE_MIN_N, max_n=SAMPLE_SIZE_MAX_N)
         if n is None:
             return None
         for upper_bound, step_score in SAMPLE_SIZE_SCORE_STEPS:
