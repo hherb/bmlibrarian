@@ -414,7 +414,6 @@ DEFAULT_CONFIG = {
             "temperature": 0.3,
             "top_p": 0.9,
             "max_tokens": 3000,
-            "version": "1.0.0",  # Increment when methodology changes
             "dimension_weights": {
                 "study_design": 0.25,
                 "sample_size": 0.15,

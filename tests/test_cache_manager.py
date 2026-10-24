@@ -100,7 +100,7 @@ def sample_paper_weight() -> Dict[str, Any]:
     """Create sample paper weight result."""
     return {
         "document_id": 12345,
-        "composite_score": 7.8,
+        "final_weight": 7.8,
         "dimensions": [
             {"dimension": "study_design", "score": 9.0, "weight": 0.25},
             {"dimension": "sample_size", "score": 8.0, "weight": 0.15},
@@ -387,6 +387,8 @@ class TestPaperWeightCaching:
         assert result is True
         call_args = cursor.execute.call_args
         assert "INSERT INTO results_cache.paper_weight_cache" in call_args[0][0]
+        # composite_score column holds the result's final_weight (#348)
+        assert call_args[0][1][3] == sample_paper_weight["final_weight"]
 
     def test_store_paper_weight_handles_error(
         self, cache_manager, mock_db_manager, sample_paper_weight

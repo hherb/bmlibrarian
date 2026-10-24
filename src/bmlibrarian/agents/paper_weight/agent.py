@@ -94,7 +94,6 @@ DEFAULT_CONFIG = {
     'temperature': 0.3,
     'top_p': 0.9,
     'max_tokens': 3000,
-    'version': '1.0.0',
     'validate_extractions': True,  # Enable LLM validation of rule-based extractions
     'dimension_weights': {
         'study_design': 0.25,
@@ -175,6 +174,11 @@ class PaperWeightAssessmentAgent(BaseAgent):
     operations to produce comprehensive paper weight assessments with full audit trails.
     """
 
+    # Methodology version: cached assessments are keyed by it. Increment when
+    # the methodology changes. A class attribute (not user config, which saved
+    # configs would pin) so QualityAssessor's results-cache key sees it too.
+    VERSION = '1.0.0'
+
     # Constants
     MAX_TEXT_LENGTH = 8000  # Maximum characters to send to LLM
     MIN_MEANINGFUL_CHUNK_LENGTH = 100  # Minimum characters worth adding when truncating
@@ -210,7 +214,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         temperature = self.config.get('temperature', 0.3)
         top_p = self.config.get('top_p', 0.9)
         self.max_tokens = self.config.get('max_tokens', 3000)
-        self.version = self.config.get('version', '1.0.0')
+        self.version = self.VERSION
 
         super().__init__(
             model=model,

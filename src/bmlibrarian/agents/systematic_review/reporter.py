@@ -36,6 +36,7 @@ from .data_models import (
     SystematicReviewResult,
     InclusionStatus,
     ExclusionStage,
+    paper_weight_score,
 )
 from .documenter import Documenter
 from .cochrane_models import CochraneStudyAssessment
@@ -421,9 +422,7 @@ class Reporter:
 
         if paper.paper_weight:
             base["paper_weight"] = paper.paper_weight
-            base["scores"]["paper_weight"] = paper.paper_weight.get(
-                "composite_score", 0.0
-            )
+            base["scores"]["paper_weight"] = paper_weight_score(paper.paper_weight)
 
         # Add optional assessments
         if paper.pico_components:

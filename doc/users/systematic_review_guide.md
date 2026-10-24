@@ -201,6 +201,10 @@ Comprehensive quality evaluation using multiple agents:
 Calculates weighted composite scores for ranking:
 
 - Combines relevance, quality, and other metrics
+- Paper weight and replication come from the paper weight assessment's
+  final weight and replication score. When a paper has none (assessment
+  disabled, failed, or missing), those two dimensions are left out and the
+  other weights scaled up, so the paper is neither rewarded nor penalised
 - Applies quality gate threshold
 - Generates final ranking
 

@@ -685,3 +685,60 @@ class TestReplicationStatusLookup:
         assert result.score == 0.0
         assert len(result.details) == 1
         assert result.details[0].extracted_value == '0'
+
+
+class TestPlaceholderCacheRows:
+    """Cached placeholder scores from failed assessments are re-assessed (#351)."""
+
+    ASSESSMENT_ROW = (
+        7, 42, datetime.now(), '1.0.0', 5.0, 0.0, 5.0, 5.0, 0.0, 3.5,
+        '{"study_design": 0.25}', 'unknown', None,
+    )
+    REAL_DETAIL = ('study_design', 'study_type', 'rct', 8.0, None, 'RCT detected')
+
+    @staticmethod
+    def _db(details: list) -> Any:
+        """Patch the DB layer to return one assessment row with ``details``."""
+        cur = MagicMock()
+        cur.fetchone.return_value = TestPlaceholderCacheRows.ASSESSMENT_ROW
+        cur.fetchall.return_value = details
+        manager = MagicMock()
+        conn = manager.get_connection.return_value.__enter__.return_value
+        conn.cursor.return_value.__enter__.return_value = cur
+        return patch('bmlibrarian.agents.paper_weight.db.get_db_manager', return_value=manager)
+
+    @pytest.mark.parametrize('placeholder', [
+        ('error', 'error', 'assessment_failed', 0.0, None, 'boom'),
+        ('methodological_quality', 'error', 'assessment_failed', 5.0, None,
+         'LLM assessment failed: timeout'),
+        ('study_design', 'study_type', 'unknown', 5.0, None,
+         'LLM extraction failed, assigned neutral score'),
+        ('sample_size', 'extracted_n', 'not_found', 0.0, None, 'LLM extraction failed'),
+        ('sample_size', 'extracted_n', 'not_found', 0.0, None,
+         'No document text available for LLM extraction'),
+    ])
+    def test_placeholder_row_is_not_served(self, placeholder: tuple) -> None:
+        """A row whose audit trail marks a failure reads as not cached."""
+        with self._db([self.REAL_DETAIL, placeholder]):
+            assert get_cached_assessment(42, '1.0.0') is None
+
+    def test_real_row_is_served(self) -> None:
+        """Real findings ('unknown' study type, no sample size) stay cached."""
+        details = [
+            self.REAL_DETAIL,
+            ('study_design', 'study_type', 'unknown', 0.0, None, 'Design not reported'),
+            ('sample_size', 'extracted_n', 'not_found', 0.0, None, 'No sample size reported'),
+        ]
+        with self._db(details):
+            cached = get_cached_assessment(42, '1.0.0')
+        assert cached is not None and cached.final_weight == 3.5
+
+    def test_agent_version_is_the_class_version(
+        self, agent: PaperWeightAssessmentAgent
+    ) -> None:
+        """Cache keys use VERSION, which QualityAssessor's cache key reads too."""
+        from bmlibrarian.agents.systematic_review.quality import QualityAssessor
+
+        assert agent.version == PaperWeightAssessmentAgent.VERSION
+        QualityAssessor._agent_version_cache.pop('paper_weight', None)
+        assert QualityAssessor()._get_agent_version('paper_weight') == agent.version

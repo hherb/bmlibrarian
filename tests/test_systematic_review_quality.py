@@ -220,7 +220,8 @@ def mock_paper_weight() -> Dict[str, Any]:
     """Create mock PaperWeightResult output."""
     return {
         "document_id": 12345,
-        "composite_score": 7.8,
+        "final_weight": 7.8,
+        "replication_status_score": 5.0,
         "dimensions": [
             {
                 "dimension": "study_design",
@@ -473,7 +474,7 @@ class TestQualityAssessor:
         assessed = AssessedPaper(
             scored_paper=scored_rct_paper,
             study_assessment={"study_type": "rct"},
-            paper_weight={"composite_score": 7.0},
+            paper_weight={"final_weight": 7.0},
         )
 
         # Second paper fails
@@ -613,6 +614,33 @@ class TestQualityAssessor:
 
         assert result["error"] == "LLM timeout"
         assessor._cache_manager.store_paper_weight.assert_not_called()
+
+    @pytest.mark.parametrize("force_recompute", [False, True])
+    @patch('bmlibrarian.agents.systematic_review.quality.QualityAssessor._get_weight_agent')
+    def test_paper_weight_comes_from_agent_not_results_cache(
+        self,
+        mock_get_weight,
+        sample_paper,
+        force_recompute,
+    ):
+        """The results-cache copy can't reveal a placeholder, so it isn't read (#351)."""
+        mock_weight_agent = Mock()
+        mock_weight_agent.assess_paper.return_value.to_dict.return_value = {"final_weight": 6.0}
+        mock_get_weight.return_value = mock_weight_agent
+
+        assessor = QualityAssessor()
+        assessor._config.force_recompute = force_recompute
+        assessor._cache_manager = Mock()
+        assessor._cache_manager.get_paper_weight.return_value = {"final_weight": 0.0}
+        document = assessor._paper_to_document(sample_paper)
+        with patch.object(assessor, '_get_version_id', return_value=1):
+            result = assessor._run_paper_weight_assessment(document)
+
+        assert result == {"final_weight": 6.0}
+        assessor._cache_manager.get_paper_weight.assert_not_called()
+        mock_weight_agent.assess_paper.assert_called_once_with(
+            document_id=sample_paper.document_id, force_reassess=force_recompute,
+        )
 
 
 # =============================================================================

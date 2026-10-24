@@ -228,8 +228,8 @@ def sample_assessed_paper(sample_scored_paper: ScoredPaper) -> AssessedPaper:
             "bias_risk": "low",
         },
         paper_weight={
-            "replication_status": "replicated",
-            "evidence_weight": 9.0,
+            "replication_status_score": 10.0,
+            "final_weight": 9.0,
         },
     )
 
@@ -1159,7 +1159,7 @@ class TestCompositeScorer:
                 ),
             ),
             study_assessment={"overall_quality": 5.0},
-            paper_weight={"replication_status": "unknown"},
+            paper_weight={"replication_status_score": 5.0},
         )
         paper2.composite_score = 5.0
 

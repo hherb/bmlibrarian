@@ -40,6 +40,17 @@ REPLICATION_SCORE_MULTIPLE_COMPARABLE = 8.0  # 2+ replications of comparable qua
 REPLICATION_SCORE_MULTIPLE_HIGHER = 10.0     # 2+ replications of higher quality
 REPLICATION_SCORE_LOWER_QUALITY = 3.0        # Lower quality replications
 
+# Audit-trail markers of the placeholder scores stored before #349 when an
+# assessment failed (neutral 5.0 / 0.0 instead of an error). Current code
+# raises instead, so a cached row carrying one is a failure, not a result.
+PLACEHOLDER_MARKER = 'error'  # dimension or component name of a failed assessment
+PLACEHOLDER_VALUE = 'assessment_failed'
+PLACEHOLDER_REASONING_PREFIXES = (
+    'LLM assessment failed',
+    'LLM extraction failed',
+    'No document text available for LLM extraction',
+)
+
 
 def get_cached_assessment(
     document_id: int,
@@ -55,7 +66,9 @@ def get_cached_assessment(
         version: Assessor version to match
 
     Returns:
-        PaperWeightResult if cached, None otherwise
+        PaperWeightResult if cached, None otherwise (also when the cached row
+        holds a failed assessment's placeholder scores, see
+        ``is_failure_placeholder``, so the caller re-assesses and overwrites it)
 
     Raises:
         Exception: Database errors are logged and re-raised, so callers can
@@ -107,12 +120,39 @@ def get_cached_assessment(
 
                 details = cur.fetchall()
 
+                if any(is_failure_placeholder(d) for d in details):
+                    logger.warning(
+                        f"Ignoring cached assessment {assessment_id} of document "
+                        f"{document_id}: it holds placeholder scores from a failed "
+                        f"assessment; re-assessing"
+                    )
+                    return None
+
                 # Convert to PaperWeightResult
                 return _reconstruct_result_from_db(row, details)
 
     except Exception as e:
         logger.error(f"Error fetching cached assessment: {e}", exc_info=True)
         raise
+
+
+def is_failure_placeholder(detail_row: tuple) -> bool:
+    """
+    Whether a stored audit-trail row marks a failed assessment's placeholder.
+
+    Args:
+        detail_row: (dimension, component, extracted_value, score_contribution,
+            evidence_text, reasoning) from paper_weights.assessment_details
+
+    Returns:
+        True if the row was written for a failure instead of a real score
+    """
+    dimension, component, extracted_value, _, _, reasoning = detail_row
+    return (
+        PLACEHOLDER_MARKER in (dimension, component)
+        or extracted_value == PLACEHOLDER_VALUE
+        or (reasoning or '').startswith(PLACEHOLDER_REASONING_PREFIXES)
+    )
 
 
 def _reconstruct_result_from_db(

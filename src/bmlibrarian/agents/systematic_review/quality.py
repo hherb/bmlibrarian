@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from .data_models import (
+    ASSESSMENT_ERROR_KEY,
     ScoredPaper,
     AssessedPaper,
     StudyTypeFilter,
@@ -50,10 +51,6 @@ logger = logging.getLogger(__name__)
 # in PICOAgent.check_suitability() and PRISMA2020Agent.check_suitability().
 # This follows BMLibrarian's AI-first approach and avoids unreliable keyword matching.
 
-# Key the required-assessment runners set on the placeholder they return when
-# the assessment failed (see "Individual Assessment Runners" below).
-ASSESSMENT_ERROR_KEY = "error"
-
 
 # =============================================================================
 # Pure helpers
@@ -63,9 +60,10 @@ def assessment_error(assessed_paper: AssessedPaper) -> Optional[str]:
     """
     Why a quality assessment failed, if it did.
 
-    The study and paper-weight runners return a placeholder with a neutral
-    mid-range score and an ``error`` entry when their LLM call fails. Such a
-    placeholder is not a real assessment and must not be saved as one.
+    The study and paper-weight runners return a placeholder with an
+    ``error`` entry when their LLM call fails (the study placeholder also has
+    a neutral mid-range score). Such a placeholder is not a real assessment
+    and must not be saved as one.
 
     Args:
         assessed_paper: The assessment to check.
@@ -601,8 +599,6 @@ class QualityAssessor:
             # Return minimal assessment when disabled (AssessedPaper expects Dict, not None)
             paper_weight = {
                 "document_id": document["id"],
-                "composite_score": 5.0,
-                "dimensions": [],
                 "note": "Assessment disabled in configuration",
             }
 
@@ -748,48 +744,34 @@ class QualityAssessor:
 
     def _run_paper_weight_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run paper weight assessment with caching support.
+        Run paper weight assessment.
 
-        The paper weight agent has its own internal caching (via paper_weights.assessments),
-        but we also integrate with ResultsCacheManager for:
-        - Unified cache statistics
-        - Consistent version tracking
-        - Cross-assessment performance analysis
+        Results come from the paper weight agent's own cache
+        (paper_weights.assessments), which skips rows holding a failed
+        assessment's placeholder scores. The ResultsCacheManager copy is
+        written for unified statistics but never read back: its flat result
+        dict cannot tell such a placeholder from a real score (#351).
 
         Args:
             document: Document dictionary with at minimum 'id'
 
         Returns:
-            Paper weight assessment dictionary with the following guaranteed fields:
-            - document_id (int): ID of the assessed document
-            - composite_score (float): Overall evidence weight score (0.0 to 10.0)
-            - dimensions (List[Dict]): Individual dimension assessments
+            ``PaperWeightResult.to_dict()``: per-dimension ``*_score`` fields,
+            ``final_weight`` (0.0 to 10.0), ``study_type``, ``sample_size``.
 
-            On error, the dict will also contain:
-            - error (str): Error message describing the failure
-
-            The presence of the 'error' field indicates assessment failure.
-            Downstream code should check for this field to detect errors.
+            On error, a dict with ``document_id`` and an ``error`` message
+            (see ``assessment_error``) and no scores.
         """
         document_id = document["id"]
-
-        # Check ResultsCacheManager first (unless force_recompute is set)
         version_id = self._get_version_id("paper_weight", "paper_weight")
-        if version_id and self._cache_manager:
-            cached_result = self._cache_manager.get_paper_weight(document_id, version_id)
-            if cached_result:
-                logger.info(f"Using cached paper weight assessment for document {document_id}")
-                return cached_result
 
-        # Not in cache or force recompute - run assessment
         try:
             start_time = time.time()
             agent = self._get_weight_agent()
 
-            # Use agent's internal caching for performance (force_reassess=False)
             result = agent.assess_paper(
                 document_id=document_id,
-                force_reassess=False,
+                force_reassess=self._config.force_recompute,
             )
 
             result_dict = result.to_dict()
@@ -809,12 +791,9 @@ class QualityAssessor:
 
         except Exception as e:
             logger.error(f"Paper weight assessment failed for {document_id}: {e}")
-            # Return minimal assessment on error
             return {
                 "document_id": document_id,
-                "composite_score": 5.0,
-                "dimensions": [],
-                "error": str(e),
+                ASSESSMENT_ERROR_KEY: str(e),
             }
 
     def _run_pico_extraction(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:

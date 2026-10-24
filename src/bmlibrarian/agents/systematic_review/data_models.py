@@ -1282,6 +1282,39 @@ class ScoredPaper:
         )
 
 
+# Key the required-assessment runners set on the placeholder they return when
+# the assessment failed (see quality.assessment_error).
+ASSESSMENT_ERROR_KEY = "error"
+
+# Score keys of a paper weight assessment (PaperWeightResult.to_dict()).
+PAPER_WEIGHT_SCORE_KEY = "final_weight"
+REPLICATION_SCORE_KEY = "replication_status_score"
+
+
+def paper_weight_score(
+    paper_weight: Optional[Dict[str, Any]],
+    key: str = PAPER_WEIGHT_SCORE_KEY,
+) -> Optional[float]:
+    """
+    A score from a paper weight assessment, if it has one.
+
+    Args:
+        paper_weight: ``AssessedPaper.paper_weight`` (may be None, a failed
+            assessment with an ``error`` key, or disabled with no scores)
+        key: Score to read: ``PAPER_WEIGHT_SCORE_KEY`` or ``REPLICATION_SCORE_KEY``
+
+    Returns:
+        The score, or None when the assessment is missing, failed, disabled
+        or has no numeric value for ``key``.
+    """
+    if not isinstance(paper_weight, dict) or paper_weight.get(ASSESSMENT_ERROR_KEY):
+        return None
+    value = paper_weight.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 @dataclass
 class AssessedPaper:
     """

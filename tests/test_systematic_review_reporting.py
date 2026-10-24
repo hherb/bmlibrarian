@@ -133,7 +133,7 @@ def sample_assessed_paper(sample_scored_paper: ScoredPaper) -> AssessedPaper:
             "limitations": ["Publication bias possible"],
         },
         paper_weight={
-            "composite_score": 7.5,
+            "final_weight": 7.5,
             "dimensions": [
                 {"name": "sample_size", "score": 8.0},
                 {"name": "methodology", "score": 7.0},
@@ -708,7 +708,7 @@ class TestEdgeCases:
         assessed = AssessedPaper(
             scored_paper=scored,
             study_assessment={"study_type": "unknown", "quality_score": 5.0},
-            paper_weight={"composite_score": 5.0},
+            paper_weight={"final_weight": 5.0},
             final_rank=1,
         )
 

@@ -101,6 +101,27 @@ what the report contains:
   saved: scoring failures from a search-strategy or initial-results resume,
   assessment failures from any later resume.
 
+## Paper weight in the composite score
+
+`AssessedPaper.paper_weight` is `PaperWeightResult.to_dict()`. The scorer,
+reporter and results cache read its `final_weight` and
+`replication_status_score` through `data_models.paper_weight_score()`, which
+returns None for a missing, failed (`error` key) or disabled assessment.
+`CompositeScorer.score` leaves None dimensions out and scales the remaining
+weights up to the configured total (#348), so a missing paper weight neither
+raises nor lowers a score.
+
+`QualityAssessor._run_paper_weight_assessment` writes
+`results_cache.paper_weight_cache` but never reads it back: its flat result
+dict can't tell placeholder scores (stored before #349) from real ones. The
+paper weight agent's own cache (`paper_weights.assessments`, keyed by
+`PaperWeightAssessmentAgent.VERSION`) is used instead; `get_cached_assessment`
+treats rows whose audit trail carries a failure marker
+(`db.is_failure_placeholder`) as not cached, so they are re-assessed and
+overwritten (#351). `force_recompute` is passed on as `force_reassess`.
+Saved evaluation runs from before #349 may still hold such placeholders
+(#286).
+
 ## Run outcome and evaluation-run status
 
 `_run_guarded(body)` wraps the pipeline part of both entry points. Setup

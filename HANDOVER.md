@@ -10,6 +10,30 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Paper weight counts in systematic-review rankings; stale placeholders
+  are re-assessed** (2026-10-24, closes #348, #351; owner decisions in this
+  session). The scorer, reporter and results cache read
+  `final_weight` / `replication_status_score` (what
+  `PaperWeightResult.to_dict()` emits) via
+  `systematic_review/data_models.paper_weight_score()`; before, every paper
+  got a neutral 5.0 for both dimensions. A paper with no paper-weight score
+  (missing, failed, disabled) has those dimensions **left out and the other
+  weights scaled up** (`CompositeScorer.score`). `get_cached_assessment`
+  treats rows whose audit trail carries a pre-#349 failure marker
+  (`paper_weight/db.is_failure_placeholder`) as not cached, so they are
+  re-assessed and overwritten; `QualityAssessor` no longer reads
+  `results_cache.paper_weight_cache` (a flat dict can't reveal a
+  placeholder) and passes `force_recompute` on as `force_reassess`. The
+  methodology version is now the class attribute
+  `PaperWeightAssessmentAgent.VERSION` (still `1.0.0`; no full re-run), read
+  by the agent and `QualityAssessor._get_agent_version`; the
+  `paper_weight_assessment.version` config key is gone. **Rankings of new
+  and resumed systematic reviews change.** Saved evaluation runs from before
+  #349 can still hold paper-weight placeholders (`final_weight` 0.0, no
+  `error` key) → #286. Docs: `systematic_review_pipeline.md` "Paper weight
+  in the composite score". Tests: `test_composite_scorer_weights.py`,
+  `test_paper_weight_persistence.py::TestPlaceholderCacheRows`,
+  `test_systematic_review_quality.py::...::test_paper_weight_comes_from_agent_not_results_cache`.
 - **Paper-weight failures raise instead of becoming scores** (2026-10-23,
   closes #345, #347). `assess_paper` / `assess_full_paper` log and re-raise
   (the 0.0/10 `_create_error_result` is gone); the MQ/RoB assessors no
@@ -36,11 +60,7 @@ off new work. Longer-term structural items live in
   `tests/test_paper_weight_llm_assessors.py` (malformed replies),
   `tests/test_paper_weight_lab_gui_errors.py` (stale export),
   `tests/test_systematic_review_quality.py::...::test_failed_paper_weight_is_not_cached`.
-  Follow-ups filed: #348 (systematic review scorer reads `composite_score`,
-  `PaperWeightResult.to_dict()` emits `final_weight`: every paper scores
-  neutral on paper weight and replication), #351 (placeholder scores stored
-  before this fix can still be served from the assessment and
-  systematic-review caches; version plumbing).
+  Follow-ups #348, #351: done (entry above).
 - **Paper-weight DB helpers raise instead of returning `[]`/`None`**
   (2026-10-23, closes #275). `search_documents`,
   `semantic_search_documents`, `get_recent_assessments`,
@@ -217,9 +237,6 @@ value — pick one, or pull an item from ROADMAP.md:
 - #320 — after rejecting every discovered source, the doi.org fallback may
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
-- #348 — systematic review ignores paper-weight scores (key mismatch;
-  changes rankings, check with the owner). Do #351 (stale cached
-  placeholders) with or before it.
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
   #344 (hardcoded PubMed `source_id = 1`; move `pmid_select_expr` into
@@ -267,8 +284,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-23
-  (#345/#347 branch, after review fixes): **4465 passed, 47 skipped** in ~9 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-24
+  (#348/#351 branch): **4480 passed, 47 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

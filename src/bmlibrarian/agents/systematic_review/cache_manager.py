@@ -25,6 +25,8 @@ from datetime import datetime, date, timezone
 
 from bmlibrarian.evaluations.store import DateTimeEncoder
 
+from .data_models import paper_weight_score
+
 logger = logging.getLogger(__name__)
 
 # Constant for byte-to-megabyte conversion (Golden Rule #2: No magic numbers)
@@ -569,7 +571,7 @@ class ResultsCacheManager:
             True if stored successfully, False otherwise
         """
         try:
-            composite_score = result.get('composite_score')
+            composite_score = paper_weight_score(result)
 
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
