@@ -209,6 +209,17 @@ Calculates weighted composite scores for ranking:
   scores. The inclusion rationale then says "Paper weight: not assessed".
   Replication is left out the same way when no replication is on record
   (replications are entered by hand)
+- Methodological rigor comes from the study assessment's five bias-risk
+  ratings (selection, performance, detection, attrition, reporting): the
+  worst rated one sets the score (low 8, moderate 5, high 2; "unclear" is
+  ignored). Sample size comes from the participant count the study
+  assessment reports ("N=120 participants"): under 30 scores 2, under 100
+  scores 4, under 500 scores 6, under 1,000 scores 8, larger scores 10. A
+  count of studies ("N=8 studies", as a review reports) is not scored. When
+  no bias domain is rated, or no participant count can be read, that
+  dimension is left out the same way as a missing paper weight. When study
+  assessment failed or is turned off, all study dimensions get the middle
+  score 5
 - If a paper's paper weight assessment fails during the review, the paper
   is listed as a failed assessment and not ranked
 - Applies quality gate threshold

@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, TypeAlias
+from typing import Any, Dict, List, Optional, Set, TypeAlias, TypeGuard
 
 logger = logging.getLogger(__name__)
 
@@ -1287,6 +1287,10 @@ class ScoredPaper:
 # the assessment failed (see quality.assessment_error).
 ASSESSMENT_ERROR_KEY = "error"
 
+# Study type of the placeholder study assessment saved when study assessment
+# is disabled in the config (see quality.QualityAssessor).
+STUDY_NOT_ASSESSED = "not_assessed"
+
 # Score keys of a paper weight assessment (PaperWeightResult.to_dict()).
 PAPER_WEIGHT_SCORE_KEY = "final_weight"
 REPLICATION_SCORE_KEY = "replication_status_score"
@@ -1365,6 +1369,28 @@ def paper_weight_score(
     ):
         return None
     return _numeric(paper_weight.get(key))
+
+
+def has_study_assessment(
+    study_assessment: Optional[Dict[str, Any]],
+) -> TypeGuard[Dict[str, Any]]:
+    """
+    Whether a saved study assessment holds a real assessment.
+
+    Args:
+        study_assessment: ``AssessedPaper.study_assessment`` (may be None,
+            empty, a failed assessment with an ``error`` key, or the disabled
+            placeholder with study type ``STUDY_NOT_ASSESSED``)
+
+    Returns:
+        False for a missing, empty, failed or disabled assessment
+    """
+    return (
+        isinstance(study_assessment, dict)
+        and bool(study_assessment)
+        and ASSESSMENT_ERROR_KEY not in study_assessment
+        and study_assessment.get("study_type") != STUDY_NOT_ASSESSED
+    )
 
 
 @dataclass

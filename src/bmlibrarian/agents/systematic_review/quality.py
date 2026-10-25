@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from .data_models import (
     ASSESSMENT_ERROR_KEY,
+    STUDY_NOT_ASSESSED,
     ScoredPaper,
     AssessedPaper,
     StudyTypeFilter,
@@ -595,14 +596,14 @@ class QualityAssessor:
             logger.debug(f"Skipping study assessment for document {document['id']} (disabled in config)")
             # Return minimal assessment when disabled (AssessedPaper expects Dict, not None)
             study_assessment = {
-                "study_type": "not_assessed",
-                "study_design": "not_assessed",
+                "study_type": STUDY_NOT_ASSESSED,
+                "study_design": STUDY_NOT_ASSESSED,
                 "quality_score": 5.0,
                 "strengths": [],
                 "limitations": ["Assessment disabled in configuration"],
                 "overall_confidence": 0.0,
                 "confidence_explanation": "Assessment skipped (disabled in config)",
-                "evidence_level": "not_assessed",
+                "evidence_level": STUDY_NOT_ASSESSED,
                 "document_id": str(document["id"]),
                 "document_title": document.get("title", ""),
             }

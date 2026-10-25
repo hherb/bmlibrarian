@@ -222,10 +222,9 @@ def sample_assessed_paper(sample_scored_paper: ScoredPaper) -> AssessedPaper:
     return AssessedPaper(
         scored_paper=sample_scored_paper,
         study_assessment={
-            "overall_quality": 8.0,
-            "methodological_rigor": 7.5,
-            "sample_size": 10000,
-            "bias_risk": "low",
+            "quality_score": 8.0,
+            "sample_size": "N=10000 participants",
+            "selection_bias_risk": "low",
         },
         paper_weight={
             "replication_status_score": 10.0,
