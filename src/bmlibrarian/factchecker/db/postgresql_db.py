@@ -153,18 +153,19 @@ class PostgreSQLFactCheckerDB(AbstractFactCheckerDB):
         Returns:
             Dictionary with document metadata or None if not found
         """
-        with self.db.db_manager.get_connection() as conn:
+        from bmlibrarian.database import pmid_select_expr, pubmed_source_id
+
+        db_manager = self.db.db_manager
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """SELECT id, title, external_id, doi, source_id
+                    f"""SELECT id, title, external_id, doi, {pmid_select_expr()}
                        FROM document WHERE id = %s""",
-                    (document_id,)
+                    (pubmed_source_id(db_manager), document_id)
                 )
                 result = cursor.fetchone()
                 if result:
-                    doc_id, title, external_id, doi, source_id = result
-                    # For PubMed (source_id=1), external_id is the PMID
-                    pmid = external_id if source_id == 1 else None
+                    doc_id, title, external_id, doi, pmid = result
                     return {
                         'id': doc_id,
                         'title': title,

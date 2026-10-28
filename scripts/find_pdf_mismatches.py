@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Find PDF Mismatches Script for BMLibrarian.
 
-Scans PDFs for PubMed documents (source_id=1) and identifies those where
+Scans PDFs for PubMed documents and identifies those where
 the PDF content doesn't match the expected document metadata. MedRxiv
 documents are skipped as they should always be correctly matched.
 
@@ -42,16 +42,13 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from bmlibrarian.database import get_db_manager
+from bmlibrarian.database import get_db_manager, pubmed_source_id
 from bmlibrarian.discovery.pdf_verifier import PDFVerifier
 
 if TYPE_CHECKING:
     import psycopg
 
 logger = logging.getLogger(__name__)
-
-# PubMed source ID in the database
-PUBMED_SOURCE_ID = 1
 
 # Default batch size for processing
 DEFAULT_BATCH_SIZE = 100
@@ -104,7 +101,7 @@ def get_pubmed_documents_with_pdfs(
     year: Optional[int] = None,
     offset: int = 0
 ) -> List[Dict[str, Any]]:
-    """Query PubMed documents (source_id=1) that have PDFs.
+    """Query PubMed documents that have PDFs.
 
     Args:
         conn: Database connection
@@ -126,7 +123,8 @@ def get_pubmed_documents_with_pdfs(
               AND pdf_filename IS NOT NULL
               AND pdf_filename != ''
         """
-        params: List[Any] = [PUBMED_SOURCE_ID]
+        # conn comes from the global manager (see main)
+        params: List[Any] = [pubmed_source_id(get_db_manager())]
 
         if year:
             query += " AND EXTRACT(YEAR FROM publication_date) = %s"
@@ -180,7 +178,8 @@ def count_pubmed_documents_with_pdfs(
               AND pdf_filename IS NOT NULL
               AND pdf_filename != ''
         """
-        params: List[Any] = [PUBMED_SOURCE_ID]
+        # conn comes from the global manager (see main)
+        params: List[Any] = [pubmed_source_id(get_db_manager())]
 
         if year:
             query += " AND EXTRACT(YEAR FROM publication_date) = %s"
@@ -411,7 +410,7 @@ def main() -> int:
     )
 
     print("PDF Mismatch Scanner for BMLibrarian")
-    print("Scanning PubMed documents only (source_id=1)")
+    print("Scanning PubMed documents only")
     print("=" * 70)
 
     # Get database connection via DatabaseManager
@@ -501,7 +500,7 @@ def main() -> int:
         output_data = {
             'scan_info': {
                 'timestamp': datetime.now().isoformat(),
-                'source': 'PubMed (source_id=1)',
+                'source': 'PubMed',
                 'total_scanned': processed,
                 'year_filter': args.year,
             },

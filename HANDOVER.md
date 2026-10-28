@@ -10,6 +10,25 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **PMID lookups use the database's PubMed source id** (2026-10-28, closes
+  #344). `pmid_select_expr()` and `pubmed_source_id(db_manager)` moved from
+  `agents/paper_weight/db.py` into `bmlibrarian.database` (public; the
+  private `_pubmed_source_id` is gone). Used by the citation editor's
+  keyword search, `ReferenceBuilder`, the PubMed Search Lab's PMID lookups,
+  `DocumentProcessor.get_document_info`, the PostgreSQL fact-checker's
+  `get_document_metadata`, and `scripts/find_pdf_mismatches.py` /
+  `pdf_verification_gui.py` (their `PUBMED_SOURCE_ID = 1` is gone). The
+  systematic-review source filter (`SearchExecutor._filter_results_by_source`)
+  classifies by `source_name` only (it also treated ids 1/2 as
+  PubMed/medRxiv; a NULL `source_name` no longer crashes it). Left as is:
+  `factchecker/db/sqlite_db.PUBMED_SOURCE_ID`, the review package's own
+  schema (#280). Docs: `document_fetching_system.md` "PMID Extraction".
+  Tests: `tests/test_pubmed_source_id_sites.py`. Review follow-ups fixed in
+  the same PR: the citation editor's keyword search selected a nonexistent
+  `d.journal` (now `d.publication AS journal`; every keyword search had
+  failed), and the PubMed Search Lab imported a nonexistent `generate_theme`
+  (now `generate_default_theme`; the swallowed ImportError meant it never
+  got the theme).
 - **Systematic-review rigor and sample size score real study assessments**
   (2026-10-24, closes #356; owner decision this session: rigor = worst rated
   domain). `CompositeScorer._extract_methodological_rigor` now uses the
@@ -191,18 +210,6 @@ off new work. Longer-term structural items live in
   rejections (were 31), 10 still below the similarity threshold. 6 accepted
   passages contain a sentence broken off by lost text; the owner accepts
   them as they are (#307 closed: rejecting would lose evidence).
-- **Sentence bounds stop rejecting real sentences** (2026-10-19, PR #305,
-  merged, closes #302, #303): invisible `Cf` characters are whitespace;
-  single-capital designators, all-caps tokens before a capital, "et al."
-  before a capital, time units and glued text are boundaries (details and
-  accepted trade-offs in `doc/llm/sentence_bounds.md`). LLM re-run of the
-  106 pairs that lost every passage in the #296 re-run: 64 accepted (were
-  0), 31 fragments, 10 below the similarity threshold, 1 irrelevant.
-- **Citation retries quote the rejected passage; passage matching folds
-  Unicode** (2026-10-18, PR #301, merged, closes #290, #291): `_retry_note`
-  quotes the previous passage (≤ 200 chars) and its similarity;
-  `passage_match.fold_char()` folds quotes, dashes, NFKD, accents (not
-  negation overlays), soft hyphens and zero-width characters.
 - **Fact-check evaluation scales its token budget** (2026-10-18, PR #300,
   closes #296): `evaluation_token_budget(max_tokens, n)` = `max_tokens` + 100
   per citation (`gpt-oss:20b` thinks inside `num_predict`);
@@ -230,7 +237,9 @@ off new work. Longer-term structural items live in
   Docs: `doc/developers/citation_system.md`, `fact_checker_system.md`
   "Failure handling", `doc/llm/sentence_bounds.md`, `doc/llm/passage_match.md`.
 - **Earlier October 2026 slices** (details in git history and the linked
-  docs): bmlib 0.10 adopted with re-export shims (PR #295,
+  docs): sentence bounds stop rejecting real sentences (PR #305,
+  `doc/llm/sentence_bounds.md`); citation retries quote the rejected passage
+  and passage matching folds Unicode (PR #301, `passage_match.fold_char()`); bmlib 0.10 adopted with re-export shims (PR #295,
   `doc/planning/bmlib_alignment_2026-09.md`); legacy orchestrator `Workflow`
   no longer wedges (`tests/test_orchestrator_workflow.py`; follow-ups ROADMAP
   §5, #294); systematic-review resume on one shared pipeline (PR #284,
@@ -273,8 +282,7 @@ value — pick one, or pull an item from ROADMAP.md:
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
-  #344 (hardcoded PubMed `source_id = 1`; move `pmid_select_expr` into
-  `bmlibrarian.database`).
+  #280 (SQLite review packages assume PubMed is source 1).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -318,8 +326,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-24
-  (#356 branch): **4532 passed, 47 skipped** in ~9 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-28
+  (#344 branch): **4537 passed, 47 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

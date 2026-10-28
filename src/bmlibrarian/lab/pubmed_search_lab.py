@@ -242,7 +242,7 @@ class PubMedSearchWorker(QThread):
             Dictionary mapping PMIDs to document IDs
         """
         try:
-            from bmlibrarian.database import get_db_manager
+            from bmlibrarian.database import get_db_manager, pubmed_source_id
 
             db_manager = get_db_manager()
             pmids = [a.pmid for a in articles if a.pmid]
@@ -252,13 +252,13 @@ class PubMedSearchWorker(QThread):
 
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Get existing PMIDs and their doc IDs (source_id=1 is PubMed)
+                    # Get existing PMIDs and their doc IDs
                     query = sql.SQL(
-                        "SELECT external_id, id FROM document WHERE source_id = 1 AND external_id IN ({})"
+                        "SELECT external_id, id FROM document WHERE source_id = %s AND external_id IN ({})"
                     ).format(
                         sql.SQL(',').join(sql.Placeholder() for _ in pmids)
                     )
-                    cur.execute(query, pmids)
+                    cur.execute(query, [pubmed_source_id(db_manager), *pmids])
                     results = cur.fetchall()
                     return {row[0]: row[1] for row in results}
 
@@ -938,14 +938,14 @@ class PubMedSearchLabWindow(QMainWindow):
             Document ID or None if not found
         """
         try:
-            from bmlibrarian.database import get_db_manager
+            from bmlibrarian.database import get_db_manager, pubmed_source_id
             db_manager = get_db_manager()
 
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT id FROM document WHERE source_id = 1 AND external_id = %s",
-                        (pmid,)
+                        "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
+                        (pubmed_source_id(db_manager), pmid)
                     )
                     result = cur.fetchone()
                     return result[0] if result else None
@@ -998,10 +998,12 @@ def run_pubmed_search_lab() -> None:
 
     # Apply stylesheet
     try:
-        from bmlibrarian.gui.qt.resources.styles.theme_generator import generate_theme
-        app.setStyleSheet(generate_theme())
-    except ImportError:
-        pass  # Use default styling
+        from bmlibrarian.gui.qt.resources.styles.theme_generator import (
+            generate_default_theme,
+        )
+        app.setStyleSheet(generate_default_theme())
+    except ImportError as e:
+        logger.warning(f"Theme unavailable, using default styling: {e}")
 
     window = PubMedSearchLabWindow()
     window.show()

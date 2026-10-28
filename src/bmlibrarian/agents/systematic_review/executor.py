@@ -936,14 +936,11 @@ class SearchExecutor:
 
         filtered = []
         for doc in results:
-            source_name = doc.get('source_name', '').lower()
-            source_id = doc.get('source_id', 0)
-
-            # PubMed source (source_id=1 or source_name contains 'pubmed')
-            is_pubmed = source_id == 1 or 'pubmed' in source_name
-
-            # medRxiv source (source_id=2 or source_name contains 'medrxiv')
-            is_medrxiv = source_id == 2 or 'medrxiv' in source_name
+            # By name, as DatabaseManager caches source ids: the ids differ
+            # between databases
+            source_name = (doc.get('source_name') or '').lower()
+            is_pubmed = 'pubmed' in source_name
+            is_medrxiv = 'medrxiv' in source_name
 
             # Check if this document should be included
             if is_pubmed and use_pubmed:

@@ -83,7 +83,9 @@ class SearchWorker(QThread):
 
     def _keyword_search(self) -> List[Dict[str, Any]]:
         """Perform keyword search."""
-        from bmlibrarian.database import get_db_manager
+        from bmlibrarian.database import (
+            get_db_manager, pmid_select_expr, pubmed_source_id,
+        )
 
         db = get_db_manager()
 
@@ -91,14 +93,14 @@ class SearchWorker(QThread):
             with conn.cursor() as cur:
                 # Full-text search on title and abstract
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         d.id,
                         d.title,
-                        CASE WHEN d.source_id = 1 THEN d.external_id ELSE NULL END as pmid,
+                        {pmid_select_expr('d')} as pmid,
                         d.doi,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
-                        d.journal,
+                        d.publication AS journal,
                         ts_rank(
                             to_tsvector('english', COALESCE(d.title, '') || ' ' || COALESCE(d.abstract, '')),
                             plainto_tsquery('english', %s)
@@ -109,7 +111,7 @@ class SearchWorker(QThread):
                     ORDER BY relevance DESC
                     LIMIT %s
                     """,
-                    (self.query, self.query, self.limit)
+                    (pubmed_source_id(db), self.query, self.query, self.limit)
                 )
                 rows = cur.fetchall()
 

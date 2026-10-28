@@ -12,7 +12,7 @@ Uses DatabaseManager for PostgreSQL connectivity (golden rule #5).
 
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Dict, List
+from typing import Optional, Dict, List
 
 from .models import (
     AssessmentDetail,
@@ -24,10 +24,7 @@ from .models import (
     DIMENSION_RISK_OF_BIAS,
     DIMENSION_REPLICATION_STATUS,
 )
-from ...database import get_db_manager
-
-if TYPE_CHECKING:
-    from ...database import DatabaseManager
+from ...database import get_db_manager, pmid_select_expr, pubmed_source_id
 
 
 logger = logging.getLogger(__name__)
@@ -502,57 +499,6 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
 SEARCH_RESULT_LIMIT = 50
 RECENT_ASSESSMENTS_LIMIT = 20
 DEFAULT_SEMANTIC_THRESHOLD = 0.6
-# Set once the missing-PubMed-source warning has been logged (avoid log spam)
-_warned_no_pubmed_source = False
-
-
-def pmid_select_expr(table_alias: str = "") -> str:
-    """SQL expression yielding ``external_id`` only for PubMed rows.
-
-    ``external_id`` holds a PMID only when the row's source is PubMed; for
-    medRxiv/Europe PMC rows it is a DOI or another identifier and must not be
-    labelled ``pmid``. The expression takes one bound parameter: the PubMed
-    ``source_id`` (see :func:`_pubmed_source_id`).
-
-    Args:
-        table_alias: Optional table alias, e.g. ``"d"`` for ``d.source_id``.
-
-    Returns:
-        A ``CASE`` expression with one ``%s`` placeholder.
-    """
-    prefix = f"{table_alias}." if table_alias else ""
-    return (
-        f"CASE WHEN {prefix}source_id = %s "
-        f"THEN {prefix}external_id ELSE NULL END"
-    )
-
-
-def _pubmed_source_id(db_manager: "DatabaseManager") -> Optional[int]:
-    """Return the PubMed ``source_id`` for ``db_manager``'s database.
-
-    Uses the manager's cached source mapping. If it has no PubMed entry,
-    returns ``None``: bound into ``source_id = %s`` that matches no row, so
-    ``pmid`` comes back ``NULL`` and PMID lookups find nothing, rather than
-    guessing an id that may belong to another source.
-
-    Args:
-        db_manager: The ``DatabaseManager`` whose database is queried.
-
-    Returns:
-        The PubMed source id, or ``None`` if it is unknown.
-    """
-    global _warned_no_pubmed_source
-    source_ids = db_manager.get_cached_source_ids() or {}
-    pubmed_id = source_ids.get('pubmed')
-    if isinstance(pubmed_id, int) and not isinstance(pubmed_id, bool):
-        return pubmed_id
-    if not _warned_no_pubmed_source:
-        logger.warning(
-            "No 'pubmed' entry in cached source ids; PMIDs will be reported "
-            "as unknown and PMID searches will return no results"
-        )
-        _warned_no_pubmed_source = True
-    return None
 
 
 def semantic_search_documents(
@@ -598,7 +544,7 @@ def semantic_search_documents(
                     FROM semantic_docsearch(%s, %s, %s) s
                     JOIN public.document d ON s.document_id = d.id
                     ORDER BY s.score DESC
-                """, (_pubmed_source_id(db_manager), query, threshold, limit))
+                """, (pubmed_source_id(db_manager), query, threshold, limit))
 
                 rows = cur.fetchall()
                 return [
@@ -650,7 +596,7 @@ def search_documents(
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                pubmed_id = _pubmed_source_id(db_manager)
+                pubmed_id = pubmed_source_id(db_manager)
                 # Common SELECT columns (first placeholder: PubMed source_id)
                 select_cols = f"""
                     id, title, {pmid_select_expr()} as pmid, doi,
@@ -740,7 +686,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
                     JOIN public.document d ON a.document_id = d.id
                     ORDER BY a.assessed_at DESC
                     LIMIT %s
-                """, (_pubmed_source_id(db_manager), limit))
+                """, (pubmed_source_id(db_manager), limit))
 
                 rows = cur.fetchall()
                 return [
@@ -831,7 +777,7 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
                         EXTRACT(YEAR FROM publication_date)::INTEGER as year
                     FROM public.document
                     WHERE id = %s
-                """, (_pubmed_source_id(db_manager), document_id))
+                """, (pubmed_source_id(db_manager), document_id))
 
                 row = cur.fetchone()
                 if row:
@@ -864,5 +810,4 @@ __all__ = [
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',
     'DEFAULT_SEMANTIC_THRESHOLD',
-    'pmid_select_expr',
 ]
