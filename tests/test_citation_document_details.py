@@ -7,6 +7,7 @@ a non-existent SQLite ``pdf_filename`` column and labelled every
 ``external_id`` as a PMID).
 """
 
+import importlib.util
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -25,7 +26,11 @@ SCHEMA_PATH = (
     Path(__file__).resolve().parent.parent
     / "src" / "bmlibrarian" / "factchecker" / "db" / "sqlite_schema.sql"
 )
+EXPORT_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "export_review_package.py"
 MEDRXIV_SOURCE_ID = PUBMED_SOURCE_ID + 1
+# PubMed's id in a database not seeded by the setup wizard (#280)
+OTHER_PUBMED_SOURCE_ID = 5
+SOURCE_NAME_COLUMN = "    source_name TEXT,"
 
 
 class TestExtractPmid:
@@ -75,20 +80,42 @@ class TestSqliteHelpers:
 
 @pytest.fixture
 def review_db(tmp_path):
-    """A review-package SQLite DB with one PubMed and one medRxiv document."""
+    """A review-package SQLite DB with one PubMed and one medRxiv document.
+
+    PubMed is deliberately not source_id 1: the exported source name decides.
+    """
     db_path = tmp_path / "review.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA_PATH.read_text())
     conn.executemany(
-        """INSERT INTO documents (id, source_id, external_id, doi, title, abstract,
-               authors, publication, publication_date, url, pdf_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO documents (id, source_id, source_name, external_id, doi, title,
+               abstract, authors, publication, publication_date, url, pdf_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
-            (1, PUBMED_SOURCE_ID, "11111111", "10.1/a", "PubMed paper", "Abstract A",
-             '["Smith J", "Doe A"]', "J Med", "2021-03-04", None, None),
-            (2, MEDRXIV_SOURCE_ID, "22222222", "10.1101/b", "Preprint", "Abstract B",
-             '["Roe R"]', "medRxiv", "2022-01-01", None, "https://x/b.pdf"),
+            (1, OTHER_PUBMED_SOURCE_ID, "PubMed", "11111111", "10.1/a", "PubMed paper",
+             "Abstract A", '["Smith J", "Doe A"]', "J Med", "2021-03-04", None, None),
+            (2, PUBMED_SOURCE_ID, "medRxiv", "22222222", "10.1101/b", "Preprint",
+             "Abstract B", '["Roe R"]', "medRxiv", "2022-01-01", None, "https://x/b.pdf"),
         ],
+    )
+    conn.commit()
+    conn.close()
+    db = SQLiteFactCheckerDB(str(db_path))
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def legacy_review_db(tmp_path):
+    """A package exported before #280: no documents.source_name column."""
+    db_path = tmp_path / "legacy.db"
+    schema = SCHEMA_PATH.read_text()
+    assert SOURCE_NAME_COLUMN in schema
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema.replace(SOURCE_NAME_COLUMN, ""))
+    conn.executemany(
+        "INSERT INTO documents (id, source_id, external_id) VALUES (?, ?, ?)",
+        [(1, PUBMED_SOURCE_ID, "11111111"), (2, MEDRXIV_SOURCE_ID, "22222222")],
     )
     conn.commit()
     conn.close()
@@ -107,9 +134,11 @@ class TestSqliteGetDocumentDetails:
         assert doc['journal'] == "J Med"
         assert doc['year'] == 2021
         assert doc['pmid'] == "11111111"
+        assert doc['source_name'] == "PubMed"
         assert doc['pdf_filename'] is None
 
     def test_non_pubmed_document_has_no_pmid(self, review_db):
+        """A medRxiv document with source_id 1 is not taken for PubMed."""
         doc = review_db.get_document_details(2)
         assert doc['pmid'] is None
         assert doc['external_id'] == "22222222"
@@ -117,6 +146,46 @@ class TestSqliteGetDocumentDetails:
 
     def test_missing_document(self, review_db):
         assert review_db.get_document_details(999) is None
+
+    def test_metadata_pmid_from_source_name(self, review_db):
+        """get_document_metadata agrees with get_document_details."""
+        assert review_db.get_document_metadata(1)['pmid'] == "PMID:11111111"
+        assert review_db.get_document_metadata(2)['pmid'] == ''
+
+    def test_legacy_package_assumes_pubmed_is_source_1(self, legacy_review_db):
+        """Packages without source names keep the old id-1 convention."""
+        assert legacy_review_db.get_document_details(1)['pmid'] == "11111111"
+        assert legacy_review_db.get_document_details(1)['source_name'] is None
+        assert legacy_review_db.get_document_details(2)['pmid'] is None
+        assert legacy_review_db.get_document_metadata(1)['pmid'] == "PMID:11111111"
+        assert legacy_review_db.get_document_metadata(2)['pmid'] == ''
+
+
+def test_export_script_writes_source_names(tmp_path):
+    """export_review_package.py stores sources.name, so PMIDs survive any source id."""
+    spec = importlib.util.spec_from_file_location("export_review_package", EXPORT_SCRIPT)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    db_file = tmp_path / "package.db"
+    sqlite_conn = script.create_sqlite_database(db_file)
+    pg_cursor = MagicMock()
+    pg_cursor.fetchall.return_value = [
+        (101, OTHER_PUBMED_SOURCE_ID, "pubmed", "123", None, "t", "a", ["A B"],
+         None, None, None, None, None, None),
+    ]
+    pg_db = MagicMock()
+    pg_conn = pg_db.db_manager.get_connection.return_value.__enter__.return_value
+    pg_conn.cursor.return_value.__enter__.return_value = pg_cursor
+
+    assert script.export_documents(pg_db, sqlite_conn, {101}) == 1
+    sqlite_conn.close()
+
+    assert "JOIN sources" in pg_cursor.execute.call_args.args[0]
+    db = SQLiteFactCheckerDB(str(db_file))
+    try:
+        assert db.get_document_details(101)['pmid'] == "123"
+    finally:
+        db.close()
 
 
 class TestCitationEnrichment:
