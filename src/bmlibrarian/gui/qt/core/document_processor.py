@@ -200,41 +200,38 @@ class DocumentProcessor:
         Returns:
             DocumentInfo or None if not found.
         """
+        from bmlibrarian.database import pmid_select_expr, pubmed_source_id
+
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Get document details
                     # Note: document table uses external_id + source_id, not pmid directly
-                    # source_id=1 is typically PubMed, so external_id would be the PMID
                     cur.execute(
-                        """
-                        SELECT d.id, d.title, d.abstract, d.doi, d.external_id,
-                               d.source_id, d.pdf_url, d.pdf_filename, d.full_text,
+                        f"""
+                        SELECT d.id, d.title, d.abstract, d.doi,
+                               {pmid_select_expr('d')}, d.pdf_url,
+                               d.pdf_filename, d.full_text,
                                EXTRACT(YEAR FROM d.publication_date)::int
                         FROM public.document d
                         WHERE d.id = %s
                         """,
-                        (document_id,),
+                        (pubmed_source_id(self.db_manager), document_id),
                     )
                     row = cur.fetchone()
                     if not row:
                         return None
-
-                    # external_id is PMID when source_id=1 (PubMed)
-                    external_id = row[4]
-                    source_id = row[5]
-                    pmid = external_id if source_id == 1 else None
 
                     doc_info = DocumentInfo(
                         id=row[0],
                         title=row[1],
                         abstract=row[2],
                         doi=row[3],
-                        pmid=pmid,
-                        pdf_url=row[6],
-                        pdf_filename=row[7],
-                        full_text=row[8],
-                        year=row[9],
+                        pmid=row[4],
+                        pdf_url=row[5],
+                        pdf_filename=row[6],
+                        full_text=row[7],
+                        year=row[8],
                     )
 
                     # Check for existing embeddings

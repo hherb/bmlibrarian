@@ -45,6 +45,8 @@ This function fetches comprehensive document details by database ID and returns 
 
 2. **PMID Extraction**: via the pure `extract_pmid(external_id, source_name)`. A numeric `external_id` counts as a PMID only when the source name contains "pubmed"; a `PMID:<digits>` marker counts for any source.
 
+   Code that must select a PMID in its own SQL uses `pmid_select_expr(alias)` (a `CASE` expression with one `%s` placeholder) bound to `pubmed_source_id(db_manager)`. Never assume PubMed is `sources.id = 1`: the id depends on insertion order and differs between databases (#344). An unknown PubMed id binds as NULL, so no row is labelled a PMID.
+
    `fetch_document_details(document_id, db_manager=None)` returns the same dictionary but raises on database errors, for callers that must tell a missing document from an unreachable database (e.g. the fact-checker's citation enrichment). `get_document_details` logs the error and returns None.
 
 3. **Date Conversion**: `publication_date` is converted to ISO string format.

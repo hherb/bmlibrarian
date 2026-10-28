@@ -228,7 +228,7 @@ class TestPmidLabelling:
 
     def test_pmid_select_expr_is_source_conditional(self):
         """The expression gates external_id on the bound PubMed source id."""
-        from bmlibrarian.agents.paper_weight.db import pmid_select_expr
+        from bmlibrarian.database import pmid_select_expr
 
         assert pmid_select_expr() == (
             "CASE WHEN source_id = %s THEN external_id ELSE NULL END"
@@ -239,16 +239,16 @@ class TestPmidLabelling:
 
     def test_pubmed_source_id_from_cache(self):
         """The cached id is used."""
-        from bmlibrarian.agents.paper_weight.db import _pubmed_source_id
+        from bmlibrarian.database import pubmed_source_id
 
-        assert _pubmed_source_id(self._mock_manager({'pubmed': 7})[0]) == 7
+        assert pubmed_source_id(self._mock_manager({'pubmed': 7})[0]) == 7
 
     @pytest.mark.parametrize("source_ids", [None, {}, {'medrxiv': 1}, {'pubmed': True}])
     def test_unknown_pubmed_source_matches_nothing(self, source_ids):
         """No PubMed id -> None (binds as NULL, matching no row) - never a guessed id."""
-        from bmlibrarian.agents.paper_weight.db import _pubmed_source_id
+        from bmlibrarian.database import pubmed_source_id
 
-        assert _pubmed_source_id(self._mock_manager(source_ids)[0]) is None
+        assert pubmed_source_id(self._mock_manager(source_ids)[0]) is None
 
     @pytest.mark.parametrize(
         "query, expected_params",

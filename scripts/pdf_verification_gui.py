@@ -33,7 +33,7 @@ from PySide6.QtGui import QFont
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from bmlibrarian.database import get_db_manager
+from bmlibrarian.database import get_db_manager, pubmed_source_id
 from bmlibrarian.config import BMLibrarianConfig
 from bmlibrarian.discovery.pdf_verifier import PDFVerifier, VerificationResult, PDFValidityResult
 from bmlibrarian.gui.qt.widgets.pdf_viewer import PDFViewerWidget
@@ -45,7 +45,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Constants
-PUBMED_SOURCE_ID = 1
 DEFAULT_BATCH_SIZE = 20
 REJECTED_DIR_NAME = "rejected"
 
@@ -202,7 +201,8 @@ class DocumentLoader(QObject):
                   AND pdf_filename IS NOT NULL
                   AND pdf_filename != ''
             """
-            params: List[Any] = [PUBMED_SOURCE_ID]
+            # conn comes from the global manager (see run)
+            params: List[Any] = [pubmed_source_id(get_db_manager())]
 
             if self.year:
                 query += " AND EXTRACT(YEAR FROM publication_date) = %s"

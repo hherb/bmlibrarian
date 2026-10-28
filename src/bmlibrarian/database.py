@@ -356,6 +356,60 @@ def _default_source_id_names() -> Dict[int, str]:
     return get_db_manager().get_cached_source_id_names() or {}
 
 
+# Set once the missing-PubMed-source warning has been logged (avoid log spam)
+_warned_no_pubmed_source = False
+
+
+def pmid_select_expr(table_alias: str = "") -> str:
+    """SQL expression yielding ``external_id`` only for PubMed rows.
+
+    ``external_id`` holds a PMID only when the row's source is PubMed; for
+    medRxiv/Europe PMC rows it is a DOI or another identifier and must not be
+    labelled ``pmid``. The expression takes one bound parameter: the PubMed
+    ``source_id`` (see :func:`pubmed_source_id`).
+
+    Args:
+        table_alias: Optional table alias, e.g. ``"d"`` for ``d.source_id``.
+
+    Returns:
+        A ``CASE`` expression with one ``%s`` placeholder.
+    """
+    prefix = f"{table_alias}." if table_alias else ""
+    return (
+        f"CASE WHEN {prefix}source_id = %s "
+        f"THEN {prefix}external_id ELSE NULL END"
+    )
+
+
+def pubmed_source_id(db_manager: "DatabaseManager") -> Optional[int]:
+    """Return the PubMed ``source_id`` for ``db_manager``'s database.
+
+    PubMed is not necessarily ``sources.id = 1``: the id depends on the order
+    the sources were inserted. Uses the manager's cached source mapping. If it
+    has no PubMed entry, returns ``None``: bound into ``source_id = %s`` that
+    matches no row, so ``pmid`` comes back ``NULL`` and PMID lookups find
+    nothing, rather than guessing an id that may belong to another source.
+
+    Args:
+        db_manager: The ``DatabaseManager`` whose database is queried.
+
+    Returns:
+        The PubMed source id, or ``None`` if it is unknown.
+    """
+    global _warned_no_pubmed_source
+    source_ids = db_manager.get_cached_source_ids() or {}
+    pubmed_id = source_ids.get('pubmed')
+    if isinstance(pubmed_id, int) and not isinstance(pubmed_id, bool):
+        return pubmed_id
+    if not _warned_no_pubmed_source:
+        logger.warning(
+            "No 'pubmed' entry in cached source ids; PMIDs will be reported "
+            "as unknown and PMID searches will return no results"
+        )
+        _warned_no_pubmed_source = True
+    return None
+
+
 def build_pagination_clause(max_rows: int, offset: int) -> Tuple[str, List[int]]:
     """Build a parameterized ``LIMIT``/``OFFSET`` SQL suffix and its bound values.
 

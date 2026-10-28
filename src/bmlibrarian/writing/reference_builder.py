@@ -194,6 +194,8 @@ class ReferenceBuilder:
         if not document_ids:
             return {}
 
+        from bmlibrarian.database import pmid_select_expr, pubmed_source_id
+
         db = self._get_db_manager()
         metadata_map = {}
 
@@ -203,7 +205,7 @@ class ReferenceBuilder:
                 # Note: authors are stored as text[] in document table
                 # Note: volume/issue/pages columns don't exist in schema
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         d.id,
                         d.title,
@@ -212,12 +214,12 @@ class ReferenceBuilder:
                         d.publication,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
                         d.publication_date,
-                        CASE WHEN d.source_id = 1 THEN d.external_id ELSE NULL END as pmid,
+                        {pmid_select_expr('d')} as pmid,
                         array_to_string(d.authors, '; ') as authors
                     FROM public.document d
                     WHERE d.id = ANY(%s)
                     """,
-                    (document_ids,)
+                    (pubmed_source_id(db), document_ids)
                 )
                 rows = cur.fetchall()
 
