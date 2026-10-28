@@ -100,7 +100,7 @@ class SearchWorker(QThread):
                         {pmid_select_expr('d')} as pmid,
                         d.doi,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
-                        d.journal,
+                        d.publication AS journal,
                         ts_rank(
                             to_tsvector('english', COALESCE(d.title, '') || ' ' || COALESCE(d.abstract, '')),
                             plainto_tsquery('english', %s)

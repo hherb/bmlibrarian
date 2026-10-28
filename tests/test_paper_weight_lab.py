@@ -28,7 +28,8 @@ from bmlibrarian.agents.paper_weight import (
 )
 
 DB_MANAGER_PATH = 'bmlibrarian.agents.paper_weight.db.get_db_manager'
-PUBMED_SOURCE_ID = 1
+# Not 1: a hardcoded PubMed id would pass unnoticed (#344)
+PUBMED_SOURCE_ID = 7
 
 
 def mock_db(mock_cursor: MagicMock):

@@ -23,7 +23,12 @@ off new work. Longer-term structural items live in
   PubMed/medRxiv; a NULL `source_name` no longer crashes it). Left as is:
   `factchecker/db/sqlite_db.PUBMED_SOURCE_ID`, the review package's own
   schema (#280). Docs: `document_fetching_system.md` "PMID Extraction".
-  Tests: `tests/test_pubmed_source_id_sites.py`.
+  Tests: `tests/test_pubmed_source_id_sites.py`. Review follow-ups fixed in
+  the same PR: the citation editor's keyword search selected a nonexistent
+  `d.journal` (now `d.publication AS journal`; every keyword search had
+  failed), and the PubMed Search Lab imported a nonexistent `generate_theme`
+  (now `generate_default_theme`; the swallowed ImportError meant it never
+  got the theme).
 - **Systematic-review rigor and sample size score real study assessments**
   (2026-10-24, closes #356; owner decision this session: rigor = worst rated
   domain). `CompositeScorer._extract_methodological_rigor` now uses the

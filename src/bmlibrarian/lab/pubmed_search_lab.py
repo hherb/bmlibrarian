@@ -998,10 +998,12 @@ def run_pubmed_search_lab() -> None:
 
     # Apply stylesheet
     try:
-        from bmlibrarian.gui.qt.resources.styles.theme_generator import generate_theme
-        app.setStyleSheet(generate_theme())
-    except ImportError:
-        pass  # Use default styling
+        from bmlibrarian.gui.qt.resources.styles.theme_generator import (
+            generate_default_theme,
+        )
+        app.setStyleSheet(generate_default_theme())
+    except ImportError as e:
+        logger.warning(f"Theme unavailable, using default styling: {e}")
 
     window = PubMedSearchLabWindow()
     window.show()

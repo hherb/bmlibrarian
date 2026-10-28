@@ -101,8 +101,26 @@ def test_citation_search_panel_keyword_search_binds_pubmed_source_id():
 
     sql, params = _first(db)
     assert pmid_select_expr('d') in sql
+    # The document table has no journal column
+    assert "d.publication AS journal" in sql
     assert params == (PUBMED_ID, "aspirin", "aspirin", 3)
     assert results[0]['pmid'] == "12345"
+
+
+def test_pubmed_search_lab_existing_pmids_binds_pubmed_source_id():
+    """The lab's existing-PMID check binds the PubMed id before the PMIDs."""
+    from types import SimpleNamespace
+
+    from bmlibrarian.lab.pubmed_search_lab import PubMedSearchWorker
+
+    db = _FakeDbManager(("111", 5))
+    worker = PubMedSearchWorker.__new__(PubMedSearchWorker)
+    articles = [SimpleNamespace(pmid="111"), SimpleNamespace(pmid="222")]
+    with patch('bmlibrarian.database.get_db_manager', return_value=db):
+        existing = worker._get_existing_pmids(articles)
+
+    assert db.executed[0][1] == [PUBMED_ID, "111", "222"]
+    assert existing == {"111": 5}
 
 
 def test_document_processor_maps_pmid_and_later_columns():
