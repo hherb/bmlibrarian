@@ -19,9 +19,12 @@ directly.
 
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from ...llm import LLMClient, LLMMessage
+
+if TYPE_CHECKING:
+    from ...database import DatabaseManager
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -188,7 +191,8 @@ def embed_documents(
 
 def search_with_embedding(
     embedding: List[float],
-    max_results: int
+    max_results: int,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> List[Tuple[int, str, float]]:
     """
     Search database using a single embedding vector.
@@ -199,6 +203,7 @@ def search_with_embedding(
     Args:
         embedding: The query embedding vector
         max_results: Maximum number of results to return
+        db_manager: Database to search (default: the global manager)
 
     Returns:
         List of (document_id, title, similarity_score) tuples
@@ -215,7 +220,8 @@ def search_with_embedding(
     results_dicts = search_by_embedding(
         embedding=embedding,
         max_results=max_results,
-        model_id=DEFAULT_EMBEDDING_MODEL_ID  # snowflake-arctic-embed2:latest
+        model_id=DEFAULT_EMBEDDING_MODEL_ID,  # snowflake-arctic-embed2:latest
+        db_manager=db_manager,
     )
 
     # Convert from dict format to tuple format for compatibility
@@ -276,7 +282,8 @@ def hyde_search(
     max_results: int = 100,
     num_hypothetical_docs: int = DEFAULT_NUM_HYPOTHETICAL_DOCS,
     similarity_threshold: float = 0.7,
-    callback: Optional[Callable[[str, str], None]] = None
+    callback: Optional[Callable[[str, str], None]] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> List[Dict[str, Any]]:
     """
     Perform HyDE (Hypothetical Document Embeddings) search.
@@ -297,6 +304,7 @@ def hyde_search(
         num_hypothetical_docs: Number of hypothetical documents to generate
         similarity_threshold: Minimum RRF score threshold (0-1)
         callback: Optional callback for progress updates
+        db_manager: Database to search (default: the global manager)
 
     Returns:
         List of document dictionaries with keys: id, title, score
@@ -345,7 +353,8 @@ def hyde_search(
     for i, embedding in enumerate(embeddings):
         results = search_with_embedding(
             embedding=embedding,
-            max_results=max_results
+            max_results=max_results,
+            db_manager=db_manager,
         )
         all_results.append(results)
         logger.info(f"Search {i+1}/{len(embeddings)}: found {len(results)} documents")

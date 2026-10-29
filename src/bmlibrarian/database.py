@@ -341,19 +341,24 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
-def _default_source_ids() -> Dict[str, Union[int, List[int]]]:
-    """Cached source-name -> id(s) mapping for the default (global) database.
+def _default_source_ids(
+    db_manager: Optional[DatabaseManager] = None,
+) -> Dict[str, Union[int, List[int]]]:
+    """Cached source-name -> id(s) mapping for ``db_manager``'s database.
 
-    The module-level search helpers operate on the global DatabaseManager, so
-    they resolve source IDs through it rather than a class-level attribute
-    (which cannot distinguish databases).
+    Source IDs differ between databases, so they are resolved through the
+    manager being searched (the global one when None) rather than a
+    class-level attribute (which cannot distinguish databases).
     """
-    return get_db_manager().get_cached_source_ids() or {}
+    return (db_manager or get_db_manager()).get_cached_source_ids() or {}
 
 
-def _default_source_id_names() -> Dict[int, str]:
-    """Cached source_id -> source-name mapping for the default (global) database."""
-    return get_db_manager().get_cached_source_id_names() or {}
+def _default_source_id_names(
+    db_manager: Optional[DatabaseManager] = None,
+) -> Dict[int, str]:
+    """Cached source_id -> source-name mapping for ``db_manager``'s database
+    (the global one when None)."""
+    return (db_manager or get_db_manager()).get_cached_source_id_names() or {}
 
 
 # Set once the missing-PubMed-source warning has been logged (avoid log spam)
@@ -518,7 +523,8 @@ def find_abstracts(
     to_date: Optional[date] = None,
     batch_size: int = 50,
     use_ranking: bool = False,
-    offset: int = 0
+    offset: int = 0,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> Generator[Dict, None, None]:
     """
     Find documents using PostgreSQL text search with optional date and source filtering.
@@ -535,7 +541,9 @@ def find_abstracts(
         batch_size: Number of rows to fetch in each database round trip (default: 50)
         use_ranking: If True, calculate and order by relevance ranking (default: False for speed)
         offset: Number of rows to skip before returning results (default: 0)
-        
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
+
     Yields:
         Dict containing document information with keys:
         - id: Document ID
@@ -568,8 +576,8 @@ def find_abstracts(
     # Log query start
     start_time = time.time()
     logger.info(f"Starting document search: query='{ts_query_str[:100]}...', max_rows={max_rows}")
-    
-    db_manager = get_db_manager()
+
+    db_manager = db_manager or get_db_manager()
     
     # Build source ID filter using cached source IDs (much faster than JOINs)
     # Only filter by source if not all sources are enabled
@@ -596,7 +604,7 @@ def find_abstracts(
         'timestamp': time.time()
     }})
     
-    source_id_map = _default_source_ids()
+    source_id_map = _default_source_ids(db_manager)
     if not all_sources_enabled and source_id_map:
         if use_pubmed and 'pubmed' in source_id_map:
             pubmed_id = source_id_map['pubmed']
@@ -718,9 +726,9 @@ def find_abstracts(
             
             logger.info(f"Query executed in {query_execution_time:.2f}ms")
 
-            # Cached source_id -> name mapping for the default database, bound
+            # Cached source_id -> name mapping for the searched database, bound
             # once so per-row lookups don't re-resolve the manager.
-            source_id_names = _default_source_id_names()
+            source_id_names = _default_source_id_names(db_manager)
 
             while True:
                 # Fetch a batch of rows
@@ -904,7 +912,8 @@ def find_abstract_ids(
 
 def fetch_documents_by_ids(
     document_ids: set[int],
-    batch_size: int = 50
+    batch_size: int = 50,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> list[Dict[str, Any]]:
     """
     Fetch full document details for given IDs.
@@ -915,6 +924,8 @@ def fetch_documents_by_ids(
     Args:
         document_ids: Set of document IDs to fetch
         batch_size: Number of documents per database query (prevents param limits)
+        db_manager: Database to read (default: the global manager from
+            ``get_db_manager()``)
 
     Returns:
         List of document dictionaries (same format as find_abstracts)
@@ -931,7 +942,7 @@ def fetch_documents_by_ids(
 
     logger.info(f"Fetching {len(document_ids)} documents in batches of {batch_size}")
 
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
     documents = []
 
     # Convert set to list for batching
@@ -968,7 +979,8 @@ def fetch_documents_by_ids(
 def search_by_embedding(
     embedding: List[float],
     max_results: int = 100,
-    model_id: int = 1
+    model_id: int = 1,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search for documents using vector similarity (cosine distance).
@@ -980,6 +992,8 @@ def search_by_embedding(
         embedding: The query embedding vector (list of floats)
         max_results: Maximum number of documents to return (default: 100)
         model_id: Embedding model ID in emb_1024 table (default: 1)
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Returns:
         List of document dictionaries with keys:
@@ -993,7 +1007,7 @@ def search_by_embedding(
         >>> for doc in results:
         ...     print(f"{doc['title']}: {doc['similarity']:.3f}")
     """
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     # Query using pgvector cosine distance
     # <=> operator returns cosine distance (0 = identical, 2 = opposite)
@@ -1025,7 +1039,8 @@ def search_with_bm25(
     max_results: int = 100,
     use_pubmed: bool = True,
     use_medrxiv: bool = True,
-    use_others: bool = True
+    use_others: bool = True,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> Generator[Dict, None, None]:
     """
     Search documents using BM25 ranked full-text search.
@@ -1039,14 +1054,16 @@ def search_with_bm25(
         use_pubmed: Include PubMed results
         use_medrxiv: Include medRxiv results
         use_others: Include other sources
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Yields:
         Document dictionaries ordered by BM25 rank (highest relevance first)
     """
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     source_filter, source_params = build_source_filter_clause(
-        _default_source_ids(), use_pubmed, use_medrxiv, use_others
+        _default_source_ids(db_manager), use_pubmed, use_medrxiv, use_others
     )
 
     logger.info(f"BM25 search: '{query_text}', max_results={max_results}")
@@ -1072,7 +1089,8 @@ def search_with_bm25(
 def search_with_semantic(
     search_text: str,
     threshold: float = 0.7,
-    max_results: int = 100
+    max_results: int = 100,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> Generator[Dict, None, None]:
     """
     Search documents using semantic search with vector embeddings.
@@ -1084,6 +1102,8 @@ def search_with_semantic(
         search_text: Natural language search query
         threshold: Minimum similarity score (0.0 to 1.0, default: 0.7)
         max_results: Maximum number of results to return
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Yields:
         Document dictionaries with semantic similarity scores
@@ -1093,7 +1113,7 @@ def search_with_semantic(
         - Returns chunk-level results, so documents may appear multiple times
         - Embedding generation takes ~2-5 seconds per query
     """
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     logger.info(f"Semantic search: '{search_text}', threshold={threshold}, max_results={max_results}")
 
@@ -1135,7 +1155,8 @@ def search_with_fulltext_function(
     max_results: int = 100,
     use_pubmed: bool = True,
     use_medrxiv: bool = True,
-    use_others: bool = True
+    use_others: bool = True,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> Generator[Dict, None, None]:
     """
     Search documents using the fulltext_search PostgreSQL function.
@@ -1149,14 +1170,16 @@ def search_with_fulltext_function(
         use_pubmed: Include PubMed results
         use_medrxiv: Include medRxiv results
         use_others: Include other sources
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Yields:
         Document dictionaries ordered by ts_rank (highest relevance first)
     """
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     source_filter, source_params = build_source_filter_clause(
-        _default_source_ids(), use_pubmed, use_medrxiv, use_others
+        _default_source_ids(db_manager), use_pubmed, use_medrxiv, use_others
     )
 
     logger.info(f"Fulltext search: '{query_text}', max_results={max_results}")
@@ -1349,7 +1372,8 @@ def search_hybrid(
     search_config: Optional[Dict[str, Any]] = None,
     use_pubmed: bool = True,
     use_medrxiv: bool = True,
-    use_others: bool = True
+    use_others: bool = True,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> tuple[List[Dict], Dict[str, Any]]:
     """
     Orchestrate hybrid search combining multiple search strategies.
@@ -1365,6 +1389,8 @@ def search_hybrid(
         use_pubmed: Include PubMed results
         use_medrxiv: Include medRxiv results
         use_others: Include other sources
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Returns:
         Tuple of (documents, strategy_metadata):
@@ -1435,7 +1461,9 @@ def search_hybrid(
         logger.info(f"Executing semantic search (threshold={threshold}, max={max_results})")
         rows = _run_search_strategy(
             'semantic',
-            lambda: search_with_semantic(search_text, threshold, max_results),
+            lambda: search_with_semantic(
+                search_text, threshold, max_results, db_manager=db_manager
+            ),
             retry_config, strategy_metadata,
         )
         if rows is not None:
@@ -1461,7 +1489,10 @@ def search_hybrid(
         logger.info(f"Executing BM25 search (k1={k1}, b={b}, max={max_results})")
         rows = _run_search_strategy(
             'bm25',
-            lambda: search_with_bm25(query_text, max_results, use_pubmed, use_medrxiv, use_others),
+            lambda: search_with_bm25(
+                query_text, max_results, use_pubmed, use_medrxiv, use_others,
+                db_manager=db_manager,
+            ),
             retry_config, strategy_metadata,
         )
         if rows is not None:
@@ -1500,7 +1531,8 @@ def search_hybrid(
         rows = _run_search_strategy(
             'fulltext',
             lambda: search_with_fulltext_function(
-                query_text, max_results, use_pubmed, use_medrxiv, use_others
+                query_text, max_results, use_pubmed, use_medrxiv, use_others,
+                db_manager=db_manager,
             ),
             retry_config, strategy_metadata,
         )

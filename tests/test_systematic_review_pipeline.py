@@ -589,8 +589,9 @@ def fake_planner_and_database() -> Iterator[None]:
     planner = MagicMock()
     planner.generate_search_plan.return_value = make_plan()
 
-    def fetch(ids: Set[int]) -> List[Dict[str, Any]]:
-        """Every requested document exists."""
+    def fetch(ids: Set[int], db_manager: Any = None) -> List[Dict[str, Any]]:
+        """Every requested document exists (in the agent's database, #285)."""
+        assert db_manager is not None, "fetch fell back to the global db_manager"
         return [paper_row(i) for i in sorted(ids)]
 
     with patch("bmlibrarian.agents.systematic_review.planner.Planner", return_value=planner), \
@@ -1170,7 +1171,7 @@ class TestResume:
         store = FakeEvaluationStore()
         _, checkpoint = run_and_stop(tmp_path, store, CHECKPOINT_INITIAL_RESULTS)
 
-        def fetch_without_3(ids: Set[int]) -> List[Dict[str, Any]]:
+        def fetch_without_3(ids: Set[int], db_manager: Any = None) -> List[Dict[str, Any]]:
             """Document 3 was deleted."""
             return [paper_row(i) for i in sorted(ids) if i != 3]
 
@@ -1373,6 +1374,20 @@ class TestComponentWiring:
         assert isinstance(components.quality_assessor, QualityAssessor)
         assert isinstance(components.composite_scorer, CompositeScorer)
         assert isinstance(components.reporter, Reporter)
+
+    def test_results_cache_uses_the_agent_database(self) -> None:
+        """Quality results are cached in the agent's database, not the default one."""
+        config = make_config()
+        config.use_results_cache = True
+        agent = make_agent(FakeEvaluationStore(), FakeWorkers(), config=config)
+        agent._criteria = make_criteria()
+        agent._weights = agent.config.scoring_weights
+
+        components = SystematicReviewAgent._build_pipeline_components(agent)
+
+        cache = components.quality_assessor._cache_manager
+        assert cache is not None
+        assert cache.db_manager is agent._db_manager
 
     def test_search_executor_uses_the_agent_database(self) -> None:
         """Search runs against the agent's database, not the default one."""

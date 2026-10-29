@@ -1265,6 +1265,7 @@ class ReviewPipelineMixin(ReviewHost):
                 config=self.config,
                 callback=self.callback,
                 orchestrator=self.orchestrator,
+                db_manager=self._db_manager,
             ),
             composite_scorer=CompositeScorer(weights=weights),
             reporter=Reporter(

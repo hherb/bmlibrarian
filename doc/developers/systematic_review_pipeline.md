@@ -76,6 +76,16 @@ stage builds its own `SearchExecutor` with `_build_search_executor()` (using
 the agent's `db_manager`). Tests replace both methods to inject fakes, and
 call the real ones in a wiring smoke test.
 
+Every read of the review's own data uses the agent's `db_manager`, never the
+global `get_db_manager()`: searches and paper fetches pass it as `db_manager=`
+to `find_abstracts`, `search_with_semantic`, `search_hybrid`, `hyde_search`
+and `fetch_documents_by_ids` (which default to the global manager when it is
+None), and `QualityAssessor` hands it to `ResultsCacheManager`. Before #285 a
+review built for one database searched the default `.env`'s. A search that
+missed it would be worse than before: its document IDs, which differ between
+databases, are fetched from the agent's. The paper-weight sub-agent
+(`paper_weight/db.py`) still uses the global manager → #366.
+
 ## Failed evaluations are never saved
 
 Because later stages read papers back from the store, what is saved decides

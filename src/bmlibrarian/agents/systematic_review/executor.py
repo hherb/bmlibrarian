@@ -747,6 +747,7 @@ class SearchExecutor:
                 search_text=query.query_text,
                 threshold=self.similarity_threshold,
                 max_results=self.results_per_query,
+                db_manager=self._db_manager,
             ))
 
             # Filter by source if specified
@@ -800,6 +801,7 @@ class SearchExecutor:
                 use_medrxiv=use_medrxiv,
                 use_others=use_others,
                 plain=False,  # Use to_tsquery format
+                db_manager=self._db_manager,
             ))
 
             document_ids = {r.get('id') for r in results if r.get('id')}
@@ -841,6 +843,7 @@ class SearchExecutor:
                 use_pubmed=use_pubmed,
                 use_medrxiv=use_medrxiv,
                 use_others=use_others,
+                db_manager=self._db_manager,
             )
 
             # Limit results
@@ -883,6 +886,7 @@ class SearchExecutor:
                 max_results=self.results_per_query,
                 num_hypothetical_docs=3,
                 similarity_threshold=self.similarity_threshold,
+                db_manager=self._db_manager,
             )
 
             document_ids = {r.get('id') for r in results if r.get('id')}
@@ -975,7 +979,7 @@ class SearchExecutor:
         try:
             from bmlibrarian.database import fetch_documents_by_ids
 
-            documents = fetch_documents_by_ids(document_ids)
+            documents = fetch_documents_by_ids(document_ids, db_manager=self._db_manager)
 
             papers = []
             for doc in documents:

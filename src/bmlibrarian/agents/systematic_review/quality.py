@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..pico_agent import PICOAgent
     from ..prisma2020_agent import PRISMA2020Agent
     from ..orchestrator import AgentOrchestrator
+    from ...database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,7 @@ class QualityAssessor:
         config: Optional[SystematicReviewConfig] = None,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
+        db_manager: Optional["DatabaseManager"] = None,
     ) -> None:
         """
         Initialize the QualityAssessor.
@@ -180,6 +182,8 @@ class QualityAssessor:
             config: Optional configuration
             callback: Optional progress callback
             orchestrator: Optional orchestrator for queue-based processing
+            db_manager: Database holding the results cache (default: the
+                global manager)
         """
         self.callback = callback
         self.orchestrator = orchestrator
@@ -191,7 +195,7 @@ class QualityAssessor:
         self._cache_manager: Optional[ResultsCacheManager] = None
         if self._config.use_results_cache:
             try:
-                self._cache_manager = ResultsCacheManager()
+                self._cache_manager = ResultsCacheManager(db_manager)
                 logger.info("Results cache manager initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize cache manager: {e}. Proceeding without cache.")

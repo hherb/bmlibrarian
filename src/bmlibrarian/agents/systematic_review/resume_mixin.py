@@ -557,7 +557,7 @@ class CheckpointResumeMixin(ReviewPipelineMixin):
         from bmlibrarian.database import fetch_documents_by_ids
 
         papers: List[PaperData] = []
-        for doc in fetch_documents_by_ids(set(document_ids)):
+        for doc in fetch_documents_by_ids(set(document_ids), db_manager=self._db_manager):
             try:
                 papers.append(PaperData.from_database_row(doc))
             except _MALFORMED_DATA_ERRORS as e:

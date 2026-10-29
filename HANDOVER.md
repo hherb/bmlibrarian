@@ -10,6 +10,18 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Systematic review reads the agent's database** (2026-10-29, closes
+  #285). `find_abstracts`, `fetch_documents_by_ids`, `search_with_semantic`,
+  `search_with_bm25`, `search_with_fulltext_function`, `search_hybrid`,
+  `search_by_embedding` and `hyde_search` take an optional `db_manager`
+  (None → global `get_db_manager()`; source ids are resolved through the
+  same manager). `SearchExecutor` (all query types incl. HyDE), the resume
+  path's `_fetch_papers` and `QualityAssessor`'s `ResultsCacheManager` pass
+  the agent's manager. The paper-weight sub-agent still uses the global
+  one → #366 (PRISMA's global calls are only on the semantic-search
+  variant, which a review doesn't call). Tests:
+  `tests/test_systematic_review_db_manager.py` (global manager made to
+  fail); the pipeline test's fetch fake asserts it gets a manager.
 - **Evaluation-run lifecycle tested against real SQL** (2026-10-29, closes
   #287). `tests/test_evaluation_run_lifecycle_db.py` (opt-in,
   `BMLIBRARIAN_TEST_DB_ENV`) walks a run failed → `reopen_run` → paused →
@@ -311,9 +323,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - #357 (unmarked pre-#349 paper-weight placeholders still served from the
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
-- Open bugs from recent slices: #285 (systematic-review agent's
-  `db_manager` ignored by fetches/searches/results cache), #274 (the
-  "failure looks like a result" pattern in TransparencyAgent).
+- Open bugs from recent slices: #274 (the "failure looks like a result"
+  pattern in TransparencyAgent), #366 (the paper-weight sub-agent uses the
+  global `db_manager` inside a systematic review).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -358,7 +370,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-29
-  (#287 branch): **4551 passed, 50 skipped** in ~8 min. Without
+  (#285 branch): **4567 passed, 50 skipped** in ~10 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
