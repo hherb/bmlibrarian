@@ -340,27 +340,29 @@ class DocumentResolver:
     def _search_local_by_pmid(self, pmid: str) -> Optional[Dict[str, Any]]:
         """Search local database for document by PMID."""
         try:
-            from bmlibrarian.database import get_db_manager
+            from bmlibrarian.database import extract_pmid, get_db_manager
             from psycopg.rows import dict_row
 
             db_manager = get_db_manager()
             with db_manager.get_connection() as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
-                    # PMID is stored in external_id field for PubMed source
+                    # Exact matches use idx_document_external_id; extract_pmid
+                    # rejects bare digits from non-PubMed sources.
+                    # shortcut: a marker embedded in a longer external_id
+                    # ("10.1/x; PMID:1") is not found; none exist (2026-10-29),
+                    # and a pattern match would scan the whole table.
                     cur.execute(
                         """
                         SELECT d.*, s.name as source_name
                         FROM document d
                         LEFT JOIN sources s ON d.source_id = s.id
-                        WHERE d.external_id = %s
-                           OR d.external_id LIKE %s
-                        LIMIT 1
+                        WHERE d.external_id = ANY(%s)
                         """,
-                        (pmid, f'%pmid:{pmid}%')
+                        ([pmid, f"PMID:{pmid}"],)
                     )
-                    row = cur.fetchone()
-                    if row:
-                        return self._db_row_to_doc(dict(row))
+                    for row in cur.fetchall():
+                        if extract_pmid(row['external_id'], row['source_name']) == pmid:
+                            return self._db_row_to_doc(dict(row))
             return None
         except Exception as e:
             logger.warning(f"Error searching local database by PMID: {e}")
@@ -368,16 +370,9 @@ class DocumentResolver:
 
     def _db_row_to_doc(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Convert database row to standardized document dict."""
-        # Extract PMID from external_id
-        pmid = None
-        external_id = row.get('external_id', '')
-        if external_id:
-            if external_id.isdigit():
-                pmid = external_id
-            elif 'pmid:' in external_id.lower():
-                match = re.search(r'pmid:(\d+)', external_id.lower())
-                if match:
-                    pmid = match.group(1)
+        from bmlibrarian.database import extract_pmid
+
+        pmid = extract_pmid(row.get('external_id'), row.get('source_name'))
 
         # Parse authors from array or string
         authors = row.get('authors', [])
@@ -726,18 +721,25 @@ class DocumentResolver:
                     )
                     source_id = cur.fetchone()[0]
 
-                # Generate external_id from DOI, PMID, or hash of content
-                external_id = doc.get('doi') or doc.get('pmid')
+                # Generate external_id from DOI, PMID, or hash of content.
+                # A PMID gets the "PMID:" marker: extract_pmid only reads bare
+                # digits as a PMID for PubMed sources (#361).
+                pmid = doc.get('pmid')
+                external_id = doc.get('doi') or (f"PMID:{pmid}" if pmid else None)
                 if not external_id:
                     # Generate unique ID from content hash
                     import hashlib
                     content = (doc.get('title', '') + doc.get('abstract', '')).encode('utf-8')
                     external_id = f"pr_{hashlib.sha256(content).hexdigest()[:16]}"
 
-                # Check if already exists by external_id
+                # Check if already exists by external_id (rows stored before
+                # #361 hold a bare PMID)
+                candidates = [external_id]
+                if not doc.get('doi') and pmid:
+                    candidates.append(str(pmid))
                 cur.execute(
-                    "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
-                    (source_id, external_id)
+                    "SELECT id FROM document WHERE source_id = %s AND external_id = ANY(%s)",
+                    (source_id, candidates)
                 )
                 existing = cur.fetchone()
                 if existing:
