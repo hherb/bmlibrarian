@@ -4,7 +4,6 @@
 document imported under the `paper_reviewer` source must carry the marker.
 """
 
-import re
 from contextlib import contextmanager
 from typing import Any, List, Optional, Tuple
 
@@ -23,6 +22,7 @@ class _FakeDbManager:
     def __init__(self, existing_id: Optional[int] = None) -> None:
         """Set the id the "already exists" check returns (None: not found)."""
         self.existing_id = existing_id
+        self.lookup_rows: List[dict] = []
         self.executed: List[Tuple[str, Any]] = []
 
     @contextmanager
@@ -69,6 +69,10 @@ class _FakeCursor:
         if "FROM document" in self.last_sql:
             return (self.manager.existing_id,) if self.manager.existing_id else None
         return None
+
+    def fetchall(self) -> List[dict]:
+        """Return the rows the PMID lookup finds."""
+        return self.manager.lookup_rows
 
 
 @pytest.fixture
@@ -117,23 +121,39 @@ def test_doi_stays_external_id(fake_db: _FakeDbManager) -> None:
     assert _exists_params(fake_db) == (SOURCE_ID, ["10.1/x"])
 
 
-@pytest.mark.parametrize("external_id, matches", [
-    ("PMID:12345", True),
-    ("pmid: 12345", True),
-    ("10.1/x; PMID:12345", True),
-    ("PMID:123456", False),
-    ("PMID:1234", False),
+def test_local_pmid_lookup_uses_exact_indexed_match(fake_db: _FakeDbManager) -> None:
+    """The lookup matches bare and marked PMIDs exactly, without a table scan."""
+    fake_db.lookup_rows = [{'external_id': 'PMID:12345', 'source_name': 'paper_reviewer'}]
+
+    doc = DocumentResolver()._search_local_by_pmid("12345")
+
+    sql, params = fake_db.executed[0]
+    assert "external_id = ANY" in sql and "~" not in sql
+    assert params == (["12345", "PMID:12345"],)
+    assert doc['pmid'] == "12345"
+
+
+def test_local_pmid_lookup_skips_bare_digits_from_other_sources(fake_db: _FakeDbManager) -> None:
+    """A numeric external_id outside PubMed is not taken for the PMID."""
+    fake_db.lookup_rows = [
+        {'external_id': '12345', 'source_name': 'medrxiv'},
+        {'external_id': '12345', 'source_name': 'pubmed', 'title': 'Hit'},
+    ]
+    assert DocumentResolver()._search_local_by_pmid("12345")['title'] == 'Hit'
+
+    fake_db.lookup_rows = fake_db.lookup_rows[:1]
+    assert DocumentResolver()._search_local_by_pmid("12345") is None
+
+
+@pytest.mark.parametrize("external_id, source_name, expected", [
+    ("12345", "pubmed", "12345"),
+    ("12345", "medrxiv", None),
+    ("PMID: 12345", "paper_reviewer", "12345"),
+    ("10.1/x", "paper_reviewer", None),
 ])
-def test_local_pmid_lookup_pattern(
-    monkeypatch: pytest.MonkeyPatch, external_id: str, matches: bool
+def test_db_row_to_doc_derives_pmid_with_extract_pmid(
+    external_id: str, source_name: str, expected: Optional[str]
 ) -> None:
-    """The lookup matches the exact marker, case-insensitively (POSIX ~* semantics)."""
-    db = _FakeDbManager()
-    monkeypatch.setattr("bmlibrarian.database.get_db_manager", lambda: db)
-
-    DocumentResolver()._search_local_by_pmid("12345")
-
-    sql, params = db.executed[0]
-    assert "~*" in sql
-    assert params[0] == "12345"
-    assert bool(re.search(params[1], external_id, re.IGNORECASE)) is matches
+    """Rows are labelled with a PMID exactly as extract_pmid would."""
+    row = {'external_id': external_id, 'source_name': source_name}
+    assert DocumentResolver()._db_row_to_doc(row)['pmid'] == expected
