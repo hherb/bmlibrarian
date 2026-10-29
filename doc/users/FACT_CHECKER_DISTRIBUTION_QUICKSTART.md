@@ -21,6 +21,11 @@ python export_review_package.py --output review_package_2024.db --exported-by yo
 - Document metadata (titles, PMIDs, DOIs)
 - NO human annotations from other reviewers
 
+**Older packages:** packages exported before 2026-10-29 carry no document
+source names, so the review GUI assumes PubMed is `source_id` 1 in the
+exporting database when showing PMIDs. If PubMed has a different id there,
+re-export the package, or PMIDs will be missing or wrong.
+
 **Output:** Single `.db` file (typically 100-500 MB for 1000 statements)
 
 ---

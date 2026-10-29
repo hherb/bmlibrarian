@@ -484,9 +484,10 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         Get full display metadata for a document from the review package.
 
         Returns the subset of ``bmlibrarian.database.get_document_details``'s
-        keys that a review package can supply (no keywords, mesh_terms or full
-        text; ``authors`` is not truncated). The PMID is derived from the
-        exported ``source_name`` (see ``_source_name`` for older packages).
+        keys that a review package can supply (no full_text, has_full_text,
+        keywords or mesh_terms; ``authors`` is not truncated). The PMID is
+        derived from the exported ``source_name`` (see ``_source_name`` for
+        older packages, whose ``source_name`` is None).
         Packages carry no PDF files, so ``pdf_filename`` is always None.
 
         Args:

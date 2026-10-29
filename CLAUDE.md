@@ -936,7 +936,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 **Documentation**:
 - Quick Start Guide: `doc/users/FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`
-- Implementation Plan: `doc/developers/FACT_CHECKER_DISTRIBUTION_PLAN.md`
+- Implementation Plan: `doc/planning/fact_checker/FACT_CHECKER_DISTRIBUTION_PLAN.md`
 - User Guide: `doc/users/fact_checker_distribution_guide.md` (if exists)
 
 **Architecture**:

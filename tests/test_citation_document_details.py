@@ -9,6 +9,7 @@ a non-existent SQLite ``pdf_filename`` column and labelled every
 
 import importlib.util
 import sqlite3
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -80,7 +81,7 @@ class TestSqliteHelpers:
 
 @pytest.fixture
 def review_db(tmp_path):
-    """A review-package SQLite DB with one PubMed and one medRxiv document.
+    """A review-package SQLite DB with PubMed, medRxiv and unmatched-source documents.
 
     PubMed is deliberately not source_id 1: the exported source name decides.
     """
@@ -96,6 +97,9 @@ def review_db(tmp_path):
              "Abstract A", '["Smith J", "Doe A"]', "J Med", "2021-03-04", None, None),
             (2, PUBMED_SOURCE_ID, "medRxiv", "22222222", "10.1101/b", "Preprint",
              "Abstract B", '["Roe R"]', "medRxiv", "2022-01-01", None, "https://x/b.pdf"),
+            # Exported with no matching sources row (LEFT JOIN gave NULL)
+            (3, PUBMED_SOURCE_ID, None, "33333333", None, "Orphan", None, None, None,
+             None, None, None),
         ],
     )
     conn.commit()
@@ -152,6 +156,11 @@ class TestSqliteGetDocumentDetails:
         assert review_db.get_document_metadata(1)['pmid'] == "PMID:11111111"
         assert review_db.get_document_metadata(2)['pmid'] == ''
 
+    def test_null_source_name_has_no_pmid(self, review_db):
+        """In a new package a NULL source name means no PMID, not the id-1 guess."""
+        assert review_db.get_document_details(3)['pmid'] is None
+        assert review_db.get_document_metadata(3)['pmid'] == ''
+
     def test_legacy_package_assumes_pubmed_is_source_1(self, legacy_review_db):
         """Packages without source names keep the old id-1 convention."""
         assert legacy_review_db.get_document_details(1)['pmid'] == "11111111"
@@ -170,8 +179,8 @@ def test_export_script_writes_source_names(tmp_path):
     sqlite_conn = script.create_sqlite_database(db_file)
     pg_cursor = MagicMock()
     pg_cursor.fetchall.return_value = [
-        (101, OTHER_PUBMED_SOURCE_ID, "pubmed", "123", None, "t", "a", ["A B"],
-         None, None, None, None, None, None),
+        (101, OTHER_PUBMED_SOURCE_ID, "pubmed", "123", "10.1/x", "t", "a", ["A B"],
+         "J", date(2020, 5, 6), "https://x", "https://x.pdf", None, None),
     ]
     pg_db = MagicMock()
     pg_conn = pg_db.db_manager.get_connection.return_value.__enter__.return_value
@@ -183,9 +192,18 @@ def test_export_script_writes_source_names(tmp_path):
     assert "JOIN sources" in pg_cursor.execute.call_args.args[0]
     db = SQLiteFactCheckerDB(str(db_file))
     try:
-        assert db.get_document_details(101)['pmid'] == "123"
+        doc = db.get_document_details(101)
     finally:
         db.close()
+    # Both column lists were rewritten: check every exported field lands in place
+    assert doc['pmid'] == "123"
+    assert doc['source_id'] == OTHER_PUBMED_SOURCE_ID
+    assert doc['source_name'] == "pubmed"
+    assert doc['doi'] == "10.1/x"
+    assert (doc['title'], doc['abstract'], doc['authors_list']) == ("t", "a", ["A B"])
+    assert doc['journal'] == "J"
+    assert doc['publication_date'] == "2020-05-06"
+    assert (doc['url'], doc['pdf_url']) == ("https://x", "https://x.pdf")
 
 
 class TestCitationEnrichment:

@@ -292,7 +292,9 @@ value — pick one, or pull an item from ROADMAP.md:
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
-  #361 (paper reviewer's bare-PMID `external_id`; mind its dedup check).
+  #361 (paper reviewer's bare-PMID `external_id`; mind its dedup check),
+  #363 (PostgreSQL fact-checker `get_document_metadata` should use
+  `extract_pmid` like the SQLite backend).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
