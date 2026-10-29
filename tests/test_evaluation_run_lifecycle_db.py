@@ -3,8 +3,9 @@ Integration test of the EvaluationStore run lifecycle against real SQL (#287).
 
 Opt-in: set BMLIBRARIAN_TEST_DB_ENV to an env file for a *development* database
 with the BMLibrarian schema (e.g. ~/.bmlibrarian/.env_pg18_dev). Refuses any
-database the test guard protects. The test deletes the run it creates (its
-evaluations go with it, ON DELETE CASCADE).
+database the test guard protects. Pending migrations are applied to that
+database (auto_migrate). The tests delete the runs they create (their
+evaluations go with them, ON DELETE CASCADE).
 """
 
 import os
@@ -22,6 +23,9 @@ pytestmark = pytest.mark.requires_database
 TEST_DB_ENV_VARIABLE = "BMLIBRARIAN_TEST_DB_ENV"
 TEST_QUESTION = "bmlibrarian test #287: evaluation run lifecycle"
 TEST_DOCUMENT_ID = 990000287
+CONNECTION_DEFAULTS = {"POSTGRES_HOST": "localhost", "POSTGRES_PORT": "5432"}
+# run_id is a BIGSERIAL starting at 1, so no run can have this id
+NONEXISTENT_RUN_ID = -1
 
 
 @pytest.fixture
@@ -34,7 +38,11 @@ def store(monkeypatch: pytest.MonkeyPatch) -> Iterator[EvaluationStore]:
     if is_protected_database(cfg.get("POSTGRES_DB")):
         pytest.fail(f"refusing to run against {cfg.get('POSTGRES_DB')!r}")
     for key in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"):
-        monkeypatch.setenv(key, cfg[key])
+        value = cfg.get(key) or CONNECTION_DEFAULTS.get(key)
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
     from bmlibrarian.database import DatabaseManager
 
     db = DatabaseManager(auto_migrate=True)
@@ -65,6 +73,9 @@ def test_run_lifecycle_failed_reopened_paused_completed(store: EvaluationStore) 
     assert failed.completed_at is not None
     assert failed.error_message == "LLM unreachable"
 
+    store.resume_run(run.run_id)  # resumes paused runs only
+    assert store.get_run(run.run_id) == failed
+
     reopened = store.reopen_run(run.run_id)
     assert reopened is not None
     assert reopened.run_id == run.run_id
@@ -90,8 +101,7 @@ def test_run_lifecycle_failed_reopened_paused_completed(store: EvaluationStore) 
 
 def test_reopen_unknown_run_returns_none(store: EvaluationStore) -> None:
     """Reopening a run id that does not exist returns None."""
-    run = store.create_run(RunType.SYSTEMATIC_REVIEW, TEST_QUESTION)
-    assert store.reopen_run(run.run_id + 1_000_000) is None
+    assert store.reopen_run(NONEXISTENT_RUN_ID) is None
 
 
 def test_save_evaluation_overwrites_same_run_document_and_type(store: EvaluationStore) -> None:

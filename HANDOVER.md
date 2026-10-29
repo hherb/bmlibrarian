@@ -312,7 +312,8 @@ value — pick one, or pull an item from ROADMAP.md:
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285 (systematic-review agent's
-  `db_manager` ignored by fetches/searches/results cache), #274 (the "failure looks like a result" pattern in TransparencyAgent).
+  `db_manager` ignored by fetches/searches/results cache), #274 (the
+  "failure looks like a result" pattern in TransparencyAgent).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
