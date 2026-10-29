@@ -268,11 +268,12 @@ def export_documents(pg_db: FactCheckerDB, sqlite_conn: sqlite3.Connection, docu
             # Query documents from public.document table
             pg_cursor.execute("""
                 SELECT
-                    id, source_id, external_id, doi, title, abstract,
-                    authors, publication, publication_date, url, pdf_url,
-                    added_date, updated_date
-                FROM document
-                WHERE id = ANY(%s)
+                    d.id, d.source_id, s.name, d.external_id, d.doi, d.title,
+                    d.abstract, d.authors, d.publication, d.publication_date,
+                    d.url, d.pdf_url, d.added_date, d.updated_date
+                FROM document d
+                LEFT JOIN sources s ON s.id = d.source_id
+                WHERE d.id = ANY(%s)
             """, (list(document_ids),))
 
             document_rows = pg_cursor.fetchall()
@@ -285,8 +286,8 @@ def export_documents(pg_db: FactCheckerDB, sqlite_conn: sqlite3.Connection, docu
             document_count = 0
 
             for row in document_rows:
-                (doc_id, source_id, external_id, doi, title, abstract,
-                 authors, publication, pub_date, url, pdf_url,
+                (doc_id, source_id, source_name, external_id, doi, title,
+                 abstract, authors, publication, pub_date, url, pdf_url,
                  added_date, updated_date) = row
 
                 # Convert authors array to JSON string
@@ -294,11 +295,12 @@ def export_documents(pg_db: FactCheckerDB, sqlite_conn: sqlite3.Connection, docu
 
                 sqlite_cursor.execute("""
                     INSERT OR IGNORE INTO documents (
-                        id, source_id, external_id, doi, title, abstract, authors,
-                        publication, publication_date, url, pdf_url, added_date, updated_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, source_id, source_name, external_id, doi, title, abstract,
+                        authors, publication, publication_date, url, pdf_url,
+                        added_date, updated_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    doc_id, source_id, external_id, doi, title, abstract, authors_json,
+                    doc_id, source_id, source_name, external_id, doi, title, abstract, authors_json,
                     publication,
                     pub_date.isoformat() if pub_date else None,
                     url, pdf_url,

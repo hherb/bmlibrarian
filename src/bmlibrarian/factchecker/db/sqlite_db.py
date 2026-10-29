@@ -22,11 +22,11 @@ from .abstract_db import (
 
 logger = logging.getLogger(__name__)
 
-# PubMed's sources.id in the exporting PostgreSQL database. The exporter
-# copies source_id verbatim and packages carry no sources table, so this
-# assumes PubMed is id 1 there (true for setup-wizard-seeded databases).
+# Packages exported before #280 carry no documents.source_name, only the
+# exporting database's source_id; for those, PubMed is assumed to be id 1
+# (true for setup-wizard-seeded databases).
 PUBMED_SOURCE_ID = 1
-# Source name passed to extract_pmid for documents with PUBMED_SOURCE_ID
+# Source name assumed for PUBMED_SOURCE_ID documents in such older packages
 PUBMED_SOURCE_NAME = "pubmed"
 # Length of the year prefix in an ISO 8601 date ("YYYY-MM-DD")
 ISO_YEAR_LENGTH = 4
@@ -110,6 +110,13 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         if not self._has_widened_from:
             logger.info(
                 "Review package predates migration 035: widened passages are not marked"
+            )
+        # Packages exported before #280 have no documents.source_name.
+        self._has_source_name = self._has_column("documents", "source_name")
+        if not self._has_source_name:
+            logger.info(
+                "Review package has no document source names: PMIDs assume "
+                "PubMed is source_id %d", PUBMED_SOURCE_ID
             )
 
     def get_all_statements_with_evaluations(self) -> List[Dict[str, Any]]:
@@ -208,6 +215,26 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         """
         rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
         return any(row[1] == column for row in rows)
+
+    def _source_name(self, row: sqlite3.Row) -> Optional[str]:
+        """
+        Source name of a ``documents`` row, for ``extract_pmid``.
+
+        Args:
+            row: A ``documents`` row selected with ``self._source_name_column()``
+                and ``source_id``.
+
+        Returns:
+            The exported source name; for older packages without one,
+            PUBMED_SOURCE_NAME if ``source_id`` is PUBMED_SOURCE_ID, else None.
+        """
+        if self._has_source_name:
+            return row['source_name']
+        return PUBMED_SOURCE_NAME if row['source_id'] == PUBMED_SOURCE_ID else None
+
+    def _source_name_column(self) -> str:
+        """SELECT expression for ``documents.source_name`` (NULL in older packages)."""
+        return "source_name" if self._has_source_name else "NULL AS source_name"
 
     def _get_evidence_for_evaluation(self, evaluation_id: int) -> List[Dict[str, Any]]:
         """Get evidence for an AI evaluation."""
@@ -457,11 +484,11 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         Get full display metadata for a document from the review package.
 
         Returns the subset of ``bmlibrarian.database.get_document_details``'s
-        keys that a review package can supply (no source_name, keywords,
-        mesh_terms or full text; ``authors`` is not truncated). Review
-        packages carry no ``sources`` table or PDF files, so the PMID uses the
-        exporter's PubMed ``source_id`` convention (as
-        ``get_document_metadata`` does) and ``pdf_filename`` is always None.
+        keys that a review package can supply (no full_text, has_full_text,
+        keywords or mesh_terms; ``authors`` is not truncated). The PMID is
+        derived from the exported ``source_name`` (see ``_source_name`` for
+        older packages, whose ``source_name`` is None).
+        Packages carry no PDF files, so ``pdf_filename`` is always None.
 
         Args:
             document_id: Document ID
@@ -470,9 +497,10 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             Document details dictionary or None if not found
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT id, source_id, external_id, doi, title, abstract, authors,
-                   publication, publication_date, url, pdf_url
+        cursor.execute(f"""
+            SELECT id, source_id, {self._source_name_column()}, external_id, doi,
+                   title, abstract, authors, publication, publication_date, url,
+                   pdf_url
             FROM documents
             WHERE id = ?
         """, (document_id,))
@@ -492,12 +520,10 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             'year': year_from_iso_date(row['publication_date']),
             'publication_date': row['publication_date'],
             'doi': row['doi'],
-            'pmid': extract_pmid(
-                external_id,
-                PUBMED_SOURCE_NAME if row['source_id'] == PUBMED_SOURCE_ID else None,
-            ),
+            'pmid': extract_pmid(external_id, self._source_name(row)),
             'external_id': external_id,
             'source_id': row['source_id'],
+            'source_name': row['source_name'],
             'url': row['url'],
             'pdf_url': row['pdf_url'],
             'pdf_filename': None,
@@ -514,16 +540,15 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             Dictionary with document metadata or None if not found
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT id, title, external_id, doi, source_id
+        cursor.execute(f"""
+            SELECT id, title, external_id, doi, source_id, {self._source_name_column()}
             FROM documents
             WHERE id = ?
         """, (document_id,))
 
         result = cursor.fetchone()
         if result:
-            # For PubMed (source_id=1), external_id is the PMID
-            pmid = result['external_id'] if result['source_id'] == PUBMED_SOURCE_ID else None
+            pmid = extract_pmid(result['external_id'], self._source_name(result))
             return {
                 'id': result['id'],
                 'title': result['title'],

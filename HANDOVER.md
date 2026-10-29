@@ -10,6 +10,17 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Review packages carry source names** (2026-10-29, closes #280).
+  `export_review_package.py` joins `sources` and stores `sources.name` in the
+  package's new `documents.source_name` column (`sqlite_schema.sql`);
+  `SQLiteFactCheckerDB.get_document_details` / `get_document_metadata` derive
+  the PMID with `extract_pmid(external_id, source_name)` (metadata also honours
+  `PMID:` markers now) and `get_document_details` returns `source_name`.
+  Packages exported before this have no column and keep the old guess
+  (`PUBMED_SOURCE_ID = 1`, logged on open). Docs:
+  `document_fetching_system.md` "PMID Extraction". Tests:
+  `tests/test_citation_document_details.py`. Side note split out as #361
+  (paper reviewer stores a bare PMID as `external_id`).
 - **PMID lookups use the database's PubMed source id** (2026-10-28, closes
   #344). `pmid_select_expr()` and `pubmed_source_id(db_manager)` moved from
   `agents/paper_weight/db.py` into `bmlibrarian.database` (public; the
@@ -20,9 +31,8 @@ off new work. Longer-term structural items live in
   `pdf_verification_gui.py` (their `PUBMED_SOURCE_ID = 1` is gone). The
   systematic-review source filter (`SearchExecutor._filter_results_by_source`)
   classifies by `source_name` only (it also treated ids 1/2 as
-  PubMed/medRxiv; a NULL `source_name` no longer crashes it). Left as is:
-  `factchecker/db/sqlite_db.PUBMED_SOURCE_ID`, the review package's own
-  schema (#280). Docs: `document_fetching_system.md` "PMID Extraction".
+  PubMed/medRxiv; a NULL `source_name` no longer crashes it). Review
+  packages: entry above (#280). Docs: `document_fetching_system.md` "PMID Extraction".
   Tests: `tests/test_pubmed_source_id_sites.py`. Review follow-ups fixed in
   the same PR: the citation editor's keyword search selected a nonexistent
   `d.journal` (now `d.publication AS journal`; every keyword search had
@@ -282,7 +292,9 @@ value — pick one, or pull an item from ROADMAP.md:
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
   #274 (the "failure looks like a result" pattern in TransparencyAgent),
-  #280 (SQLite review packages assume PubMed is source 1).
+  #361 (paper reviewer's bare-PMID `external_id`; mind its dedup check),
+  #363 (PostgreSQL fact-checker `get_document_metadata` should use
+  `extract_pmid` like the SQLite backend).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -326,8 +338,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-28
-  (#344 branch): **4537 passed, 47 skipped** in ~9 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-29
+  (#280 branch): **4541 passed, 47 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

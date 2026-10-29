@@ -47,6 +47,8 @@ This function fetches comprehensive document details by database ID and returns 
 
    Code that must select a PMID in its own SQL uses `pmid_select_expr(alias)` (a `CASE` expression with one `%s` placeholder) bound to `pubmed_source_id(db_manager)`. Never assume PubMed is `sources.id = 1`: the id depends on insertion order and differs between databases (#344). An unknown PubMed id binds as NULL, so no row is labelled a PMID.
 
+   SQLite fact-checker review packages (`scripts/export_review_package.py`) store each document's `sources.name` in `documents.source_name`, and `SQLiteFactCheckerDB` passes it to `extract_pmid` (#280). Packages exported before that column existed fall back to assuming PubMed is `source_id` 1.
+
    `fetch_document_details(document_id, db_manager=None)` returns the same dictionary but raises on database errors, for callers that must tell a missing document from an unreachable database (e.g. the fact-checker's citation enrichment). `get_document_details` logs the error and returns None.
 
 3. **Date Conversion**: `publication_date` is converted to ISO string format.

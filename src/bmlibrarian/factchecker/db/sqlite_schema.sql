@@ -106,6 +106,7 @@ CREATE INDEX idx_ai_eval_matches ON ai_evaluations(matches_expected) WHERE match
 CREATE TABLE documents (
     id INTEGER PRIMARY KEY,  -- Preserved from PostgreSQL document.id
     source_id INTEGER,
+    source_name TEXT,  -- sources.name in the exporting database (NULL if unmatched); decides whether external_id is a PMID
     external_id TEXT NOT NULL,  -- PMID for PubMed, etc.
     doi TEXT,
     title TEXT,
