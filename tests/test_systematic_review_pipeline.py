@@ -1375,6 +1375,20 @@ class TestComponentWiring:
         assert isinstance(components.composite_scorer, CompositeScorer)
         assert isinstance(components.reporter, Reporter)
 
+    def test_results_cache_uses_the_agent_database(self) -> None:
+        """Quality results are cached in the agent's database, not the default one."""
+        config = make_config()
+        config.use_results_cache = True
+        agent = make_agent(FakeEvaluationStore(), FakeWorkers(), config=config)
+        agent._criteria = make_criteria()
+        agent._weights = agent.config.scoring_weights
+
+        components = SystematicReviewAgent._build_pipeline_components(agent)
+
+        cache = components.quality_assessor._cache_manager
+        assert cache is not None
+        assert cache.db_manager is agent._db_manager
+
     def test_search_executor_uses_the_agent_database(self) -> None:
         """Search runs against the agent's database, not the default one."""
         agent = make_agent(FakeEvaluationStore(), FakeWorkers())

@@ -979,7 +979,8 @@ def fetch_documents_by_ids(
 def search_by_embedding(
     embedding: List[float],
     max_results: int = 100,
-    model_id: int = 1
+    model_id: int = 1,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search for documents using vector similarity (cosine distance).
@@ -991,6 +992,8 @@ def search_by_embedding(
         embedding: The query embedding vector (list of floats)
         max_results: Maximum number of documents to return (default: 100)
         model_id: Embedding model ID in emb_1024 table (default: 1)
+        db_manager: Database to search (default: the global manager from
+            ``get_db_manager()``)
 
     Returns:
         List of document dictionaries with keys:
@@ -1004,7 +1007,7 @@ def search_by_embedding(
         >>> for doc in results:
         ...     print(f"{doc['title']}: {doc['similarity']:.3f}")
     """
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     # Query using pgvector cosine distance
     # <=> operator returns cosine distance (0 = identical, 2 = opposite)

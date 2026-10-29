@@ -8,7 +8,7 @@ These tests pass a manager explicitly and make the global one fail, so any
 path that still falls back to it shows up.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, Iterator, List
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,6 +77,25 @@ class TestDatabaseHelpersUseGivenManager:
             .cursor.return_value.__enter__.return_value
         assert 7 in cursor.execute.call_args.args[1]  # PubMed only
 
+    @pytest.mark.parametrize("search", [
+        lambda m: database.search_with_semantic("statin", db_manager=m),
+        lambda m: database.search_with_bm25(
+            "statin", use_medrxiv=False, use_others=False, db_manager=m
+        ),
+        lambda m: database.search_with_fulltext_function(
+            "statin", use_medrxiv=False, use_others=False, db_manager=m
+        ),
+        lambda m: iter(database.search_by_embedding([0.1], db_manager=m)),
+    ], ids=["semantic", "bm25", "fulltext", "embedding"])
+    def test_search_queries_given_manager(
+        self, search: Callable[[MagicMock], Iterator[Dict[str, Any]]],
+        no_global_manager: None,
+    ) -> None:
+        """Each search strategy runs its SQL on the given manager."""
+        manager = make_manager([])
+        list(search(manager))
+        manager.get_connection.assert_called_once()
+
     @pytest.mark.parametrize("strategy", ["semantic", "bm25", "fulltext"])
     def test_search_hybrid_passes_manager_to_strategies(self, strategy: str) -> None:
         """Every strategy of a hybrid search gets the caller's manager."""
@@ -130,6 +149,20 @@ class TestSearchExecutorUsesAgentManager:
         with patch.object(database, "search_hybrid", return_value=([], {})) as fake:
             assert executor._execute_hybrid_query(
                 make_query(QueryType.HYBRID), True, True, True
+            ).success
+        assert fake.call_args.kwargs["db_manager"] is manager
+
+    def test_hyde(self, executor: SearchExecutor, manager: MagicMock) -> None:
+        """HyDE's vector search reads the agent's database (its ids are
+        fetched from there)."""
+        with patch(
+            "bmlibrarian.agents.utils.hyde_search.generate_hypothetical_documents",
+            return_value=["doc"],
+        ), patch(
+            "bmlibrarian.agents.utils.hyde_search.embed_documents", return_value=[[0.1]]
+        ), patch.object(database, "search_by_embedding", return_value=[]) as fake:
+            assert executor._execute_hyde_query(
+                make_query(QueryType.HYDE), True, True, True
             ).success
         assert fake.call_args.kwargs["db_manager"] is manager
 

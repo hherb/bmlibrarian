@@ -886,6 +886,7 @@ class SearchExecutor:
                 max_results=self.results_per_query,
                 num_hypothetical_docs=3,
                 similarity_threshold=self.similarity_threshold,
+                db_manager=self._db_manager,
             )
 
             document_ids = {r.get('id') for r in results if r.get('id')}
