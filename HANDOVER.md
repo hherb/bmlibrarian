@@ -10,6 +10,13 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Evaluation-run lifecycle tested against real SQL** (2026-10-29, closes
+  #287). `tests/test_evaluation_run_lifecycle_db.py` (opt-in,
+  `BMLIBRARIAN_TEST_DB_ENV`) walks a run failed → `reopen_run` → paused →
+  resumed → completed, checking `get_run` each step, and checks that
+  `save_evaluation` overwrites the same run/document/type. #286 (pre-#284
+  failure placeholders in saved runs) closed as moot: a read-only check found
+  none in `knowledgebase` or `bmlibrarian_dev`.
 - **PMID parity: PostgreSQL fact-checker and paper reviewer** (2026-10-29,
   closes #363, #361). `PostgreSQLFactCheckerDB.get_document_metadata` joins
   `sources` and uses `extract_pmid` (was `pmid_select_expr`), matching the
@@ -304,8 +311,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - #357 (unmarked pre-#349 paper-weight placeholders still served from the
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
-- Open bugs from recent slices: #285–#287 (systematic review follow-ups),
-  #274 (the "failure looks like a result" pattern in TransparencyAgent).
+- Open bugs from recent slices: #285 (systematic-review agent's
+  `db_manager` ignored by fetches/searches/results cache), #274 (the
+  "failure looks like a result" pattern in TransparencyAgent).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -350,7 +358,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-29
-  (#361/#363 branch): **4551 passed, 47 skipped** in ~9 min. Without
+  (#287 branch): **4551 passed, 50 skipped** in ~8 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
