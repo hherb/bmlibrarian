@@ -10,6 +10,17 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **PMID parity: PostgreSQL fact-checker and paper reviewer** (2026-10-29,
+  closes #363, #361). `PostgreSQLFactCheckerDB.get_document_metadata` joins
+  `sources` and uses `extract_pmid` (was `pmid_select_expr`), matching the
+  SQLite backend. `DocumentResolver.import_document` stores a PMID-only
+  paper as `PMID:<digits>` under the `paper_reviewer` source; its duplicate
+  check also matches bare-digit rows from before (`knowledgebase` has one
+  `paper_reviewer` row, none bare-digit, so no migration). Its local PMID
+  lookup matches the marker case-insensitively and exactly (`~*`; the old
+  `LIKE '%pmid:…%'` missed `PMID:` and matched `pmid:1234` for `123`).
+  Tests: `tests/test_paper_reviewer_resolver_pmid.py`,
+  `test_pubmed_source_id_sites.py`.
 - **Review packages carry source names** (2026-10-29, closes #280).
   `export_review_package.py` joins `sources` and stores `sources.name` in the
   package's new `documents.source_name` column (`sqlite_schema.sql`);
@@ -291,10 +302,7 @@ value — pick one, or pull an item from ROADMAP.md:
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #285–#287 (systematic review follow-ups),
-  #274 (the "failure looks like a result" pattern in TransparencyAgent),
-  #361 (paper reviewer's bare-PMID `external_id`; mind its dedup check),
-  #363 (PostgreSQL fact-checker `get_document_metadata` should use
-  `extract_pmid` like the SQLite backend).
+  #274 (the "failure looks like a result" pattern in TransparencyAgent).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -339,7 +347,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-29
-  (#280 branch): **4541 passed, 47 skipped** in ~9 min. Without
+  (#361/#363 branch): **4550 passed, 47 skipped** in ~9.5 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

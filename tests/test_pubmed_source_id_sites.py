@@ -142,23 +142,32 @@ def test_document_processor_maps_pmid_and_later_columns():
     )
 
 
-def test_fact_checker_document_metadata_binds_pubmed_source_id():
-    """The PostgreSQL fact-checker wrapper labels a PMID only for PubMed rows."""
+def test_fact_checker_document_metadata_uses_extract_pmid():
+    """The PostgreSQL fact-checker derives the PMID like the SQLite backend (#363)."""
     from bmlibrarian.factchecker.db.postgresql_db import PostgreSQLFactCheckerDB
 
-    db = _FakeDbManager((5, "Title", "12345", "10.1/x", "12345"))
+    db = _FakeDbManager((5, "Title", "12345", "10.1/x", "PubMed"))
     wrapper = PostgreSQLFactCheckerDB.__new__(PostgreSQLFactCheckerDB)
     wrapper.db = type('Inner', (), {'db_manager': db})()
 
     metadata = wrapper.get_document_metadata(5)
 
     sql, params = _first(db)
-    assert pmid_select_expr() in sql
-    assert params == (PUBMED_ID, 5)
+    assert "JOIN sources" in sql
+    assert params == (5,)
     assert metadata['pmid'] == "PMID:12345"
+    assert metadata['doi'] == "DOI:10.1/x"
 
-    db.row = (6, "Preprint", "10.1101/x", "10.1101/x", None)
-    assert PostgreSQLFactCheckerDB.get_document_metadata(wrapper, 6)['pmid'] == ''
+    cases = [
+        ("10.1101/x", "medRxiv", ''),          # non-PubMed DOI
+        ("12345", "medRxiv", ''),              # bare digits only count for PubMed
+        ("abc", "PubMed", ''),                 # non-numeric PubMed id is no PMID
+        ("PMID:777", "paper_reviewer", "PMID:777"),  # marker honoured for any source
+        ("12345", None, ''),                   # source row missing (LEFT JOIN)
+    ]
+    for external_id, source_name, expected in cases:
+        db.row = (6, "Doc", external_id, None, source_name)
+        assert wrapper.get_document_metadata(6)['pmid'] == expected, (external_id, source_name)
 
 
 def test_systematic_review_source_filter_uses_source_name_not_id():

@@ -353,10 +353,10 @@ class DocumentResolver:
                         FROM document d
                         LEFT JOIN sources s ON d.source_id = s.id
                         WHERE d.external_id = %s
-                           OR d.external_id LIKE %s
+                           OR d.external_id ~* %s
                         LIMIT 1
                         """,
-                        (pmid, f'%pmid:{pmid}%')
+                        (pmid, rf'pmid:\s*{re.escape(pmid)}([^0-9]|$)')
                     )
                     row = cur.fetchone()
                     if row:
@@ -726,18 +726,25 @@ class DocumentResolver:
                     )
                     source_id = cur.fetchone()[0]
 
-                # Generate external_id from DOI, PMID, or hash of content
-                external_id = doc.get('doi') or doc.get('pmid')
+                # Generate external_id from DOI, PMID, or hash of content.
+                # A PMID gets the "PMID:" marker: extract_pmid only reads bare
+                # digits as a PMID for PubMed sources (#361).
+                pmid = doc.get('pmid')
+                external_id = doc.get('doi') or (f"PMID:{pmid}" if pmid else None)
                 if not external_id:
                     # Generate unique ID from content hash
                     import hashlib
                     content = (doc.get('title', '') + doc.get('abstract', '')).encode('utf-8')
                     external_id = f"pr_{hashlib.sha256(content).hexdigest()[:16]}"
 
-                # Check if already exists by external_id
+                # Check if already exists by external_id (rows stored before
+                # #361 hold a bare PMID)
+                candidates = [external_id]
+                if not doc.get('doi') and pmid:
+                    candidates.append(str(pmid))
                 cur.execute(
-                    "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
-                    (source_id, external_id)
+                    "SELECT id FROM document WHERE source_id = %s AND external_id = ANY(%s)",
+                    (source_id, candidates)
                 )
                 existing = cur.fetchone()
                 if existing:
