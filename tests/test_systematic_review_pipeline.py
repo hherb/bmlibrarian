@@ -589,8 +589,9 @@ def fake_planner_and_database() -> Iterator[None]:
     planner = MagicMock()
     planner.generate_search_plan.return_value = make_plan()
 
-    def fetch(ids: Set[int]) -> List[Dict[str, Any]]:
-        """Every requested document exists."""
+    def fetch(ids: Set[int], db_manager: Any = None) -> List[Dict[str, Any]]:
+        """Every requested document exists (in the agent's database, #285)."""
+        assert db_manager is not None, "fetch fell back to the global db_manager"
         return [paper_row(i) for i in sorted(ids)]
 
     with patch("bmlibrarian.agents.systematic_review.planner.Planner", return_value=planner), \
@@ -1170,7 +1171,7 @@ class TestResume:
         store = FakeEvaluationStore()
         _, checkpoint = run_and_stop(tmp_path, store, CHECKPOINT_INITIAL_RESULTS)
 
-        def fetch_without_3(ids: Set[int]) -> List[Dict[str, Any]]:
+        def fetch_without_3(ids: Set[int], db_manager: Any = None) -> List[Dict[str, Any]]:
             """Document 3 was deleted."""
             return [paper_row(i) for i in sorted(ids) if i != 3]
 
