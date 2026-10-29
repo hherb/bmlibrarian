@@ -83,8 +83,17 @@ and `fetch_documents_by_ids` (which default to the global manager when it is
 None), and `QualityAssessor` hands it to `ResultsCacheManager`. Before #285 a
 review built for one database searched the default `.env`'s. A search that
 missed it would be worse than before: its document IDs, which differ between
-databases, are fetched from the agent's. The paper-weight sub-agent
-(`paper_weight/db.py`) still uses the global manager → #366.
+databases, are fetched from the agent's.
+
+`QualityAssessor` also hands it to `PaperWeightAssessmentAgent(db_manager=)`
+(#366), which passes it to every database step of `assess_paper`: the
+`paper_weights` cache and store (`get_cached_assessment`, `store_assessment`),
+`get_document`, `check_replication_status`, the chunk helpers in
+`validators.py`, and `ensure_document_embeddings` → `ChunkEmbedder(db_manager=)`
+(`assess_full_paper` also gives it to `PDFIngestor`). Each defaults to the
+global manager when it is None, so the Paper Weight Lab is unchanged.
+`PRISMA2020Agent` needs nothing: the review calls `assess_prisma_compliance`
+with the document dict; only the semantic-search variant reads the database.
 
 ## Failed evaluations are never saved
 

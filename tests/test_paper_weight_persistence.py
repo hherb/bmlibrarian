@@ -352,7 +352,7 @@ class TestErrorHandling:
              patch(f'{AGENT_MODULE}.store_assessment') as store:
             result = agent.assess_paper(42)
 
-        store.assert_called_once_with(result)
+        store.assert_called_once_with(result, db_manager=None)
         assert result.methodological_quality.score == len(MQ_COMPONENTS)
 
     def test_malformed_assessor_reply_is_not_stored(

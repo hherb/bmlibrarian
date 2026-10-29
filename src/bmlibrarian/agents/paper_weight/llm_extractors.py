@@ -17,7 +17,10 @@ The workflow is:
 
 import json
 import logging
-from typing import Dict, List, Any, Optional
+from typing import TYPE_CHECKING, Dict, List, Any, Optional
+
+if TYPE_CHECKING:
+    from ...database import DatabaseManager
 
 from .models import (
     DimensionScore,
@@ -167,6 +170,7 @@ def extract_study_type_llm(
     model: str,
     document: Optional[Dict[str, Any]] = None,
     hierarchy_config: Optional[Dict[str, float]] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> DimensionScore:
     """
     Extract study type using LLM with semantic search context.
@@ -180,6 +184,7 @@ def extract_study_type_llm(
         model: LLM model name to use
         document: Optional document dict (used for fallback if no chunks)
         hierarchy_config: Optional dict mapping study types to scores
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         DimensionScore for study design with audit trail
@@ -202,12 +207,13 @@ def extract_study_type_llm(
         similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD,
         min_threshold=MIN_SIMILARITY_THRESHOLD,
         threshold_decrement=THRESHOLD_DECREMENT,
+        db_manager=db_manager,
     )
 
     # Fall back to positional chunks if semantic search returns nothing
     if not chunks:
         logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
-        chunks = get_all_document_chunks(document_id, limit=5)
+        chunks = get_all_document_chunks(document_id, limit=5, db_manager=db_manager)
 
     # If still no chunks, try using abstract only (full_text should already be chunked)
     #
@@ -339,6 +345,7 @@ def extract_sample_size_llm(
     model: str,
     document: Optional[Dict[str, Any]] = None,
     scoring_config: Optional[Dict[str, float]] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> DimensionScore:
     """
     Extract sample size using LLM with semantic search context.
@@ -352,6 +359,7 @@ def extract_sample_size_llm(
         model: LLM model name to use
         document: Optional document dict (used for fallback if no chunks)
         scoring_config: Optional scoring configuration
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         DimensionScore for sample size with audit trail
@@ -382,12 +390,13 @@ def extract_sample_size_llm(
         similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD,
         min_threshold=MIN_SIMILARITY_THRESHOLD,
         threshold_decrement=THRESHOLD_DECREMENT,
+        db_manager=db_manager,
     )
 
     # Fall back to positional chunks if semantic search returns nothing
     if not chunks:
         logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
-        chunks = get_all_document_chunks(document_id, limit=5)
+        chunks = get_all_document_chunks(document_id, limit=5, db_manager=db_manager)
 
     # If still no chunks, try using abstract only (full_text should already be chunked)
     #
@@ -547,6 +556,7 @@ def ensure_document_embeddings(
     document_id: int,
     document: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Any] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> bool:
     """
     Ensure document has embeddings created for its full_text.
@@ -557,6 +567,7 @@ def ensure_document_embeddings(
         document_id: Database ID of the document
         document: Optional document dict (to avoid extra DB query)
         progress_callback: Optional callback(stage, current, total) for progress
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         True if embeddings exist or were created, False otherwise
@@ -568,7 +579,7 @@ def ensure_document_embeddings(
     from ...database import get_db_manager
     from ...embeddings.chunk_embedder import ChunkEmbedder
 
-    db_manager = get_db_manager()
+    db_manager = db_manager or get_db_manager()
 
     try:
         # Check if chunks already exist
@@ -607,7 +618,7 @@ def ensure_document_embeddings(
         if progress_callback:
             progress_callback("embedding", 0, 1)
 
-        embedder = ChunkEmbedder()
+        embedder = ChunkEmbedder(db_manager=db_manager)
 
         def embed_progress(current: int, total: int) -> None:
             """Forward progress to main callback."""

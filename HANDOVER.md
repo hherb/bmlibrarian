@@ -10,6 +10,19 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Paper-weight sub-agent reads the review's database** (2026-10-30,
+  closes #366). `PaperWeightAssessmentAgent(db_manager=)` (from
+  `QualityAssessor`) reaches every DB step of `assess_paper`/
+  `assess_full_paper`: `get_cached_assessment`, `store_assessment`,
+  `get_document`, `check_replication_status`, `search_chunks_by_query`,
+  `get_all_document_chunks`, the two `validate_*_extraction`s, both
+  `extract_*_llm`s, `ensure_document_embeddings`, and new optional
+  `db_manager` on `ChunkEmbedder` and `PDFIngestor` (None → global, so the
+  lab is unchanged). PRISMA needs nothing (the review calls only
+  `assess_prisma_compliance` on the document dict). The lab-only helpers in
+  `paper_weight/db.py` (`search_documents`, `get_recent_assessments`, …)
+  still use the global manager. Docs: `systematic_review_pipeline.md`.
+  Tests: `tests/test_paper_weight_db_manager.py`.
 - **Systematic review reads the agent's database** (2026-10-29, closes
   #285). `find_abstracts`, `fetch_documents_by_ids`, `search_with_semantic`,
   `search_with_bm25`, `search_with_fulltext_function`, `search_hybrid`,
@@ -17,9 +30,8 @@ off new work. Longer-term structural items live in
   (None → global `get_db_manager()`; source ids are resolved through the
   same manager). `SearchExecutor` (all query types incl. HyDE), the resume
   path's `_fetch_papers` and `QualityAssessor`'s `ResultsCacheManager` pass
-  the agent's manager. The paper-weight sub-agent still uses the global
-  one → #366 (PRISMA's global calls are only on the semantic-search
-  variant, which a review doesn't call). Tests:
+  the agent's manager; the paper-weight sub-agent too since #366 (entry
+  above). Tests:
   `tests/test_systematic_review_db_manager.py` (global manager made to
   fail); the pipeline test's fetch fake asserts it gets a manager.
 - **Evaluation-run lifecycle tested against real SQL** (2026-10-29, closes
@@ -324,8 +336,7 @@ value — pick one, or pull an item from ROADMAP.md:
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
 - Open bugs from recent slices: #274 (the "failure looks like a result"
-  pattern in TransparencyAgent), #366 (the paper-weight sub-agent uses the
-  global `db_manager` inside a systematic review).
+  pattern in TransparencyAgent).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -369,8 +380,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-29
-  (#285 branch): **4567 passed, 50 skipped** in ~10 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
+  (#366 branch): **4577 passed, 50 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
