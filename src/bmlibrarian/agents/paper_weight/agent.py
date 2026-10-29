@@ -714,6 +714,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Raises:
             RuntimeError: If PDF ingestion fails (including a missing pdf_path)
+                or stores no full text (e.g. scanned PDF, failed UPDATE)
             Exception: Database and LLM failures are logged and re-raised
                 (see assess_paper).
         """
@@ -740,6 +741,10 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 if not ingest_result.success:
                     raise RuntimeError(f"PDF ingestion failed: {ingest_result.error_message}")
+                # Without stored text the assessment would silently score (and cache) the abstract
+                if not ingest_result.full_text_stored:
+                    reasons = "; ".join(ingest_result.warnings) or "no reason given"
+                    raise RuntimeError(f"PDF ingestion stored no full text: {reasons}")
 
                 # Refresh document data
                 document = get_document(document_id, db_manager=self.db_manager)

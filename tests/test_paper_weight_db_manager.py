@@ -5,12 +5,13 @@ Inside a systematic review the agent's searches, fetches and results cache
 use the review's ``db_manager`` (#285), but the paper-weight sub-agent read
 documents, chunks and its ``paper_weights`` cache through the global
 ``get_db_manager()`` (the default ``.env``), so a review built for database B
-assessed and stored papers in database A. These tests pass a manager
-explicitly and make the global one fail, so any path that still falls back to
-it shows up.
+assessed and stored papers in database A. These tests make the global manager
+fail while the helpers run against an explicit one, and check that the agent
+hands its own manager to every helper it calls.
 """
 
 from contextlib import ExitStack
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
@@ -25,8 +26,8 @@ from bmlibrarian.agents.systematic_review.config import SystematicReviewConfig
 from bmlibrarian.agents.systematic_review.quality import QualityAssessor
 
 AGENT_MODULE = "bmlibrarian.agents.paper_weight.agent"
-# Modules that bind get_db_manager at import time; lazy importers read it from
-# bmlibrarian.database.
+# Where get_db_manager is looked up: its home module (read by the lazy
+# ``from ...database import``) and the modules that bind it at import time.
 GLOBAL_MANAGER_NAMES = (
     "bmlibrarian.database.get_db_manager",
     "bmlibrarian.agents.paper_weight.db.get_db_manager",
@@ -107,6 +108,41 @@ class TestHelpersUseGivenManager:
         manager = make_manager(fetchone=(3,))
         assert llm_extractors.ensure_document_embeddings(1, db_manager=manager)
 
+    def test_ensure_document_embeddings_creates_chunks(self, no_global_manager: None) -> None:
+        """Missing chunks are embedded into the given database."""
+        manager = make_manager(fetchone=(0,))
+        with patch("bmlibrarian.embeddings.chunk_embedder.ChunkEmbedder") as embedder_cls:
+            embedder_cls.return_value.chunk_and_embed.return_value = 2
+            assert llm_extractors.ensure_document_embeddings(
+                1, document={"full_text": "text"}, db_manager=manager
+            )
+        assert embedder_cls.call_args.kwargs["db_manager"] is manager
+
+    @pytest.mark.parametrize("module, func, extra", [
+        (llm_extractors, "extract_study_type_llm", {}),
+        (llm_extractors, "extract_sample_size_llm", {}),
+        (validators, "validate_study_type_extraction",
+         {"dimension_score": DimensionScore("study_design", 5.0)}),
+        (validators, "validate_sample_size_extraction",
+         {"dimension_score": DimensionScore("sample_size", 5.0)}),
+    ])
+    def test_extractors_and_validators_pass_manager_on(
+        self, no_global_manager: None, module: Any, func: str, extra: dict
+    ) -> None:
+        """The LLM extractors and validators read chunks from the given database."""
+        manager = MagicMock()
+        with patch.object(module, "search_chunks_by_query", return_value=[]) as search, \
+             patch.object(module, "get_all_document_chunks", return_value=[]) as listing:
+            try:
+                getattr(module, func)(
+                    document_id=1, llm_client=MagicMock(), model="m",
+                    db_manager=manager, **extra,
+                )
+            except ValueError:
+                pass  # no chunks and no document text: extractors refuse to score
+        assert search.call_args.kwargs["db_manager"] is manager
+        assert listing.call_args.kwargs["db_manager"] is manager
+
     def test_chunk_embedder_and_pdf_ingestor(self, no_global_manager: None) -> None:
         """Embedder and ingestor keep the manager they are given."""
         from bmlibrarian.embeddings.chunk_embedder import ChunkEmbedder
@@ -115,9 +151,30 @@ class TestHelpersUseGivenManager:
         manager = make_manager(fetchone=(4,))  # embedding_models row
         with patch("bmlibrarian.embeddings.chunk_embedder.LLMClient", create=True):
             embedder = ChunkEmbedder(backend="ollama", db_manager=manager)
-        assert embedder.db_manager is manager
-        assert embedder.model_id == 4  # model id looked up in the given database
-        assert PDFIngestor(db_manager=manager).db_manager is manager
+            assert embedder.db_manager is manager
+            assert embedder.model_id == 4  # model id looked up in the given database
+            ingestor = PDFIngestor(db_manager=manager)
+            assert ingestor.db_manager is manager
+            assert ingestor.embedder.db_manager is manager
+
+    def test_chunk_insert_failure_keeps_other_chunks(self) -> None:
+        """Each chunk is inserted in its own savepoint, so one failure loses only that chunk."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        manager = make_manager(fetchone=(4,))
+        with patch.object(chunk_embedder, "LLMClient", create=True):
+            embedder = chunk_embedder.ChunkEmbedder(backend="ollama", db_manager=manager)
+        conn = manager.get_connection.return_value.__enter__.return_value
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = [RuntimeError("insert failed"), None, None]
+        positions = [MagicMock(chunk_no=n, text=f"chunk {n}") for n in range(3)]
+        with patch.object(embedder, "get_document_full_text", return_value="text"), \
+             patch.object(embedder, "delete_existing_chunks"), \
+             patch.object(embedder, "create_embeddings_batch", return_value=[[0.1]] * 3), \
+             patch.object(chunk_embedder, "adaptive_chunker_with_positions",
+                          return_value=positions):
+            assert embedder.chunk_and_embed(1) == 2
+        assert conn.transaction.call_count == 3
 
 
 class TestAgentPassesItsManager:
@@ -174,6 +231,36 @@ class TestAgentPassesItsManager:
             )
         for name, mock in mocks.items():
             assert mock.call_args.kwargs.get("db_manager") is manager, name
+
+    def test_assess_full_paper(self, no_global_manager: None, tmp_path: Path) -> None:
+        """PDF ingestion, document fetches and the chunk count use the agent's manager."""
+        manager = make_manager(fetchall=[(0, 0, 5, "chunk")])
+        agent = PaperWeightAssessmentAgent(show_model_info=False, db_manager=manager)
+        with patch(f"{AGENT_MODULE}.get_document",
+                   side_effect=[{"id": 1}, {"id": 1, "full_text": "text"}]) as get_doc, \
+             patch("bmlibrarian.importers.pdf_ingestor.PDFIngestor") as ingestor_cls, \
+             patch.object(agent, "assess_paper") as assess:
+            ingestor_cls.return_value.ingest_pdf_immediate.return_value = MagicMock(
+                success=True, full_text_stored=True
+            )
+            agent.assess_full_paper(1, pdf_path=tmp_path / "paper.pdf")
+        assert ingestor_cls.call_args.kwargs["db_manager"] is manager
+        assert all(c.kwargs["db_manager"] is manager for c in get_doc.call_args_list)
+        manager.get_connection.assert_called_once()  # _search_document_chunks
+        assess.assert_called_once()
+
+    def test_assess_full_paper_without_stored_text_raises(self, tmp_path: Path) -> None:
+        """An ingestion that stored no full text fails instead of scoring the abstract."""
+        agent = PaperWeightAssessmentAgent(show_model_info=False, db_manager=MagicMock())
+        with patch(f"{AGENT_MODULE}.get_document", return_value={"id": 1}), \
+             patch("bmlibrarian.importers.pdf_ingestor.PDFIngestor") as ingestor_cls, \
+             patch.object(agent, "assess_paper") as assess, \
+             pytest.raises(RuntimeError, match="stored no full text: read-only"):
+            ingestor_cls.return_value.ingest_pdf_immediate.return_value = MagicMock(
+                success=True, full_text_stored=False, warnings=["read-only"]
+            )
+            agent.assess_full_paper(1, pdf_path=tmp_path / "paper.pdf")
+        assess.assert_not_called()
 
     def test_quality_assessor_hands_on_its_manager(self) -> None:
         """The systematic review's paper-weight agent uses the review's database."""

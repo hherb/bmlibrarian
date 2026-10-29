@@ -16,12 +16,19 @@ off new work. Longer-term structural items live in
   `assess_full_paper`: `get_cached_assessment`, `store_assessment`,
   `get_document`, `check_replication_status`, `search_chunks_by_query`,
   `get_all_document_chunks`, the two `validate_*_extraction`s, both
-  `extract_*_llm`s, `ensure_document_embeddings`, and new optional
+  `extract_*_llm`s, `ensure_document_embeddings`, `_search_document_chunks`,
+  and new optional
   `db_manager` on `ChunkEmbedder` and `PDFIngestor` (None → global, so the
   lab is unchanged). PRISMA needs nothing (the review calls only
-  `assess_prisma_compliance` on the document dict). The lab-only helpers in
-  `paper_weight/db.py` (`search_documents`, `get_recent_assessments`, …)
-  still use the global manager. Docs: `systematic_review_pipeline.md`.
+  `assess_prisma_compliance` on the document dict). The remaining helpers in
+  `paper_weight/db.py` (`search_documents`, `semantic_search_documents`,
+  `get_recent_assessments`, …), used by the Paper Weight Lab and the citation
+  editor, still use the global manager. Review follow-ups: `assess_full_paper`
+  raises when ingestion stores no full text (it used to score and cache the
+  abstract); `ChunkEmbedder.chunk_and_embed` inserts each chunk in its own
+  savepoint (one failed INSERT used to abort the transaction and lose every
+  chunk at COMMIT while still counting them); the dead, uncallable
+  `SystematicReviewAgent._get_paper_weight_agent` was removed. Docs: `systematic_review_pipeline.md`.
   Tests: `tests/test_paper_weight_db_manager.py`.
 - **Systematic review reads the agent's database** (2026-10-29, closes
   #285). `find_abstracts`, `fetch_documents_by_ids`, `search_with_semantic`,
@@ -381,7 +388,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
-  (#366 branch): **4577 passed, 50 skipped** in ~9 min. Without
+  (#366 branch): **4585 passed, 50 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -182,8 +182,9 @@ class QualityAssessor:
             config: Optional configuration
             callback: Optional progress callback
             orchestrator: Optional orchestrator for queue-based processing
-            db_manager: Database holding the results cache and the paper-weight
-                store (default: the global manager)
+            db_manager: Database holding the results cache and everything the
+                paper-weight sub-agent reads and writes (documents, chunks,
+                ``paper_weights``) (default: the global manager)
         """
         self.callback = callback
         self.orchestrator = orchestrator

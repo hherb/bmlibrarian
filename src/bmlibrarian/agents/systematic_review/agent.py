@@ -176,7 +176,6 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self._citation_agent = None
         self._pico_agent = None
         self._study_assessment_agent = None
-        self._paper_weight_agent = None
         self._prisma_agent = None
         self._semantic_query_agent = None
 
@@ -1176,26 +1175,6 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 show_model_info=False,
             )
         return self._study_assessment_agent
-
-    def _get_paper_weight_agent(self):
-        """Get or create PaperWeightAssessmentAgent instance."""
-        if self._paper_weight_agent is None:
-            from ..paper_weight import PaperWeightAssessmentAgent
-            from ...config import get_model, get_ollama_host, get_agent_config
-
-            model = get_model("paper_weight_assessment_agent")
-            config = get_agent_config("paper_weight_assessment")
-
-            self._paper_weight_agent = PaperWeightAssessmentAgent(
-                model=model,
-                host=get_ollama_host(),
-                temperature=config.get("temperature", 0.3),
-                top_p=config.get("top_p", 0.9),
-                callback=self.callback,
-                orchestrator=self.orchestrator,
-                show_model_info=False,
-            )
-        return self._paper_weight_agent
 
     def _get_prisma_agent(self):
         """Get or create PRISMA2020Agent instance."""

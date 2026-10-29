@@ -206,8 +206,8 @@ class ChunkEmbedder:
                        If None with llama_cpp, will try to find Ollama's cached model.
             n_ctx: Context window size for llama_cpp backend.
                   If None, uses config["embeddings"]["n_ctx"].
-            db_manager: Database to read and write chunks in (default: the
-                global manager).
+            db_manager: Database for the chunks and the ``embedding_models``
+                row (default: the global manager).
 
         Raises:
             ImportError: If required backend is not installed.
@@ -853,31 +853,34 @@ class ChunkEmbedder:
 
                         # Store chunk with embedding
                         try:
-                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
-                            cur.execute(
-                                """
-                                INSERT INTO semantic.chunks (
-                                    document_id, model_id, chunk_size, chunk_overlap,
-                                    chunk_no, start_pos, end_pos, embedding
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
-                                DO UPDATE SET
-                                    start_pos = EXCLUDED.start_pos,
-                                    end_pos = EXCLUDED.end_pos,
-                                    embedding = EXCLUDED.embedding,
-                                    created_at = NOW()
-                                """,
-                                (
-                                    document_id,
-                                    self.model_id,
-                                    chunk_size,
-                                    overlap,
-                                    chunk_pos.chunk_no,
-                                    chunk_pos.start_pos,
-                                    chunk_pos.end_pos,
-                                    embedding_str,
-                                ),
-                            )
+                            # Savepoint per chunk: a failed INSERT would otherwise abort the
+                            # whole transaction and every later chunk would be lost at COMMIT.
+                            with conn.transaction():
+                                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                                cur.execute(
+                                    """
+                                    INSERT INTO semantic.chunks (
+                                        document_id, model_id, chunk_size, chunk_overlap,
+                                        chunk_no, start_pos, end_pos, embedding
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
+                                    DO UPDATE SET
+                                        start_pos = EXCLUDED.start_pos,
+                                        end_pos = EXCLUDED.end_pos,
+                                        embedding = EXCLUDED.embedding,
+                                        created_at = NOW()
+                                    """,
+                                    (
+                                        document_id,
+                                        self.model_id,
+                                        chunk_size,
+                                        overlap,
+                                        chunk_pos.chunk_no,
+                                        chunk_pos.start_pos,
+                                        chunk_pos.end_pos,
+                                        embedding_str,
+                                    ),
+                                )
                             chunks_created += 1
 
                         except Exception as e:

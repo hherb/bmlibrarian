@@ -90,8 +90,9 @@ databases, are fetched from the agent's.
 `paper_weights` cache and store (`get_cached_assessment`, `store_assessment`),
 `get_document`, `check_replication_status`, the chunk helpers in
 `validators.py`, and `ensure_document_embeddings` → `ChunkEmbedder(db_manager=)`
-(`assess_full_paper` also gives it to `PDFIngestor`). Each defaults to the
-global manager when it is None, so the Paper Weight Lab is unchanged.
+(`assess_full_paper` also uses it for its chunk count and gives it to
+`PDFIngestor`). Each defaults to the global manager when it is None, so the
+Paper Weight Lab is unchanged.
 `PRISMA2020Agent` needs nothing: the review calls `assess_prisma_compliance`
 with the document dict; only the semantic-search variant reads the database.
 
