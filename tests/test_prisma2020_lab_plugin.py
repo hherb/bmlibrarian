@@ -361,10 +361,9 @@ class TestPRISMA2020LabTabWidget:
 
         widget.cleanup()
 
-        # Verify cleanup (AgentOrchestrator has no shutdown(); only the
-        # worker thread needs stopping)
         mock_worker.terminate.assert_called_once()
         mock_worker.wait.assert_called_once()
+        widget.orchestrator.stop_processing.assert_called_once()
 
 
 class TestPRISMA2020AssessmentWorker:

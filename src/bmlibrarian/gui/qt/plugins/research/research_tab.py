@@ -105,6 +105,8 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         # Agents and workflow executor
         self.agents: Optional[dict] = agents
         self.workflow_executor: Optional['QtWorkflowExecutor'] = None
+        # Set when settings change; the next start rebuilds the agents
+        self._agents_stale = False
 
         # Initialize workflow executor if agents available
         if self.agents:
@@ -397,29 +399,42 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         return self.settings_widget
 
     def _reinitialize_agents(self) -> None:
-        """Reinitialize agents with new configuration from settings."""
-        try:
-            from bmlibrarian.agents import (
-                QueryAgent, DocumentScoringAgent, CitationFinderAgent,
-                ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator
-            )
+        """Mark the agents stale after a settings change.
 
-            self.logger.info("Reinitializing agents with new configuration...")
+        They are rebuilt when the next research starts, so a running workflow
+        keeps the executor it started with.
+        """
+        self._agents_stale = True
+        self.logger.info("Settings changed - agents will be rebuilt at the next research start")
 
-            orchestrator = AgentOrchestrator(max_workers=4)
-            self.agents = {
-                'query_agent': QueryAgent(orchestrator=orchestrator),
-                'scoring_agent': DocumentScoringAgent(orchestrator=orchestrator),
-                'citation_agent': CitationFinderAgent(orchestrator=orchestrator),
-                'reporting_agent': ReportingAgent(orchestrator=orchestrator),
-                'counterfactual_agent': CounterfactualAgent(orchestrator=orchestrator),
-                'editor_agent': EditorAgent(orchestrator=orchestrator)
-            }
+    def _rebuild_agents(self) -> None:
+        """Rebuild the agents and workflow executor from the current settings.
 
-            self.logger.info("Agents reinitialized successfully")
+        The main window's audit connection is reused (it returns it to the
+        pool on shutdown); the old executor and orchestrator are released.
 
-        except Exception as e:
-            self.logger.error(f"Error reinitializing agents: {e}", exc_info=True)
+        Raises:
+            Exception: Agent creation failed; the previous agents are kept
+                and stay marked stale, so the next start retries.
+        """
+        from bmlibrarian.agents import AgentFactory
+
+        self.logger.info("Rebuilding agents with new configuration...")
+        old_agents = self.agents or {}
+        agents = AgentFactory.create_all_agents(audit_conn=old_agents.get('_audit_conn'))
+        for key in ('_db_manager', '_audit_conn'):
+            if key in old_agents:
+                agents[key] = old_agents[key]
+
+        self._teardown_workflow_executor()
+        self.agents = agents
+        self._initialize_workflow_executor()
+        self._agents_stale = False
+
+        old_orchestrator = old_agents.get('orchestrator')
+        if old_orchestrator is not None:
+            old_orchestrator.stop_processing()
+        self.logger.info("Agents rebuilt successfully")
 
     # ========================================================================
     # Event Handlers
@@ -506,6 +521,19 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                     "Please adjust the values."
                 )
                 return
+
+            if self._agents_stale:
+                try:
+                    self._rebuild_agents()
+                except Exception as e:
+                    self.logger.error(f"Agent rebuild failed: {e}", exc_info=True)
+                    QMessageBox.critical(
+                        self,
+                        "Settings Not Applied",
+                        f"Could not apply the changed settings:\n\n{e}\n\n"
+                        "Check the model and provider settings and try again."
+                    )
+                    return
 
             if not self.workflow_executor:
                 QMessageBox.critical(
@@ -629,6 +657,20 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         except (RuntimeError, TypeError):
             pass
 
+    def _teardown_workflow_executor(self) -> None:
+        """Disconnect and clean up the workflow executor, if any."""
+        if not self.workflow_executor:
+            return
+        self._safe_disconnect(self.workflow_executor.workflow_started, self._on_workflow_started)
+        self._safe_disconnect(self.workflow_executor.workflow_completed, self._on_workflow_completed)
+        self._safe_disconnect(self.workflow_executor.workflow_error, self._on_workflow_error)
+        self._safe_disconnect(self.workflow_executor.status_message, self._on_workflow_status)
+
+        if hasattr(self.workflow_executor, 'cleanup'):
+            self.workflow_executor.cleanup()
+        self.workflow_executor.deleteLater()
+        self.workflow_executor = None
+
     def cleanup(self) -> None:
         """Cleanup resources and disconnect signals."""
         try:
@@ -646,15 +688,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                 self.workflow_thread.deleteLater()
                 self.workflow_thread = None
 
-            # Disconnect workflow executor signals
-            if self.workflow_executor:
-                self._safe_disconnect(self.workflow_executor.workflow_started, self._on_workflow_started)
-                self._safe_disconnect(self.workflow_executor.workflow_completed, self._on_workflow_completed)
-                self._safe_disconnect(self.workflow_executor.workflow_error, self._on_workflow_error)
-                self._safe_disconnect(self.workflow_executor.status_message, self._on_workflow_status)
-
-                if hasattr(self.workflow_executor, 'cleanup'):
-                    self.workflow_executor.cleanup()
+            self._teardown_workflow_executor()
 
             # Disconnect UI element signals
             self._safe_disconnect(self.question_input.textChanged, self._on_question_changed)

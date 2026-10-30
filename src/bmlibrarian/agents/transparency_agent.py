@@ -221,8 +221,39 @@ class TransparencyAgent(BaseAgent):
                 message gives the reason. Any other exception (e.g. an LLM provider timeout) is logged
                 with its traceback and re-raised as this error.
         """
+        return self._assess_counted(document, min_confidence, check_connection=True)
+
+    def _connection_failure_reason(self) -> str:
+        """Reason recorded when the LLM provider or model is unavailable."""
+        return (
+            f"LLM provider unreachable or model {self.model} not available "
+            f"- transparency assessment unavailable"
+        )
+
+    def _assess_counted(
+        self,
+        document: Dict[str, Any],
+        min_confidence: float,
+        check_connection: bool,
+    ) -> TransparencyAssessment:
+        """Run one assessment, counting it in the stats and wrapping errors.
+
+        Args:
+            document: Document dictionary.
+            min_confidence: Low-confidence threshold (0-1).
+            check_connection: Check the LLM connection first (``assess_batch``
+                checks once for the whole batch and passes False).
+
+        Returns:
+            The TransparencyAssessment.
+
+        Raises:
+            TransparencyAssessmentError: The document could not be assessed.
+        """
         self._assessment_stats["total_assessments"] += 1
         try:
+            if check_connection and not self.test_connection():
+                raise TransparencyAssessmentError(self._connection_failure_reason())
             assessment = self._assess_document(document, min_confidence)
         except Exception as e:
             self._assessment_stats["failed_assessments"] += 1
@@ -255,12 +286,6 @@ class TransparencyAgent(BaseAgent):
         Raises:
             TransparencyAssessmentError: The document could not be assessed.
         """
-        if not self.test_connection():
-            raise TransparencyAssessmentError(
-                f"LLM provider unreachable or model {self.model} not available "
-                f"- transparency assessment unavailable"
-            )
-
         doc_id = document.get("id", "unknown")
         title = document.get("title", "Untitled")
         abstract = document.get("abstract", "")
@@ -578,6 +603,12 @@ class TransparencyAgent(BaseAgent):
 
         logger.info(f"Starting batch transparency assessment for {total} documents")
 
+        # One check for the whole batch, not 2 extra requests per document
+        unavailable_reason = None
+        if documents and not self.test_connection():
+            unavailable_reason = self._connection_failure_reason()
+            logger.error(f"Transparency batch of {total} documents not assessed: {unavailable_reason}")
+
         for i, document in enumerate(documents):
             doc_title = document.get("title", "Unknown Document")
 
@@ -585,10 +616,14 @@ class TransparencyAgent(BaseAgent):
                 progress_callback(i + 1, total, doc_title)
 
             doc_id = str(document.get("id", "unknown"))
+            if unavailable_reason:
+                self._assessment_stats["total_assessments"] += 1
+                self._assessment_stats["failed_assessments"] += 1
+                result.failures.append((doc_id, unavailable_reason))
+                continue
             try:
-                assessment = self.assess_transparency(
-                    document=document,
-                    min_confidence=min_confidence,
+                assessment = self._assess_counted(
+                    document, min_confidence, check_connection=False
                 )
             except TransparencyAssessmentError as e:
                 result.failures.append((doc_id, str(e)))

@@ -315,6 +315,81 @@ class TestResearchTabWidget(unittest.TestCase):
         MockThread.return_value.start.assert_called_once()
         self.assertTrue(self.widget.workflow_running)
 
+    # ========================================================================
+    # Settings change rebuilds agents (#330)
+    # ========================================================================
+
+    def _start_with_mocked_thread(self):
+        """Click Start with WorkflowThread mocked; return the thread mock."""
+        self.widget.question_input.setPlainText("Test research question")
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.WorkflowThread'
+        ) as MockThread:
+            QTest.mouseClick(self.widget.start_button, Qt.LeftButton)
+            QApplication.processEvents()
+        return MockThread
+
+    def test_settings_change_rebuilds_agents_and_executor_at_next_start(self):
+        """The next research runs on new agents through a new executor."""
+        audit_conn, db_manager = Mock(), Mock()
+        self.agents['_audit_conn'] = audit_conn
+        self.agents['_db_manager'] = db_manager
+        old_orchestrator = Mock()
+        self.agents['orchestrator'] = old_orchestrator
+        old_executor = self.widget.workflow_executor
+        old_executor_cleanup = patch.object(old_executor, 'cleanup').start()
+        self.addCleanup(patch.stopall)
+        new_agents = {name: Mock() for name in AGENT_NAMES}
+
+        self.widget._reinitialize_agents()
+        # Nothing is replaced until the next start (a running workflow keeps its executor)
+        self.assertIs(self.widget.workflow_executor, old_executor)
+
+        with patch(
+            'bmlibrarian.agents.AgentFactory.create_all_agents', return_value=new_agents
+        ) as create:
+            MockThread = self._start_with_mocked_thread()
+
+        create.assert_called_once_with(audit_conn=audit_conn)
+        executor = MockThread.call_args.kwargs['executor']
+        self.assertIsNot(executor, old_executor)
+        self.assertIs(executor.agents['query_agent'], new_agents['query_agent'])
+        self.assertIs(self.widget.agents['_audit_conn'], audit_conn)
+        self.assertIs(self.widget.agents['_db_manager'], db_manager)
+        # The old set is released
+        old_executor_cleanup.assert_called_once()
+        old_orchestrator.stop_processing.assert_called_once()
+
+    def test_failed_rebuild_does_not_start_on_old_agents(self):
+        """A failed rebuild aborts the start and is retried next time."""
+        old_executor = self.widget.workflow_executor
+        self.widget._reinitialize_agents()
+
+        with patch(
+            'bmlibrarian.agents.AgentFactory.create_all_agents',
+            side_effect=RuntimeError("model missing"),
+        ):
+            MockThread = self._start_with_mocked_thread()
+
+        MockThread.assert_not_called()
+        self.assertFalse(self.widget.workflow_running)
+        self.assertIs(self.widget.workflow_executor, old_executor)
+        self.assertTrue(self.widget._agents_stale)
+        from bmlibrarian.gui.qt.plugins.research import research_tab
+        title, message = research_tab.QMessageBox.critical.call_args.args[1:3]
+        self.assertEqual(title, "Settings Not Applied")
+        self.assertIn("model missing", message)
+
+    def test_cleanup_tears_down_workflow_executor(self):
+        """cleanup() releases the executor and is safe to call twice."""
+        executor = self.widget.workflow_executor
+        with patch.object(executor, 'cleanup') as executor_cleanup:
+            self.widget.cleanup()
+            self.widget.cleanup()
+
+        executor_cleanup.assert_called_once()
+        self.assertIsNone(self.widget.workflow_executor)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,6 +5,8 @@ Interactive interface for evaluating research quality, study design, and
 trustworthiness of biomedical evidence using StudyAssessmentAgent.
 """
 
+import logging
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QLineEdit, QComboBox, QSplitter,
@@ -25,6 +27,9 @@ from .constants import (
     QUALITY_COLORS, CONFIDENCE_COLORS, BIAS_RISK_COLORS,
     SECTION_COLORS
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class StudyAssessmentWorker(QThread):
@@ -122,9 +127,9 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
                 orchestrator=self.orchestrator,
                 show_model_info=True
             )
-            print(f"✓ StudyAssessmentAgent initialized with model: {default_model}")
+            logger.info(f"StudyAssessmentAgent initialized with model: {default_model}")
         except Exception as e:
-            print(f"Warning: Failed to initialize StudyAssessmentAgent: {e}")
+            logger.error(f"Failed to initialize StudyAssessmentAgent: {e}", exc_info=True)
             self.assessment_agent = None
 
     def _setup_ui(self):
@@ -937,6 +942,6 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
 
         if self.orchestrator:
             try:
-                self.orchestrator.shutdown()
+                self.orchestrator.stop_processing()
             except Exception as e:
-                print(f"Warning: Error during orchestrator shutdown: {e}")
+                logger.error(f"Error during orchestrator shutdown: {e}", exc_info=True)

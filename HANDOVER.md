@@ -10,6 +10,25 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Lab cleanup, transparency batches, research-tab settings** (2026-10-30,
+  closes #331, #370, #330). The PICO, Study Assessment and PRISMA labs'
+  `cleanup()` calls `orchestrator.stop_processing()` (PICO/Study called a
+  nonexistent `shutdown()`, PRISMA called nothing; the GUI never starts
+  orchestrator processing, so this is hygiene). `TransparencyAgent.assess_batch`
+  checks the LLM connection once per batch (was 2 requests per document);
+  if it fails, every document is recorded as failed with that reason
+  (stats += N). Research tab: a settings change marks the agents stale and
+  the **next Start** rebuilds them via `AgentFactory.create_all_agents`
+  (keeping the main window's `_audit_conn`/`_db_manager`) and replaces the
+  workflow executor (it used to rebuild agents inline without audit tracking
+  and keep running the old executor); a failed rebuild aborts that start
+  with the error and is retried next time (only the research tab uses the
+  main window's agents). Review follow-ups: the rebuild stops the old
+  orchestrator; a failed rebuild says "Settings Not Applied"; PICO/Study
+  lab `print`s are logger calls; `BaseAgent.test_connection` logs the
+  traceback. Open: the main Settings tab does not mark the research agents
+  stale (#372). Tests: `tests/test_lab_tab_cleanup.py`,
+  `tests/test_qt_research_tab.py`, `tests/test_transparency_agent.py`.
 - **TransparencyAgent failures are surfaced** (2026-10-30, closes #274).
   `assess_transparency` raises `TransparencyAssessmentError` (reason in the
   message: no Ollama, no text, unparseable/invalid LLM reply, request
@@ -172,48 +191,11 @@ off new work. Longer-term structural items live in
   in the composite score". Tests: `test_composite_scorer_weights.py`,
   `test_paper_weight_persistence.py::TestPlaceholderCacheRows`,
   `test_systematic_review_quality.py::...::test_paper_weight_comes_from_agent_not_results_cache`.
-- **Paper-weight failures raise instead of becoming scores** (2026-10-23,
-  closes #345, #347). `assess_paper` / `assess_full_paper` log and re-raise
-  (the 0.0/10 `_create_error_result` is gone); the MQ/RoB assessors no
-  longer return a neutral 5.0 (`create_error_dimension_score` removed);
-  `extract_study_type_llm` / `extract_sample_size_llm` raise on an LLM error,
-  an unparseable reply, a reply missing `study_type` / `sample_size`, an
-  off-hierarchy study type, or a document with no text (were 5.0 / 0.0;
-  `"unknown"` and `sample_size: null` remain real findings); the MQ/RoB
-  calculators require every prompted component (`MQ_COMPONENTS` /
-  `ROB_COMPONENTS`) with a numeric score and sum only those;
-  `search_chunks_by_query`,
-  `get_all_document_chunks`, `_search_document_chunks` and
-  `ensure_document_embeddings` re-raise DB errors; legacy
-  `_validate_extractions` no longer swallows them (LLM validation failures
-  are recorded in the audit trail as `validation_failed`, no longer as
-  `valid`). The lab drops the previous result (and disables export) on
-  loading a document or starting an assessment. Nothing failed
-  is stored or cached, so a re-run retries: the lab shows "Assessment
-  Error", the systematic review gets its `"error"` dict (not cached), the
-  paper reviewer marks the step FAILED. `knowledgebase` had no stored
-  failure scores (117 assessments, read-only check). Tests:
-  `tests/test_paper_weight_persistence.py::TestErrorHandling`,
-  `tests/test_paper_weight_llm_extractors.py`,
-  `tests/test_paper_weight_llm_assessors.py` (malformed replies),
-  `tests/test_paper_weight_lab_gui_errors.py` (stale export),
-  `tests/test_systematic_review_quality.py::...::test_failed_paper_weight_is_not_cached`.
-  Follow-ups #348, #351: done (entry above).
-- **Paper-weight DB helpers raise instead of returning `[]`/`None`**
-  (2026-10-23, closes #275). `search_documents`,
-  `semantic_search_documents`, `get_recent_assessments`,
-  `get_document_for_viewer`, `get_document_metadata`,
-  `get_cached_assessment` and `check_replication_status` (which used to
-  return a stored replication score of 0 on a query failure) log and
-  re-raise. The Paper Weight Lab reports "Search Failed" / "Could Not Load
-  Document" (search tab, search dialog, results tab; a failed load also
-  clears the results tab so Assess can't act on the previous paper) and
-  marks the recent-assessments combo non-modally; `assess_paper` turns the
-  error into its (unstored) error result. Tests:
-  `tests/test_paper_weight_lab.py::TestDatabaseErrorsPropagate`,
-  `tests/test_paper_weight_persistence.py::TestErrorHandling`,
-  `tests/test_paper_weight_lab_gui_errors.py`.
-  Follow-up: #344 (hardcoded PubMed `source_id = 1` elsewhere).
+- **Paper-weight failures raise instead of becoming scores; DB helpers
+  raise instead of returning `[]`/`None`** (2026-10-23, closes #345, #347,
+  #275). Nothing failed is stored or cached, so a re-run retries; the lab
+  shows "Assessment Error" / "Search Failed" / "Could Not Load Document".
+  Details in git history; tests in `tests/test_paper_weight_*.py`.
 - **Fact-checker review GUI shows the cited passage** (2026-10-23, closes
   #338). `CitationListWidget` now renders each evidence row as a
   `widgets/citation_card.CitationCard` (passage highlighted in the abstract,
@@ -412,7 +394,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
-  (#274 branch): **4608 passed, 50 skipped** in ~9 min. Without
+  (#331/#370/#330 branch): **4613 passed, 50 skipped** in 9–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

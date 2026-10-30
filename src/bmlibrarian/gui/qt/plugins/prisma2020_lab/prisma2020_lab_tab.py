@@ -483,6 +483,7 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         if self.orchestrator:
             try:
                 logger.debug("Shutting down orchestrator")
+                self.orchestrator.stop_processing()
                 logger.info("Orchestrator cleanup complete")
             except Exception as e:
                 logger.error(f"Error during orchestrator cleanup: {e}", exc_info=True)
