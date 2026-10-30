@@ -10,7 +10,10 @@ When conflicts are detected, they are flagged for user review.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from typing import TYPE_CHECKING, Dict, List, Any, Optional
+
+if TYPE_CHECKING:
+    from ...database import DatabaseManager
 
 from .models import DimensionScore
 
@@ -66,6 +69,7 @@ def search_chunks_by_query(
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     min_threshold: float = MIN_SIMILARITY_THRESHOLD,
     threshold_decrement: float = THRESHOLD_DECREMENT,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search document chunks using semantic similarity with dynamic threshold reduction.
@@ -88,6 +92,7 @@ def search_chunks_by_query(
         similarity_threshold: Starting similarity score threshold (0.0-1.0)
         min_threshold: Minimum threshold to try before giving up (0.0-1.0)
         threshold_decrement: Amount to reduce threshold on each retry
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         List of chunk dicts with 'chunk_no', 'chunk_text', 'similarity'
@@ -114,7 +119,7 @@ def search_chunks_by_query(
     from ...database import get_db_manager
 
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
 
         # Try with progressively lower thresholds until we find results
         current_threshold = similarity_threshold
@@ -191,6 +196,7 @@ DEFAULT_CHUNK_LIMIT = 20  # Default limit for get_all_document_chunks
 def get_all_document_chunks(
     document_id: int,
     limit: int = DEFAULT_CHUNK_LIMIT,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get all chunks for a document ordered by position.
@@ -200,6 +206,7 @@ def get_all_document_chunks(
     Args:
         document_id: Database ID of the document (must be positive)
         limit: Maximum chunks to retrieve (must be positive)
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         List of chunk dicts with 'chunk_no', 'chunk_text'
@@ -218,7 +225,7 @@ def get_all_document_chunks(
     from ...database import get_db_manager
 
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
 
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
@@ -362,6 +369,7 @@ def validate_study_type_extraction(
     llm_client: Any,
     model: str,
     fallback_chunks: Optional[List[Dict[str, Any]]] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> ValidationResult:
     """
     Validate study type extraction using LLM with semantic search context.
@@ -372,6 +380,7 @@ def validate_study_type_extraction(
         llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         fallback_chunks: Optional pre-computed chunks to use if the document has no stored chunks
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         ValidationResult with validation details and conflict flags; an LLM
@@ -401,11 +410,12 @@ def validate_study_type_extraction(
         document_id=document_id,
         query="study design methodology randomized controlled trial cohort retrospective prospective systematic review meta-analysis",
         max_chunks=DEFAULT_MAX_CHUNKS,
+        db_manager=db_manager,
     )
 
     if not chunks:
         # Fall back to getting first few chunks from database
-        chunks = get_all_document_chunks(document_id, limit=5)
+        chunks = get_all_document_chunks(document_id, limit=5, db_manager=db_manager)
 
     if not chunks and fallback_chunks:
         # Use provided fallback chunks (e.g., synthetic chunks from full_text)
@@ -484,6 +494,7 @@ def validate_sample_size_extraction(
     llm_client: Any,
     model: str,
     fallback_chunks: Optional[List[Dict[str, Any]]] = None,
+    db_manager: Optional["DatabaseManager"] = None,
 ) -> ValidationResult:
     """
     Validate sample size extraction using LLM with semantic search context.
@@ -494,6 +505,7 @@ def validate_sample_size_extraction(
         llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         fallback_chunks: Optional pre-computed chunks to use if the document has no stored chunks
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         ValidationResult with validation details and conflict flags; an LLM
@@ -527,11 +539,12 @@ def validate_sample_size_extraction(
         document_id=document_id,
         query="sample size participants subjects patients enrolled recruited n= N= total number",
         max_chunks=DEFAULT_MAX_CHUNKS,
+        db_manager=db_manager,
     )
 
     if not chunks:
         # Fall back to getting first few chunks (methods section usually early)
-        chunks = get_all_document_chunks(document_id, limit=5)
+        chunks = get_all_document_chunks(document_id, limit=5, db_manager=db_manager)
 
     if not chunks and fallback_chunks:
         # Use provided fallback chunks (e.g., synthetic chunks from full_text)

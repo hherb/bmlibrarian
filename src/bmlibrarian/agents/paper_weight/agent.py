@@ -84,6 +84,7 @@ from .llm_extractors import (
 
 if TYPE_CHECKING:
     from ..orchestrator import AgentOrchestrator
+    from ...database import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -189,7 +190,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
         host: Optional[str] = None,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
-        show_model_info: bool = True
+        show_model_info: bool = True,
+        db_manager: Optional["DatabaseManager"] = None,
     ):
         """
         Initialize the PaperWeightAssessmentAgent.
@@ -200,7 +202,11 @@ class PaperWeightAssessmentAgent(BaseAgent):
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
+            db_manager: Database holding the documents, chunks and the
+                paper_weights schema (default: the global manager)
         """
+        self.db_manager = db_manager
+
         # Load configuration
         self.config = self._load_config()
 
@@ -416,7 +422,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         conflicts = []
 
         # Check if document has chunks available
-        chunks = get_all_document_chunks(document_id, limit=5)
+        chunks = get_all_document_chunks(document_id, limit=5, db_manager=self.db_manager)
 
         # If no chunks, try to use full_text directly
         if not chunks and document:
@@ -459,6 +465,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             llm_client=self._llm_client,
             model=model,
             fallback_chunks=chunks,
+            db_manager=self.db_manager,
         )
 
         if study_validation.has_conflict:
@@ -483,6 +490,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             llm_client=self._llm_client,
             model=model,
             fallback_chunks=chunks,
+            db_manager=self.db_manager,
         )
 
         if sample_validation.has_conflict:
@@ -551,7 +559,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         try:
             # Check cache
             if not force_reassess:
-                cached = get_cached_assessment(document_id, self.version)
+                cached = get_cached_assessment(document_id, self.version, db_manager=self.db_manager)
                 if cached:
                     logger.info(f"Using cached assessment for document {document_id} (version {self.version})")
                     return cached
@@ -559,7 +567,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             logger.info(f"Performing fresh assessment for document {document_id}...")
 
             # Fetch document
-            document = get_document(document_id)
+            document = get_document(document_id, db_manager=self.db_manager)
 
             # Step 1: Ensure embeddings exist if document has full_text
             # This enables semantic search for LLM-first extraction
@@ -570,6 +578,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                     embeddings_ready = ensure_document_embeddings(
                         document_id=document_id,
                         document=document,
+                        db_manager=self.db_manager,
                     )
                     if embeddings_ready:
                         logger.info(f"Document {document_id} embeddings ready for semantic search")
@@ -594,6 +603,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                     model=self.model,
                     document=document,
                     hierarchy_config=hierarchy_config,
+                    db_manager=self.db_manager,
                 )
 
                 sample_size_score = extract_sample_size_llm(
@@ -602,6 +612,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                     model=self.model,
                     document=document,
                     scoring_config=scoring_config,
+                    db_manager=self.db_manager,
                 )
 
                 # No validation conflicts in LLM-first mode (LLM is primary)
@@ -631,7 +642,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             # Step 3: LLM assessments (same for both modes)
             methodological_quality_score = self._assess_methodological_quality(document, study_assessment)
             risk_of_bias_score = self._assess_risk_of_bias(document, study_assessment)
-            replication_status_score = check_replication_status(document_id)
+            replication_status_score = check_replication_status(document_id, db_manager=self.db_manager)
 
             # Compute final weight
             dimension_scores = {
@@ -665,7 +676,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             )
 
             # Store in database
-            store_assessment(result)
+            store_assessment(result, db_manager=self.db_manager)
 
             return result
 
@@ -703,14 +714,13 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         Raises:
             RuntimeError: If PDF ingestion fails (including a missing pdf_path)
+                or stores no full text (e.g. scanned PDF, failed UPDATE)
             Exception: Database and LLM failures are logged and re-raised
                 (see assess_paper).
         """
-        from ...database import get_db_manager
-
         try:
             # Step 1: Check if PDF ingestion is needed
-            document = get_document(document_id)
+            document = get_document(document_id, db_manager=self.db_manager)
             has_full_text = bool(document.get('full_text'))
 
             if pdf_path and not has_full_text:
@@ -722,7 +732,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 # Import here to avoid circular imports
                 from ...importers.pdf_ingestor import PDFIngestor
 
-                ingestor = PDFIngestor()
+                ingestor = PDFIngestor(db_manager=self.db_manager)
                 ingest_result = ingestor.ingest_pdf_immediate(
                     document_id=document_id,
                     pdf_path=pdf_path,
@@ -731,9 +741,13 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 if not ingest_result.success:
                     raise RuntimeError(f"PDF ingestion failed: {ingest_result.error_message}")
+                # Without stored text the assessment would silently score (and cache) the abstract
+                if not ingest_result.full_text_stored:
+                    reasons = "; ".join(ingest_result.warnings) or "no reason given"
+                    raise RuntimeError(f"PDF ingestion stored no full text: {reasons}")
 
                 # Refresh document data
-                document = get_document(document_id)
+                document = get_document(document_id, db_manager=self.db_manager)
 
                 if progress_callback:
                     progress_callback("ingesting", 1, 1)
@@ -789,7 +803,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         """
         from ...database import get_db_manager
 
-        db_manager = get_db_manager()
+        db_manager = self.db_manager or get_db_manager()
 
         try:
             with db_manager.get_connection() as conn:

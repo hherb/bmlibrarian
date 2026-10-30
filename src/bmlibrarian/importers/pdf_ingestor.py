@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
 
-from bmlibrarian.database import get_db_manager
+from bmlibrarian.database import DatabaseManager, get_db_manager
 from bmlibrarian.importers.pdf_converter import (
     get_converter,
     ConversionResult,
@@ -109,6 +109,7 @@ class PDFIngestor:
         converter_name: str = DEFAULT_CONVERTER,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        db_manager: Optional[DatabaseManager] = None,
     ) -> None:
         """
         Initialize the PDF ingestor.
@@ -119,8 +120,9 @@ class PDFIngestor:
             converter_name: Name of PDF converter to use (default: "pymupdf").
             chunk_size: Default chunk size for text chunking.
             chunk_overlap: Default overlap between chunks.
+            db_manager: Database to ingest into (default: the global manager).
         """
-        self.db_manager = get_db_manager()
+        self.db_manager = db_manager or get_db_manager()
 
         # Initialize PDF base directory
         if pdf_base_dir is None:
@@ -154,7 +156,7 @@ class PDFIngestor:
     def embedder(self) -> ChunkEmbedder:
         """Lazy-load the chunk embedder."""
         if self._embedder is None:
-            self._embedder = ChunkEmbedder()
+            self._embedder = ChunkEmbedder(db_manager=self.db_manager)
         return self._embedder
 
     def get_document(self, document_id: int) -> Optional[Dict[str, Any]]:

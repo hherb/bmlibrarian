@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Callable, Literal
 
-from bmlibrarian.database import get_db_manager
+from bmlibrarian.database import DatabaseManager, get_db_manager
 from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
 
 from ..config import get_ollama_host
@@ -188,6 +188,7 @@ class ChunkEmbedder:
         backend: Optional[EmbeddingBackend] = None,
         model_path: Optional[str] = None,
         n_ctx: Optional[int] = None,
+        db_manager: Optional[DatabaseManager] = None,
     ) -> None:
         """
         Initialize the chunk embedder.
@@ -205,6 +206,8 @@ class ChunkEmbedder:
                        If None with llama_cpp, will try to find Ollama's cached model.
             n_ctx: Context window size for llama_cpp backend.
                   If None, uses config["embeddings"]["n_ctx"].
+            db_manager: Database for the chunks and the ``embedding_models``
+                row (default: the global manager).
 
         Raises:
             ImportError: If required backend is not installed.
@@ -230,7 +233,7 @@ class ChunkEmbedder:
             n_ctx = embeddings_config.get("n_ctx", 8192)
 
         self.backend = backend
-        self.db_manager = get_db_manager()
+        self.db_manager = db_manager or get_db_manager()
         self.model_name = model_name
         self._llama_embedder = None
         self._st_embedder = None
@@ -850,31 +853,34 @@ class ChunkEmbedder:
 
                         # Store chunk with embedding
                         try:
-                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
-                            cur.execute(
-                                """
-                                INSERT INTO semantic.chunks (
-                                    document_id, model_id, chunk_size, chunk_overlap,
-                                    chunk_no, start_pos, end_pos, embedding
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
-                                DO UPDATE SET
-                                    start_pos = EXCLUDED.start_pos,
-                                    end_pos = EXCLUDED.end_pos,
-                                    embedding = EXCLUDED.embedding,
-                                    created_at = NOW()
-                                """,
-                                (
-                                    document_id,
-                                    self.model_id,
-                                    chunk_size,
-                                    overlap,
-                                    chunk_pos.chunk_no,
-                                    chunk_pos.start_pos,
-                                    chunk_pos.end_pos,
-                                    embedding_str,
-                                ),
-                            )
+                            # Savepoint per chunk: a failed INSERT would otherwise abort the
+                            # whole transaction and every later chunk would be lost at COMMIT.
+                            with conn.transaction():
+                                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                                cur.execute(
+                                    """
+                                    INSERT INTO semantic.chunks (
+                                        document_id, model_id, chunk_size, chunk_overlap,
+                                        chunk_no, start_pos, end_pos, embedding
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
+                                    DO UPDATE SET
+                                        start_pos = EXCLUDED.start_pos,
+                                        end_pos = EXCLUDED.end_pos,
+                                        embedding = EXCLUDED.embedding,
+                                        created_at = NOW()
+                                    """,
+                                    (
+                                        document_id,
+                                        self.model_id,
+                                        chunk_size,
+                                        overlap,
+                                        chunk_pos.chunk_no,
+                                        chunk_pos.start_pos,
+                                        chunk_pos.end_pos,
+                                        embedding_str,
+                                    ),
+                                )
                             chunks_created += 1
 
                         except Exception as e:

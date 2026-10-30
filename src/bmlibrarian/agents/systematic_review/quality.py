@@ -182,11 +182,13 @@ class QualityAssessor:
             config: Optional configuration
             callback: Optional progress callback
             orchestrator: Optional orchestrator for queue-based processing
-            db_manager: Database holding the results cache (default: the
-                global manager)
+            db_manager: Database holding the results cache and everything the
+                paper-weight sub-agent reads and writes (documents, chunks,
+                ``paper_weights``) (default: the global manager)
         """
         self.callback = callback
         self.orchestrator = orchestrator
+        self._db_manager = db_manager
 
         # Load config
         self._config = config or get_systematic_review_config()
@@ -379,6 +381,7 @@ class QualityAssessor:
                 callback=self.callback,
                 orchestrator=self.orchestrator,
                 show_model_info=False,
+                db_manager=self._db_manager,
             )
 
         return self._weight_agent

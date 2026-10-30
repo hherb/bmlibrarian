@@ -24,7 +24,12 @@ from .models import (
     DIMENSION_RISK_OF_BIAS,
     DIMENSION_REPLICATION_STATUS,
 )
-from ...database import get_db_manager, pmid_select_expr, pubmed_source_id
+from ...database import (
+    DatabaseManager,
+    get_db_manager,
+    pmid_select_expr,
+    pubmed_source_id,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +56,8 @@ PLACEHOLDER_REASONING_PREFIXES = (
 
 def get_cached_assessment(
     document_id: int,
-    version: str
+    version: str,
+    db_manager: Optional[DatabaseManager] = None,
 ) -> Optional[PaperWeightResult]:
     """
     Retrieve cached assessment from database.
@@ -61,6 +67,7 @@ def get_cached_assessment(
     Args:
         document_id: Database ID of document
         version: Assessor version to match
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         PaperWeightResult if cached, None otherwise (also when the cached row
@@ -72,7 +79,7 @@ def get_cached_assessment(
             tell a failure from an empty result.
     """
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Fetch assessment
@@ -247,7 +254,10 @@ def _reconstruct_result_from_db(
     )
 
 
-def store_assessment(result: PaperWeightResult) -> None:
+def store_assessment(
+    result: PaperWeightResult,
+    db_manager: Optional[DatabaseManager] = None,
+) -> None:
     """
     Store assessment in database with full audit trail.
 
@@ -256,9 +266,10 @@ def store_assessment(result: PaperWeightResult) -> None:
 
     Args:
         result: PaperWeightResult to store
+        db_manager: Database to use (default: the global manager)
     """
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Insert/update assessment
@@ -345,12 +356,16 @@ def store_assessment(result: PaperWeightResult) -> None:
         raise
 
 
-def get_document(document_id: int) -> dict:
+def get_document(
+    document_id: int,
+    db_manager: Optional[DatabaseManager] = None,
+) -> dict:
     """
     Fetch document from database by ID.
 
     Args:
         document_id: Database ID of document
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         Document dict with title, abstract, and full_text fields
@@ -359,7 +374,7 @@ def get_document(document_id: int) -> dict:
         ValueError: If document not found
     """
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -390,7 +405,10 @@ def get_document(document_id: int) -> dict:
         raise
 
 
-def check_replication_status(document_id: int) -> DimensionScore:
+def check_replication_status(
+    document_id: int,
+    db_manager: Optional[DatabaseManager] = None,
+) -> DimensionScore:
     """
     Check replication status from database.
 
@@ -399,6 +417,7 @@ def check_replication_status(document_id: int) -> DimensionScore:
 
     Args:
         document_id: Database ID of document
+        db_manager: Database to use (default: the global manager)
 
     Returns:
         DimensionScore for replication status
@@ -408,7 +427,7 @@ def check_replication_status(document_id: int) -> DimensionScore:
             tell a failure from an empty result.
     """
     try:
-        db_manager = get_db_manager()
+        db_manager = db_manager or get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Check for replications
