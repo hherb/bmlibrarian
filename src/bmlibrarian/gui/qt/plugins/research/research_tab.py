@@ -411,7 +411,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         """Rebuild the agents and workflow executor from the current settings.
 
         The main window's audit connection is reused (it returns it to the
-        pool on shutdown).
+        pool on shutdown); the old executor and orchestrator are released.
 
         Raises:
             Exception: Agent creation failed; the previous agents are kept
@@ -430,6 +430,10 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.agents = agents
         self._initialize_workflow_executor()
         self._agents_stale = False
+
+        old_orchestrator = old_agents.get('orchestrator')
+        if old_orchestrator is not None:
+            old_orchestrator.stop_processing()
         self.logger.info("Agents rebuilt successfully")
 
     # ========================================================================
@@ -519,7 +523,17 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                 return
 
             if self._agents_stale:
-                self._rebuild_agents()
+                try:
+                    self._rebuild_agents()
+                except Exception as e:
+                    self.logger.error(f"Agent rebuild failed: {e}", exc_info=True)
+                    QMessageBox.critical(
+                        self,
+                        "Settings Not Applied",
+                        f"Could not apply the changed settings:\n\n{e}\n\n"
+                        "Check the model and provider settings and try again."
+                    )
+                    return
 
             if not self.workflow_executor:
                 QMessageBox.critical(

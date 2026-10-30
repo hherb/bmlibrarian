@@ -23,7 +23,11 @@ off new work. Longer-term structural items live in
   workflow executor (it used to rebuild agents inline without audit tracking
   and keep running the old executor); a failed rebuild aborts that start
   with the error and is retried next time (only the research tab uses the
-  main window's agents). Tests: `tests/test_lab_tab_cleanup.py`,
+  main window's agents). Review follow-ups: the rebuild stops the old
+  orchestrator; a failed rebuild says "Settings Not Applied"; PICO/Study
+  lab `print`s are logger calls; `BaseAgent.test_connection` logs the
+  traceback. Open: the main Settings tab does not mark the research agents
+  stale (#372). Tests: `tests/test_lab_tab_cleanup.py`,
   `tests/test_qt_research_tab.py`, `tests/test_transparency_agent.py`.
 - **TransparencyAgent failures are surfaced** (2026-10-30, closes #274).
   `assess_transparency` raises `TransparencyAssessmentError` (reason in the

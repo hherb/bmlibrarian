@@ -5,6 +5,8 @@ Interactive interface for experimenting with PICOAgent and extracting
 Population, Intervention, Comparison, and Outcome components from research papers.
 """
 
+import logging
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QLineEdit, QComboBox, QSplitter,
@@ -21,6 +23,9 @@ from bmlibrarian.database import get_document_details, resolve_pdf_path
 from ...resources.styles import get_font_scale, scale_px
 from ...widgets import DocumentViewWidget, DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
+
+
+logger = logging.getLogger(__name__)
 
 
 class PICOExtractionWorker(QThread):
@@ -124,9 +129,9 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
                 orchestrator=self.orchestrator,
                 show_model_info=True
             )
-            print(f"✓ PICOAgent initialized with model: {default_model}")
+            logger.info(f"PICOAgent initialized with model: {default_model}")
         except Exception as e:
-            print(f"Warning: Failed to initialize PICOAgent: {e}")
+            logger.error(f"Failed to initialize PICOAgent: {e}", exc_info=True)
             self.pico_agent = None
 
     def _setup_ui(self):
@@ -643,4 +648,4 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
             try:
                 self.orchestrator.stop_processing()
             except Exception as e:
-                print(f"Warning: Error during orchestrator shutdown: {e}")
+                logger.error(f"Error during orchestrator shutdown: {e}", exc_info=True)

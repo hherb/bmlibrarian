@@ -878,9 +878,14 @@ class TestTransparencyAgentMalformedResponses:
     ) -> None:
         """An all-failed batch is not mistaken for empty input."""
         docs = [dict(SAMPLE_TRANSPARENT_DOCUMENT, id=i) for i in (1, 2, 3)]
+        progress = Mock()
 
         agent = TransparencyAgent(show_model_info=False)
-        result = agent.assess_batch(docs)
+        with patch.object(TransparencyAgent, '_assess_document') as mock_assess:
+            result = agent.assess_batch(docs, progress_callback=progress)
+
+        mock_assess.assert_not_called()  # nothing is sent to the unavailable LLM
+        assert progress.call_count == 3
 
         assert result.assessments == []
         assert [doc_id for doc_id, _ in result.failures] == ["1", "2", "3"]
@@ -890,6 +895,15 @@ class TestTransparencyAgentMalformedResponses:
         assert stats["failed_assessments"] == 3
         assert stats["success_rate"] == 0.0
         mock_conn.assert_called_once()
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    def test_empty_batch_skips_connection_check(self, mock_conn: Mock) -> None:
+        """An empty batch makes no provider round-trip."""
+        result = TransparencyAgent(show_model_info=False).assess_batch([])
+
+        assert result.assessments == []
+        assert result.failures == []
+        mock_conn.assert_not_called()
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json', side_effect=RuntimeError("boom"))

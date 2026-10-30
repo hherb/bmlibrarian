@@ -746,7 +746,7 @@ class BaseAgent(ABC):
             return True
 
         except Exception as e:
-            logger.error(f"Failed to connect to LLM provider: {e}")
+            logger.error(f"Failed to connect to LLM provider: {e}", exc_info=True)
             return False
 
     def get_available_models(self) -> list[str]:
