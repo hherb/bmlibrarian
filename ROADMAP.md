@@ -45,7 +45,9 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 - **Route the remaining direct `psycopg.connect()` callers through
   `DatabaseManager`** so the pytest production guard (`db_test_guard.py`,
   PR #270) covers them: `db_import_profile.py` (ALTER SYSTEM / restart),
-  `app.py`, `fulltext_discovery_cli.py`, `paperchecker/database.py`, the Qt
+  `app.py`, `fulltext_discovery_cli.py`, `paperchecker/database.py`,
+  `transparency_analyzer_cli.py` (its own `.env` loading too, so it ignores
+  `BMLIBRARIAN_ENV_FILE`), the Qt
   login in `gui/qt/core/application.py`, and ~10 more. Today the guard only
   makes `DatabaseManager` / `MigrationManager` connections read-only; these
   paths could still write to production under pytest. Also golden rule 5.
@@ -202,16 +204,6 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 - [#252](https://github.com/hherb/bmlibrarian/issues/252) —
   `SemanticChunkProcessor` still speaks the old ollama API and is
   unreachable: wire it onto `LLMClient` or delete it.
-- [#273](https://github.com/hherb/bmlibrarian/issues/273) — Fact-checker
-  records infrastructure failures (DB/Ollama down) as `maybe` verdicts.
-- [#274](https://github.com/hherb/bmlibrarian/issues/274) —
-  TransparencyAgent failure reasons and batch failures are not surfaced to
-  callers.
-- [#275](https://github.com/hherb/bmlibrarian/issues/275) — `paper_weight/db.py`
-  query helpers return `[]`/`None` on database errors.
-- [#317](https://github.com/hherb/bmlibrarian/issues/317) — Find PDF: a PDF
-  found via a CrossRef-guessed DOI is attached without a prompt when its
-  re-verification crashes (`verified is None`).
 
 ## Out of scope for now
 

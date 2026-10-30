@@ -10,6 +10,26 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **TransparencyAgent failures are surfaced** (2026-10-30, closes #274).
+  `assess_transparency` raises `TransparencyAssessmentError` (reason in the
+  message: no Ollama, no text, unparseable/invalid LLM reply, request
+  failure) instead of returning `None`; `assess_batch` returns
+  `TransparencyBatchResult(assessments, failures=[(doc_id, reason)])`;
+  `total_assessments` counts every attempt (body moved to
+  `_assess_document`). `TransparencyAssessment.low_confidence` is set below
+  `min_confidence` (summary shows "LOW CONFIDENCE"; not a DB column).
+  Unrated `funding_disclosure_quality` / `coi_disclosure_quality` /
+  `industry_funding_confidence` are `None` ("not assessed", NULL in the DB;
+  CLI reloads no longer turn NULL into 0.0; older rows hold 0.0). CLI
+  `assess` prints "FAILED: N of M" plus each reason and exits 1; the lab
+  shows the reason. Also fixed: `enrich_with_metadata` and the lab's
+  document loader imported a nonexistent `bmlibrarian.database.get_db_connection`,
+  so **every CLI `assess` crashed after the batch, before saving**, and
+  the lab could not load any document; both use
+  `get_db_manager().get_connection()` now, and an enrichment DB error is a
+  warning (was debug, "table may not exist"; migration 029 creates it).
+  Tests: `tests/test_transparency_agent.py`,
+  `tests/test_transparency_analyzer_cli.py`.
 - **Paper-weight sub-agent reads the review's database** (2026-10-30,
   closes #366). `PaperWeightAssessmentAgent(db_manager=)` (from
   `QualityAssessor`) reaches every DB step of `assess_paper`/
@@ -342,8 +362,6 @@ value — pick one, or pull an item from ROADMAP.md:
 - #357 (unmarked pre-#349 paper-weight placeholders still served from the
   cache) and #358 (`find_sample_size` misreads "1,234"); both hinge on
   whether to bump `PaperWeightAssessmentAgent.VERSION` (full re-run).
-- Open bugs from recent slices: #274 (the "failure looks like a result"
-  pattern in TransparencyAgent).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -388,7 +406,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
-  (#366 branch): **4585 passed, 50 skipped** in ~9 min. Without
+  (#274 branch): **4595 passed, 50 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

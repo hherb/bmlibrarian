@@ -338,10 +338,11 @@ def cmd_assess(args: argparse.Namespace) -> None:
         """Display progress during batch assessment."""
         print(f"  [{current}/{total}] {title[:60]}...")
 
-    assessments = agent.assess_batch(
+    result = agent.assess_batch(
         documents,
         progress_callback=progress_callback,
     )
+    assessments = result.assessments
 
     # Optionally enrich with bulk metadata
     for assessment in assessments:
@@ -361,6 +362,8 @@ def cmd_assess(args: argparse.Namespace) -> None:
     # Print results
     print(f"\n{'='*60}")
     print(f"Assessment Complete: {len(assessments)} of {len(documents)} documents assessed")
+    if result.failures:
+        print(f"FAILED: {len(result.failures)} of {len(documents)} documents")
     print(f"Saved to database: {saved_count}")
     print(f"{'='*60}\n")
 
@@ -382,6 +385,12 @@ def cmd_assess(args: argparse.Namespace) -> None:
         else:
             agent.export_to_json(assessments, args.output)
         print(f"\nResults exported to: {args.output}")
+
+    if result.failures:
+        print(f"\n--- NOT ASSESSED ({len(result.failures)}) ---")
+        for doc_id, reason in result.failures:
+            print(f"  Document {doc_id}: {reason}")
+        sys.exit(1)
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -506,12 +515,12 @@ def cmd_show(args: argparse.Namespace) -> None:
         funding_statement=row[5],
         funding_sources=row[6] or [],
         is_industry_funded=row[7],
-        industry_funding_confidence=row[8] or 0.0,
-        funding_disclosure_quality=row[9] or 0.0,
+        industry_funding_confidence=row[8],
+        funding_disclosure_quality=row[9],
         has_coi_disclosure=row[10] or False,
         coi_statement=row[11],
         conflicts_identified=row[12] or [],
-        coi_disclosure_quality=row[13] or 0.0,
+        coi_disclosure_quality=row[13],
         data_availability=row[14] or "not_stated",
         data_availability_statement=row[15],
         has_author_contributions=row[16] or False,
@@ -577,9 +586,9 @@ def cmd_export(args: argparse.Namespace) -> None:
             has_funding_disclosure=row[6] or False,
             funding_sources=row[7] or [],
             is_industry_funded=row[8],
-            funding_disclosure_quality=row[9] or 0.0,
+            funding_disclosure_quality=row[9],
             has_coi_disclosure=row[10] or False,
-            coi_disclosure_quality=row[11] or 0.0,
+            coi_disclosure_quality=row[11],
             data_availability=row[12] or "not_stated",
             has_author_contributions=row[13] or False,
             has_trial_registration=row[14] or False,

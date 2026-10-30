@@ -186,6 +186,20 @@ The overall confidence (0-1) indicates how reliable the assessment is. Lower con
 - Ambiguous or unclear disclosures
 - Non-standard formatting
 
+Below 0.4 the summary shows "LOW CONFIDENCE" next to it: treat such an assessment as a hint, not a finding. A disclosure quality the model did not rate is shown as "not assessed" (not 0%, which would mean the worst disclosure).
+
+### Documents That Could Not Be Assessed
+A document fails instead of getting a made-up score when Ollama is unreachable, the document has no text, or the model's answer is unusable. `assess` prints how many failed and why, e.g.:
+
+```
+FAILED: 2 of 50 documents
+--- NOT ASSESSED (2) ---
+  Document 123: No text found for document 123
+  Document 456: Missing required fields ['transparency_score'] in assessment response for document 456
+```
+
+and exits with status 1. The successful assessments are still saved. Retry a failed document with `assess --doc-id <id>` (re-running the original command re-assesses every matching document). The Transparency Lab shows the reason in its results panel.
+
 ## Offline Capability
 
 The transparency assessment system is designed for fully offline operation:
