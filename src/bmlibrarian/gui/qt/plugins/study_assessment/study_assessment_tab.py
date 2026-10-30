@@ -937,6 +937,6 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
 
         if self.orchestrator:
             try:
-                self.orchestrator.shutdown()
+                self.orchestrator.stop_processing()
             except Exception as e:
                 print(f"Warning: Error during orchestrator shutdown: {e}")

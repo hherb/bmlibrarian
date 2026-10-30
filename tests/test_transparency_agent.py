@@ -480,6 +480,7 @@ class TestTransparencyAgent:
         assert len(result.assessments) == 2
         assert result.failures == []
         assert len(progress_calls) == 2
+        mock_conn.assert_called_once()  # once per batch, not per document (#370)
         assert progress_calls[0] == (1, 2, SAMPLE_TRANSPARENT_DOCUMENT["title"])
 
     def test_get_agent_type(self) -> None:
@@ -888,6 +889,7 @@ class TestTransparencyAgentMalformedResponses:
         assert stats["total_assessments"] == 3
         assert stats["failed_assessments"] == 3
         assert stats["success_rate"] == 0.0
+        mock_conn.assert_called_once()
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json', side_effect=RuntimeError("boom"))
