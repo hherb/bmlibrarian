@@ -32,13 +32,17 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg
 from dotenv import load_dotenv
 
-from src.bmlibrarian.agents import TransparencyAgent, TransparencyAssessment
-from src.bmlibrarian.agents.transparency_data import RiskLevel
+from src.bmlibrarian.agents import (
+    TransparencyAgent,
+    TransparencyAssessment,
+    TransparencyAssessmentError,
+)
+from src.bmlibrarian.agents.transparency_data import DEFAULT_MIN_CONFIDENCE, RiskLevel
 from src.bmlibrarian.config import BMLibrarianConfig
 
 logger = logging.getLogger(__name__)
@@ -210,12 +214,14 @@ def save_assessment(
     Args:
         conn: Database connection.
         assessment: TransparencyAssessment to save.
+
+    Raises:
+        ValueError: The document_id is not numeric.
     """
     try:
         doc_id = int(assessment.document_id)
-    except (ValueError, TypeError):
-        logger.warning(f"Cannot save assessment - non-numeric document_id: {assessment.document_id}")
-        return
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"non-numeric document_id: {assessment.document_id!r}") from e
 
     with conn.cursor() as cur:
         cur.execute(
@@ -342,20 +348,29 @@ def cmd_assess(args: argparse.Namespace) -> None:
         documents,
         progress_callback=progress_callback,
     )
-    assessments = result.assessments
-
-    # Optionally enrich with bulk metadata
-    for assessment in assessments:
-        agent.enrich_with_metadata(assessment)
+    # Enrich with bulk metadata; without it the retraction status is unknown,
+    # so such an assessment is a failure, not a "not retracted" result
+    assessments: List[TransparencyAssessment] = []
+    for assessment in result.assessments:
+        try:
+            agent.enrich_with_metadata(assessment)
+        except TransparencyAssessmentError as e:
+            result.failures.append((assessment.document_id, str(e)))
+            continue
+        assessments.append(assessment)
 
     # Save to database
     saved_count = 0
+    unsaved: List[Tuple[str, str]] = []
     for assessment in assessments:
         try:
             save_assessment(conn, assessment)
             saved_count += 1
         except Exception as e:
+            # A failed statement aborts the transaction; later saves need a clean one
+            conn.rollback()
             logger.error(f"Failed to save assessment for document {assessment.document_id}: {e}")
+            unsaved.append((assessment.document_id, str(e)))
 
     conn.close()
 
@@ -377,19 +392,23 @@ def cmd_assess(args: argparse.Namespace) -> None:
         for level, count in risk_dist.items():
             print(f"  {level.upper()}: {count}")
 
+    # Listed before the export so a failed export cannot hide them
+    for heading, problems in (("NOT ASSESSED", result.failures), ("NOT SAVED", unsaved)):
+        if problems:
+            print(f"\n--- {heading} ({len(problems)}) ---")
+            for doc_id, reason in problems:
+                print(f"  Document {doc_id}: {reason}")
+
     # Export if requested
     if args.output:
         output_path = Path(args.output)
         if output_path.suffix == ".csv":
             agent.export_to_csv(assessments, args.output)
         else:
-            agent.export_to_json(assessments, args.output)
+            agent.export_to_json(assessments, args.output, failures=result.failures)
         print(f"\nResults exported to: {args.output}")
 
-    if result.failures:
-        print(f"\n--- NOT ASSESSED ({len(result.failures)}) ---")
-        for doc_id, reason in result.failures:
-            print(f"  Document {doc_id}: {reason}")
+    if result.failures or unsaved:
         sys.exit(1)
 
 
@@ -511,6 +530,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         transparency_score=row[1] or 0.0,
         risk_level=row[2] or "unknown",
         overall_confidence=row[3] or 0.0,
+        # Not stored; `assess` always runs with the default threshold
+        low_confidence=(row[3] or 0.0) < DEFAULT_MIN_CONFIDENCE,
         has_funding_disclosure=row[4] or False,
         funding_statement=row[5],
         funding_sources=row[6] or [],
@@ -561,7 +582,8 @@ def cmd_export(args: argparse.Namespace) -> None:
                    a.data_availability, a.has_author_contributions,
                    a.has_trial_registration, a.trial_registry_ids,
                    a.risk_indicators, a.strengths, a.weaknesses,
-                   a.is_retracted, a.trial_sponsor_class
+                   a.is_retracted, a.trial_sponsor_class,
+                   a.industry_funding_confidence
             FROM transparency.assessments a
             JOIN public.document d ON d.id = a.document_id
             ORDER BY a.transparency_score ASC
@@ -583,6 +605,8 @@ def cmd_export(args: argparse.Namespace) -> None:
             transparency_score=row[3] or 0.0,
             risk_level=row[4] or "unknown",
             overall_confidence=row[5] or 0.0,
+            # Not stored; `assess` always runs with the default threshold
+            low_confidence=(row[5] or 0.0) < DEFAULT_MIN_CONFIDENCE,
             has_funding_disclosure=row[6] or False,
             funding_sources=row[7] or [],
             is_industry_funded=row[8],
@@ -598,6 +622,7 @@ def cmd_export(args: argparse.Namespace) -> None:
             weaknesses=row[18] or [],
             is_retracted=row[19],
             trial_sponsor_class=row[20],
+            industry_funding_confidence=row[21],
         )
         assessments.append(assessment)
 

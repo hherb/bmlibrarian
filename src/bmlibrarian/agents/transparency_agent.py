@@ -35,7 +35,7 @@ import csv
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .base import BaseAgent
 from .transparency_data import (
@@ -216,20 +216,25 @@ class TransparencyAgent(BaseAgent):
 
         Raises:
             TransparencyAssessmentError: The document could not be assessed
-                (no Ollama connection, no text, unparseable or invalid LLM
-                response, request failure); the message gives the reason.
+                (LLM provider unreachable or model missing, no text,
+                unparseable or invalid LLM response, request failure); the
+                message gives the reason. Any other exception (e.g. an LLM provider timeout) is logged
+                with its traceback and re-raised as this error.
         """
         self._assessment_stats["total_assessments"] += 1
         try:
             assessment = self._assess_document(document, min_confidence)
         except Exception as e:
             self._assessment_stats["failed_assessments"] += 1
+            expected = isinstance(e, TransparencyAssessmentError)
             logger.error(
                 f"Transparency assessment failed for document "
                 f"{document.get('id', 'unknown')}: {e}",
-                exc_info=not isinstance(e, TransparencyAssessmentError),
+                exc_info=not expected,
             )
-            raise
+            if expected:
+                raise
+            raise TransparencyAssessmentError(f"{type(e).__name__}: {e}") from e
         self._assessment_stats["successful_assessments"] += 1
         return assessment
 
@@ -252,7 +257,8 @@ class TransparencyAgent(BaseAgent):
         """
         if not self.test_connection():
             raise TransparencyAssessmentError(
-                "Cannot connect to Ollama - transparency assessment unavailable"
+                f"LLM provider unreachable or model {self.model} not available "
+                f"- transparency assessment unavailable"
             )
 
         doc_id = document.get("id", "unknown")
@@ -587,10 +593,6 @@ class TransparencyAgent(BaseAgent):
             except TransparencyAssessmentError as e:
                 result.failures.append((doc_id, str(e)))
                 continue
-            except Exception as e:
-                # Unexpected (already logged with traceback): finish the batch
-                result.failures.append((doc_id, f"Unexpected error: {e}"))
-                continue
 
             result.assessments.append(assessment)
             logger.debug(f"Assessed transparency for document {doc_id}")
@@ -613,15 +615,18 @@ class TransparencyAgent(BaseAgent):
         information about the document (grants, retraction status, trial
         sponsor classification) and merges it into the assessment.
 
-        A database error is logged as a warning and leaves the assessment
-        unenriched (e.g. a retraction is not flagged); it does not raise, so
-        a batch can still save its assessments.
+        A document with no metadata row is left unchanged. A database error
+        raises: an unenriched assessment would claim "not retracted" without
+        having checked, and saving it would overwrite a stored retraction.
 
         Args:
             assessment: The assessment to enrich.
 
         Returns:
             The enriched assessment (modified in-place and returned).
+
+        Raises:
+            TransparencyAssessmentError: The metadata lookup failed.
         """
         from bmlibrarian.database import get_db_manager
 
@@ -671,10 +676,14 @@ class TransparencyAgent(BaseAgent):
                 logger.debug(f"Enriched assessment for document {doc_id} with bulk metadata")
 
         except Exception as e:
-            logger.warning(
+            logger.error(
                 f"Could not enrich transparency assessment for document {doc_id} "
-                f"with bulk metadata (retraction/sponsor data not applied): {e}"
+                f"with bulk metadata: {e}"
             )
+            raise TransparencyAssessmentError(
+                f"Metadata lookup failed for document {doc_id} "
+                f"(retraction/sponsor status unknown): {e}"
+            ) from e
 
         return assessment
 
@@ -909,17 +918,24 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         self,
         assessments: List[TransparencyAssessment],
         output_file: str,
+        failures: Optional[List[Tuple[str, str]]] = None,
     ) -> None:
         """Export transparency assessments to JSON file.
 
         Args:
             assessments: List of TransparencyAssessment objects.
             output_file: Path to output JSON file.
+            failures: ``(document_id, reason)`` for documents that were not
+                assessed, so the file does not pass for the complete set.
         """
         data = {
             "assessments": [a.to_dict() for a in assessments],
             "metadata": {
                 "total_assessments": len(assessments),
+                "failures": [
+                    {"document_id": doc_id, "reason": reason}
+                    for doc_id, reason in failures or []
+                ],
                 "assessment_date": datetime.now(timezone.utc).isoformat(),
                 "agent_model": self.model,
                 "agent_version": self.VERSION,

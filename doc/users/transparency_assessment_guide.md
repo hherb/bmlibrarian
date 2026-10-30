@@ -189,16 +189,19 @@ The overall confidence (0-1) indicates how reliable the assessment is. Lower con
 Below 0.4 the summary shows "LOW CONFIDENCE" next to it: treat such an assessment as a hint, not a finding. A disclosure quality the model did not rate is shown as "not assessed" (not 0%, which would mean the worst disclosure).
 
 ### Documents That Could Not Be Assessed
-A document fails instead of getting a made-up score when Ollama is unreachable, the document has no text, or the model's answer is unusable. `assess` prints how many failed and why, e.g.:
+A document fails instead of getting a made-up score when Ollama is unreachable or the model request fails (e.g. times out), the document has no text, the model's answer is unusable, or the retraction/sponsor lookup in the database fails (the result would otherwise claim "not retracted" without having checked, and overwrite a stored retraction). `assess` prints how many failed and why, e.g.:
 
 ```
 FAILED: 2 of 50 documents
+...
 --- NOT ASSESSED (2) ---
   Document 123: No text found for document 123
   Document 456: Missing required fields ['transparency_score'] in assessment response for document 456
 ```
 
-and exits with status 1. The successful assessments are still saved. Retry a failed document with `assess --doc-id <id>` (re-running the original command re-assesses every matching document). The Transparency Lab shows the reason in its results panel.
+An assessment that could not be saved is listed under `--- NOT SAVED ---`. Either list makes `assess` exit with status 1. The successful assessments are still saved, and with `--output` exported; a JSON export names the failed documents under `metadata.failures`. Retry a failed document with `assess --doc-id <id>` (re-running the original command re-assesses every matching document). The Transparency Lab shows the reason in its results panel.
+
+`show` and `export` mark an assessment "LOW CONFIDENCE" from its stored confidence and the default 0.4 threshold. Assessments saved before 2026-10-30 store 0% for a quality the model did not rate, so for those rows 0% may mean "not assessed".
 
 ## Offline Capability
 

@@ -424,7 +424,7 @@ class TestTransparencyAgent:
     def test_no_connection(self, mock_conn: Mock) -> None:
         """Test handling of no Ollama connection."""
         agent = TransparencyAgent(show_model_info=False)
-        with pytest.raises(TransparencyAssessmentError, match="Cannot connect to Ollama"):
+        with pytest.raises(TransparencyAssessmentError, match="model .* not available"):
             agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
 
     def test_no_text(self) -> None:
@@ -851,13 +851,12 @@ class TestTransparencyAgentMalformedResponses:
         assert stats["success_rate"] == 0.5
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
-    @patch.object(TransparencyAgent, 'assess_transparency')
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
     def test_batch_survives_unexpected_exception(
-        self, mock_assess: Mock, mock_conn: Mock,
+        self, mock_generate: Mock, mock_conn: Mock,
     ) -> None:
-        """An unexpected exception for one document is logged and skipped."""
-        good = Mock()
-        mock_assess.side_effect = [RuntimeError("boom"), good]
+        """An unexpected exception for one document is recorded with its type."""
+        mock_generate.side_effect = [RuntimeError("boom"), EXPECTED_TRANSPARENT_RESPONSE]
         progress = Mock()
 
         agent = TransparencyAgent(show_model_info=False)
@@ -866,9 +865,9 @@ class TestTransparencyAgentMalformedResponses:
             progress_callback=progress,
         )
 
-        assert result.assessments == [good]
+        assert len(result.assessments) == 1
         assert result.failures == [
-            (str(SAMPLE_TRANSPARENT_DOCUMENT["id"]), "Unexpected error: boom")
+            (str(SAMPLE_TRANSPARENT_DOCUMENT["id"]), "RuntimeError: boom")
         ]
         assert progress.call_count == 2
 
@@ -884,7 +883,7 @@ class TestTransparencyAgentMalformedResponses:
 
         assert result.assessments == []
         assert [doc_id for doc_id, _ in result.failures] == ["1", "2", "3"]
-        assert all("Cannot connect to Ollama" in reason for _, reason in result.failures)
+        assert all("not available" in reason for _, reason in result.failures)
         stats = agent.get_assessment_stats()
         assert stats["total_assessments"] == 3
         assert stats["failed_assessments"] == 3
@@ -895,14 +894,34 @@ class TestTransparencyAgentMalformedResponses:
     def test_unexpected_exception_counts_as_failed_attempt(
         self, mock_generate: Mock, mock_conn: Mock,
     ) -> None:
-        """failed_assessments can never exceed total_assessments."""
+        """An unexpected error surfaces as TransparencyAssessmentError and is counted."""
         agent = TransparencyAgent(show_model_info=False)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(TransparencyAssessmentError, match="RuntimeError: boom") as exc:
             agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
 
+        assert isinstance(exc.value.__cause__, RuntimeError)
         stats = agent.get_assessment_stats()
         assert stats["total_assessments"] == 1
         assert stats["failed_assessments"] == 1
+
+    @pytest.mark.parametrize("error", [ConnectionError("refused"), ValueError("bad model")])
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_request_failure_raises_and_counts_once(
+        self, mock_generate: Mock, mock_conn: Mock, error,
+    ) -> None:
+        """A request failure is not mistaken for a parse failure (JSONDecodeError is a ValueError)."""
+        mock_generate.side_effect = error
+
+        agent = TransparencyAgent(show_model_info=False)
+        with pytest.raises(TransparencyAssessmentError, match="Ollama request failed") as exc:
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert exc.value.__cause__ is error
+        stats = agent.get_assessment_stats()
+        assert stats["total_assessments"] == 1
+        assert stats["failed_assessments"] == 1
+        assert stats["parse_failures"] == 0
 
     @pytest.mark.parametrize("confidence, flagged", [(0.3, True), (0.4, False), (0.9, False)])
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
@@ -971,19 +990,47 @@ class TestTransparencyAgentMalformedResponses:
         assert assessment.industry_funding_confidence == 0.95
         assert assessment.trial_registry_ids == ["NCT87654321"]
 
-    def test_enrich_db_error_is_a_warning_not_a_crash(self, caplog) -> None:
-        """A DB error leaves the assessment unenriched and is logged visibly."""
+    def test_enrich_db_error_raises(self, caplog) -> None:
+        """A DB error raises: an unchecked retraction status must not pass as 'not retracted'."""
         manager = MagicMock()
         manager.get_connection.side_effect = RuntimeError("connection refused")
         assessment = TransparencyAssessment(document_id="42", document_title="t")
 
         agent = TransparencyAgent(show_model_info=False)
         with patch("bmlibrarian.database.get_db_manager", return_value=manager):
-            with caplog.at_level("WARNING"):
-                assert agent.enrich_with_metadata(assessment) is assessment
+            with caplog.at_level("ERROR"):
+                with pytest.raises(TransparencyAssessmentError, match="retraction/sponsor status unknown"):
+                    agent.enrich_with_metadata(assessment)
+
+        assert "connection refused" in caplog.text
+
+    def test_enrich_without_metadata_row_leaves_assessment_unchanged(self) -> None:
+        """No metadata for the document is not an error."""
+        assessment = TransparencyAssessment(document_id="42", document_title="t")
+
+        agent = TransparencyAgent(show_model_info=False)
+        with patch("bmlibrarian.database.get_db_manager",
+                   return_value=self._db_manager_returning(None)):
+            assert agent.enrich_with_metadata(assessment) is assessment
 
         assert assessment.is_retracted is None
-        assert "connection refused" in caplog.text
+        assert assessment.risk_indicators == []
+
+    def test_export_json_lists_failures(self, tmp_path) -> None:
+        """Failed documents are named in the exported file's metadata."""
+        out = tmp_path / "r.json"
+        agent = TransparencyAgent(show_model_info=False)
+        agent.export_to_json(
+            [TransparencyAssessment(document_id="1", document_title="t")],
+            str(out),
+            failures=[("2", "No text found for document 2")],
+        )
+
+        metadata = json.loads(out.read_text())["metadata"]
+        assert metadata["total_assessments"] == 1
+        assert metadata["failures"] == [
+            {"document_id": "2", "reason": "No text found for document 2"}
+        ]
 
     def test_score_distribution_keys_and_counts(self) -> None:
         """get_score_distribution uses half-open, risk-aligned buckets."""

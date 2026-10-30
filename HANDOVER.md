@@ -26,10 +26,16 @@ off new work. Longer-term structural items live in
   document loader imported a nonexistent `bmlibrarian.database.get_db_connection`,
   so **every CLI `assess` crashed after the batch, before saving**, and
   the lab could not load any document; both use
-  `get_db_manager().get_connection()` now, and an enrichment DB error is a
-  warning (was debug, "table may not exist"; migration 029 creates it).
-  Tests: `tests/test_transparency_agent.py`,
-  `tests/test_transparency_analyzer_cli.py`.
+  `get_db_manager().get_connection()` now. Review follow-ups: an enrichment
+  DB error raises (was debug, "table may not exist"; migration 029 creates
+  it) and the CLI skips saving that document, since its upsert would reset
+  a stored `is_retracted`; non-`TransparencyAssessmentError` exceptions
+  (LLM timeouts etc.) are wrapped into it; a failed save rolls back, is
+  listed as "NOT SAVED" and exits 1; `export` now reads
+  `industry_funding_confidence` (was never selected); `show`/`export`
+  rebuild `low_confidence`; JSON export lists failures. Tests:
+  `tests/test_transparency_agent.py`, `tests/test_transparency_analyzer_cli.py`,
+  `tests/test_transparency_lab_worker.py`.
 - **Paper-weight sub-agent reads the review's database** (2026-10-30,
   closes #366). `PaperWeightAssessmentAgent(db_manager=)` (from
   `QualityAssessor`) reaches every DB step of `assess_paper`/
@@ -406,7 +412,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
-  (#274 branch): **4595 passed, 50 skipped** in ~9 min. Without
+  (#274 branch): **4608 passed, 50 skipped** in ~9 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

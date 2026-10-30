@@ -141,7 +141,7 @@ BaseAgent
 
 #### `assess_transparency(document, min_confidence=0.4)`
 
-Main entry point. Accepts a document dict (with `title`, `full_text` or `abstract`, `id`, `doi`, `pmid` fields). Returns a `TransparencyAssessment`, or raises `TransparencyAssessmentError` whose message gives the reason (no Ollama connection, no text, unparseable or invalid LLM response, request failure). Every call counts in `total_assessments`; a failure (of any exception type) also in `failed_assessments`, so `success_rate` = successful / attempted.
+Main entry point. Accepts a document dict (with `title`, `full_text` or `abstract`, `id`, `doi`, `pmid` fields). Returns a `TransparencyAssessment`, or raises `TransparencyAssessmentError` whose message gives the reason (no Ollama connection, no text, unparseable or invalid LLM response, request failure). Any other exception (e.g. an LLM provider timeout, which `LLMClient` re-raises in the provider's own type) is logged with its traceback and re-raised as `TransparencyAssessmentError("<Type>: <message>")`, chained to the original, so callers only need to catch one type. Every call counts in `total_assessments`; a failure also in `failed_assessments`, so `success_rate` = successful / attempted.
 
 Flow:
 1. Extract text (prefer `full_text`, fall back to `abstract`)
@@ -161,7 +161,7 @@ Convenience method that fetches document from database by ID, then calls `assess
 
 #### `assess_batch(documents, progress_callback=None)`
 
-Processes multiple documents sequentially with optional progress callback and returns a `TransparencyBatchResult`: `assessments` (successes, in input order) and `failures`, a list of `(document_id, reason)`. A failure for one document never aborts the batch. `transparency_analyzer_cli.py assess` prints "FAILED: N of M documents" and each reason, and exits 1 if any document failed (successful ones are still saved and exported).
+Processes multiple documents sequentially with optional progress callback and returns a `TransparencyBatchResult`: `assessments` (successes, in input order) and `failures`, a list of `(document_id, reason)`. A failure for one document never aborts the batch. `transparency_analyzer_cli.py assess` then runs `enrich_with_metadata` on each success; that raises `TransparencyAssessmentError` on a database error (an unenriched assessment would carry `is_retracted` unset and its upsert would overwrite a stored retraction), so the CLI moves such a document to the failures instead of saving it. A failed save is rolled back (psycopg aborts the transaction otherwise, failing every later save) and listed under "NOT SAVED". The CLI prints "FAILED: N of M documents", each reason, and exits 1 if anything failed or was not saved; successful ones are still saved and exported, and `export_to_json(..., failures=)` writes the failures under `metadata.failures`. `show`/`export` rebuild `low_confidence` from the stored `overall_confidence` and `DEFAULT_MIN_CONFIDENCE` (the threshold `assess` always uses).
 
 #### `get_score_distribution(assessments)`
 
