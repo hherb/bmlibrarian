@@ -71,7 +71,13 @@ from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep, WorkflowTim
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 from .factory import AgentFactory
 from .transparency_agent import TransparencyAgent
-from .transparency_data import TransparencyAssessment, RiskLevel, DataAvailability
+from .transparency_data import (
+    TransparencyAssessment,
+    TransparencyAssessmentError,
+    TransparencyBatchResult,
+    RiskLevel,
+    DataAvailability,
+)
 from .paper_reviewer import (
     PaperReviewerAgent,
     PaperReviewResult,
@@ -143,6 +149,8 @@ __all__ = [
     # Transparency
     "TransparencyAgent",
     "TransparencyAssessment",
+    "TransparencyAssessmentError",
+    "TransparencyBatchResult",
     "RiskLevel",
     "DataAvailability",
     # Paper Reviewer

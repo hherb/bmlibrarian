@@ -19,19 +19,23 @@ Usage:
     from bmlibrarian.agents import TransparencyAgent, TransparencyAssessment
 
     agent = TransparencyAgent()
-    assessment = agent.assess_transparency(document)
-    if assessment:
+    try:
+        assessment = agent.assess_transparency(document)
+    except TransparencyAssessmentError as e:
+        print(f"Not assessed: {e}")
+    else:
         print(agent.format_assessment_summary(assessment))
 
-    # Batch processing
-    assessments = agent.assess_batch(documents, progress_callback=my_callback)
+    # Batch processing: failures are collected, not raised
+    result = agent.assess_batch(documents, progress_callback=my_callback)
+    print(f"{len(result.failures)} of {len(documents)} failed")
 """
 
 import csv
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .base import BaseAgent
 from .transparency_data import (
@@ -44,12 +48,15 @@ from .transparency_data import (
     MIN_TRANSPARENCY_SCORE,
     MIN_UNIT_VALUE,
     PATTERN_INDUSTRY_MIN_CONFIDENCE,
+    SPONSOR_INDUSTRY_MIN_CONFIDENCE,
     SUMMARY_SEPARATOR_WIDTH,
     SCORE_THRESHOLD_HIGH_RISK,
     SCORE_THRESHOLD_MEDIUM_RISK,
     DataAvailability,
     RiskLevel,
     TransparencyAssessment,
+    TransparencyAssessmentError,
+    TransparencyBatchResult,
     coerce_bounded_float,
     coerce_data_availability,
     coerce_optional_bool,
@@ -72,18 +79,18 @@ REQUIRED_ASSESSMENT_FIELDS = (
     "overall_confidence",
 )
 
-# Numeric LLM fields: name -> (minimum, maximum, default if missing/invalid).
-# A default of None means the field is required: a missing, non-numeric or
-# out-of-range value fails the assessment (out of range usually means the
-# model answered on the wrong scale, e.g. 0-100, and clamping would turn that
-# into the most favourable score). Optional fields fall back to the default
-# and out-of-range values are clamped, both with a warning.
+# Numeric LLM fields: name -> (minimum, maximum, required).
+# A missing, non-numeric or out-of-range required value fails the assessment
+# (out of range usually means the model answered on the wrong scale, e.g.
+# 0-100, and clamping would turn that into the most favourable score).
+# Optional fields become None ("not assessed") when missing or invalid, with a
+# warning when invalid; out-of-range values are clamped with a warning.
 NUMERIC_ASSESSMENT_FIELDS = {
-    "transparency_score": (MIN_TRANSPARENCY_SCORE, MAX_TOTAL_SCORE, None),
-    "overall_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, None),
-    "industry_funding_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
-    "funding_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
-    "coi_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+    "transparency_score": (MIN_TRANSPARENCY_SCORE, MAX_TOTAL_SCORE, True),
+    "overall_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, True),
+    "industry_funding_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, False),
+    "funding_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, False),
+    "coi_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, False),
 }
 
 # Required boolean LLM fields: an unrecognisable value fails the assessment
@@ -108,6 +115,18 @@ LIST_ASSESSMENT_FIELDS = (
     "strengths",
     "weaknesses",
 )
+
+
+def _percent(value: Optional[float]) -> str:
+    """Format a 0-1 value as a percentage, or 'not assessed' for None.
+
+    Args:
+        value: The value, or None if it was not assessed.
+
+    Returns:
+        E.g. ``"80%"`` or ``"not assessed"``.
+    """
+    return "not assessed" if value is None else f"{value:.0%}"
 
 
 class TransparencyAgent(BaseAgent):
@@ -177,25 +196,70 @@ class TransparencyAgent(BaseAgent):
         self,
         document: Dict[str, Any],
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
-    ) -> Optional[TransparencyAssessment]:
+    ) -> TransparencyAssessment:
         """Assess the transparency and disclosure completeness of a research publication.
 
         Analyzes the document text (preferring full_text over abstract) to evaluate
         funding disclosure, COI declarations, data availability, and other transparency
         indicators. Uses a local LLM for text analysis and pattern matching for
-        trial registry ID extraction.
+        trial registry ID extraction. Every call counts as an attempt in
+        ``get_assessment_stats()``.
 
         Args:
             document: Document dictionary with 'abstract' (required) and optional 'full_text'.
             min_confidence: Confidence (0-1) below which the assessment is flagged
-                as low-confidence (logged and counted; it is still returned).
+                as low-confidence (``low_confidence=True``, logged and counted;
+                it is still returned).
 
         Returns:
-            TransparencyAssessment object if successful, None on failure.
+            The TransparencyAssessment.
+
+        Raises:
+            TransparencyAssessmentError: The document could not be assessed
+                (LLM provider unreachable or model missing, no text,
+                unparseable or invalid LLM response, request failure); the
+                message gives the reason. Any other exception (e.g. an LLM provider timeout) is logged
+                with its traceback and re-raised as this error.
+        """
+        self._assessment_stats["total_assessments"] += 1
+        try:
+            assessment = self._assess_document(document, min_confidence)
+        except Exception as e:
+            self._assessment_stats["failed_assessments"] += 1
+            expected = isinstance(e, TransparencyAssessmentError)
+            logger.error(
+                f"Transparency assessment failed for document "
+                f"{document.get('id', 'unknown')}: {e}",
+                exc_info=not expected,
+            )
+            if expected:
+                raise
+            raise TransparencyAssessmentError(f"{type(e).__name__}: {e}") from e
+        self._assessment_stats["successful_assessments"] += 1
+        return assessment
+
+    def _assess_document(
+        self,
+        document: Dict[str, Any],
+        min_confidence: float,
+    ) -> TransparencyAssessment:
+        """Run one assessment (the body of :meth:`assess_transparency`).
+
+        Args:
+            document: Document dictionary.
+            min_confidence: Low-confidence threshold (0-1).
+
+        Returns:
+            The TransparencyAssessment.
+
+        Raises:
+            TransparencyAssessmentError: The document could not be assessed.
         """
         if not self.test_connection():
-            logger.error("Cannot connect to Ollama - transparency assessment unavailable")
-            return None
+            raise TransparencyAssessmentError(
+                f"LLM provider unreachable or model {self.model} not available "
+                f"- transparency assessment unavailable"
+            )
 
         doc_id = document.get("id", "unknown")
         title = document.get("title", "Untitled")
@@ -205,8 +269,7 @@ class TransparencyAgent(BaseAgent):
         text_to_analyze = full_text if full_text else abstract
 
         if not text_to_analyze:
-            logger.warning(f"No text found for document {doc_id}")
-            return None
+            raise TransparencyAssessmentError(f"No text found for document {doc_id}")
 
         if len(text_to_analyze) > MAX_TEXT_LENGTH:
             text_to_analyze = text_to_analyze[:MAX_TEXT_LENGTH] + "..."
@@ -231,27 +294,23 @@ class TransparencyAgent(BaseAgent):
                 num_predict=self.max_tokens,
             )
         except json.JSONDecodeError as e:
-            logger.error(
+            self._assessment_stats["parse_failures"] += 1
+            raise TransparencyAssessmentError(
                 f"Could not parse JSON from LLM after {self.max_retries + 1} "
                 f"attempts for document {doc_id}: {e}"
-            )
-            self._assessment_stats["parse_failures"] += 1
-            return None
+            ) from e
         except (ConnectionError, ValueError) as e:
-            logger.error(f"Ollama request failed for document {doc_id}: {e}")
-            self._assessment_stats["failed_assessments"] += 1
-            return None
+            raise TransparencyAssessmentError(
+                f"Ollama request failed for document {doc_id}: {e}"
+            ) from e
 
         # Validate and normalize the untrusted LLM output
-        validated = self._validate_assessment_data(assessment_data, doc_id)
-        if validated is None:
-            self._assessment_stats["failed_assessments"] += 1
-            return None
-        assessment_data = validated
+        assessment_data = self._validate_assessment_data(assessment_data, doc_id)
 
         overall_confidence = assessment_data["overall_confidence"]
+        low_confidence = overall_confidence < min_confidence
 
-        if overall_confidence < min_confidence:
+        if low_confidence:
             logger.info(
                 f"Transparency assessment confidence {overall_confidence:.2f} below "
                 f"threshold {min_confidence:.2f} for document {doc_id}"
@@ -276,7 +335,7 @@ class TransparencyAgent(BaseAgent):
 
         industry_confidence = assessment_data["industry_funding_confidence"]
         if pattern_industry_flag:
-            industry_confidence = max(industry_confidence, PATTERN_INDUSTRY_MIN_CONFIDENCE)
+            industry_confidence = max(industry_confidence or 0.0, PATTERN_INDUSTRY_MIN_CONFIDENCE)
 
         # Build assessment object
         assessment = TransparencyAssessment(
@@ -302,6 +361,7 @@ class TransparencyAgent(BaseAgent):
             trial_registry_ids=all_registry_ids,
             transparency_score=assessment_data["transparency_score"],
             overall_confidence=overall_confidence,
+            low_confidence=low_confidence,
             risk_indicators=assessment_data["risk_indicators"],
             strengths=assessment_data["strengths"],
             weaknesses=assessment_data["weaknesses"],
@@ -311,10 +371,6 @@ class TransparencyAgent(BaseAgent):
 
         # Classify risk based on score
         assessment.risk_level = assessment.classify_risk()
-
-        # Update statistics
-        self._assessment_stats["total_assessments"] += 1
-        self._assessment_stats["successful_assessments"] += 1
 
         self._call_callback(
             "transparency_assessment_completed",
@@ -334,16 +390,15 @@ class TransparencyAgent(BaseAgent):
         self,
         data: Any,
         doc_id: Any,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Validate and normalize a parsed LLM transparency response.
 
-        Fails the assessment (returns ``None``, logged as an error) when the
-        response is not an object, a required field is missing, a required
+        Fails the assessment (raises) when the response is not an object, a required field is missing, a required
         numeric field is not a number (numeric strings are accepted) or is out
         of range, or a required boolean is unrecognisable.
 
         Otherwise repairs are applied and logged as warnings: optional numeric
-        fields that are invalid fall back to their defaults and out-of-range
+        fields that are invalid become ``None`` (not assessed) and out-of-range
         ones are clamped; optional booleans that are unrecognisable fall back
         to their defaults; an unknown ``data_availability`` becomes
         ``not_stated``; list fields of the wrong type become empty lists and
@@ -358,52 +413,51 @@ class TransparencyAgent(BaseAgent):
             doc_id: Document ID for log messages.
 
         Returns:
-            A normalized copy of ``data``, or ``None`` if it is unusable.
+            A normalized copy of ``data``.
+
+        Raises:
+            TransparencyAssessmentError: ``data`` is unusable; the message
+                says why.
         """
         if not isinstance(data, dict):
-            logger.error(
+            raise TransparencyAssessmentError(
                 f"Transparency response for document {doc_id} is "
                 f"{type(data).__name__}, expected a JSON object"
             )
-            return None
 
         missing = [f for f in REQUIRED_ASSESSMENT_FIELDS if f not in data]
         if missing:
-            logger.error(
+            raise TransparencyAssessmentError(
                 f"Missing required fields {missing} in assessment response for document {doc_id}"
             )
-            return None
 
         normalized = dict(data)
 
-        for name, (minimum, maximum, default) in NUMERIC_ASSESSMENT_FIELDS.items():
+        for name, (minimum, maximum, required) in NUMERIC_ASSESSMENT_FIELDS.items():
             raw = data.get(name)
             number = parse_finite_float(raw)
-            required = default is None
             if number is None:
                 if required:
-                    logger.error(
+                    raise TransparencyAssessmentError(
                         f"Invalid value {raw!r} for required field '{name}' "
                         f"in assessment response for document {doc_id}"
                     )
-                    return None
                 if raw is None:
-                    logger.debug(f"'{name}' missing (document {doc_id}); using {default}")
+                    logger.debug(f"'{name}' missing (document {doc_id}); not assessed")
                 else:
                     logger.warning(
                         f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
-                        f"using {default}"
+                        f"not assessed"
                     )
-                normalized[name] = default
+                normalized[name] = None
                 continue
             if not minimum <= number <= maximum:
                 if required:
-                    logger.error(
+                    raise TransparencyAssessmentError(
                         f"Out-of-range value {raw!r} for required field '{name}' "
                         f"(expected {minimum:g}-{maximum:g}) in assessment response "
                         f"for document {doc_id}"
                     )
-                    return None
                 logger.warning(
                     f"Out-of-range value {raw!r} for '{name}' (document {doc_id}); "
                     f"clamping to {minimum:g}-{maximum:g}"
@@ -413,11 +467,10 @@ class TransparencyAgent(BaseAgent):
         for name in REQUIRED_BOOL_ASSESSMENT_FIELDS:
             value = coerce_optional_bool(data.get(name))
             if value is None:
-                logger.error(
+                raise TransparencyAssessmentError(
                     f"Invalid value {data.get(name)!r} for required boolean field "
                     f"'{name}' in assessment response for document {doc_id}"
                 )
-                return None
             normalized[name] = value
 
         for name, default in OPTIONAL_BOOL_ASSESSMENT_FIELDS.items():
@@ -465,7 +518,7 @@ class TransparencyAgent(BaseAgent):
         self,
         document_id: int,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
-    ) -> Optional[TransparencyAssessment]:
+    ) -> TransparencyAssessment:
         """Assess transparency by fetching document from the database.
 
         Convenience method that fetches the document by ID and calls
@@ -477,10 +530,11 @@ class TransparencyAgent(BaseAgent):
                 as low-confidence (logged and counted; it is still returned).
 
         Returns:
-            TransparencyAssessment object if successful, None otherwise.
+            The TransparencyAssessment.
 
         Raises:
             ValueError: If document ID is not found in database.
+            TransparencyAssessmentError: The document could not be assessed.
         """
         from bmlibrarian.database import fetch_documents_by_ids
 
@@ -504,8 +558,11 @@ class TransparencyAgent(BaseAgent):
         documents: List[Dict[str, Any]],
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-    ) -> List[TransparencyAssessment]:
+    ) -> TransparencyBatchResult:
         """Assess transparency for multiple documents.
+
+        A failure for one document never aborts the batch: it is recorded in
+        the result's ``failures`` with its reason.
 
         Args:
             documents: List of document dictionaries.
@@ -514,9 +571,9 @@ class TransparencyAgent(BaseAgent):
             progress_callback: Optional callback(current, total, doc_title) for progress.
 
         Returns:
-            List of successful TransparencyAssessment objects.
+            The successful assessments and the ``(document_id, reason)`` failures.
         """
-        assessments: List[TransparencyAssessment] = []
+        result = TransparencyBatchResult()
         total = len(documents)
 
         logger.info(f"Starting batch transparency assessment for {total} documents")
@@ -527,30 +584,26 @@ class TransparencyAgent(BaseAgent):
             if progress_callback:
                 progress_callback(i + 1, total, doc_title)
 
-            # One unexpected failure must not abort the rest of the batch
+            doc_id = str(document.get("id", "unknown"))
             try:
                 assessment = self.assess_transparency(
                     document=document,
                     min_confidence=min_confidence,
                 )
-            except Exception as e:
-                logger.error(
-                    f"Transparency assessment failed for document {document.get('id')}: {e}",
-                    exc_info=True,
-                )
-                self._assessment_stats["failed_assessments"] += 1
+            except TransparencyAssessmentError as e:
+                result.failures.append((doc_id, str(e)))
                 continue
 
-            if assessment:
-                assessments.append(assessment)
-                logger.debug(f"Assessed transparency for document {document.get('id')}")
+            result.assessments.append(assessment)
+            logger.debug(f"Assessed transparency for document {doc_id}")
 
         logger.info(
             f"Batch transparency assessment completed: "
-            f"{len(assessments)} successful out of {total} documents"
+            f"{len(result.assessments)} successful, {len(result.failures)} failed "
+            f"out of {total} documents"
         )
 
-        return assessments
+        return result
 
     def enrich_with_metadata(
         self,
@@ -562,13 +615,20 @@ class TransparencyAgent(BaseAgent):
         information about the document (grants, retraction status, trial
         sponsor classification) and merges it into the assessment.
 
+        A document with no metadata row is left unchanged. A database error
+        raises: an unenriched assessment would claim "not retracted" without
+        having checked, and saving it would overwrite a stored retraction.
+
         Args:
             assessment: The assessment to enrich.
 
         Returns:
             The enriched assessment (modified in-place and returned).
+
+        Raises:
+            TransparencyAssessmentError: The metadata lookup failed.
         """
-        from bmlibrarian.database import get_db_connection
+        from bmlibrarian.database import get_db_manager
 
         try:
             doc_id = int(assessment.document_id)
@@ -577,8 +637,7 @@ class TransparencyAgent(BaseAgent):
             return assessment
 
         try:
-            conn = get_db_connection()
-            with conn.cursor() as cur:
+            with get_db_manager().get_connection() as conn, conn.cursor() as cur:
                 cur.execute(
                     """
                     SELECT is_retracted, retraction_reason, trial_sponsor_class,
@@ -602,7 +661,7 @@ class TransparencyAgent(BaseAgent):
                     if sponsor_class.lower() == "industry" and not assessment.is_industry_funded:
                         assessment.is_industry_funded = True
                         assessment.industry_funding_confidence = max(
-                            assessment.industry_funding_confidence, 0.95
+                            assessment.industry_funding_confidence or 0.0, SPONSOR_INDUSTRY_MIN_CONFIDENCE
                         )
                 if trial_id and not assessment.has_trial_registration:
                     assessment.has_trial_registration = True
@@ -617,7 +676,14 @@ class TransparencyAgent(BaseAgent):
                 logger.debug(f"Enriched assessment for document {doc_id} with bulk metadata")
 
         except Exception as e:
-            logger.debug(f"Could not enrich assessment with metadata (table may not exist): {e}")
+            logger.error(
+                f"Could not enrich transparency assessment for document {doc_id} "
+                f"with bulk metadata: {e}"
+            )
+            raise TransparencyAssessmentError(
+                f"Metadata lookup failed for document {doc_id} "
+                f"(retraction/sponsor status unknown): {e}"
+            ) from e
 
         return assessment
 
@@ -778,7 +844,8 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             f"\n--- OVERALL ---",
             f"Transparency Score: {assessment.transparency_score:.1f}/10",
             f"Risk Level: {risk_emoji.get(assessment.risk_level, assessment.risk_level)}",
-            f"Confidence: {assessment.overall_confidence:.0%}",
+            f"Confidence: {assessment.overall_confidence:.0%}"
+            + (" (LOW CONFIDENCE)" if assessment.low_confidence else ""),
         ])
 
         if assessment.is_retracted:
@@ -787,12 +854,12 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         # Funding
         lines.append(f"\n--- FUNDING DISCLOSURE ---")
         if assessment.has_funding_disclosure:
-            lines.append(f"Status: Disclosed (quality: {assessment.funding_disclosure_quality:.0%})")
+            lines.append(f"Status: Disclosed (quality: {_percent(assessment.funding_disclosure_quality)})")
             if assessment.funding_sources:
                 lines.append(f"Sources: {', '.join(assessment.funding_sources)}")
             if assessment.is_industry_funded:
                 lines.append(
-                    f"Industry Funded: Yes (confidence: {assessment.industry_funding_confidence:.0%})"
+                    f"Industry Funded: Yes (confidence: {_percent(assessment.industry_funding_confidence)})"
                 )
             if assessment.trial_sponsor_class:
                 lines.append(f"Trial Sponsor Class: {assessment.trial_sponsor_class}")
@@ -802,7 +869,7 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         # COI
         lines.append(f"\n--- CONFLICT OF INTEREST ---")
         if assessment.has_coi_disclosure:
-            lines.append(f"Status: Disclosed (quality: {assessment.coi_disclosure_quality:.0%})")
+            lines.append(f"Status: Disclosed (quality: {_percent(assessment.coi_disclosure_quality)})")
             if assessment.conflicts_identified:
                 for conflict in assessment.conflicts_identified:
                     lines.append(f"  - {conflict}")
@@ -851,17 +918,24 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         self,
         assessments: List[TransparencyAssessment],
         output_file: str,
+        failures: Optional[List[Tuple[str, str]]] = None,
     ) -> None:
         """Export transparency assessments to JSON file.
 
         Args:
             assessments: List of TransparencyAssessment objects.
             output_file: Path to output JSON file.
+            failures: ``(document_id, reason)`` for documents that were not
+                assessed, so the file does not pass for the complete set.
         """
         data = {
             "assessments": [a.to_dict() for a in assessments],
             "metadata": {
                 "total_assessments": len(assessments),
+                "failures": [
+                    {"document_id": doc_id, "reason": reason}
+                    for doc_id, reason in failures or []
+                ],
                 "assessment_date": datetime.now(timezone.utc).isoformat(),
                 "agent_model": self.model,
                 "agent_version": self.VERSION,

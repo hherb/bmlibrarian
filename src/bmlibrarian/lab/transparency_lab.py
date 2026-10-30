@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 class AssessmentWorker(QObject):
     """Worker that runs transparency assessment in a background thread."""
 
-    finished = Signal(object)  # TransparencyAssessment or None
-    error = Signal(str)
+    finished = Signal(object)  # TransparencyAssessment
+    error = Signal(str)  # why the document could not be assessed
     progress = Signal(str)
 
     def __init__(self, agent: Any, document: Dict[str, Any]) -> None:
@@ -62,9 +62,8 @@ class AssessmentWorker(QObject):
         try:
             self.progress.emit("Running transparency assessment...")
             assessment = self.agent.assess_transparency(self.document)
-            if assessment:
-                self.progress.emit("Enriching with bulk metadata...")
-                self.agent.enrich_with_metadata(assessment)
+            self.progress.emit("Enriching with bulk metadata...")
+            self.agent.enrich_with_metadata(assessment)
             self.finished.emit(assessment)
         except Exception as e:
             self.error.emit(str(e))
@@ -227,7 +226,7 @@ class TransparencyLabWindow(QMainWindow):
         self.assess_btn.setEnabled(False)
 
         try:
-            from bmlibrarian.database import fetch_documents_by_ids, get_db_connection
+            from bmlibrarian.database import fetch_documents_by_ids, get_db_manager
 
             # Try as numeric ID first
             try:
@@ -235,8 +234,7 @@ class TransparencyLabWindow(QMainWindow):
                 docs = fetch_documents_by_ids({doc_id})
             except ValueError:
                 # Try as DOI or PMID
-                conn = get_db_connection()
-                with conn.cursor() as cur:
+                with get_db_manager().get_connection() as conn, conn.cursor() as cur:
                     cur.execute(
                         """
                         SELECT id FROM public.document
@@ -324,15 +322,10 @@ class TransparencyLabWindow(QMainWindow):
         """Handle completed assessment.
 
         Args:
-            assessment: TransparencyAssessment object or None.
+            assessment: TransparencyAssessment object.
         """
         self.thread.quit()
         self.assess_btn.setEnabled(True)
-
-        if assessment is None:
-            self.results_widget.setPlainText("Assessment failed - no result returned.")
-            self.status_label.setText("Assessment failed")
-            return
 
         # Format results
         summary = self.agent.format_assessment_summary(assessment)

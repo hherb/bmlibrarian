@@ -58,14 +58,14 @@ class TransparencyAssessment:
     funding_statement: Optional[str] = None
     funding_sources: List[str] = field(default_factory=list)
     is_industry_funded: Optional[bool] = None
-    industry_funding_confidence: float = 0.0
-    funding_disclosure_quality: float = 0.0
+    industry_funding_confidence: Optional[float] = None  # None = not assessed
+    funding_disclosure_quality: Optional[float] = None
 
     # Conflict of interest
     has_coi_disclosure: bool = False
     coi_statement: Optional[str] = None
     conflicts_identified: List[str] = field(default_factory=list)
-    coi_disclosure_quality: float = 0.0
+    coi_disclosure_quality: Optional[float] = None
 
     # Data availability
     data_availability: str = DataAvailability.NOT_STATED.value
@@ -141,7 +141,7 @@ BaseAgent
 
 #### `assess_transparency(document, min_confidence=0.4)`
 
-Main entry point. Accepts a document dict (with `title`, `full_text` or `abstract`, `id`, `doi`, `pmid` fields). Returns `Optional[TransparencyAssessment]`.
+Main entry point. Accepts a document dict (with `title`, `full_text` or `abstract`, `id`, `doi`, `pmid` fields). Returns a `TransparencyAssessment`, or raises `TransparencyAssessmentError` whose message gives the reason (no Ollama connection, no text, unparseable or invalid LLM response, request failure). Any other exception (e.g. an LLM provider timeout, which `LLMClient` re-raises in the provider's own type) is logged with its traceback and re-raised as `TransparencyAssessmentError("<Type>: <message>")`, chained to the original, so callers only need to catch one type. Every call counts in `total_assessments`; a failure also in `failed_assessments`, so `success_rate` = successful / attempted.
 
 Flow:
 1. Extract text (prefer `full_text`, fall back to `abstract`)
@@ -153,7 +153,7 @@ Flow:
 7. Merge pattern-matched results (industry funder names, registry IDs)
 8. Build the `TransparencyAssessment`
 9. Classify risk level
-10. Flag low confidence: below `min_confidence` the assessment is logged and counted in `low_confidence_assessments`, but still returned
+10. Flag low confidence: below `min_confidence` the assessment gets `low_confidence=True` (shown as "LOW CONFIDENCE" in the summary), is logged and counted in `low_confidence_assessments`, and is still returned. The flag is not stored in `transparency.assessments`; `overall_confidence` is.
 
 #### `assess_transparency_by_id(document_id)`
 
@@ -161,7 +161,7 @@ Convenience method that fetches document from database by ID, then calls `assess
 
 #### `assess_batch(documents, progress_callback=None)`
 
-Processes multiple documents sequentially with optional progress callback. An exception for one document is logged, counted in `failed_assessments`, and skipped; the rest of the batch continues.
+Processes multiple documents sequentially with optional progress callback and returns a `TransparencyBatchResult`: `assessments` (successes, in input order) and `failures`, a list of `(document_id, reason)`. A failure for one document never aborts the batch. `transparency_analyzer_cli.py assess` then runs `enrich_with_metadata` on each success; that raises `TransparencyAssessmentError` on a database error (an unenriched assessment would carry `is_retracted` unset and its upsert would overwrite a stored retraction), so the CLI moves such a document to the failures instead of saving it. A failed save is rolled back (psycopg aborts the transaction otherwise, failing every later save) and listed under "NOT SAVED". The CLI prints "FAILED: N of M documents", each reason, and exits 1 if anything failed or was not saved; successful ones are still saved and exported, and `export_to_json(..., failures=)` writes the failures under `metadata.failures`. `show`/`export` rebuild `low_confidence` from the stored `overall_confidence` and `DEFAULT_MIN_CONFIDENCE` (the threshold `assess` always uses).
 
 #### `get_score_distribution(assessments)`
 
@@ -230,10 +230,10 @@ Expected JSON schema from LLM:
 
 The parsed JSON is untrusted. `_validate_assessment_data()` normalizes it using pure helpers from `transparency_data.py`:
 
-- The response must be a JSON object with all `REQUIRED_ASSESSMENT_FIELDS`; otherwise the document fails (`None`, counted in `failed_assessments`).
+- The response must be a JSON object with all `REQUIRED_ASSESSMENT_FIELDS`; otherwise the document fails (`TransparencyAssessmentError`, counted in `failed_assessments`).
 - Numeric fields (`NUMERIC_ASSESSMENT_FIELDS`) are parsed with `parse_finite_float()`: numbers and numeric strings are accepted; booleans, NaN/infinity and non-numbers are rejected. Ranges: `transparency_score` 0-10, confidences and `*_disclosure_quality` 0-1.
   - Required (`transparency_score`, `overall_confidence`): a rejected **or out-of-range** value fails the document. Out of range usually means the model answered on the wrong scale (e.g. `45` on 0-100); clamping it would produce the most favourable score.
-  - Optional: an invalid value falls back to `0.0` with a warning (a missing one silently, debug log only); an out-of-range value is clamped with a warning.
+  - Optional: an invalid value becomes `None` ("not assessed", shown as such in the summary and stored as NULL) with a warning (a missing one silently, debug log only); an out-of-range value is clamped with a warning. `0.0` would read as "worst disclosure". Rows stored before this change hold `0.0` for not-assessed values and cannot be told apart.
 - Booleans go through `coerce_optional_bool()`, which accepts real booleans and `true`/`yes`/`false`/`no` strings (plain `bool("false")` would be `True`). An unrecognisable `has_funding_disclosure` / `has_coi_disclosure` fails the document; `is_industry_funded` falls back to `None` (pattern matching decides) and `has_author_contributions` to `False`, with a warning.
 - `data_availability` goes through `coerce_data_availability()` (case-insensitive, spaces/hyphens as underscores); `null` or an unknown value becomes `not_stated` with a warning.
 - List fields (`LIST_ASSESSMENT_FIELDS`) go through `coerce_str_list()`: a single string becomes a one-element list, `None` an empty list, items are stringified and stripped with blank/`None` items dropped; any other type becomes an empty list with a warning.

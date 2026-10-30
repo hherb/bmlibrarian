@@ -10,7 +10,13 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch, MagicMock
 
-from bmlibrarian.agents import TransparencyAgent, TransparencyAssessment, RiskLevel, DataAvailability
+from bmlibrarian.agents import (
+    TransparencyAgent,
+    TransparencyAssessment,
+    TransparencyAssessmentError,
+    RiskLevel,
+    DataAvailability,
+)
 from bmlibrarian.agents.transparency_data import (
     SCORE_THRESHOLD_HIGH_RISK,
     SCORE_THRESHOLD_MEDIUM_RISK,
@@ -418,16 +424,16 @@ class TestTransparencyAgent:
     def test_no_connection(self, mock_conn: Mock) -> None:
         """Test handling of no Ollama connection."""
         agent = TransparencyAgent(show_model_info=False)
-        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
-        assert assessment is None
+        with pytest.raises(TransparencyAssessmentError, match="model .* not available"):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
 
     def test_no_text(self) -> None:
         """Test handling of document with no text."""
         agent = TransparencyAgent(show_model_info=False)
         doc = {"id": "1", "title": "Test", "abstract": "", "full_text": ""}
         with patch.object(agent, 'test_connection', return_value=True):
-            assessment = agent.assess_transparency(doc)
-        assert assessment is None
+            with pytest.raises(TransparencyAssessmentError, match="No text found"):
+                agent.assess_transparency(doc)
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json', side_effect=json.JSONDecodeError("", "", 0))
@@ -436,9 +442,10 @@ class TestTransparencyAgent:
     ) -> None:
         """Test handling of JSON parse failure."""
         agent = TransparencyAgent(show_model_info=False)
-        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
-        assert assessment is None
+        with pytest.raises(TransparencyAssessmentError, match="Could not parse JSON"):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
         assert agent._assessment_stats["parse_failures"] == 1
+        assert agent._assessment_stats["failed_assessments"] == 1
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json')
@@ -448,8 +455,8 @@ class TestTransparencyAgent:
         """Test handling of response missing required fields."""
         mock_generate.return_value = {"some_field": "value"}
         agent = TransparencyAgent(show_model_info=False)
-        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
-        assert assessment is None
+        with pytest.raises(TransparencyAssessmentError, match="Missing required fields"):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
         assert agent._assessment_stats["failed_assessments"] == 1
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
@@ -468,9 +475,10 @@ class TestTransparencyAgent:
             progress_calls.append((current, total, title))
 
         documents = [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT]
-        assessments = agent.assess_batch(documents, progress_callback=track_progress)
+        result = agent.assess_batch(documents, progress_callback=track_progress)
 
-        assert len(assessments) == 2
+        assert len(result.assessments) == 2
+        assert result.failures == []
         assert len(progress_calls) == 2
         assert progress_calls[0] == (1, 2, SAMPLE_TRANSPARENT_DOCUMENT["title"])
 
@@ -685,7 +693,8 @@ class TestTransparencyAgentMalformedResponses:
         mock_generate.return_value = self._response(transparency_score="high")
 
         agent = TransparencyAgent(show_model_info=False)
-        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+        with pytest.raises(TransparencyAssessmentError):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
         assert agent.get_assessment_stats()["failed_assessments"] == 1
 
     @pytest.mark.parametrize(
@@ -707,7 +716,8 @@ class TestTransparencyAgentMalformedResponses:
         mock_generate.return_value = response
 
         agent = TransparencyAgent(show_model_info=False)
-        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+        with pytest.raises(TransparencyAssessmentError, match="expected a JSON object"):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
 
     @pytest.mark.parametrize(
         "overrides",
@@ -728,7 +738,8 @@ class TestTransparencyAgentMalformedResponses:
         mock_generate.return_value = self._response(**overrides)
 
         agent = TransparencyAgent(show_model_info=False)
-        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+        with pytest.raises(TransparencyAssessmentError):
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
         assert agent.get_assessment_stats()["failed_assessments"] == 1
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
@@ -807,7 +818,7 @@ class TestTransparencyAgentMalformedResponses:
         assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
 
         assert assessment is not None
-        assert assessment.coi_disclosure_quality == 0.0
+        assert assessment.coi_disclosure_quality is None  # not assessed, not "worst"
         assert assessment.funding_disclosure_quality == 1.0
         assert assessment.overall_confidence == 0.9
         assert assessment.funding_sources == ["National Institutes of Health"]
@@ -825,32 +836,201 @@ class TestTransparencyAgentMalformedResponses:
         ]
 
         agent = TransparencyAgent(show_model_info=False)
-        assessments = agent.assess_batch(
+        result = agent.assess_batch(
             [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT]
         )
 
-        assert len(assessments) == 1
-        assert agent.get_assessment_stats()["failed_assessments"] == 1
+        assert len(result.assessments) == 1
+        assert len(result.failures) == 1
+        doc_id, reason = result.failures[0]
+        assert doc_id == str(SAMPLE_TRANSPARENT_DOCUMENT["id"])
+        assert "overall_confidence" in reason
+        stats = agent.get_assessment_stats()
+        assert stats["failed_assessments"] == 1
+        assert stats["total_assessments"] == 2
+        assert stats["success_rate"] == 0.5
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
-    @patch.object(TransparencyAgent, 'assess_transparency')
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
     def test_batch_survives_unexpected_exception(
-        self, mock_assess: Mock, mock_conn: Mock,
+        self, mock_generate: Mock, mock_conn: Mock,
     ) -> None:
-        """An unexpected exception for one document is logged and skipped."""
-        good = Mock()
-        mock_assess.side_effect = [RuntimeError("boom"), good]
+        """An unexpected exception for one document is recorded with its type."""
+        mock_generate.side_effect = [RuntimeError("boom"), EXPECTED_TRANSPARENT_RESPONSE]
         progress = Mock()
 
         agent = TransparencyAgent(show_model_info=False)
-        assessments = agent.assess_batch(
+        result = agent.assess_batch(
             [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT],
             progress_callback=progress,
         )
 
-        assert assessments == [good]
-        assert agent.get_assessment_stats()["failed_assessments"] == 1
+        assert len(result.assessments) == 1
+        assert result.failures == [
+            (str(SAMPLE_TRANSPARENT_DOCUMENT["id"]), "RuntimeError: boom")
+        ]
         assert progress.call_count == 2
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=False)
+    def test_batch_where_nothing_succeeds_reports_every_failure(
+        self, mock_conn: Mock,
+    ) -> None:
+        """An all-failed batch is not mistaken for empty input."""
+        docs = [dict(SAMPLE_TRANSPARENT_DOCUMENT, id=i) for i in (1, 2, 3)]
+
+        agent = TransparencyAgent(show_model_info=False)
+        result = agent.assess_batch(docs)
+
+        assert result.assessments == []
+        assert [doc_id for doc_id, _ in result.failures] == ["1", "2", "3"]
+        assert all("not available" in reason for _, reason in result.failures)
+        stats = agent.get_assessment_stats()
+        assert stats["total_assessments"] == 3
+        assert stats["failed_assessments"] == 3
+        assert stats["success_rate"] == 0.0
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json', side_effect=RuntimeError("boom"))
+    def test_unexpected_exception_counts_as_failed_attempt(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """An unexpected error surfaces as TransparencyAssessmentError and is counted."""
+        agent = TransparencyAgent(show_model_info=False)
+        with pytest.raises(TransparencyAssessmentError, match="RuntimeError: boom") as exc:
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert isinstance(exc.value.__cause__, RuntimeError)
+        stats = agent.get_assessment_stats()
+        assert stats["total_assessments"] == 1
+        assert stats["failed_assessments"] == 1
+
+    @pytest.mark.parametrize("error", [ConnectionError("refused"), ValueError("bad model")])
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_request_failure_raises_and_counts_once(
+        self, mock_generate: Mock, mock_conn: Mock, error,
+    ) -> None:
+        """A request failure is not mistaken for a parse failure (JSONDecodeError is a ValueError)."""
+        mock_generate.side_effect = error
+
+        agent = TransparencyAgent(show_model_info=False)
+        with pytest.raises(TransparencyAssessmentError, match="Ollama request failed") as exc:
+            agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert exc.value.__cause__ is error
+        stats = agent.get_assessment_stats()
+        assert stats["total_assessments"] == 1
+        assert stats["failed_assessments"] == 1
+        assert stats["parse_failures"] == 0
+
+    @pytest.mark.parametrize("confidence, flagged", [(0.3, True), (0.4, False), (0.9, False)])
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_low_confidence_flag(
+        self, mock_generate: Mock, mock_conn: Mock, confidence, flagged,
+    ) -> None:
+        """Below min_confidence the assessment itself is marked."""
+        mock_generate.return_value = self._response(overall_confidence=confidence)
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT, min_confidence=0.4)
+
+        assert assessment.low_confidence is flagged
+        assert assessment.to_dict()["low_confidence"] is flagged
+        assert ("LOW CONFIDENCE" in agent.format_assessment_summary(assessment)) is flagged
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_missing_quality_fields_are_not_assessed(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """Missing optional qualities are None and shown as 'not assessed', not 0%."""
+        response = self._response(funding_sources=["Pfizer Inc."])
+        for name in ("funding_disclosure_quality", "coi_disclosure_quality",
+                     "industry_funding_confidence"):
+            response.pop(name)
+        mock_generate.return_value = response
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert assessment.funding_disclosure_quality is None
+        assert assessment.coi_disclosure_quality is None
+        # Pattern-matched industry funder still sets a floor
+        assert assessment.industry_funding_confidence == 0.8
+        summary = agent.format_assessment_summary(assessment)
+        assert "quality: not assessed" in summary
+        assert "quality: 0%" not in summary
+
+    @staticmethod
+    def _db_manager_returning(row):
+        """A fake DatabaseManager whose query returns ``row``."""
+        cursor = MagicMock()
+        cursor.fetchone.return_value = row
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        manager = MagicMock()
+        manager.get_connection.return_value.__enter__.return_value = conn
+        return manager
+
+    def test_enrich_applies_retraction_and_industry_sponsor(self) -> None:
+        """Bulk metadata reaches the assessment (the DB import used to fail)."""
+        row = (True, "Data fabrication", "INDUSTRY", "NCT87654321", None, None)
+        assessment = TransparencyAssessment(document_id="42", document_title="t")
+
+        agent = TransparencyAgent(show_model_info=False)
+        with patch("bmlibrarian.database.get_db_manager",
+                   return_value=self._db_manager_returning(row)):
+            agent.enrich_with_metadata(assessment)
+
+        assert assessment.is_retracted is True
+        assert assessment.risk_level == RiskLevel.HIGH.value
+        assert "Paper has been retracted" in assessment.risk_indicators
+        assert assessment.is_industry_funded is True
+        assert assessment.industry_funding_confidence == 0.95
+        assert assessment.trial_registry_ids == ["NCT87654321"]
+
+    def test_enrich_db_error_raises(self, caplog) -> None:
+        """A DB error raises: an unchecked retraction status must not pass as 'not retracted'."""
+        manager = MagicMock()
+        manager.get_connection.side_effect = RuntimeError("connection refused")
+        assessment = TransparencyAssessment(document_id="42", document_title="t")
+
+        agent = TransparencyAgent(show_model_info=False)
+        with patch("bmlibrarian.database.get_db_manager", return_value=manager):
+            with caplog.at_level("ERROR"):
+                with pytest.raises(TransparencyAssessmentError, match="retraction/sponsor status unknown"):
+                    agent.enrich_with_metadata(assessment)
+
+        assert "connection refused" in caplog.text
+
+    def test_enrich_without_metadata_row_leaves_assessment_unchanged(self) -> None:
+        """No metadata for the document is not an error."""
+        assessment = TransparencyAssessment(document_id="42", document_title="t")
+
+        agent = TransparencyAgent(show_model_info=False)
+        with patch("bmlibrarian.database.get_db_manager",
+                   return_value=self._db_manager_returning(None)):
+            assert agent.enrich_with_metadata(assessment) is assessment
+
+        assert assessment.is_retracted is None
+        assert assessment.risk_indicators == []
+
+    def test_export_json_lists_failures(self, tmp_path) -> None:
+        """Failed documents are named in the exported file's metadata."""
+        out = tmp_path / "r.json"
+        agent = TransparencyAgent(show_model_info=False)
+        agent.export_to_json(
+            [TransparencyAssessment(document_id="1", document_title="t")],
+            str(out),
+            failures=[("2", "No text found for document 2")],
+        )
+
+        metadata = json.loads(out.read_text())["metadata"]
+        assert metadata["total_assessments"] == 1
+        assert metadata["failures"] == [
+            {"document_id": "2", "reason": "No text found for document 2"}
+        ]
 
     def test_score_distribution_keys_and_counts(self) -> None:
         """get_score_distribution uses half-open, risk-aligned buckets."""

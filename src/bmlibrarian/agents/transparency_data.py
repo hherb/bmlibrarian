@@ -63,6 +63,8 @@ FALSE_STRINGS = frozenset({"false", "no"})
 # Minimum industry-funding confidence when pattern matching finds a known
 # industry funder among the disclosed funding sources
 PATTERN_INDUSTRY_MIN_CONFIDENCE = 0.8
+# ...when ClinicalTrials.gov classifies the trial sponsor as industry
+SPONSOR_INDUSTRY_MIN_CONFIDENCE = 0.95
 
 
 class RiskLevel(str, Enum):
@@ -176,14 +178,15 @@ class TransparencyAssessment:
     funding_statement: Optional[str] = None
     funding_sources: List[str] = field(default_factory=list)
     is_industry_funded: Optional[bool] = None
-    industry_funding_confidence: float = 0.0
-    funding_disclosure_quality: float = 0.0
+    # None = not assessed (the LLM gave no usable value), not "worst"
+    industry_funding_confidence: Optional[float] = None
+    funding_disclosure_quality: Optional[float] = None
 
     # Conflict of interest
     has_coi_disclosure: bool = False
     coi_statement: Optional[str] = None
     conflicts_identified: List[str] = field(default_factory=list)
-    coi_disclosure_quality: float = 0.0
+    coi_disclosure_quality: Optional[float] = None
 
     # Data availability
     data_availability: str = DataAvailability.NOT_STATED.value
@@ -200,6 +203,8 @@ class TransparencyAssessment:
     # Overall assessment
     transparency_score: float = 0.0
     overall_confidence: float = 0.0
+    # overall_confidence is below the min_confidence the assessment ran with
+    low_confidence: bool = False
     risk_level: str = RiskLevel.UNKNOWN.value
     risk_indicators: List[str] = field(default_factory=list)
     strengths: List[str] = field(default_factory=list)
@@ -243,6 +248,23 @@ class TransparencyAssessment:
             return RiskLevel.MEDIUM.value
         else:
             return RiskLevel.LOW.value
+
+
+class TransparencyAssessmentError(Exception):
+    """A document could not be assessed; the message says why."""
+
+
+@dataclass
+class TransparencyBatchResult:
+    """Outcome of a batch assessment: what succeeded and what failed.
+
+    Attributes:
+        assessments: Successful assessments, in input order.
+        failures: ``(document_id, reason)`` for every document that failed.
+    """
+
+    assessments: List[TransparencyAssessment] = field(default_factory=list)
+    failures: List[Tuple[str, str]] = field(default_factory=list)
 
 
 def is_likely_industry_funder(funder_name: str) -> bool:
