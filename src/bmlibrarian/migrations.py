@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class MigrationError(RuntimeError):
-    """A pending migration failed while being applied; the schema is outdated."""
+    """A pending migration could not be read, applied or recorded.
+
+    The schema is outdated, or (if only the record failed) the migration will
+    be re-run; either way the app must not start as if it were current.
+    """
 
 
 class MigrationManager:
@@ -329,6 +333,8 @@ class MigrationManager:
 
         Raises:
             ProtectedDatabaseError: Under pytest, for a protected (production) database.
+            MigrationError: A pending migration could not be read, applied or
+                recorded.
         """
         refuse_if_guarded(self.database, "apply migrations")
         migrations_dir = Path(migrations_dir)
@@ -341,22 +347,22 @@ class MigrationManager:
                 print(msg)
             return 0
 
-        # Ensure migrations table exists
+        # Ensure migrations table exists. A role without CREATE on the schema
+        # can fail here even when the table exists, so fall through and read it.
+        create_error: Optional[Exception] = None
         try:
             self._create_migrations_table()
         except Exception as e:
-            msg = f"Could not create migrations table: {e}"
-            if silent:
-                logger.warning(msg)
-            else:
-                print(f"Warning: {msg}")
-            return 0
+            create_error = e
+            logger.debug(f"Could not create migrations table (reading it instead): {e}")
 
         # Get applied migrations
         try:
             applied_migrations = {filename for filename, _ in self._get_applied_migrations()}
         except Exception as e:
             msg = f"Could not get applied migrations: {e}"
+            if create_error is not None:
+                msg += f" (creating the migrations table also failed: {create_error})"
             if silent:
                 logger.warning(msg)
             else:
@@ -409,13 +415,12 @@ class MigrationManager:
                 else:
                     print(msg)
 
-                # Read and validate migration
-                with open(migration_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                checksum = self._calculate_checksum(content)
-
                 try:
+                    # Inside the try: an unreadable pending file is a failed apply too.
+                    with open(migration_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    checksum = self._calculate_checksum(content)
+
                     # Apply migration
                     self._apply_sql_file(migration_file)
 

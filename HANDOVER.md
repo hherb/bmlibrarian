@@ -15,14 +15,22 @@ off new work. Longer-term structural items live in
   raises `bmlibrarian.migrations.MigrationError` (a `RuntimeError`, so
   existing `except RuntimeError` callers still work); `DatabaseManager`
   closes its pool and re-raises (it used to log "Auto-migration check
-  failed" and run on the outdated schema). Failing to *check* (no
-  migrations dir, no `MigrationManager`, no access to the tracking table) is
-  still a warning. The Qt app creates the manager right after login
+  failed" and run on the outdated schema). An unreadable pending file is a
+  `MigrationError` too. Failing to *check* (no migrations dir, no
+  `MigrationManager`, tracking table neither creatable nor readable) is not
+  fatal; if only `CREATE TABLE IF NOT EXISTS bmlibrarian_migrations` fails
+  (no CREATE on the schema) but the table reads, pending files still run.
+  The Qt app creates the manager right after login
   (`BMLibrarianApplication._check_schema_current`): on `MigrationError` it
   shows a critical dialog (no window exists yet for a toast) and exits 1;
-  other manager errors are left to the tabs, as before. CLIs fail at their
-  first DB use (not checked per CLI). `get_db_manager()` keeps no manager
-  after a failure, so each call retries the migration. Docs:
+  other manager errors are left to the tabs, as before.
+  `bmlibrarian_cli.py` no longer runs its own swallowing migration pass and
+  stops in agent setup; other CLIs fail at their first DB use (not checked
+  per CLI). `get_db_manager()` keeps no manager after a failure, so each
+  call retries the migration (#379); standalone windows skip the startup
+  check (#378). The SETUP_GUIDE manual-recovery recipe uses
+  `psql -v ON_ERROR_STOP=1 -U <owner>` so a failed statement is never
+  marked applied. Docs:
   `doc/developers/architecture.md` "Failed auto-migration is fatal",
   `SETUP_GUIDE.md` + `doc/users/troubleshooting.md` "Database Migration
   Failed". Tests: `tests/test_auto_migration_failure.py`.
@@ -427,6 +435,10 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ## Also tracked on GitHub (not yet started)
 
+- [#378](https://github.com/hherb/bmlibrarian/issues/378) — Standalone Qt
+  windows (labs, review GUIs) skip the startup migration check.
+- [#379](https://github.com/hherb/bmlibrarian/issues/379) —
+  `get_db_manager()` re-runs a failing migration on every call.
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker
   `insert_ai_evaluation` MAX(version)+1 race under concurrent writers.
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings

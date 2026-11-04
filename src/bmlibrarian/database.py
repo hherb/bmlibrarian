@@ -195,8 +195,8 @@ class DatabaseManager:
         except MigrationError:
             raise
         except Exception as e:
-            # Could not even check (e.g. no migrations table access): the
-            # schema may well be current, so carry on.
+            # Not a failed apply (e.g. migrations module missing, test guard):
+            # the schema may well be current, so carry on.
             logger.warning(f"Auto-migration check failed: {e}")
             return 0
     
