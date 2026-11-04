@@ -306,6 +306,26 @@ with db.get_connection() as conn:
 - macOS (Homebrew): `brew install pgvector`
 - Or compile from source: https://github.com/pgvector/pgvector
 
+### Error: "Database Migration Failed" / "✗ Failed to apply NNN_….sql"
+
+**Symptom**: BMLibrarian refuses to start (the Qt app shows "Database
+Migration Failed"; a CLI stops with `MigrationError`).
+
+**Cause**: A pending migration could not be applied, so the schema is out of
+date. Common cause: the database user does not own the table the migration
+alters (`ALTER TABLE` / `COMMENT ON COLUMN` need ownership).
+
+**Solution**:
+- Read the error: it names the migration file and the PostgreSQL error.
+- Fix the cause, then start BMLibrarian again. For an ownership error,
+  either start it once with the table owner's credentials in
+  `POSTGRES_USER`/`POSTGRES_PASSWORD`, or apply the file as the owner
+  (`psql -d <db> -f migrations/NNN_….sql`) and record it as applied with the
+  app's own credentials (re-running it as a non-owner would fail again):
+  ```bash
+  uv run python -c "from pathlib import Path; from bmlibrarian.migrations import MigrationManager; MigrationManager.from_env().mark_migration_applied(Path('migrations/NNN_….sql'))"
+  ```
+
 ### Warning: "tqdm not installed"
 
 **Symptom**: Warning about missing tqdm package.

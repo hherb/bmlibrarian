@@ -15,6 +15,10 @@ from bmlibrarian.db_test_guard import guarded_connect_kwargs, refuse_if_guarded
 logger = logging.getLogger(__name__)
 
 
+class MigrationError(RuntimeError):
+    """A pending migration failed while being applied; the schema is outdated."""
+
+
 class MigrationManager:
     """Manages database migrations for bmlibrarian."""
 
@@ -431,8 +435,6 @@ class MigrationManager:
                         logger.error(msg)
                     else:
                         print(msg)
-                    # Re-raise to let caller handle the error
-                    # Previously this was silently swallowed in silent mode
-                    raise RuntimeError(msg) from e
+                    raise MigrationError(msg) from e
 
         return applied_count

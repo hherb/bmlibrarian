@@ -10,6 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **A failed auto-migration stops startup** (2026-11-04, closes #342; owner
+  decision: fatal). A pending migration that fails while being applied
+  raises `bmlibrarian.migrations.MigrationError` (a `RuntimeError`, so
+  existing `except RuntimeError` callers still work); `DatabaseManager`
+  closes its pool and re-raises (it used to log "Auto-migration check
+  failed" and run on the outdated schema). Failing to *check* (no
+  migrations dir, no `MigrationManager`, no access to the tracking table) is
+  still a warning. The Qt app creates the manager right after login
+  (`BMLibrarianApplication._check_schema_current`): on `MigrationError` it
+  shows a critical dialog (no window exists yet for a toast) and exits 1;
+  other manager errors are left to the tabs, as before. CLIs fail at their
+  first DB use (not checked per CLI). `get_db_manager()` keeps no manager
+  after a failure, so each call retries the migration. Docs:
+  `doc/developers/architecture.md` "Failed auto-migration is fatal",
+  `SETUP_GUIDE.md` + `doc/users/troubleshooting.md` "Database Migration
+  Failed". Tests: `tests/test_auto_migration_failure.py`.
 - **A fact-check verdict is stored with its evidence or not at all; a
   failed audit write no longer poisons the shared audit connection**
   (2026-11-04, closes #340, #341). `FactCheckerDB.store_verdict(statement,
@@ -158,49 +174,15 @@ off new work. Longer-term structural items live in
   `save_evaluation` overwrites the same run/document/type. #286 (pre-#284
   failure placeholders in saved runs) closed as moot: a read-only check found
   none in `knowledgebase` or `bmlibrarian_dev`.
-- **PMID parity: PostgreSQL fact-checker and paper reviewer** (2026-10-29,
-  closes #363, #361). `PostgreSQLFactCheckerDB.get_document_metadata` joins
-  `sources` and uses `extract_pmid` (was `pmid_select_expr`), matching the
-  SQLite backend. `DocumentResolver.import_document` stores a PMID-only
-  paper as `PMID:<digits>` under the `paper_reviewer` source; its duplicate
-  check also matches bare-digit rows from before (`knowledgebase` has one
-  `paper_reviewer` row, none bare-digit, so no migration). Its local PMID
-  lookup is an indexed exact match on `<digits>` / `PMID:<digits>`, kept
-  only where `extract_pmid` agrees (the old `LIKE '%pmid:…%'` scanned the
-  whole table, missed `PMID:` and matched `pmid:1234` for `123`; no
-  `knowledgebase` row embeds a marker in a longer id). `_db_row_to_doc`
-  derives its PMID with `extract_pmid` too.
-  Tests: `tests/test_paper_reviewer_resolver_pmid.py`,
-  `test_pubmed_source_id_sites.py`.
-- **Review packages carry source names** (2026-10-29, closes #280).
-  `export_review_package.py` joins `sources` and stores `sources.name` in the
-  package's new `documents.source_name` column (`sqlite_schema.sql`);
-  `SQLiteFactCheckerDB.get_document_details` / `get_document_metadata` derive
-  the PMID with `extract_pmid(external_id, source_name)` (metadata also honours
-  `PMID:` markers now) and `get_document_details` returns `source_name`.
-  Packages exported before this have no column and keep the old guess
-  (`PUBMED_SOURCE_ID = 1`, logged on open). Docs:
-  `document_fetching_system.md` "PMID Extraction". Tests:
-  `tests/test_citation_document_details.py`. Side note split out as #361
-  (paper reviewer stores a bare PMID as `external_id`).
-- **PMID lookups use the database's PubMed source id** (2026-10-28, closes
-  #344). `pmid_select_expr()` and `pubmed_source_id(db_manager)` moved from
-  `agents/paper_weight/db.py` into `bmlibrarian.database` (public; the
-  private `_pubmed_source_id` is gone). Used by the citation editor's
-  keyword search, `ReferenceBuilder`, the PubMed Search Lab's PMID lookups,
-  `DocumentProcessor.get_document_info`, the PostgreSQL fact-checker's
-  `get_document_metadata`, and `scripts/find_pdf_mismatches.py` /
-  `pdf_verification_gui.py` (their `PUBMED_SOURCE_ID = 1` is gone). The
-  systematic-review source filter (`SearchExecutor._filter_results_by_source`)
-  classifies by `source_name` only (it also treated ids 1/2 as
-  PubMed/medRxiv; a NULL `source_name` no longer crashes it). Review
-  packages: entry above (#280). Docs: `document_fetching_system.md` "PMID Extraction".
-  Tests: `tests/test_pubmed_source_id_sites.py`. Review follow-ups fixed in
-  the same PR: the citation editor's keyword search selected a nonexistent
-  `d.journal` (now `d.publication AS journal`; every keyword search had
-  failed), and the PubMed Search Lab imported a nonexistent `generate_theme`
-  (now `generate_default_theme`; the swallowed ImportError meant it never
-  got the theme).
+- **PMIDs come from the database's PubMed source id everywhere**
+  (2026-10-28/29, closes #344, #280, #361, #363). `pmid_select_expr()`,
+  `pubmed_source_id(db_manager)` and `extract_pmid` in `bmlibrarian.database`
+  replace hardcoded `PUBMED_SOURCE_ID = 1`; review packages store
+  `documents.source_name` (older packages keep the guess); the paper
+  reviewer stores PMID-only papers as `PMID:<digits>` with an indexed exact
+  lookup. Docs: `document_fetching_system.md` "PMID Extraction". Tests:
+  `test_pubmed_source_id_sites.py`, `test_paper_reviewer_resolver_pmid.py`,
+  `test_citation_document_details.py`.
 - **Systematic-review rigor and sample size score real study assessments**
   (2026-10-24, closes #356; owner decision this session: rigor = worst rated
   domain). `CompositeScorer._extract_methodological_rigor` now uses the
@@ -450,15 +432,15 @@ have drifted since the 2026-07-19 review. Full details, including the
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
-- #342 (from the PR #339 review): a failed auto-migration is only a log
-  warning, so the app runs against an outdated schema (#340/#341, its
-  write-side consequences, are fixed).
+- #376 — `migrate_factchecker_sqlite_to_postgres.py` migrates table by
+  table, so a verdict can still be committed without its evidence; migrate
+  per evaluation with `FactCheckerDB.store_verdict` (one-off script).
 
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-04
-  (#250/#252 branch, after review fixes): **4639 passed, 50 skipped** in 8–17 min. Without
+  (#342 branch): **4664 passed, 53 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

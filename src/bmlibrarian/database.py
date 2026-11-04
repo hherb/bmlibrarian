@@ -72,7 +72,11 @@ class DatabaseManager:
             if db_test_guard.guard_applies(dbname):
                 logger.warning("Running under pytest: not auto-migrating protected database %r", dbname)
             else:
-                self._apply_pending_migrations(dry_run=dry_run_migrations)
+                try:
+                    self._apply_pending_migrations(dry_run=dry_run_migrations)
+                except Exception:
+                    self.close()
+                    raise
         self._cache_source_ids()
     
     @property
@@ -146,8 +150,15 @@ class DatabaseManager:
             dry_run: If True, only show what would be applied without making changes.
 
         Returns:
-            Number of migrations applied (0 if none pending or on error).
+            Number of migrations applied (0 if none pending, or if the
+            migration state could not be checked).
+
+        Raises:
+            MigrationError: A pending migration failed while being applied.
+                The schema is outdated, so writes would fail later (#342).
         """
+        from bmlibrarian.migrations import MigrationError
+
         try:
             from bmlibrarian.migrations import MigrationManager
 
@@ -181,8 +192,11 @@ class DatabaseManager:
                 logger.info(f"Applied {applied} migrations successfully")
             return applied
 
+        except MigrationError:
+            raise
         except Exception as e:
-            # Log but don't fail - migrations might already be applied
+            # Could not even check (e.g. no migrations table access): the
+            # schema may well be current, so carry on.
             logger.warning(f"Auto-migration check failed: {e}")
             return 0
     
