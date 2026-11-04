@@ -11,6 +11,8 @@ from typing import Optional, List, Dict, Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,7 @@ class ReportTracker:
         Returns:
             report_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.generated_reports (
                     research_question_id, session_id, report_type, model_name,
@@ -97,7 +99,7 @@ class ReportTracker:
         Args:
             report_id: ID of the report
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             # First, get the research_question_id
             cur.execute("""
                 SELECT research_question_id FROM audit.generated_reports
@@ -140,7 +142,7 @@ class ReportTracker:
         Returns:
             Dictionary with report data, or None if no reports exist
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             if report_type:
                 cur.execute("""
                     SELECT * FROM audit.generated_reports
@@ -171,7 +173,7 @@ class ReportTracker:
         Returns:
             Dictionary with report data, or None if no final report exists
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.generated_reports
                 WHERE research_question_id = %s AND is_final = TRUE
@@ -192,7 +194,7 @@ class ReportTracker:
         Returns:
             List of dictionaries with report data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.generated_reports
                 WHERE research_question_id = %s
@@ -229,7 +231,7 @@ class ReportTracker:
         Returns:
             analysis_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.counterfactual_analyses (
                     research_question_id, session_id, source_report_id,
@@ -275,7 +277,7 @@ class ReportTracker:
         Returns:
             question_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.counterfactual_questions (
                     research_question_id, analysis_id, question_text,
@@ -305,7 +307,7 @@ class ReportTracker:
         Returns:
             List of dictionaries with analysis data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.counterfactual_analyses
                 WHERE research_question_id = %s
@@ -326,7 +328,7 @@ class ReportTracker:
         Returns:
             List of dictionaries with question data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.counterfactual_questions
                 WHERE analysis_id = %s

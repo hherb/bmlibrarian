@@ -12,6 +12,8 @@ from datetime import datetime
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +55,7 @@ class SessionTracker:
         Returns:
             research_question_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute(
                 "SELECT audit.get_or_create_research_question(%s, %s)",
                 (question_text, user_id)
@@ -83,7 +85,7 @@ class SessionTracker:
         """
         import json
 
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.research_sessions (
                     research_question_id, session_type, config_snapshot, user_notes
@@ -113,7 +115,7 @@ class SessionTracker:
             session_id: ID of the session
             status: Final status ('completed', 'failed', 'cancelled')
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 UPDATE audit.research_sessions
                 SET completed_at = NOW(),
@@ -137,7 +139,7 @@ class SessionTracker:
         Returns:
             Dictionary with session data, or None if no sessions exist
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.v_latest_sessions
                 WHERE research_question_id = %s
@@ -159,7 +161,7 @@ class SessionTracker:
         """
         question_hash = hashlib.md5(question_text.lower().strip().encode()).hexdigest()
 
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 SELECT research_question_id
                 FROM audit.research_questions
@@ -181,7 +183,7 @@ class SessionTracker:
         Returns:
             Dictionary with question data, or None if not found
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.research_questions
                 WHERE research_question_id = %s
@@ -201,7 +203,7 @@ class SessionTracker:
         Returns:
             Dictionary with session data, or None if not found
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.research_sessions
                 WHERE session_id = %s
@@ -225,7 +227,7 @@ class SessionTracker:
         Returns:
             List of dictionaries with question data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             if user_id is not None:
                 cur.execute("""
                     SELECT * FROM audit.research_questions
@@ -253,7 +255,7 @@ class SessionTracker:
         Args:
             research_question_id: ID of the research question
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 UPDATE audit.research_questions
                 SET status = 'archived'

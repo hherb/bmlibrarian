@@ -16,7 +16,7 @@ import json
 import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -28,6 +28,7 @@ from bmlibrarian.agents.citation_agent import (
     CitationFinderAgent,
 )
 from bmlibrarian.agents.query_agent import QueryAgent
+from bmlibrarian.factchecker.db.database import AIEvaluation, Evidence, FactCheckerDB, Statement
 from bmlibrarian.factchecker.agent.fact_checker_agent import (
     EVALUATION_ERROR,
     STAGE_CITATIONS,
@@ -232,8 +233,7 @@ def test_storing_an_error_result_is_refused(agent: FactCheckerAgent) -> None:
 def test_degradation_notes_are_stored(agent: FactCheckerAgent) -> None:
     """A partial-evidence verdict reaches the database with its notes."""
     agent.db = Mock()
-    agent.db.insert_statement.return_value = 1
-    agent.db.insert_ai_evaluation.return_value = 2
+    agent.db.store_verdict.return_value = (1, 2)
     result = FactCheckResult(
         statement="s", evaluation="no", reason="r", evidence_list=[], confidence="low",
         degradation_notes=["bm25 search failed: timeout"],
@@ -241,8 +241,42 @@ def test_degradation_notes_are_stored(agent: FactCheckerAgent) -> None:
 
     assert agent._store_result_in_database(result, None)
 
-    stored = agent.db.insert_ai_evaluation.call_args.args[0]
+    stored = agent.db.store_verdict.call_args.args[1]
     assert stored.degradation_notes == ["bm25 search failed: timeout"]
+
+
+def test_a_failed_store_is_counted_not_claimed(agent: FactCheckerAgent) -> None:
+    """When the verdict's transaction fails (e.g. an evidence insert), it is a storage failure."""
+    agent.db = Mock()
+    agent.db.store_verdict.side_effect = RuntimeError("evidence insert failed")
+    result = FactCheckResult(statement="s", evaluation="yes", reason="r", evidence_list=[],
+                             confidence="low")
+
+    assert not agent._store_result_in_database(result, None)
+    assert agent.storage_failures == 1
+
+
+def test_verdict_and_evidence_share_one_transaction() -> None:
+    """store_verdict runs every insert on one pooled connection, so a failure rolls back all."""
+    conn = MagicMock()
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = MagicMock()
+    db.db_manager.get_connection.return_value.__enter__.return_value = conn
+    db.insert_statement = MagicMock(return_value=1)
+    db.insert_ai_evaluation = MagicMock(return_value=2)
+    db.insert_evidence = MagicMock(side_effect=RuntimeError("undefined column"))
+    evaluation = AIEvaluation(evaluation="yes")
+
+    with pytest.raises(RuntimeError):
+        db.store_verdict(Statement(statement_text="s"), evaluation, [Evidence(citation_text="c")])
+
+    assert db.db_manager.get_connection.call_count == 1
+    exit_args = db.db_manager.get_connection.return_value.__exit__.call_args.args
+    assert exit_args[0] is RuntimeError  # the transaction saw the error and rolls back
+    for insert in (db.insert_statement, db.insert_ai_evaluation, db.insert_evidence):
+        assert insert.call_args.kwargs["conn"] is conn
+    assert evaluation.statement_id == 1
+    assert db.insert_evidence.call_args.args[0].evaluation_id == 2
 
 
 # ---- Recoverable failures are retried -------------------------------------

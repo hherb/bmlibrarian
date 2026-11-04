@@ -12,11 +12,13 @@ Uses the centralized DatabaseManager and factcheck schema (no data duplication).
 
 import json
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Iterator, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
@@ -129,19 +131,56 @@ class FactCheckerDB:
         self.db_manager = get_db_manager()
         logger.info("FactCheckerDB initialized with centralized DatabaseManager")
 
+    @contextmanager
+    def _connection(self, conn: Optional[psycopg.Connection]) -> Iterator[psycopg.Connection]:
+        """Yield ``conn`` (the caller's transaction) or a pooled connection that commits on exit."""
+        if conn is not None:
+            yield conn
+        else:
+            with self.db_manager.get_connection() as pooled:
+                yield pooled
+
+    def store_verdict(self, statement: Statement, evaluation: AIEvaluation,
+                      evidence: List[Evidence]) -> Tuple[int, int]:
+        """
+        Store a statement, its AI evaluation and the evaluation's evidence in one transaction.
+
+        If any insert fails nothing is committed, so a verdict is never stored
+        without its evidence (incremental mode would otherwise treat the
+        statement as done and never retry the evidence).
+
+        Args:
+            statement: The statement (an existing one is reused).
+            evaluation: The verdict; its ``statement_id`` is set here.
+            evidence: Evidence rows; their ``evaluation_id`` is set here.
+
+        Returns:
+            (statement_id, evaluation_id)
+        """
+        with self.db_manager.get_connection() as conn:
+            statement_id = self.insert_statement(statement, conn=conn)
+            evaluation.statement_id = statement_id
+            evaluation_id = self.insert_ai_evaluation(evaluation, conn=conn)
+            for item in evidence:
+                item.evaluation_id = evaluation_id
+                self.insert_evidence(item, conn=conn)
+        return statement_id, evaluation_id
+
     # ========== Statement Operations ==========
 
-    def insert_statement(self, statement: Statement) -> int:
+    def insert_statement(self, statement: Statement,
+                         conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a new statement or return existing ID if duplicate.
 
         Args:
             statement: Statement object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Statement ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Use helper function for upsert
                 cur.execute("""
@@ -239,7 +278,8 @@ class FactCheckerDB:
 
     # ========== AI Evaluation Operations ==========
 
-    def insert_ai_evaluation(self, evaluation: AIEvaluation) -> int:
+    def insert_ai_evaluation(self, evaluation: AIEvaluation,
+                             conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a new AI evaluation as the next version for its statement.
 
@@ -251,11 +291,12 @@ class FactCheckerDB:
 
         Args:
             evaluation: AIEvaluation object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Evaluation ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Convert agent_config to JSONB if it's a string
                 agent_config_jsonb = None
@@ -360,9 +401,10 @@ class FactCheckerDB:
 
     # ========== Evidence Operations ==========
 
-    def insert_evidence(self, evidence: Evidence) -> int:
-        """Insert a new evidence citation."""
-        with self.db_manager.get_connection() as conn:
+    def insert_evidence(self, evidence: Evidence,
+                        conn: Optional[psycopg.Connection] = None) -> int:
+        """Insert a new evidence citation (inside ``conn``'s transaction if given)."""
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO factcheck.evidence (
@@ -769,9 +811,6 @@ class FactCheckerDB:
                                 source_file=json_file,
                                 review_status='pending'
                             )
-                            statement_id = self.insert_statement(stmt)
-                            stats['new_statements'] += 1
-
                             # Import AI evaluation if present. A failed check
                             # ('error') is not a verdict: storing it would stop
                             # incremental mode from re-checking the statement.
@@ -781,9 +820,11 @@ class FactCheckerDB:
                                     f"Not importing evaluation {evaluation!r} as a verdict "
                                     f"for statement: {statement_text[:50]}"
                                 )
-                            elif evaluation:
+                            if evaluation not in STORABLE_VERDICTS:
+                                self.insert_statement(stmt)
+                                stats['new_statements'] += 1
+                            else:
                                 ai_eval = AIEvaluation(
-                                    statement_id=statement_id,
                                     evaluation=result['evaluation'],
                                     reason=result.get('reason', ''),
                                     confidence=result.get('confidence'),
@@ -797,10 +838,7 @@ class FactCheckerDB:
                                     version=1,
                                     degradation_notes=_as_notes(result.get('degradation_notes'))
                                 )
-                                eval_id = self.insert_ai_evaluation(ai_eval)
-                                stats['imported_evaluations'] += 1
-
-                                # Import evidence
+                                evidence_rows = []
                                 for evidence_data in result.get('evidence_list', []):
                                     # Extract document_id (convert to int if needed)
                                     doc_id_str = evidence_data.get('document_id')
@@ -811,8 +849,7 @@ class FactCheckerDB:
                                             logger.warning(f"Invalid document_id: {doc_id_str}")
                                             continue
 
-                                        evidence = Evidence(
-                                            evaluation_id=eval_id,
+                                        evidence_rows.append(Evidence(
                                             citation_text=evidence_data.get('citation', ''),
                                             document_id=doc_id,
                                             pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
@@ -820,9 +857,13 @@ class FactCheckerDB:
                                             relevance_score=evidence_data.get('relevance_score'),
                                             supports_statement=evidence_data.get('stance'),
                                             widened_from=evidence_data.get('widened_from')
-                                        )
-                                        self.insert_evidence(evidence)
-                                        stats['imported_evidence'] += 1
+                                        ))
+
+                                # One transaction: a verdict is never stored without its evidence
+                                self.store_verdict(stmt, ai_eval, evidence_rows)
+                                stats['new_statements'] += 1
+                                stats['imported_evaluations'] += 1
+                                stats['imported_evidence'] += len(evidence_rows)
 
                         except Exception as e:
                             logger.error(f"Error importing result: {e}")

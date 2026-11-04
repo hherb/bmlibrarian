@@ -135,8 +135,7 @@ def test_fact_checker_stores_the_fragment_with_its_evidence() -> None:
     """A checked statement's widened evidence reaches insert_evidence."""
     agent = FactCheckerAgent(model="test-model", show_model_info=False, max_citations=None)
     agent.db = MagicMock()
-    agent.db.insert_statement.return_value = 1
-    agent.db.insert_ai_evaluation.return_value = 2
+    agent.db.store_verdict.return_value = (1, 2)
     result = FactCheckResult(
         statement="s", evaluation="yes", reason="r", confidence="low",
         evidence_list=[EvidenceReference(
@@ -146,7 +145,7 @@ def test_fact_checker_stores_the_fragment_with_its_evidence() -> None:
 
     assert agent._store_result_in_database(result, None)
 
-    stored = agent.db.insert_evidence.call_args.args[0]
+    [stored] = agent.db.store_verdict.call_args.args[2]
     assert stored.citation_text == PASSAGE
     assert stored.widened_from == FRAGMENT
 

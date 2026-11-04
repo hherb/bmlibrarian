@@ -10,6 +10,20 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **A fact-check verdict is stored with its evidence or not at all; a
+  failed audit write no longer poisons the shared audit connection**
+  (2026-11-04, closes #340, #341). `FactCheckerDB.store_verdict(statement,
+  evaluation, evidence)` runs all inserts on one pooled connection in one
+  transaction (the three `insert_*` take an optional `conn`); used by
+  `FactCheckerAgent._store_result_in_database` and `import_json_results`
+  (same bug). Every audit tracker query runs in
+  `audit/connection.audit_cursor(conn)`, which rolls back on error and
+  re-raises. Not done: `extract_citations_with_audit` still drops a
+  citation whose audit write failed (no production callers). Tests:
+  `tests/test_audit_cursor.py`, `tests/test_fact_checker_failure_handling.py`,
+  opt-in real SQL `tests/test_factcheck_audit_transactions_db.py` (both
+  fail on the old code). Docs: `fact_checker_system.md` "Failure handling",
+  `AUDIT_SYSTEM_DESIGN.md` "Python Tracker Classes".
 - **PRISMA chunk consolidation works; the LLM boundary guard sees raw
   Ollama HTTP** (2026-11-04, closes #252, #250). `SemanticChunkProcessor`
   called its client with ollama's API (`options=`, `response["message"]`),
@@ -428,10 +442,9 @@ have drifted since the 2026-07-19 review. Full details, including the
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
-- #340–#342 (from the PR #339 review; matter only if a migration fails to
-  apply): fact-checker stores a verdict without its evidence when an
-  evidence insert fails; audit trackers never roll back a failed write;
-  a failed auto-migration is only a log warning.
+- #342 (from the PR #339 review): a failed auto-migration is only a log
+  warning, so the app runs against an outdated schema (#340/#341, its
+  write-side consequences, are fixed).
 
 ### Verify
 

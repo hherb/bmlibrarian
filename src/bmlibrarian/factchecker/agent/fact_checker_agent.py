@@ -1636,11 +1636,7 @@ Respond ONLY with the JSON object, no additional text."""
                 source_file=source_file or 'unknown',
                 review_status='pending'
             )
-            statement_id = self.db.insert_statement(stmt)
-
-            # Insert AI evaluation
             ai_eval = AIEvaluation(
-                statement_id=statement_id,
                 evaluation=result.evaluation,
                 reason=result.reason,
                 confidence=result.confidence,
@@ -1654,12 +1650,8 @@ Respond ONLY with the JSON object, no additional text."""
                 version=1,
                 degradation_notes=list(result.degradation_notes) or None
             )
-            eval_id = self.db.insert_ai_evaluation(ai_eval)
-
-            # Insert evidence citations
-            for evidence_ref in result.evidence_list:
-                evidence = Evidence(
-                    evaluation_id=eval_id,
+            evidence = [
+                Evidence(
                     citation_text=evidence_ref.citation_text,
                     pmid=evidence_ref.pmid,
                     doi=evidence_ref.doi,
@@ -1670,7 +1662,10 @@ Respond ONLY with the JSON object, no additional text."""
                                       "neutral",
                     widened_from=evidence_ref.widened_from
                 )
-                self.db.insert_evidence(evidence)
+                for evidence_ref in result.evidence_list
+            ]
+            # One transaction: a verdict is never stored without its evidence (#340)
+            statement_id, _ = self.db.store_verdict(stmt, ai_eval, evidence)
 
             logger.debug(f"Stored result for statement {statement_id} in database")
             return True

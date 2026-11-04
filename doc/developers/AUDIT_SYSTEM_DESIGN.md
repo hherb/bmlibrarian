@@ -220,6 +220,14 @@ generated_queries (many) ──→ query_documents (many)
 
 Located in `src/bmlibrarian/audit/`:
 
+All trackers share one non-autocommit connection (`agents/lifecycle.py`) and
+commit after each write. Every query runs in `audit.connection.audit_cursor(conn)`,
+which rolls the connection back when the block raises and re-raises the
+error. Without it, one failed statement left the shared connection in an
+aborted transaction and every later audit call failed with
+`InFailedSqlTransaction` (#341). New tracker code must use `audit_cursor`,
+not `conn.cursor()`.
+
 ### `SessionTracker`
 - `get_or_create_research_question(question_text, user_id)`
 - `start_session(question_id, session_type, config, notes)`
