@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import psycopg
 
-from bmlibrarian.database import DatabaseManager
+from bmlibrarian.database import DatabaseManager, get_db_manager
 
 # Configure logging
 logging.basicConfig(
@@ -75,10 +75,10 @@ class MeshImporter:
         Initialize the MeSH importer.
 
         Args:
-            db_manager: Optional DatabaseManager instance (creates new if None)
+            db_manager: Optional DatabaseManager instance (the shared one if None)
             use_streaming: Whether to use streaming parser for large files (default: True)
         """
-        self.db = db_manager or DatabaseManager()
+        self.db = db_manager or get_db_manager()
         self.stats = ImportStats()
         self.use_streaming = use_streaming
 

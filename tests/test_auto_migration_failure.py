@@ -232,6 +232,132 @@ class TestGetDbManagerRemembersFailure:
         assert cls.call_count == 1
         assert results == [manager] * 4
 
+    def test_handler_told_once_about_a_failure(self) -> None:
+        """The failure handler hears about the first failure only (#381)."""
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        handler = MagicMock()
+        database.set_migration_failure_handler(handler)
+        with patch.object(database, "DatabaseManager", side_effect=error):
+            for _ in range(3):
+                with pytest.raises(MigrationError):
+                    database.get_db_manager()
+        handler.assert_called_once_with(error)
+
+    def test_failing_handler_still_raises_migration_error(self) -> None:
+        """A broken handler can't hide the migration failure from the caller."""
+        database.set_migration_failure_handler(MagicMock(side_effect=RuntimeError("boom")))
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        with patch.object(database, "DatabaseManager", side_effect=error), \
+             pytest.raises(MigrationError, match="035_x.sql"):
+            database.get_db_manager()
+
+    def test_handler_not_told_about_other_errors(self) -> None:
+        """No credentials / server down is not a migration failure."""
+        handler = MagicMock()
+        database.set_migration_failure_handler(handler)
+        with patch.object(database, "DatabaseManager", side_effect=ValueError("no creds")), \
+             pytest.raises(ValueError):
+            database.get_db_manager()
+        handler.assert_not_called()
+
+
+class TestLateMigrationFailureIsFatal:
+    """A migration first failing after startup shows the fatal dialog (#381)."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_globals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No global manager, no stored error, a QApplication to deliver signals."""
+        from PySide6.QtWidgets import QApplication
+
+        monkeypatch.setattr(database, "_db_manager", None)
+        monkeypatch.setattr(database, "_db_manager_error", None)
+        self.qapp = QApplication.instance() or QApplication([])
+
+    def test_worker_thread_failure_reaches_gui_thread_and_quits(self) -> None:
+        """Startup could not connect; a worker's later migration failure is fatal."""
+        import threading
+        import time
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        with patch.object(database, "get_db_manager", side_effect=ValueError("server down")):
+            assert schema_check.check_schema_current() is True
+
+        shown_in: list = []
+        worker_errors: list = []
+
+        def worker() -> None:
+            """Stand in for a widget's QThread creating the manager."""
+            try:
+                database.get_db_manager()
+            except MigrationError as e:
+                worker_errors.append(e)
+
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        fake_qapp = MagicMock()
+        with patch.object(database, "DatabaseManager", side_effect=error), \
+             patch.object(schema_check, "QApplication", fake_qapp), \
+             patch.object(schema_check.QMessageBox, "critical",
+                          side_effect=lambda *a: shown_in.append(threading.current_thread())) as critical:
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            assert critical.call_count == 0  # queued, not shown on the worker
+            deadline = time.monotonic() + 5
+            while not critical.called and time.monotonic() < deadline:
+                self.qapp.processEvents()
+        assert worker_errors == [error]
+        assert shown_in == [threading.main_thread()]
+        assert critical.call_args.args[1] == schema_check.MIGRATION_FAILED_TITLE
+        assert "035_x.sql" in critical.call_args.args[2]
+        fake_qapp.exit.assert_called_once_with(schema_check.MIGRATION_FAILED_EXIT_CODE)
+
+    def test_startup_migration_failure_installs_no_handler(self) -> None:
+        """The startup dialog already covers it; the window never starts."""
+        from bmlibrarian.gui.qt.core import schema_check
+
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        with patch.object(database, "get_db_manager", side_effect=error), \
+             patch.object(schema_check.QMessageBox, "critical"):
+            assert schema_check.check_schema_current() is False
+        assert database._migration_failure_handler is None
+
+
+class TestDirectCallersUseSharedManager:
+    """Former ``DatabaseManager()`` callers reuse the shared manager (#381)."""
+
+    def test_audit_plugin_cleanup_keeps_shared_pool_open(self) -> None:
+        """The plugin releases its connection but doesn't close the app's pool."""
+        from bmlibrarian.gui.qt.plugins.audit_validation import plugin as plugin_mod
+
+        manager = MagicMock()
+        with patch.object(plugin_mod, "get_db_manager", return_value=manager), \
+             patch.object(plugin_mod, "AuditValidationDataManager"):
+            plugin = plugin_mod.AuditValidationPlugin()
+            assert plugin._initialize_database() is True
+            plugin.cleanup()
+        manager.acquire_persistent_connection.return_value.release.assert_called_once()
+        manager.close.assert_not_called()
+
+    def test_audit_gui_reviewer_lookup_uses_shared_manager(self) -> None:
+        """The reviewer lookup neither builds nor closes its own manager."""
+        import importlib.util
+
+        root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location("gui_audit_validation", root / "audit_validation_gui.py")
+        assert spec is not None and spec.loader is not None
+        gui = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gui)
+
+        manager = MagicMock()
+        cursor = manager.get_connection.return_value.__enter__.return_value.cursor.return_value
+        cursor.__enter__.return_value.fetchone.return_value = {"id": 7}
+        window = SimpleNamespace(reviewer_name="alice", reviewer_id=None)
+        with patch.object(gui, "get_db_manager", return_value=manager):
+            gui.AuditValidationMainWindow._lookup_reviewer(window)
+        assert window.reviewer_id == 7
+        manager.close.assert_not_called()
+
 
 def _exit_code(entry: Any) -> Any:
     """Run a launcher entry point; return its exit code (returned or via sys.exit)."""

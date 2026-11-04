@@ -350,6 +350,25 @@ _db_manager = None
 _db_manager_error: Optional[Exception] = None
 # Serialises creating (and so migrating) and closing the global manager
 _db_manager_lock = threading.Lock()
+# Told about a failed migration when get_db_manager() first hits it (#381)
+_migration_failure_handler: Callable[[Exception], None] | None = None
+
+
+def set_migration_failure_handler(handler: Callable[[Exception], None] | None) -> None:
+    """Register the function told when creating the global manager fails on a migration.
+
+    It is called once per remembered failure, with the ``MigrationError``, in
+    whichever thread called :func:`get_db_manager` (often a worker thread),
+    after the lock is released and before the error is raised to that
+    caller. The Qt apps use it to show one fatal "Database Migration Failed"
+    dialog however late the failure happens. Exceptions it raises are logged
+    and ignored.
+
+    Args:
+        handler: The function, or None to remove it.
+    """
+    global _migration_failure_handler
+    _migration_failure_handler = handler
 
 
 def get_db_manager() -> DatabaseManager:
@@ -359,8 +378,9 @@ def get_db_manager() -> DatabaseManager:
         MigrationError: A pending migration failed. The failure is remembered
             and re-raised on every later call without re-running the
             migration (#379); fix the cause and restart, or call
-            :func:`close_database` to allow one more attempt. Any other
-            construction error (no credentials, server down) is not
+            :func:`close_database` to allow one more attempt. The handler set
+            by :func:`set_migration_failure_handler` is told the first time.
+            Any other construction error (no credentials, server down) is not
             remembered: the next call tries again.
     """
     global _db_manager, _db_manager_error
@@ -379,10 +399,17 @@ def get_db_manager() -> DatabaseManager:
             raise _db_manager_error.with_traceback(None)
         try:
             _db_manager = DatabaseManager()
+            return _db_manager
         except MigrationError as e:
-            _db_manager_error = e
-            raise
-        return _db_manager
+            _db_manager_error = failure = e
+    # Outside the lock, so a handler that calls get_db_manager() can't deadlock
+    handler = _migration_failure_handler
+    if handler is not None:
+        try:
+            handler(failure)
+        except Exception as handler_error:
+            logger.exception(f"Migration failure handler failed: {handler_error}")
+    raise failure
 
 
 def _default_source_ids(

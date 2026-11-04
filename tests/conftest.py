@@ -187,6 +187,8 @@ def isolate_tests():
     database = sys.modules.get("bmlibrarian.database")
     if database is not None:
         database._db_manager_error = None
+        # A Qt fatal-dialog handler (#381) must not fire in later tests
+        database._migration_failure_handler = None
 
 @pytest.fixture(autouse=True)
 def _no_backoff_waits(monkeypatch: pytest.MonkeyPatch) -> list:

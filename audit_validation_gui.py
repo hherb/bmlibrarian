@@ -24,7 +24,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QInputDial
 from PySide6.QtCore import Qt
 from psycopg.rows import dict_row
 
-from bmlibrarian.database import DatabaseManager
+from bmlibrarian.database import get_db_manager
+from bmlibrarian.migrations import MigrationError
 from bmlibrarian.config import BMLibrarianConfig
 from bmlibrarian.gui.qt.plugins.audit_validation.plugin import AuditValidationPlugin
 
@@ -115,11 +116,9 @@ class AuditValidationMainWindow(QMainWindow):
 
     def _lookup_reviewer(self) -> None:
         """Look up or create reviewer in the database."""
-        db_manager = None
         try:
-            # Use DatabaseManager for connection (golden rule #5)
-            db_manager = DatabaseManager()
-            with db_manager.get_connection() as conn:
+            # The shared manager: a failed migration is remembered, not re-run (#381)
+            with get_db_manager().get_connection() as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute(
                         "SELECT id FROM public.users WHERE username = %s",
@@ -132,11 +131,10 @@ class AuditValidationMainWindow(QMainWindow):
             else:
                 logger.info(f"Reviewer '{self.reviewer_name}' not found in users table")
 
+        except MigrationError:
+            pass  # reported by the fatal migration dialog (schema_check)
         except Exception as e:
             logger.warning(f"Could not look up reviewer: {e}")
-        finally:
-            if db_manager:
-                db_manager.close()
 
     def closeEvent(self, event) -> None:
         """Handle window close event."""

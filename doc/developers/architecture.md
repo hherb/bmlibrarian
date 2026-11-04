@@ -208,9 +208,14 @@ bmlibrarian migrate init --user username --password password
   `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
   Reviewer / Transparency / PubMed Search labs. On `MigrationError` they
   show "Database Migration Failed" and exit with status 1; other manager
-  errors (no credentials, server down) are left to the widgets (#378). The
-  check runs once: if the server was down at startup, a migration that
-  fails later is reported by the widget that hit it.
+  errors (no credentials, server down) are left to the widgets (#378).
+  If the startup check could not connect, it registers a handler with
+  `database.set_migration_failure_handler()`: when a later
+  `get_db_manager()` (usually on a worker thread) first hits a
+  `MigrationError`, the handler queues the same dialog onto the GUI thread
+  and ends the event loop with exit code 1 (#381). Code that needs the
+  database uses `get_db_manager()`, not its own `DatabaseManager()`, so it
+  shares the remembered failure and never closes the shared pool.
   `bmlibrarian_cli.py` stops in agent setup with the message. Other CLIs
   should fail at their first database use (not checked per CLI).
 - `get_db_manager()` remembers the `MigrationError` and re-raises it on

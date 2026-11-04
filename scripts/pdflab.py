@@ -31,7 +31,8 @@ import pymupdf.layout  # noqa: F401 - activates layout features
 import pymupdf4llm
 import pymupdf
 
-from bmlibrarian.database import DatabaseManager
+from bmlibrarian.database import DatabaseManager, get_db_manager
+from bmlibrarian.migrations import MigrationError
 
 # Configure logging
 logger = logging.getLogger('pdflab')
@@ -207,8 +208,11 @@ class PDFConversionLabWindow(QMainWindow):
     def _init_database(self) -> None:
         """Initialize database connection for storing ratings."""
         try:
-            self.db_manager = DatabaseManager()
+            # The shared manager: a failed migration is remembered, not re-run (#381)
+            self.db_manager = get_db_manager()
             logger.info("Database connection established")
+        except MigrationError:
+            pass  # reported by the fatal migration dialog (schema_check)
         except Exception as e:
             logger.warning(f"Could not connect to database: {e}")
             QMessageBox.warning(

@@ -153,9 +153,9 @@ class EvaluationStore:
 
     Usage:
         from bmlibrarian.evaluations import EvaluationStore
-        from bmlibrarian.database import DatabaseManager
+        from bmlibrarian.database import get_db_manager
 
-        db = DatabaseManager()
+        db = get_db_manager()
         store = EvaluationStore(db)
 
         # Create a new run

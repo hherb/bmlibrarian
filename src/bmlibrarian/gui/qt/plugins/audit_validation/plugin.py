@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QWidget, QTabWidget, QVBoxLayout, QLabel
 
 import psycopg
 
-from bmlibrarian.database import DatabaseManager, PersistentConnection
+from bmlibrarian.database import DatabaseManager, PersistentConnection, get_db_manager
 
 from ...plugins.base_tab import BaseTabPlugin, TabPluginMetadata
 from .data_manager import AuditValidationDataManager
@@ -77,10 +77,9 @@ class AuditValidationPlugin(BaseTabPlugin):
             True if initialization successful, False otherwise
         """
         try:
-            # Use DatabaseManager for connection (golden rule #5)
-            # For GUI plugins that need long-lived connections, we acquire
-            # a persistent connection from the pool
-            self.db_manager = DatabaseManager()
+            # The shared manager (a failed migration is remembered, not re-run:
+            # #381); this plugin holds one long-lived connection from its pool
+            self.db_manager = get_db_manager()
             self._persistent_conn = self.db_manager.acquire_persistent_connection()
             self.conn = self._persistent_conn.connection
 
@@ -180,14 +179,8 @@ class AuditValidationPlugin(BaseTabPlugin):
             except Exception as e:
                 logger.error(f"Error releasing persistent connection: {e}")
 
-        # Then close the database manager (which closes the pool)
-        if self.db_manager:
-            try:
-                self.db_manager.close()
-                self.db_manager = None
-                logger.info("Audit Validation plugin database manager closed")
-            except Exception as e:
-                logger.error(f"Error closing database manager: {e}")
+        # The manager is shared with the rest of the app: leave its pool open
+        self.db_manager = None
 
         # Call parent cleanup to handle base plugin signals
         super().cleanup()

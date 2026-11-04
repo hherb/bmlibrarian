@@ -130,11 +130,12 @@ psycopg.errors.InsufficientPrivilege: permission denied for table bmlibrarian_mi
 
 ## Migration Issues
 
-### "Database Migration Failed" at startup
+### "Database Migration Failed"
 
 **Symptoms:**
 - The desktop app, a lab or a review window shows "Database Migration
-  Failed" and exits; a CLI stops with an error containing
+  Failed" and exits (at startup, or later if the database was not reachable
+  when it started); a CLI stops with an error containing
   `✗ Failed to apply NNN_….sql: …`
 
 BMLibrarian applies pending migrations when it connects. If one fails, it
