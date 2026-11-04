@@ -16,14 +16,22 @@ off new work. Longer-term structural items live in
   evaluation, evidence)` runs all inserts on one pooled connection in one
   transaction (the three `insert_*` take an optional `conn`); used by
   `FactCheckerAgent._store_result_in_database` and `import_json_results`
-  (same bug). Every audit tracker query runs in
-  `audit/connection.audit_cursor(conn)`, which rolls back on error and
-  re-raises. Not done: `extract_citations_with_audit` still drops a
-  citation whose audit write failed (no production callers). Tests:
-  `tests/test_audit_cursor.py`, `tests/test_fact_checker_failure_handling.py`,
-  opt-in real SQL `tests/test_factcheck_audit_transactions_db.py` (both
-  fail on the old code). Docs: `fact_checker_system.md` "Failure handling",
-  `AUDIT_SYSTEM_DESIGN.md` "Python Tracker Classes".
+  (same bug). When an imported verdict fails, `import_json_results` stores
+  the statement alone (`errors`) so `--incremental` still re-checks it;
+  evidence without a usable `document_id` is logged and counted
+  (`dropped_evidence`); both reach the import progress message
+  (`import_problems_suffix`). Every query on an audit connection — the
+  trackers and `AuditValidationDataManager` — runs in
+  `audit/connection.audit_cursor(conn)`, which rolls back on any
+  exception (including Ctrl-C) and re-raises; `tests/test_audit_cursor.py`
+  fails on any bare `conn.cursor(` there. Not done:
+  `extract_citations_with_audit` still drops a citation whose audit write
+  failed (no production callers); the SQLite→PostgreSQL migration script
+  is still not atomic (#376). Tests: `tests/test_audit_cursor.py`,
+  `tests/test_fact_checker_failure_handling.py`, opt-in real SQL
+  `tests/test_factcheck_audit_transactions_db.py` (passes on
+  `bmlibrarian_dev`). Docs: `fact_checker_system.md` "Failure handling",
+  `AUDIT_SYSTEM_DESIGN.md` "Connection handling".
 - **PRISMA chunk consolidation works; the LLM boundary guard sees raw
   Ollama HTTP** (2026-11-04, closes #252, #250). `SemanticChunkProcessor`
   called its client with ollama's API (`options=`, `response["message"]`),

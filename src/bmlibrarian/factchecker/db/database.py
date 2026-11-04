@@ -153,6 +153,7 @@ class FactCheckerDB:
             statement: The statement (an existing one is reused).
             evaluation: The verdict; its ``statement_id`` is set here.
             evidence: Evidence rows; their ``evaluation_id`` is set here.
+                On failure these ids refer to rows that were rolled back.
 
         Returns:
             (statement_id, evaluation_id)
@@ -745,6 +746,11 @@ class FactCheckerDB:
         """
         Import fact-check results from legacy JSON format.
 
+        A result whose verdict cannot be stored is counted in ``errors`` and its
+        statement is imported alone, so incremental mode still checks it.
+        Evidence without a usable ``document_id`` is dropped and counted in
+        ``dropped_evidence``.
+
         Args:
             json_file: Path to JSON file with results
             skip_existing: If True, skip statements with existing evaluations
@@ -758,6 +764,7 @@ class FactCheckerDB:
             'skipped_existing': 0,
             'imported_evaluations': 0,
             'imported_evidence': 0,
+            'dropped_evidence': 0,
             'errors': 0
         }
 
@@ -781,7 +788,9 @@ class FactCheckerDB:
                         try:
                             # Support both 'statement' and 'question' keys
                             statement_text = result.get('statement') or result.get('question', '')
-                            if not statement_text:
+                            # A non-string would abort this connection's transaction, failing every later row
+                            if not statement_text or not isinstance(statement_text, str):
+                                logger.warning(f"Skipping result without a statement text: {statement_text!r}")
                                 stats['errors'] += 1
                                 continue
 
@@ -801,7 +810,6 @@ class FactCheckerDB:
                                 logger.debug(f"Skipping existing statement: {statement_text[:50]}")
                                 continue
 
-                            # Import new statement
                             # Support both 'answer' and 'expected_answer' keys
                             # Support both 'id' and 'input_statement_id' keys
                             stmt = Statement(
@@ -842,31 +850,53 @@ class FactCheckerDB:
                                 for evidence_data in result.get('evidence_list', []):
                                     # Extract document_id (convert to int if needed)
                                     doc_id_str = evidence_data.get('document_id')
-                                    if doc_id_str:
-                                        try:
-                                            doc_id = int(doc_id_str) if isinstance(doc_id_str, str) else doc_id_str
-                                        except (ValueError, TypeError):
-                                            logger.warning(f"Invalid document_id: {doc_id_str}")
-                                            continue
+                                    if not doc_id_str:
+                                        logger.warning(
+                                            f"Dropping evidence without a document_id for statement: "
+                                            f"{statement_text[:50]}"
+                                        )
+                                        stats['dropped_evidence'] += 1
+                                        continue
+                                    try:
+                                        doc_id = int(doc_id_str) if isinstance(doc_id_str, str) else doc_id_str
+                                    except (ValueError, TypeError):
+                                        logger.warning(
+                                            f"Dropping evidence with invalid document_id {doc_id_str!r} "
+                                            f"for statement: {statement_text[:50]}"
+                                        )
+                                        stats['dropped_evidence'] += 1
+                                        continue
 
-                                        evidence_rows.append(Evidence(
-                                            citation_text=evidence_data.get('citation', ''),
-                                            document_id=doc_id,
-                                            pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
-                                            doi=evidence_data.get('doi', '').replace('DOI:', ''),
-                                            relevance_score=evidence_data.get('relevance_score'),
-                                            supports_statement=evidence_data.get('stance'),
-                                            widened_from=evidence_data.get('widened_from')
-                                        ))
+                                    evidence_rows.append(Evidence(
+                                        citation_text=evidence_data.get('citation', ''),
+                                        document_id=doc_id,
+                                        pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
+                                        doi=evidence_data.get('doi', '').replace('DOI:', ''),
+                                        relevance_score=evidence_data.get('relevance_score'),
+                                        supports_statement=evidence_data.get('stance'),
+                                        widened_from=evidence_data.get('widened_from')
+                                    ))
 
                                 # One transaction: a verdict is never stored without its evidence
-                                self.store_verdict(stmt, ai_eval, evidence_rows)
+                                try:
+                                    self.store_verdict(stmt, ai_eval, evidence_rows)
+                                except Exception:
+                                    logger.error(
+                                        f"Could not import the verdict for statement {statement_text[:50]!r}; "
+                                        f"importing the statement alone so it is checked again",
+                                        exc_info=True,
+                                    )
+                                    # Rolled back with the verdict; without it incremental mode never checks it
+                                    self.insert_statement(stmt)
+                                    stats['new_statements'] += 1
+                                    stats['errors'] += 1
+                                    continue
                                 stats['new_statements'] += 1
                                 stats['imported_evaluations'] += 1
                                 stats['imported_evidence'] += len(evidence_rows)
 
                         except Exception as e:
-                            logger.error(f"Error importing result: {e}")
+                            logger.error(f"Error importing result: {e}", exc_info=True)
                             stats['errors'] += 1
                             continue
 

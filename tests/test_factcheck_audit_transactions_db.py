@@ -3,8 +3,8 @@ Real-SQL checks that failed writes leave nothing behind (#340, #341).
 
 Opt-in: set BMLIBRARIAN_TEST_DB_ENV to an env file for a *development* database
 with the BMLibrarian schema (e.g. ~/.bmlibrarian/.env_pg18_dev). Refuses any
-database the test guard protects. Both tests make a write fail on a foreign
-key, so they leave no rows; the statement text is still deleted afterwards.
+database the test guard protects. Every test makes a write fail on a foreign
+key; the test statement is deleted before and after each test.
 """
 
 import os
@@ -83,6 +83,31 @@ def test_failed_evidence_insert_leaves_no_verdict(db_manager) -> None:
             "SELECT count(*) FROM factcheck.statements WHERE statement_text = %s", (TEST_STATEMENT,)
         ).fetchone()[0]
     assert (rows, statements) == (0, 0)
+
+
+def test_failed_verdict_keeps_an_existing_statement_unevaluated(db_manager) -> None:
+    """A statement already stored (e.g. imported) stays, with no evaluation, so incremental mode re-checks it."""
+    from bmlibrarian.factchecker.db.database import AIEvaluation, Evidence, FactCheckerDB, Statement
+
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = db_manager
+    statement_id = db.insert_statement(Statement(statement_text=TEST_STATEMENT, source_file="test"))
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        db.store_verdict(
+            Statement(statement_text=TEST_STATEMENT, source_file="test"),
+            AIEvaluation(evaluation="yes", reason="r", model_used="test"),
+            [Evidence(citation_text="c", document_id=NONEXISTENT_ID)],
+        )
+
+    with db_manager.get_connection() as conn:
+        evaluations = conn.execute(
+            "SELECT count(*) FROM factcheck.ai_evaluations WHERE statement_id = %s", (statement_id,)
+        ).fetchone()[0]
+        statements = conn.execute(
+            "SELECT count(*) FROM factcheck.statements WHERE statement_id = %s", (statement_id,)
+        ).fetchone()[0]
+    assert (evaluations, statements) == (0, 1)
 
 
 def test_failed_audit_write_does_not_poison_the_connection(db_manager) -> None:
