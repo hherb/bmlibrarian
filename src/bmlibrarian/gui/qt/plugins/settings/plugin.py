@@ -21,6 +21,7 @@ from ...tabs.general_tab import GeneralSettingsTab
 from ...tabs.agent_tab import AgentConfigTab
 from ...tabs.search_tab import SearchSettingsTab
 from ..base_tab import BaseTabPlugin, TabPluginMetadata
+from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 
 
 class SettingsWidget(QWidget):
@@ -332,6 +333,8 @@ class SettingsWidget(QWidget):
 
                 # Save configuration
                 self.config.save_config(file_path)
+                # The live config changed above, so the agents are stale
+                self.agents_need_reinit.emit()
 
                 # Verify the file was created
                 if os.path.exists(file_path):
@@ -374,6 +377,7 @@ class SettingsWidget(QWidget):
 
                 # Update configuration
                 self.config._merge_config(config_data)
+                self.agents_need_reinit.emit()
 
                 # Refresh all tabs
                 self._refresh_all_tabs()
@@ -400,6 +404,7 @@ class SettingsWidget(QWidget):
 
             # Save to default location
             self.config.save_config(None)
+            self.agents_need_reinit.emit()
 
             # Get the actual path
             default_path = Path.home() / ".bmlibrarian" / "config.json"
@@ -413,8 +418,7 @@ class SettingsWidget(QWidget):
                     f"✅ Your configuration has been saved successfully!\n\n"
                     f"Location: {default_path}\n"
                     f"Size: {file_size} bytes\n\n"
-                    "Changes will be loaded on next application start.\n"
-                    "Use 'Apply Changes' for immediate effect."
+                    "The Research tab uses them from its next Start."
                 )
             else:
                 QMessageBox.warning(
@@ -446,6 +450,7 @@ class SettingsWidget(QWidget):
             try:
                 # Reset to defaults
                 self.config._config = DEFAULT_CONFIG.copy()
+                self.agents_need_reinit.emit()
                 self._refresh_all_tabs()
 
                 QMessageBox.information(
@@ -566,11 +571,19 @@ class SettingsPlugin(BaseTabPlugin):
         self.settings_widget = SettingsWidget(parent)
 
         # Connect signals
-        self.settings_widget.agents_need_reinit.connect(
-            lambda: self.status_changed.emit("Configuration updated - agents reinitialized")
-        )
+        self.settings_widget.agents_need_reinit.connect(self._on_agents_need_reinit)
 
         return self.settings_widget
+
+    @Slot()
+    def _on_agents_need_reinit(self) -> None:
+        """Tell the other tabs (the research tab) that saved settings need new agents."""
+        EventBus().publish_data(
+            self.get_metadata().plugin_id, {"event": AGENTS_NEED_REINIT_EVENT}
+        )
+        self.status_changed.emit(
+            "Configuration updated - agents will be rebuilt at the next research start"
+        )
 
     def on_tab_activated(self):
         """Called when this tab becomes active."""

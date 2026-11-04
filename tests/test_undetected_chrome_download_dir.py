@@ -78,11 +78,33 @@ class TestPromoteDownloadedPdf:
         assert promote_downloaded_pdf(download_dir, save_path) == len(PDF_BYTES)
         assert save_path.read_bytes() == PDF_BYTES
 
+    @pytest.mark.parametrize("name", ["fulltext", "download.ashx", "article.PDF"])
+    def test_pdf_without_pdf_extension_is_promoted(self, tmp_path: Path, name: str) -> None:
+        """A valid PDF is recognised by its content, not its file name (#329)."""
+        download_dir = tmp_path / "dl"
+        download_dir.mkdir()
+        (download_dir / name).write_bytes(PDF_BYTES)
+        save_path = tmp_path / "target.pdf"
+        save_path.touch()
+
+        assert promote_downloaded_pdf(download_dir, save_path) == len(PDF_BYTES)
+        assert save_path.read_bytes() == PDF_BYTES
+
     def test_partial_download_is_ignored(self, tmp_path: Path) -> None:
         """Chrome's in-progress .crdownload files are not taken."""
         download_dir = tmp_path / "dl"
         download_dir.mkdir()
         (download_dir / "article.pdf.crdownload").write_bytes(PDF_BYTES)
+        save_path = tmp_path / "target.pdf"
+
+        assert promote_downloaded_pdf(download_dir, save_path) is None
+        assert not save_path.exists()
+
+    def test_hidden_temp_file_is_ignored(self, tmp_path: Path) -> None:
+        """A hidden temporary (e.g. ``.com.google.Chrome.*``) is not taken."""
+        download_dir = tmp_path / "dl"
+        download_dir.mkdir()
+        (download_dir / ".com.google.Chrome.abc123").write_bytes(PDF_BYTES)
         save_path = tmp_path / "target.pdf"
 
         assert promote_downloaded_pdf(download_dir, save_path) is None

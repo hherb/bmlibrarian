@@ -294,6 +294,8 @@ uv run python bmlibrarian_qt.py   # then open the Configuration or Settings tab
 - Model selection with live refresh
 - Parameter sliders and inputs
 - Save/load/reset functionality
+- Saved settings reach the Research tab at its next **Start** (a running
+  research keeps the settings it started with; no restart needed)
 
 ### 2. Manual File Editing
 

@@ -1945,6 +1945,27 @@ def wait_for_chrome_download(
         elapsed += poll_interval
 
 
+def finished_downloads(download_dir: Path) -> list[Path]:
+    """List the regular files in a download dir, skipping unfinished ones.
+
+    Chrome's ``*.crdownload`` files are skipped, and so are hidden files
+    (e.g. macOS ``.com.google.Chrome.*`` temporaries): a partly written one
+    can already start with the PDF magic bytes ``is_pdf_file`` checks.
+
+    Args:
+        download_dir: Directory Chrome downloaded into for this call only.
+
+    Returns:
+        Finished downloads, whatever their names.
+    """
+    return [
+        f for f in download_dir.iterdir()
+        if f.is_file()
+        and not f.name.startswith('.')
+        and not f.match(CHROME_PARTIAL_DOWNLOAD_GLOB)
+    ]
+
+
 def promote_downloaded_pdf(download_dir: Path, save_path: Path) -> Optional[int]:
     """Move the newest valid PDF in a per-call download dir onto save_path.
 
@@ -1952,6 +1973,9 @@ def promote_downloaded_pdf(download_dir: Path, save_path: Path) -> Optional[int]
     for this download) are considered, so another document's PDF in the
     shared year folder can never be taken (#325). A non-PDF download is not
     moved (the caller's cleanup deletes it) and save_path is not touched.
+    Files are recognised by content, not name: a site may serve the PDF as
+    ``fulltext`` or ``article.PDF`` (#329). Chrome's unfinished
+    ``*.crdownload`` files are skipped.
 
     Args:
         download_dir: Directory Chrome downloaded into for this call only.
@@ -1960,7 +1984,7 @@ def promote_downloaded_pdf(download_dir: Path, save_path: Path) -> Optional[int]
     Returns:
         Size in bytes of the promoted PDF, or None if no valid PDF was found.
     """
-    candidates = [f for f in download_dir.glob('*.pdf') if f.is_file()]
+    candidates = finished_downloads(download_dir)
     for candidate in sorted(candidates, key=lambda f: f.stat().st_mtime, reverse=True):
         if is_pdf_file(candidate):
             os.replace(candidate, save_path)
@@ -2474,7 +2498,7 @@ def download_pdf_with_undetected_chrome(
                     'needs_institutional_access': True
                 }
 
-        if any(download_dir.glob('*.pdf')):
+        if finished_downloads(download_dir):
             # Anything still here failed is_pdf_file in promote_downloaded_pdf
             return {
                 'status': 'failed',

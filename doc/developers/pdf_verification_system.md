@@ -250,7 +250,10 @@ leave an empty placeholder behind; it is never linked and only pushes later
 downloads to `_<n>`. The undetected-Chrome fallback
 (`browser_downloader.download_pdf_with_undetected_chrome`) downloads into a
 fresh `<year>/.chrome-download-*` directory and promotes only a valid PDF
-from there onto the reserved path (`promote_downloaded_pdf`), then removes
+from there onto the reserved path (`promote_downloaded_pdf`; any finished
+file is checked by its content, so a PDF served as `fulltext` or
+`article.PDF` counts, #329; `*.crdownload` and hidden temporaries such
+as macOS `.com.google.Chrome.*` are skipped), then removes
 the directory on every exit path (#325). After each PDF navigation it polls
 that directory (`wait_for_chrome_download`): it waits up to 5 s for a
 download to start; a started download gets up to the call's `timeout` in
