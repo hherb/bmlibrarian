@@ -83,10 +83,11 @@ class TestLauncherArgs:
         launcher = _load_launcher()
         captured = {}
 
-        def fake_run(widget_factory, title, argv=None):
+        def fake_run(widget_factory, title, argv=None, check_schema=True):
             """Build the widget via its factory instead of starting Qt."""
             captured['widget'] = widget_factory()
             captured['title'] = title
+            captured['check_schema'] = check_schema
             return 0
 
         with patch("bmlibrarian.gui.qt.core.standalone.run_widget_standalone",
@@ -104,6 +105,16 @@ class TestLauncherArgs:
             blind_mode=True, incremental=True,
         )
         assert "Fact-Checker" in captured['title']
+        # A SQLite package needs no PostgreSQL migration check (#378)
+        assert captured['check_schema'] is False
+
+    def test_main_checks_schema_without_a_package(self):
+        """PostgreSQL review (no --db-file) keeps the migration check (#378)."""
+        launcher = _load_launcher()
+        with patch("bmlibrarian.gui.qt.core.standalone.run_widget_standalone",
+                   return_value=0) as run:
+            assert launcher.main(["--user", "alice"]) == 0
+        assert run.call_args.kwargs["check_schema"] is True
 
 
 class TestReviewHelpers:

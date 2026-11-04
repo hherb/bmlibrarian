@@ -198,14 +198,26 @@ bmlibrarian migrate init --user username --password password
   not fatal (debug log or printed warning). If only creating the tracking
   table fails (a role without CREATE on the schema) but it can be read,
   pending migrations are still applied.
-- The Qt app creates the manager right after login
-  (`BMLibrarianApplication._check_schema_current`), shows the error and exits
-  with status 1. `bmlibrarian_cli.py` stops in agent setup with the message.
-  Other CLIs should fail at their first database use (not checked per CLI).
-  Standalone lab/review windows do not run the startup check (#378).
-- `get_db_manager()` keeps no manager after a failure, so every later call
-  retries the migration and fails again until the cause is fixed (caching
-  the failure instead: #379).
+- The Qt app and the standalone windows check right after startup with
+  `gui/qt/core/schema_check.check_schema_current()`: the main app
+  (`BMLibrarianApplication._check_schema_current`, after login),
+  `standalone.run_plugin_standalone` / `run_widget_standalone` (the
+  Query/PICO/PRISMA/Study labs and `fact_checker_review_gui.py`, which
+  skips the check with `--db-file`), `systematic_review_gui.py`,
+  `audit_validation_gui.py`, `scripts/pdf_verification_gui.py`,
+  `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
+  Reviewer / Transparency / PubMed Search labs. On `MigrationError` they
+  show "Database Migration Failed" and exit with status 1; other manager
+  errors (no credentials, server down) are left to the widgets (#378). The
+  check runs once: if the server was down at startup, a migration that
+  fails later is reported by the widget that hit it.
+  `bmlibrarian_cli.py` stops in agent setup with the message. Other CLIs
+  should fail at their first database use (not checked per CLI).
+- `get_db_manager()` remembers the `MigrationError` and re-raises it on
+  every later call without re-running the migration (#379), so code that
+  swallows the error and calls again does not retake locks or re-run a slow
+  failing DDL. Fix the cause and restart; `close_database()` clears the
+  remembered error (one more attempt in-process).
 
 **Idempotent Operations:**
 - Safe to retry failed operations

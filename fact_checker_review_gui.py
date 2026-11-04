@@ -147,6 +147,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             incremental=args.incremental,
         ),
         title="BMLibrarian - Fact-Checker Review",
+        # A SQLite review package needs no PostgreSQL (or its migrations)
+        check_schema=args.db_file is None,
         argv=[sys.argv[0]],
     )
 

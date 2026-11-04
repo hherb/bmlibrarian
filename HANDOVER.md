@@ -10,6 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **A failed migration is remembered; standalone windows check the schema
+  too** (2026-11-04, closes #379, #378). `get_db_manager()` stores the
+  `MigrationError` (`database._db_manager_error`) and re-raises it on every
+  later call without re-running the migration; `close_database()` clears
+  it. Other construction errors are not remembered. The Qt startup check is
+  now `gui/qt/core/schema_check.check_schema_current()` (the main app's
+  `_check_schema_current` delegates), called by `run_plugin_standalone`,
+  `run_widget_standalone` (new `check_schema=`; `fact_checker_review_gui.py`
+  passes False with `--db-file`), `systematic_review_gui.py`,
+  `audit_validation_gui.py`, `scripts/pdf_verification_gui.py`,
+  `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
+  Reviewer / Transparency / PubMed Search lab entry points. Creating the
+  manager is serialised by a lock (one migration run per process). Docs: `architecture.md` "Failed
+  auto-migration is fatal". Tests: `tests/test_auto_migration_failure.py`
+  (`TestGetDbManagerRemembersFailure`, `TestStandaloneWindowsCheckSchema`).
+
 - **A failed auto-migration stops startup** (2026-11-04, closes #342; owner
   decision: fatal). A pending migration that fails while being applied
   raises `bmlibrarian.migrations.MigrationError` (a `RuntimeError`, so
@@ -26,9 +42,7 @@ off new work. Longer-term structural items live in
   other manager errors are left to the tabs, as before.
   `bmlibrarian_cli.py` no longer runs its own swallowing migration pass and
   stops in agent setup; other CLIs fail at their first DB use (not checked
-  per CLI). `get_db_manager()` keeps no manager after a failure, so each
-  call retries the migration (#379); standalone windows skip the startup
-  check (#378). The SETUP_GUIDE manual-recovery recipe uses
+  per CLI). The SETUP_GUIDE manual-recovery recipe uses
   `psql -v ON_ERROR_STOP=1 -U <owner>` so a failed statement is never
   marked applied. Docs:
   `doc/developers/architecture.md` "Failed auto-migration is fatal",
@@ -435,10 +449,6 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ## Also tracked on GitHub (not yet started)
 
-- [#378](https://github.com/hherb/bmlibrarian/issues/378) — Standalone Qt
-  windows (labs, review GUIs) skip the startup migration check.
-- [#379](https://github.com/hherb/bmlibrarian/issues/379) —
-  `get_db_manager()` re-runs a failing migration on every call.
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker
   `insert_ai_evaluation` MAX(version)+1 race under concurrent writers.
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
@@ -452,7 +462,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-04
-  (#342 branch): **4664 passed, 53 skipped** in 7–17 min. Without
+  (#379/#378 branch, after review fixes): **4686 passed, 53 skipped** in 8–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

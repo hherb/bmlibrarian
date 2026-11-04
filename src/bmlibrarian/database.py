@@ -2,6 +2,7 @@
 
 import os
 import re
+import threading
 import time
 import logging
 from contextlib import contextmanager
@@ -345,14 +346,43 @@ class PersistentConnection:
 
 # Global database manager instance
 _db_manager = None
+# The MigrationError that stopped the global manager being created (#379)
+_db_manager_error: Optional[Exception] = None
+# Serialises creating (and so migrating) and closing the global manager
+_db_manager_lock = threading.Lock()
 
 
 def get_db_manager() -> DatabaseManager:
-    """Get the global database manager instance."""
-    global _db_manager
-    if _db_manager is None:
-        _db_manager = DatabaseManager()
-    return _db_manager
+    """Get the global database manager instance.
+
+    Raises:
+        MigrationError: A pending migration failed. The failure is remembered
+            and re-raised on every later call without re-running the
+            migration (#379); fix the cause and restart, or call
+            :func:`close_database` to allow one more attempt. Any other
+            construction error (no credentials, server down) is not
+            remembered: the next call tries again.
+    """
+    global _db_manager, _db_manager_error
+    if _db_manager is not None:
+        return _db_manager
+    from bmlibrarian.migrations import MigrationError
+
+    # One thread creates the manager (and applies migrations); the others
+    # wait and then get its manager or its remembered error
+    with _db_manager_lock:
+        if _db_manager is not None:
+            return _db_manager
+        if _db_manager_error is not None:
+            # Fresh traceback each time, so repeated callers don't grow it;
+            # the PostgreSQL cause stays reachable through __cause__
+            raise _db_manager_error.with_traceback(None)
+        try:
+            _db_manager = DatabaseManager()
+        except MigrationError as e:
+            _db_manager_error = e
+            raise
+        return _db_manager
 
 
 def _default_source_ids(
@@ -1844,8 +1874,10 @@ def resolve_pdf_path(doc: Dict[str, Any]) -> Optional[str]:
 
 
 def close_database():
-    """Close the database connection pool."""
-    global _db_manager
-    if _db_manager:
-        _db_manager.close()
-        _db_manager = None
+    """Close the database connection pool and forget a failed migration."""
+    global _db_manager, _db_manager_error
+    with _db_manager_lock:
+        _db_manager_error = None
+        if _db_manager:
+            _db_manager.close()
+            _db_manager = None

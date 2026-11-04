@@ -183,7 +183,10 @@ def cli_args_apply():
 def isolate_tests():
     """Automatically isolate tests by cleaning up any state."""
     yield
-    # Any cleanup code can go here if needed
+    # A remembered migration failure (#379) must not leak into later tests
+    database = sys.modules.get("bmlibrarian.database")
+    if database is not None:
+        database._db_manager_error = None
 
 @pytest.fixture(autouse=True)
 def _no_backoff_waits(monkeypatch: pytest.MonkeyPatch) -> list:

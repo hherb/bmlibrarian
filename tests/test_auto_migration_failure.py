@@ -174,3 +174,181 @@ class TestCliStopsOnMigrationError:
             assert manager.setup_agents() is False
         factory.create_all_agents.assert_not_called()
         assert "035_x.sql" in ui.show_error_message.call_args.args[0]
+
+
+class TestGetDbManagerRemembersFailure:
+    """``get_db_manager()`` re-raises a failed migration without re-running it (#379)."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_globals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Run each test with no global manager and no stored error."""
+        monkeypatch.setattr(database, "_db_manager", None)
+        monkeypatch.setattr(database, "_db_manager_error", None)
+
+    def test_failure_is_remembered_until_close_database(self) -> None:
+        """Later calls raise the same error; ``close_database()`` allows a retry."""
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        with patch.object(database, "DatabaseManager", side_effect=error) as cls:
+            for _ in range(3):
+                with pytest.raises(MigrationError, match="035_x.sql"):
+                    database.get_db_manager()
+            assert cls.call_count == 1
+            database.close_database()
+            with pytest.raises(MigrationError):
+                database.get_db_manager()
+            assert cls.call_count == 2
+
+    def test_other_errors_are_not_remembered(self) -> None:
+        """Only a failed migration sticks; e.g. missing credentials are retried."""
+        with patch.object(database, "DatabaseManager", side_effect=ValueError("no creds")) as cls:
+            for _ in range(2):
+                with pytest.raises(ValueError):
+                    database.get_db_manager()
+        assert cls.call_count == 2
+        assert database._db_manager_error is None
+
+    def test_concurrent_callers_create_one_manager(self) -> None:
+        """Threads racing on first use migrate once and share one outcome."""
+        import threading
+        import time
+
+        manager = MagicMock()
+
+        def slow_create() -> MagicMock:
+            """Stand in for a DatabaseManager whose migrations take a while."""
+            time.sleep(0.05)
+            return manager
+
+        with patch.object(database, "DatabaseManager", side_effect=slow_create) as cls:
+            results: list = []
+            threads = [
+                threading.Thread(target=lambda: results.append(database.get_db_manager()))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        assert cls.call_count == 1
+        assert results == [manager] * 4
+
+
+def _exit_code(entry: Any) -> Any:
+    """Run a launcher entry point; return its exit code (returned or via sys.exit)."""
+    try:
+        return entry()
+    except SystemExit as exit_info:
+        return exit_info.code
+
+
+class TestStandaloneWindowsCheckSchema:
+    """Standalone windows run the startup migration check too (#378)."""
+
+    @staticmethod
+    def _launcher_patches(standalone: Any, schema_ok: bool) -> tuple[MagicMock, list]:
+        """Patches that keep ``run_*_standalone`` from showing anything."""
+        qapp = MagicMock()
+        qapp.exec.return_value = 0
+        return qapp, [
+            patch.object(standalone, "_ensure_application", return_value=qapp),
+            patch.object(standalone, "_apply_theme"),
+            patch.object(standalone, "_show_window"),
+            patch.object(standalone, "check_schema_current", return_value=schema_ok),
+        ]
+
+    def test_plugin_not_created_when_migration_failed(self) -> None:
+        """A failed check exits before the plugin factory runs."""
+        from contextlib import ExitStack
+
+        from bmlibrarian.gui.qt.core import standalone
+
+        create_plugin = MagicMock()
+        qapp, patches = self._launcher_patches(standalone, schema_ok=False)
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            code = standalone.run_plugin_standalone(create_plugin)
+        assert code == standalone.STARTUP_FAILURE_EXIT_CODE
+        create_plugin.assert_not_called()
+        qapp.exec.assert_not_called()
+
+    @pytest.mark.parametrize("check_schema, checks", [(True, 1), (False, 0)])
+    def test_widget_check_can_be_skipped(self, check_schema: bool, checks: int) -> None:
+        """``check_schema=False`` (SQLite review packages) skips the check."""
+        from contextlib import ExitStack
+
+        from bmlibrarian.gui.qt.core import standalone
+
+        _, patches = self._launcher_patches(standalone, schema_ok=True)
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in patches]
+            assert standalone.run_widget_standalone(MagicMock, "T", check_schema=check_schema) == 0
+        assert mocks[3].call_count == checks
+
+    def test_widget_not_created_when_migration_failed(self) -> None:
+        """A failed check exits before the widget factory runs."""
+        from contextlib import ExitStack
+
+        from bmlibrarian.gui.qt.core import standalone
+
+        widget_factory = MagicMock()
+        qapp, patches = self._launcher_patches(standalone, schema_ok=False)
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            code = standalone.run_widget_standalone(widget_factory, "T")
+        assert code == standalone.STARTUP_FAILURE_EXIT_CODE
+        widget_factory.assert_not_called()
+        qapp.exec.assert_not_called()
+
+    @pytest.mark.parametrize("module, window, entry", [
+        ("bmlibrarian.lab.transparency_lab", "TransparencyLabWindow", "main"),
+        ("bmlibrarian.lab.paper_checker_lab.main_window", "PaperCheckerLab", "main"),
+        ("bmlibrarian.lab.paper_reviewer_lab.main_window", "PaperReviewerLab", "main"),
+        ("bmlibrarian.lab.paper_weight_lab.main_window", "PaperWeightLab", "main"),
+        ("bmlibrarian.lab.pubmed_search_lab", "PubMedSearchLabWindow",
+         "run_pubmed_search_lab"),
+    ])
+    def test_lab_main_stops_before_window(self, module: str, window: str, entry: str) -> None:
+        """Each lab entry point exits 1 without building its window."""
+        import importlib
+
+        from bmlibrarian.gui.qt.core import schema_check
+        from bmlibrarian.gui.qt.resources.styles import theme_generator
+
+        lab = importlib.import_module(module)
+        # The theme needs a real QApplication (the PubMed lab builds it first)
+        with patch.object(lab, "QApplication"), \
+             patch.object(theme_generator, "generate_default_theme", return_value=""), \
+             patch.object(lab, window) as window_cls, \
+             patch.object(schema_check, "check_schema_current", return_value=False):
+            assert _exit_code(getattr(lab, entry)) == 1
+        window_cls.assert_not_called()
+
+    @pytest.mark.parametrize("script, window, argv", [
+        ("systematic_review_gui.py", "SystematicReviewMainWindow", ["--review-dir"]),
+        ("audit_validation_gui.py", "AuditValidationMainWindow", ["--user", "alice"]),
+        ("scripts/pdf_verification_gui.py", "PDFVerificationGUI", []),
+        ("scripts/pdflab.py", "PDFConversionLabWindow", []),
+    ])
+    def test_gui_main_stops_before_window(
+        self, tmp_path: Path, script: str, window: str, argv: list[str]
+    ) -> None:
+        """The script-level standalone GUIs exit 1 without a window."""
+        import importlib.util
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        if argv == ["--review-dir"]:
+            argv = argv + [str(tmp_path)]
+        root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(f"gui_{Path(script).stem}", root / script)
+        assert spec is not None and spec.loader is not None
+        gui = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gui)
+        with patch.object(gui, "QApplication"), \
+             patch.object(gui, window) as window_cls, \
+             patch.object(gui.sys, "argv", [script, *argv]), \
+             patch.object(schema_check, "check_schema_current", return_value=False):
+            assert _exit_code(gui.main) == 1
+        window_cls.assert_not_called()

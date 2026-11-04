@@ -47,6 +47,8 @@ class TestStandaloneLauncher:
             patch.object(standalone, "_ensure_application", return_value=qapp),
             patch.object(standalone, "_apply_theme"),
             patch.object(standalone, "_show_window", return_value=MagicMock()),
+            # Keeps the launcher tests off the real database (#378)
+            patch.object(standalone, "check_schema_current", return_value=True),
         )
 
     def test_widget_cleanup_and_status_are_wired(self, app):
@@ -55,7 +57,7 @@ class TestStandaloneLauncher:
 
         widget = MagicMock()
         qapp, patches = self._patched()
-        with patches[0], patches[1], patches[2] as show_window:
+        with patches[0], patches[1], patches[2] as show_window, patches[3]:
             assert standalone.run_widget_standalone(lambda: widget, "T") == 0
         qapp.aboutToQuit.connect.assert_called_once_with(widget.cleanup)
         assert show_window.call_args[0][3] is widget.status_changed
@@ -69,7 +71,7 @@ class TestStandaloneLauncher:
             raise RuntimeError("database down")
 
         qapp, patches = self._patched()
-        with patches[0], patches[1], patches[2] as show_window, \
+        with patches[0], patches[1], patches[2] as show_window, patches[3], \
              patch.object(standalone, "QMessageBox") as box:
             exit_code = standalone.run_widget_standalone(broken_factory, "Tool")
         assert exit_code == standalone.STARTUP_FAILURE_EXIT_CODE
@@ -85,7 +87,7 @@ class TestStandaloneLauncher:
         plugin = MagicMock()
         plugin.get_metadata.return_value = SimpleNamespace(display_name="Query Lab")
         qapp, patches = self._patched()
-        with patches[0], patches[1], patches[2] as show_window:
+        with patches[0], patches[1], patches[2] as show_window, patches[3]:
             assert standalone.run_plugin_standalone(lambda: plugin) == 0
         plugin.create_widget.assert_called_once_with(None)
         qapp.aboutToQuit.connect.assert_called_once_with(plugin.cleanup)
@@ -102,7 +104,7 @@ class TestStandaloneLauncher:
             raise ImportError("missing dependency")
 
         qapp, patches = self._patched()
-        with patches[0], patches[1], patches[2], \
+        with patches[0], patches[1], patches[2], patches[3], \
              patch.object(standalone, "QMessageBox"):
             assert standalone.run_plugin_standalone(broken_plugin) == \
                 standalone.STARTUP_FAILURE_EXIT_CODE

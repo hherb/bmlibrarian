@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from psycopg import sql
 
 from bmlibrarian.config import get_config
+from bmlibrarian.migrations import MigrationError
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.constants import (
     ImportButtonColors,
@@ -212,6 +213,8 @@ class PubMedSearchWorker(QThread):
 
                 try:
                     existing_pmid_to_docid = self._get_existing_pmids(articles)
+                except MigrationError:
+                    raise  # reported as a search error, not "0 in database"
                 except Exception as e:
                     logger.warning(f"Failed to check existing documents: {e}")
 
@@ -262,6 +265,8 @@ class PubMedSearchWorker(QThread):
                     results = cur.fetchall()
                     return {row[0]: row[1] for row in results}
 
+        except MigrationError:
+            raise
         except Exception as e:
             logger.warning(f"Database check failed: {e}")
             return {}
@@ -1004,6 +1009,12 @@ def run_pubmed_search_lab() -> None:
         app.setStyleSheet(generate_default_theme())
     except ImportError as e:
         logger.warning(f"Theme unavailable, using default styling: {e}")
+
+    from bmlibrarian.gui.qt.core.schema_check import check_schema_current
+    from bmlibrarian.gui.qt.core.standalone import STARTUP_FAILURE_EXIT_CODE
+
+    if not check_schema_current():
+        sys.exit(STARTUP_FAILURE_EXIT_CODE)
 
     window = PubMedSearchLabWindow()
     window.show()
