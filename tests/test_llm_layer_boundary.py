@@ -22,9 +22,15 @@ Scope note: this covers the package only. Standalone tooling under
 
 Imports are detected by parsing the AST, not by grepping, so ``import
 ollama`` appearing inside a docstring example is correctly ignored.
+
+Raw HTTP to the Ollama REST API (``/api/tags``, ``/api/chat``, …) bypasses
+the layer just as surely without importing anything (#250, #252), so
+``test_no_new_raw_ollama_http`` also flags string literals naming those
+endpoints. Docstrings and comments do not count.
 """
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -44,6 +50,66 @@ LLM_LAYER = "llm"
 # and token accounting — a configured anthropic: model silently would not
 # apply, which is the failure this guard exists to prevent.
 KNOWN_DIRECT_OLLAMA_MODULES: frozenset[str] = frozenset()
+
+
+# Ollama REST endpoints; a string literal naming one is a raw HTTP call.
+OLLAMA_ENDPOINT_PATTERN = re.compile(
+    r"/api/(tags|generate|chat|embed|embeddings|pull|push|show|ps|version)\b"
+)
+
+# Modules allowed to call the Ollama REST API directly. Same rules as
+# KNOWN_DIRECT_OLLAMA_MODULES: do not add to it without a reason that the
+# LLM layer cannot serve.
+KNOWN_RAW_OLLAMA_HTTP_MODULES: frozenset[str] = frozenset({
+    # Batch embedding server for bulk chunk embedding (/api/embed takes a
+    # list of inputs); the LLM layer embeds one text per request.
+    "embeddings/embedding_server.py",
+})
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """
+    Collect the ids of every docstring and bare string-expression node.
+
+    Args:
+        tree: Parsed module
+
+    Returns:
+        ``id()`` of each string Constant that is a statement on its own
+    """
+    return {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+
+
+def _names_ollama_endpoint(source: str) -> bool:
+    """
+    Report whether a module's code contains a string naming an Ollama endpoint.
+
+    Args:
+        source: Python source text
+
+    Returns:
+        True if any string literal (f-string parts included) outside a
+        docstring names an Ollama REST endpoint.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    docstrings = _docstring_nodes(tree)
+    return any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+        and OLLAMA_ENDPOINT_PATTERN.search(node.value)
+        for node in ast.walk(tree)
+    )
 
 
 def _imports_ollama(source: str) -> bool:
@@ -80,6 +146,19 @@ def _modules_importing_ollama() -> set[str]:
     Returns:
         Package-relative POSIX paths, excluding the LLM layer itself
     """
+    return _scan_package(_imports_ollama)
+
+
+def _scan_package(check) -> set[str]:
+    """
+    Find every package module, outside the LLM layer, whose source fails a check.
+
+    Args:
+        check: Callable taking module source text, True when it offends
+
+    Returns:
+        Package-relative POSIX paths
+    """
     found: set[str] = set()
     for path in PACKAGE_ROOT.rglob("*.py"):
         if "__pycache__" in path.parts:
@@ -87,7 +166,7 @@ def _modules_importing_ollama() -> set[str]:
         relative = path.relative_to(PACKAGE_ROOT)
         if relative.parts and relative.parts[0] == LLM_LAYER:
             continue
-        if _imports_ollama(path.read_text(encoding="utf-8")):
+        if check(path.read_text(encoding="utf-8")):
             found.add(relative.as_posix())
     return found
 
@@ -126,4 +205,44 @@ def test_allowlist_contains_no_stale_entries(direct_importers: set[str]) -> None
         "These modules no longer import ollama and must be dropped from "
         "KNOWN_DIRECT_OLLAMA_MODULES so the guard keeps tightening:\n  "
         + "\n  ".join(sorted(stale))
+    )
+
+
+@pytest.fixture(scope="module")
+def raw_http_callers() -> set[str]:
+    """Scan the package once for modules naming Ollama REST endpoints."""
+    return _scan_package(_names_ollama_endpoint)
+
+
+def test_endpoint_detection_ignores_docstrings() -> None:
+    """A docstring mention is fine; a URL built in code is not."""
+    documented = '"""Uses the /api/embed endpoint."""\n'
+    assert not _names_ollama_endpoint(documented)
+    assert _names_ollama_endpoint(documented + 'url = f"{host}/api/tags"\n')
+    assert _names_ollama_endpoint('requests.post(host + "/api/generate")\n')
+    assert not _names_ollama_endpoint('path = "/api/tagsoup"\n')
+
+
+def test_no_new_raw_ollama_http(raw_http_callers: set[str]) -> None:
+    """New code must not reach the Ollama REST API around the LLM layer."""
+    unexpected = raw_http_callers - KNOWN_RAW_OLLAMA_HTTP_MODULES
+
+    assert not unexpected, (
+        "These modules call the Ollama REST API directly, bypassing provider "
+        "selection, fallback, retries and token accounting:\n  "
+        + "\n  ".join(sorted(unexpected))
+        + "\n\nUse bmlibrarian.llm.LLMClient, or bmlibrarian.llm."
+          "list_ollama_models for a model picker."
+    )
+
+
+def test_raw_http_allowlist_contains_no_stale_entries(
+    raw_http_callers: set[str],
+) -> None:
+    """A migrated module must be removed from the raw-HTTP allowlist."""
+    stale = KNOWN_RAW_OLLAMA_HTTP_MODULES - raw_http_callers
+
+    assert not stale, (
+        "These modules no longer call the Ollama REST API and must be dropped "
+        "from KNOWN_RAW_OLLAMA_HTTP_MODULES:\n  " + "\n  ".join(sorted(stale))
     )

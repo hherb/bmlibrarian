@@ -195,15 +195,9 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
-- [#250](https://github.com/hherb/bmlibrarian/issues/250) — Three model
-  pickers reach Ollama over raw HTTP, which the AST-based LLM boundary
-  guard cannot see. Extend the guard to the REST endpoints too.
 - [#251](https://github.com/hherb/bmlibrarian/issues/251) — Unmarked tests
   hitting a live database and a live Ollama; two more collection-error
   files; assert-free tests that cannot fail. Overlaps §2 above.
-- [#252](https://github.com/hherb/bmlibrarian/issues/252) —
-  `SemanticChunkProcessor` still speaks the old ollama API and is
-  unreachable: wire it onto `LLMClient` or delete it.
 
 ## Out of scope for now
 

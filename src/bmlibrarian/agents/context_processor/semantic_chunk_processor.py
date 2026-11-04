@@ -16,7 +16,7 @@ Usage:
     )
 
     processor = SemanticChunkProcessor(
-        llm_client=ollama_client,
+        llm_client=LLMClient(),
         model="gpt-oss:20b",
         extraction_prompt_template=EXTRACTION_PROMPT,
     )
@@ -30,6 +30,8 @@ Usage:
 import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from bmlibrarian.llm import LLMClient, LLMMessage
 
 from .base import IterativeContextProcessor, ProgressCallback
 from .data_types import (
@@ -118,7 +120,7 @@ class SemanticChunkProcessor(IterativeContextProcessor):
     using LLM summarization at each level.
 
     Attributes:
-        llm_client: Ollama client for LLM calls.
+        llm_client: bmlibrarian.llm.LLMClient for LLM calls.
         model: Model name for LLM calls.
         extraction_prompt_template: Template for extraction prompts.
         consolidation_prompt_template: Template for consolidation prompts.
@@ -129,7 +131,7 @@ class SemanticChunkProcessor(IterativeContextProcessor):
 
     def __init__(
         self,
-        llm_client: Any,
+        llm_client: LLMClient,
         model: str,
         extraction_prompt_template: Optional[str] = None,
         consolidation_prompt_template: Optional[str] = None,
@@ -143,7 +145,7 @@ class SemanticChunkProcessor(IterativeContextProcessor):
         Initialize the semantic chunk processor.
 
         Args:
-            llm_client: Ollama client instance for LLM calls.
+            llm_client: bmlibrarian.llm.LLMClient for LLM calls.
             model: Name of the LLM model to use.
             extraction_prompt_template: Custom template for extraction prompts.
                 Must include {query} and {content} placeholders.
@@ -303,15 +305,13 @@ class SemanticChunkProcessor(IterativeContextProcessor):
         try:
             # Call LLM
             response = self.llm_client.chat(
+                messages=[LLMMessage(role="user", content=prompt)],
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": self.max_tokens,
-                },
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
             )
 
-            extracted_content = response["message"]["content"].strip()
+            extracted_content = response.content.strip()
             confidence = DEFAULT_EXTRACTION_CONFIDENCE
 
             # Try to parse structured output if enabled
@@ -344,8 +344,21 @@ class SemanticChunkProcessor(IterativeContextProcessor):
             raise RuntimeError(error_msg) from e
 
 
+def _escape_braces(text: str) -> str:
+    """
+    Escape braces so text survives inside a str.format() template.
+
+    Args:
+        text: Text to embed literally in a template.
+
+    Returns:
+        The text with every brace doubled.
+    """
+    return text.replace("{", "{{").replace("}", "}}")
+
+
 def create_prisma_chunk_processor(
-    llm_client: Any,
+    llm_client: LLMClient,
     model: str,
     item_name: str,
     item_description: str,
@@ -362,7 +375,7 @@ def create_prisma_chunk_processor(
     PRISMA 2020 item re-assessment using semantic search context.
 
     Args:
-        llm_client: Ollama client instance.
+        llm_client: bmlibrarian.llm.LLMClient for LLM calls.
         model: LLM model name.
         item_name: Name of the PRISMA item (e.g., 'search_strategy').
         item_description: Description of what the item requires.
@@ -375,6 +388,12 @@ def create_prisma_chunk_processor(
     Returns:
         Configured SemanticChunkProcessor for PRISMA re-assessment.
     """
+    # The templates below are .format()ed again with {query}/{content}, so
+    # literal braces in paper text (e.g. LaTeX in a title) must be escaped.
+    document_title = _escape_braces(document_title)
+    item_description = _escape_braces(item_description)
+    original_explanation = _escape_braces(original_explanation)
+
     # PRISMA-specific extraction prompt
     extraction_prompt = f"""You are extracting evidence for PRISMA 2020 compliance assessment.
 
