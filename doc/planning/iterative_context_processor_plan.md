@@ -168,7 +168,7 @@ Created `semantic_chunk_processor.py` with:
 
 Modified `prisma2020_agent.py`:
 - Added `_process_semantic_chunks_for_context()` method
-- Added `_fallback_first_chunk()` for graceful degradation
+- Added `_fallback_first_chunk()` for graceful degradation (removed 2026-11-04: it re-scored items on one chunk as if on full text; a failed run now skips re-assessment and reports `prisma_second_pass_error`)
 - Replaced truncation with iterative context processor
 - **Removed truncation at line 1443** - context no longer truncated
 

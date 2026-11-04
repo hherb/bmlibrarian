@@ -23,7 +23,7 @@ from ..llm import (
     LLMMessage,
     LLMResponse,
     Provider,
-    TRUNCATION_STOP_REASONS,
+    checked_content,
     parse_model_string,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
@@ -299,6 +299,8 @@ class BaseAgent(ABC):
         """
         Return a response's content, refusing an empty one.
 
+        Delegates to :func:`bmlibrarian.llm.checked_content`.
+
         Args:
             response: The provider's response.
             max_tokens: The generation ceiling that was requested, for messages.
@@ -307,24 +309,9 @@ class BaseAgent(ABC):
             The content (not stripped).
 
         Raises:
-            ValueError: If the content is empty; the message says when the
-                model used up ``max_tokens`` (e.g. on reasoning) first.
+            ValueError: If the content is empty.
         """
-        content = response.content
-        truncated = response.stop_reason in TRUNCATION_STOP_REASONS
-        if not content or not content.strip():
-            if truncated:
-                raise ValueError(
-                    f"Model hit the max_tokens limit ({max_tokens}) before producing "
-                    f"an answer"
-                )
-            raise ValueError("Empty response from model")
-        if truncated:
-            logging.getLogger('bmlibrarian.agents').warning(
-                f"Response from {response.model} was cut off at the max_tokens "
-                f"limit ({max_tokens})"
-            )
-        return content
+        return checked_content(response, max_tokens)
 
     def _make_llm_request(
         self,

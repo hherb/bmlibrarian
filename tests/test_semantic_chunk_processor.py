@@ -6,8 +6,7 @@ processing semantic search chunks from PRISMA assessments and other agents.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
-from typing import Dict, Any
+from typing import Any, Optional
 
 from bmlibrarian.agents.context_processor import (
     SemanticChunkProcessor,
@@ -18,43 +17,58 @@ from bmlibrarian.agents.context_processor import (
     DEFAULT_EXTRACTION_PROMPT,
     DEFAULT_CONSOLIDATION_PROMPT,
 )
+from bmlibrarian.agents.context_processor.semantic_chunk_processor import (
+    DEFAULT_EXTRACTION_CONFIDENCE,
+)
+from bmlibrarian.llm import LLMClient
+from tests.llm_test_support import llm_response, patch_llm
 
 
-class MockOllamaClient:
-    """Mock Ollama client for testing without LLM calls."""
+class FakeModel:
+    """
+    A real LLMClient whose provider calls are answered from a script.
 
-    def __init__(self, responses: list = None, should_fail: bool = False):
+    Patched at the provider boundary (see tests/llm_test_support.py), so the
+    processor must speak the real LLMClient API: the old ollama-shaped mock
+    this replaces let a TypeError on every call ship with green tests (#252).
+    """
+
+    def __init__(
+        self,
+        test: unittest.TestCase,
+        responses: Optional[list] = None,
+        should_fail: bool = False,
+    ):
         """
-        Initialize mock client.
+        Start the patch for the duration of the test.
 
         Args:
-            responses: List of response strings to return in order.
-            should_fail: If True, raise exception on chat calls.
+            test: Test case whose cleanup ends the patch.
+            responses: Response strings to return in order (cycled).
+            should_fail: If True, every provider call raises.
         """
         self.responses = responses or ["Extracted content from batch."]
         self.response_index = 0
         self.should_fail = should_fail
         self.call_history: list = []
+        patcher = patch_llm(side_effect=self._answer)
+        patcher.__enter__()
+        test.addCleanup(patcher.__exit__, None, None, None)
+        self.client = LLMClient()
 
-    def chat(
-        self,
-        model: str,
-        messages: list,
-        options: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
-        """Mock chat method."""
+    def _answer(self, **kwargs: Any) -> Any:
+        """Record the provider call and return the next scripted reply."""
         self.call_history.append({
-            "model": model,
-            "messages": messages,
-            "options": options,
+            "model": kwargs["model"],
+            "prompt": kwargs["messages"][-1].content,
+            "max_tokens": kwargs.get("max_tokens"),
+            "temperature": kwargs.get("temperature"),
         })
-
         if self.should_fail:
             raise RuntimeError("Mock LLM failure")
-
         response = self.responses[self.response_index % len(self.responses)]
         self.response_index += 1
-        return {"message": {"content": response}}
+        return llm_response(response)
 
 
 class TestSemanticChunkProcessor(unittest.TestCase):
@@ -62,9 +76,9 @@ class TestSemanticChunkProcessor(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.mock_client = MockOllamaClient()
+        self.mock_client = FakeModel(self)
         self.processor = SemanticChunkProcessor(
-            llm_client=self.mock_client,
+            llm_client=self.mock_client.client,
             model="test-model",
             config=ProcessingConfig(max_context_chars=200),
         )
@@ -130,9 +144,11 @@ class TestSemanticChunkProcessor(unittest.TestCase):
 
         self.assertEqual(len(self.mock_client.call_history), 1)
         call = self.mock_client.call_history[0]
-        self.assertEqual(call["model"], "test-model")
-        self.assertIn(query, call["messages"][0]["content"])
-        self.assertIn(batch_content, call["messages"][0]["content"])
+        self.assertTrue(call["model"].endswith("test-model"))
+        self.assertEqual(call["max_tokens"], self.processor.max_tokens)
+        self.assertEqual(call["temperature"], self.processor.temperature)
+        self.assertIn(query, call["prompt"])
+        self.assertIn(batch_content, call["prompt"])
         self.assertIsInstance(result, ExtractionResult)
         self.assertEqual(result.content, "Extracted content from batch.")
 
@@ -144,7 +160,7 @@ class TestSemanticChunkProcessor(unittest.TestCase):
             "content", "query", batch_metadata
         )
 
-        prompt = self.mock_client.call_history[0]["messages"][0]["content"]
+        prompt = self.mock_client.call_history[0]["prompt"]
         self.assertIn("Extract the key information", prompt)
 
     def test_extract_uses_consolidation_prompt_at_level_1(self):
@@ -155,14 +171,14 @@ class TestSemanticChunkProcessor(unittest.TestCase):
             "content", "query", batch_metadata
         )
 
-        prompt = self.mock_client.call_history[0]["messages"][0]["content"]
+        prompt = self.mock_client.call_history[0]["prompt"]
         self.assertIn("Consolidate and synthesize", prompt)
 
     def test_extract_failure_raises_runtime_error(self):
         """Test that LLM failure raises RuntimeError."""
-        failing_client = MockOllamaClient(should_fail=True)
+        failing_client = FakeModel(self, should_fail=True)
         processor = SemanticChunkProcessor(
-            llm_client=failing_client,
+            llm_client=failing_client.client,
             model="test-model",
         )
 
@@ -172,6 +188,23 @@ class TestSemanticChunkProcessor(unittest.TestCase):
             )
 
         self.assertIn("LLM extraction failed", str(ctx.exception))
+
+    def test_empty_reply_fails_the_batch(self):
+        """An empty reply is an error, not a success that contributes nothing."""
+        empty_client = FakeModel(self, responses=["   "])
+        processor = SemanticChunkProcessor(
+            llm_client=empty_client.client,
+            model="test-model",
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            processor.extract_from_batch(
+                "content", "query", {"batch_index": 0, "recursion_level": 0}
+            )
+        self.assertIn("Empty response", str(ctx.exception))
+
+        result = processor.process([("Some text", 0.9)], "query")
+        self.assertNotEqual(result.status, ProcessingStatus.COMPLETED)
 
     def test_process_small_chunks_single_batch(self):
         """Test that small chunks fit in a single batch and complete successfully."""
@@ -183,7 +216,7 @@ class TestSemanticChunkProcessor(unittest.TestCase):
 
         # Processor with large context limit - chunks fit in one batch
         processor = SemanticChunkProcessor(
-            llm_client=self.mock_client,
+            llm_client=self.mock_client.client,
             model="test-model",
             config=ProcessingConfig(max_context_chars=1000),
         )
@@ -206,7 +239,7 @@ class TestSemanticChunkProcessor(unittest.TestCase):
         ]
 
         processor = SemanticChunkProcessor(
-            llm_client=self.mock_client,
+            llm_client=self.mock_client.client,
             model="test-model",
             config=ProcessingConfig(max_context_chars=150),
         )
@@ -219,9 +252,9 @@ class TestSemanticChunkProcessor(unittest.TestCase):
 
     def test_process_handles_llm_failure_gracefully(self):
         """Test that processing handles LLM failure with continue_on_error."""
-        failing_client = MockOllamaClient(should_fail=True)
+        failing_client = FakeModel(self, should_fail=True)
         processor = SemanticChunkProcessor(
-            llm_client=failing_client,
+            llm_client=failing_client.client,
             model="test-model",
             config=ProcessingConfig(
                 max_context_chars=50,
@@ -241,7 +274,7 @@ class TestSemanticChunkProcessor(unittest.TestCase):
         custom_consolidation = "Custom consolidation: {query}\n{content}"
 
         processor = SemanticChunkProcessor(
-            llm_client=self.mock_client,
+            llm_client=self.mock_client.client,
             model="test-model",
             extraction_prompt_template=custom_extraction,
             consolidation_prompt_template=custom_consolidation,
@@ -251,14 +284,14 @@ class TestSemanticChunkProcessor(unittest.TestCase):
             "content", "test query", {"batch_index": 0, "recursion_level": 0}
         )
 
-        prompt = self.mock_client.call_history[0]["messages"][0]["content"]
+        prompt = self.mock_client.call_history[0]["prompt"]
         self.assertIn("Custom extraction:", prompt)
 
     def test_invalid_prompt_template_raises_error(self):
         """Test that missing placeholders raise ValueError."""
         with self.assertRaises(ValueError) as ctx:
             SemanticChunkProcessor(
-                llm_client=self.mock_client,
+                llm_client=self.mock_client.client,
                 model="test-model",
                 extraction_prompt_template="No placeholders here",
             )
@@ -271,10 +304,10 @@ class TestCreatePrismaChunkProcessor(unittest.TestCase):
 
     def test_creates_configured_processor(self):
         """Test that factory creates properly configured processor."""
-        mock_client = MockOllamaClient()
+        mock_client = FakeModel(self)
 
         processor = create_prisma_chunk_processor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="test-model",
             item_name="search_strategy",
             item_description="Full search strategy for at least one database",
@@ -288,10 +321,10 @@ class TestCreatePrismaChunkProcessor(unittest.TestCase):
 
     def test_prisma_prompts_include_context(self):
         """Test that PRISMA prompts include item context."""
-        mock_client = MockOllamaClient()
+        mock_client = FakeModel(self)
 
         processor = create_prisma_chunk_processor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="test-model",
             item_name="search_strategy",
             item_description="Full search strategy",
@@ -305,11 +338,55 @@ class TestCreatePrismaChunkProcessor(unittest.TestCase):
             "batch content", "query", {"batch_index": 0, "recursion_level": 0}
         )
 
-        prompt = mock_client.call_history[0]["messages"][0]["content"]
+        prompt = mock_client.call_history[0]["prompt"]
         self.assertIn("My Paper", prompt)
         self.assertIn("Search Strategy", prompt)  # Title case
         self.assertIn("1.0", prompt)
         self.assertIn("Partial", prompt)
+
+
+    def test_prisma_prompt_survives_braces_in_paper_text(self):
+        """Braces in a title or explanation must not break template formatting."""
+        mock_client = FakeModel(self)
+
+        processor = create_prisma_chunk_processor(
+            llm_client=mock_client.client,
+            model="test-model",
+            item_name="search_strategy",
+            item_description="Strategy {with braces}",
+            original_score=1.0,
+            original_explanation="Found {x}",
+            document_title="Effect of $\\frac{1}{2}$ dose",
+        )
+
+        result = processor.extract_from_batch(
+            "batch content", "query", {"batch_index": 0, "recursion_level": 0}
+        )
+
+        self.assertEqual(result.content, "Extracted content from batch.")
+        prompt = mock_client.call_history[0]["prompt"]
+        self.assertIn("$\\frac{1}{2}$", prompt)
+        self.assertIn("Strategy {with braces}", prompt)
+        self.assertIn("Found {x}", prompt)
+
+    def test_prisma_processor_accepts_null_title(self):
+        """A NULL title column (None) must not break the processor."""
+        mock_client = FakeModel(self)
+
+        processor = create_prisma_chunk_processor(
+            llm_client=mock_client.client,
+            model="test-model",
+            item_name="search_strategy",
+            item_description="Full search strategy",
+            original_score=1.0,
+            original_explanation=None,
+            document_title=None,
+        )
+
+        result = processor.extract_from_batch(
+            "batch content", "query", {"batch_index": 0, "recursion_level": 0}
+        )
+        self.assertEqual(result.content, "Extracted content from batch.")
 
 
 class TestStructuredOutput(unittest.TestCase):
@@ -318,10 +395,10 @@ class TestStructuredOutput(unittest.TestCase):
     def test_structured_output_parses_json(self):
         """Test that structured output mode parses JSON responses."""
         json_response = '{"extracted_content": "Parsed content", "confidence": 0.95}'
-        mock_client = MockOllamaClient(responses=[json_response])
+        mock_client = FakeModel(self, responses=[json_response])
 
         processor = SemanticChunkProcessor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="test-model",
             use_structured_output=True,
         )
@@ -335,10 +412,10 @@ class TestStructuredOutput(unittest.TestCase):
 
     def test_structured_output_handles_invalid_json(self):
         """Test that invalid JSON falls back to raw content."""
-        mock_client = MockOllamaClient(responses=["Not valid JSON"])
+        mock_client = FakeModel(self, responses=["Not valid JSON"])
 
         processor = SemanticChunkProcessor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="test-model",
             use_structured_output=True,
         )
@@ -349,6 +426,34 @@ class TestStructuredOutput(unittest.TestCase):
 
         # Should use raw content as fallback
         self.assertEqual(result.content, "Not valid JSON")
+
+
+    def _extract(self, reply: str) -> ExtractionResult:
+        """Run one structured-output extraction against a scripted reply."""
+        mock_client = FakeModel(self, responses=[reply])
+        processor = SemanticChunkProcessor(
+            llm_client=mock_client.client,
+            model="test-model",
+            use_structured_output=True,
+        )
+        return processor.extract_from_batch(
+            "content", "query", {"batch_index": 0, "recursion_level": 0}
+        )
+
+    def test_structured_output_non_object_keeps_raw_content(self):
+        """A JSON list is valid JSON but not the expected shape: keep the text."""
+        result = self._extract('["a", "b"]')
+        self.assertEqual(result.content, '["a", "b"]')
+
+    def test_structured_output_unusable_confidence_uses_default(self):
+        """A null or out-of-range confidence keeps the content and the default."""
+        for raw in ("null", "85"):
+            with self.subTest(confidence=raw):
+                result = self._extract(
+                    f'{{"extracted_content": "Parsed", "confidence": {raw}}}'
+                )
+                self.assertEqual(result.content, "Parsed")
+                self.assertEqual(result.confidence, DEFAULT_EXTRACTION_CONFIDENCE)
 
 
 class TestIntegrationWithPRISMA(unittest.TestCase):
@@ -363,12 +468,12 @@ class TestIntegrationWithPRISMA(unittest.TestCase):
             ("No date restrictions were applied. Languages limited to English.", 0.75),
         ]
 
-        mock_client = MockOllamaClient(responses=[
+        mock_client = FakeModel(self, responses=[
             "The search strategy used PubMed, Embase, and Cochrane databases with Boolean operators."
         ])
 
         processor = create_prisma_chunk_processor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="gpt-oss:20b",
             item_name="search_strategy",
             item_description="Full search strategy for at least one database",
@@ -385,9 +490,9 @@ class TestIntegrationWithPRISMA(unittest.TestCase):
 
     def test_handles_empty_chunks(self):
         """Test handling of empty chunk list."""
-        mock_client = MockOllamaClient()
+        mock_client = FakeModel(self)
         processor = SemanticChunkProcessor(
-            llm_client=mock_client,
+            llm_client=mock_client.client,
             model="test-model",
         )
 

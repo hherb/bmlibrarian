@@ -1473,7 +1473,10 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             query: The semantic search query used.
 
         Returns:
-            Consolidated context string (never truncated).
+            Consolidated context string (never truncated), or "" when there
+            is nothing to add or processing failed. A failure is logged and
+            reported through the callback; the caller then keeps the
+            first-pass score rather than re-scoring on degraded context.
         """
         if not chunks:
             return ""
@@ -1512,14 +1515,10 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             )
 
             if result.status == ProcessingStatus.FAILED:
-                logger.warning(
-                    f"Context processing failed for {item_name}: {result.error_message}"
-                )
-                # Fallback: return first chunk that fits
-                return self._fallback_first_chunk(chunks)
+                return self._report_context_failure(item_name, result.error_message)
 
             if result.status == ProcessingStatus.PARTIAL:
-                logger.info(
+                logger.warning(
                     f"Context processing partial for {item_name}: "
                     f"{len(result.failed_batches)} batches failed"
                 )
@@ -1533,44 +1532,28 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             return result.content
 
         except Exception as e:
-            logger.error(f"Context processor error for {item_name}: {e}")
-            # Fallback: return first chunk that fits
-            return self._fallback_first_chunk(chunks)
+            return self._report_context_failure(item_name, str(e))
 
-    def _fallback_first_chunk(
-        self,
-        chunks: List[Tuple[str, float]]
-    ) -> str:
+    def _report_context_failure(self, item_name: str, error: Optional[str]) -> str:
         """
-        Fallback method to return the first chunk that fits within limits.
+        Log and report a failed context-processing run for one PRISMA item.
 
-        Used when the context processor fails. Returns a warning message
-        along with the highest-scoring chunk that fits.
+        Re-scoring on a single fallback chunk would be stored as a full-text
+        re-assessment, so the item is skipped and keeps its first-pass score.
 
         Args:
-            chunks: List of (text, score) tuples.
+            item_name: Name of the PRISMA item whose context failed.
+            error: The failure reason.
 
         Returns:
-            First chunk that fits, with a warning prefix.
+            "" so the caller skips re-assessment of this item.
         """
-        # Sort by score descending to get best chunk first
-        sorted_chunks = sorted(chunks, key=lambda x: x[1], reverse=True)
-
-        for text, score in sorted_chunks:
-            if len(text) <= SEMANTIC_CONTEXT_MAX_CHARS:
-                return (
-                    f"[Note: Full context could not be processed, showing best match]\n"
-                    f"[Chunk Score: {score:.2f}]\n{text}"
-                )
-
-        # If even the best chunk is too large, truncate with warning
-        if sorted_chunks:
-            text, score = sorted_chunks[0]
-            return (
-                f"[Warning: Context truncated due to processing failure]\n"
-                f"[Chunk Score: {score:.2f}]\n{text[:SEMANTIC_CONTEXT_MAX_CHARS]}"
-            )
-
+        message = (
+            f"Full-text re-assessment of {item_name} skipped: "
+            f"context processing failed ({error})"
+        )
+        logger.error(message)
+        self._call_callback("prisma_second_pass_error", message)
         return ""
 
     def _re_assess_item_with_context(

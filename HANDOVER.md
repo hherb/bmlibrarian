@@ -10,6 +10,33 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **PRISMA chunk consolidation works; the LLM boundary guard sees raw
+  Ollama HTTP** (2026-11-04, closes #252, #250). `SemanticChunkProcessor`
+  called its client with ollama's API (`options=`, `response["message"]`),
+  so whenever a low-scoring PRISMA item's semantic chunks exceeded
+  `SEMANTIC_CONTEXT_MAX_CHARS`, every batch raised and
+  `PRISMA2020Agent._process_semantic_chunks_for_context` fell back to the
+  single best-scoring chunk (#252 called it unreachable; it is not). It now
+  calls `LLMClient.chat(messages=[LLMMessage], temperature=, max_tokens=)`;
+  the PRISMA factory escapes braces in title/description/explanation (a `{`
+  in a title broke `.format()`; a NULL title is treated as empty). Review
+  follow-ups: an empty model reply fails the batch (shared
+  `bmlibrarian.llm.checked_content`, which `BaseAgent._checked_content` now
+  delegates to; a truncated reply is kept with a warning), and a failed
+  consolidation no longer re-scores on a fallback chunk — the item keeps its
+  first-pass score and a `prisma_second_pass_error` callback reports it
+  (`_fallback_first_chunk` removed). The PICO lab model picker uses
+  `list_ollama_models(host)` (was `requests.get(/api/tags)`; the other two
+  #250 sites went with Flet) and reports failures in its status line, not a
+  modal (the refresh runs during tab construction).
+  `tests/test_llm_layer_boundary.py` also flags non-docstring string
+  literals naming Ollama REST endpoints; allowlist
+  `KNOWN_RAW_OLLAMA_HTTP_MODULES` = `embeddings/embedding_server.py` (batch
+  `/api/embed`; its `/api/tags` check is remaining debt). Tests:
+  `tests/test_semantic_chunk_processor.py` (now a real `LLMClient` patched
+  at the provider boundary; 11 of them fail on the old code),
+  `tests/test_prisma_semantic_context.py` (agent -> processor -> LLMClient),
+  `tests/test_pico_lab_model_refresh.py`.
 - **Settings saved in other tabs reach the research tab; Chrome fallback
   takes PDFs by content; medRxiv test stays out of `~`** (2026-11-04,
   closes #372, #329, #335). The main Settings tab (Apply, Save, Save As,
@@ -410,7 +437,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-04
-  (#372/#329/#335 branch): **4623 passed, 50 skipped** in 9–17 min. Without
+  (#250/#252 branch, after review fixes): **4639 passed, 50 skipped** in 8–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -20,6 +20,7 @@ from bmlibrarian.agents import PICOAgent, AgentOrchestrator
 from bmlibrarian.agents.pico_agent import PICOExtraction
 from bmlibrarian.config import get_config
 from bmlibrarian.database import get_document_details, resolve_pdf_path
+from bmlibrarian.llm import list_ollama_models
 from ...resources.styles import get_font_scale, scale_px
 from ...widgets import DocumentViewWidget, DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
@@ -345,36 +346,63 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
 
         return group
 
-    def _refresh_models(self):
-        """Refresh available models from Ollama."""
+    def _refresh_models(self) -> None:
+        """
+        Refresh available models from Ollama.
+
+        Runs while the tab is being built, so failures go to the log and the
+        status line rather than a modal dialog that would block startup.
+        """
+        combo = self.model_combo
+        if combo is None:
+            return
         try:
-            # Get available models
-            import requests
             host = self.config.get_ollama_config()['host']
-            response = requests.get(f"{host}/api/tags", timeout=5)
-
-            if response.status_code == 200:
-                data = response.json()
-                models = [m['name'] for m in data.get('models', [])]
-
-                current = self.model_combo.currentText()
-                self.model_combo.clear()
-                self.model_combo.addItems(models)
-
-                # Restore selection if possible
-                if current in models:
-                    self.model_combo.setCurrentText(current)
-                else:
-                    # Set to configured model
-                    default_model = self.config.get_model('pico_agent') or "gpt-oss:20b"
-                    if default_model in models:
-                        self.model_combo.setCurrentText(default_model)
-
-                self.status_message.emit(f"Refreshed models - {len(models)} available")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to fetch models from Ollama")
+            models = list_ollama_models(host)
+        except ConnectionError as e:
+            message = f"Ollama unreachable: {e}"
+            logger.error(message)
+            combo.setPlaceholderText("Ollama unreachable - press Refresh")
+            self._report_status(message)
+            return
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to connect to Ollama: {str(e)}")
+            message = f"Failed to refresh models: {type(e).__name__}: {e}"
+            logger.error(message, exc_info=True)
+            self._report_status(message)
+            return
+
+        current = combo.currentText()
+        combo.clear()
+        combo.addItems(models)
+
+        if not models:
+            self._report_status(
+                "Ollama has no models installed - run 'ollama pull <model>'"
+            )
+            return
+
+        # Restore selection if possible
+        if current in models:
+            combo.setCurrentText(current)
+        else:
+            # Set to configured model
+            default_model = self.config.get_model('pico_agent') or "gpt-oss:20b"
+            if default_model in models:
+                combo.setCurrentText(default_model)
+
+        self._report_status(f"Refreshed models - {len(models)} available")
+
+    def _report_status(self, message: str) -> None:
+        """
+        Show a message in the tab's status line and the app status bar.
+
+        Args:
+            message: Text to show. The status line does not exist yet while
+                the input panel is being built; the signal is still emitted.
+        """
+        if self.status_label is not None:
+            self.status_label.setText(message)
+        self.status_message.emit(message)
 
     def _on_model_changed(self, model_name: str):
         """Handle model selection change."""
