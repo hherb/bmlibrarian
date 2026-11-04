@@ -5,7 +5,6 @@ Handles agent initialization, setup, and connection testing.
 """
 
 import logging
-import os
 from typing import Optional
 from bmlibrarian.agents import AgentFactory, AgentOrchestrator
 
@@ -34,57 +33,26 @@ class WorkflowAgentManager:
         self.audit_conn = None
         self.audit_enabled = False
 
-    def _run_pending_migrations(self) -> bool:
-        """Run any pending database migrations.
-
-        Returns:
-            True if migrations were successful or already applied, False on error
-        """
-        try:
-            from bmlibrarian.migrations import MigrationManager
-            from pathlib import Path
-
-            # Create migration manager from environment variables
-            migration_manager = MigrationManager.from_env()
-            if not migration_manager:
-                logger.debug("Could not create MigrationManager (missing credentials)")
-                return True  # Not fatal
-
-            # Find migrations directory
-            migrations_dir = Path(__file__).parent.parent.parent.parent / "migrations"
-            if not migrations_dir.exists():
-                logger.debug(f"Migrations directory not found: {migrations_dir}")
-                return True  # Not fatal
-
-            # Apply pending migrations (silent mode - use logging)
-            applied_count = migration_manager.apply_pending_migrations(migrations_dir, silent=True)
-
-            if applied_count > 0:
-                logger.info(f"Applied {applied_count} pending database migration(s)")
-            else:
-                logger.debug("No pending migrations to apply")
-
-            return True
-
-        except Exception as e:
-            logger.warning(f"Error running migrations: {e}")
-            logger.debug("Continuing without migration check")
-            return True  # Non-fatal
-
     def _setup_audit_tracking(self) -> bool:
         """Setup audit tracking using DatabaseManager.
 
         Gets a connection from the pool and keeps it for the session duration.
         This follows the pattern where CLI sessions are short-lived and don't
         need connection recycling.
+
+        Returns:
+            True if audit tracking is enabled, False if it is not available.
+
+        Raises:
+            MigrationError: A pending migration failed; the CLI must stop.
         """
+        from bmlibrarian.migrations import MigrationError
+
         try:
             from bmlibrarian.database import get_db_manager
 
-            # Run pending migrations first (ensures audit schema exists)
-            self._run_pending_migrations()
-
-            # Get database manager (already handles connection pooling)
+            # Creating the manager applies pending migrations; a failed one
+            # raises MigrationError, which must stop the CLI (#342).
             self.db_manager = get_db_manager()
 
             # Get a connection from the pool for this session
@@ -115,6 +83,8 @@ class WorkflowAgentManager:
             logger.info("Audit tracking enabled (using DatabaseManager connection pool)")
             return True
 
+        except MigrationError:
+            raise
         except Exception as e:
             logger.warning(f"Could not enable audit tracking: {e}")
             logger.info("Continuing without audit tracking")
@@ -122,8 +92,8 @@ class WorkflowAgentManager:
             if self.audit_conn and self.db_manager:
                 try:
                     self.db_manager._pool.putconn(self.audit_conn)
-                except:
-                    pass
+                except Exception as put_error:
+                    logger.debug(f"Could not return audit connection to pool: {put_error}")
             self.audit_conn = None
             self.db_manager = None
             return False
@@ -133,7 +103,8 @@ class WorkflowAgentManager:
         try:
             self.ui.show_progress_message("Setting up BMLibrarian agents...")
 
-            # Setup audit tracking (optional - non-fatal if fails)
+            # Setup audit tracking (optional - non-fatal if fails, except a
+            # failed migration, which the except below reports and stops on)
             self._setup_audit_tracking()
 
             # Create orchestrator

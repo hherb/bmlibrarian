@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, call, mock_open, patch
 import pytest
 
 from bmlibrarian.db_test_guard import READ_ONLY_OPTIONS
-from bmlibrarian.migrations import MigrationManager
+from bmlibrarian.migrations import MigrationError, MigrationManager
 
 
 class TestMigrationManager:
@@ -340,7 +340,7 @@ class TestMigrationManager:
             migration.write_text("-- Test migration")
             
             with patch('builtins.print') as mock_print:
-                with pytest.raises(RuntimeError, match="Failed to apply 001_test.sql: SQL error"):
+                with pytest.raises(MigrationError, match="Failed to apply 001_test.sql: SQL error"):
                     self.manager.apply_pending_migrations(migrations_dir)
             
             mock_print.assert_any_call("✗ Failed to apply 001_test.sql: SQL error")

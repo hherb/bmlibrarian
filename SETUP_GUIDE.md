@@ -306,6 +306,38 @@ with db.get_connection() as conn:
 - macOS (Homebrew): `brew install pgvector`
 - Or compile from source: https://github.com/pgvector/pgvector
 
+### Error: "Database Migration Failed" / "✗ Failed to apply NNN_….sql"
+
+**Symptom**: BMLibrarian refuses to start (the Qt app shows "Database
+Migration Failed"; a CLI stops with an error containing
+`✗ Failed to apply NNN_….sql`).
+
+**Cause**: A pending migration could not be applied, so the schema is out of
+date. Common cause: the database user does not own the table the migration
+alters (`ALTER TABLE` / `COMMENT ON COLUMN` need ownership).
+
+**Solution**:
+- Read the error: it names the migration file and the PostgreSQL error.
+- Fix the cause, then start BMLibrarian again. For an ownership error,
+  either start it once as the table owner (owner credentials in
+  `POSTGRES_USER`/`POSTGRES_PASSWORD`, or in the desktop app's login dialog,
+  which overrides the environment), or apply the file as the owner and then
+  record it as applied with the app's own credentials (re-running it as a
+  non-owner would fail again). From the repository root:
+  ```bash
+  # 1. Apply as the owner; ON_ERROR_STOP makes psql stop and exit non-zero on
+  #    the first error (without it psql carries on and exits 0).
+  psql -v ON_ERROR_STOP=1 -U <owner> -h <host> -p <port> -d <db> -f migrations/NNN_….sql
+  # 2. ONLY if step 1 exited without errors: record it as applied. This uses
+  #    the same POSTGRES_* settings as the app (prefix BMLIBRARIAN_ENV_FILE=…
+  #    if you select your database that way), so <db> above must match.
+  uv run python -c "from pathlib import Path; from bmlibrarian.migrations import MigrationManager; MigrationManager.from_env().mark_migration_applied(Path('migrations/NNN_….sql'))"
+  ```
+  Do not add psql's `-1` (single transaction): some migrations use
+  `CREATE INDEX CONCURRENTLY`, which cannot run inside one. Objects the
+  migration creates are owned by the owner role, so check the app user can
+  still use them (many migrations grant access themselves).
+
 ### Warning: "tqdm not installed"
 
 **Symptom**: Warning about missing tqdm package.

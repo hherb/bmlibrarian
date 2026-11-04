@@ -186,6 +186,27 @@ bmlibrarian migrate init --user username --password password
 - Automatic rollback on failure
 - Database state remains consistent
 
+**Failed auto-migration is fatal (#342):**
+- `DatabaseManager` (auto-migrate on) applies pending migrations when it is
+  created. A migration that fails while being applied raises
+  `bmlibrarian.migrations.MigrationError` (a `RuntimeError`); the manager
+  closes its pool and re-raises, so nothing runs against an outdated schema
+  (before, this was a log warning and writes failed later at runtime).
+- A pending file that cannot be read, applied or recorded raises
+  `MigrationError`. Being unable to *check* (no migrations directory, no
+  `MigrationManager`, the tracking table neither creatable nor readable) is
+  not fatal (debug log or printed warning). If only creating the tracking
+  table fails (a role without CREATE on the schema) but it can be read,
+  pending migrations are still applied.
+- The Qt app creates the manager right after login
+  (`BMLibrarianApplication._check_schema_current`), shows the error and exits
+  with status 1. `bmlibrarian_cli.py` stops in agent setup with the message.
+  Other CLIs should fail at their first database use (not checked per CLI).
+  Standalone lab/review windows do not run the startup check (#378).
+- `get_db_manager()` keeps no manager after a failure, so every later call
+  retries the migration and fails again until the cause is fixed (caching
+  the failure instead: #379).
+
 **Idempotent Operations:**
 - Safe to retry failed operations
 - Use `IF NOT EXISTS` and similar constructs
