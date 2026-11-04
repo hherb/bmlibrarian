@@ -558,6 +558,23 @@ packages, and shown under the AI rationale in the review GUI. The CLI counts
 them and lists them with `--detailed`. A verdict with notes is still a
 verdict: it is stored and does not change the exit code.
 
+**A verdict is stored with its evidence or not at all.**
+`FactCheckerDB.store_verdict(statement, evaluation, evidence)` inserts the
+statement, the evaluation and every evidence row on one connection in one
+transaction; both `_store_result_in_database` and `import_json_results` use
+it. If any insert fails (e.g. a missing column after a failed migration),
+nothing is committed, the agent counts a storage failure, and
+`--incremental` checks the statement again. When an imported verdict fails,
+`import_json_results` stores the statement alone (counted in `errors`) so
+incremental mode still finds it unevaluated. Imported evidence without a
+usable `document_id` is dropped before the verdict is stored, logged and
+counted in `dropped_evidence`; the import progress message reports both
+counts. Before (#340) each insert
+committed on its own, so a failed evidence insert left a verdict with
+partial evidence that incremental mode treated as done. The individual
+`insert_statement`/`insert_ai_evaluation`/`insert_evidence` take an optional
+`conn` to join a caller's transaction.
+
 **The evaluation budget grows with the evidence.** The evaluation request's
 generation ceiling is `evaluation_token_budget(max_tokens, n)`: the agent's
 `max_tokens` (verdict and reason) plus `EVALUATION_TOKENS_PER_CITATION` (100)

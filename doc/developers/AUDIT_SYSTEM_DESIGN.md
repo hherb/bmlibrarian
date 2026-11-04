@@ -218,7 +218,8 @@ generated_queries (many) ──→ query_documents (many)
 
 ## Python Tracker Classes
 
-Located in `src/bmlibrarian/audit/`:
+Located in `src/bmlibrarian/audit/`. See [Connection handling](#connection-handling)
+for the rule every query on an audit connection must follow.
 
 ### `SessionTracker`
 - `get_or_create_research_question(question_text, user_id)`
@@ -249,6 +250,22 @@ Located in `src/bmlibrarian/audit/`:
 - `get_final_report(question_id)`
 - `record_counterfactual_analysis(...)`
 - `record_counterfactual_question(...)`
+
+### Connection handling
+
+Each caller hands one long-lived, non-autocommit connection to several
+trackers: `agents/lifecycle.py` for the Qt app, `cli/workflow_agents.py` for
+the CLI, and the audit-validation plugin's persistent connection for
+`ValidationTracker` and `AuditValidationDataManager`. Trackers commit after
+each write. Every query on such a connection runs in
+`audit.connection.audit_cursor(conn)`, which rolls the connection back when
+the block raises (including `KeyboardInterrupt`) and re-raises the error.
+Without it, one failed statement left the shared connection in an aborted
+transaction and every later audit call failed with `InFailedSqlTransaction`
+(#341). Any code using an audit connection must use `audit_cursor`, not
+`conn.cursor()` (`tests/test_audit_cursor.py` enforces this for
+`src/bmlibrarian/audit/`), and must not leave uncommitted writes on it: the
+rollback would discard them.
 
 ## Typical Workflow
 

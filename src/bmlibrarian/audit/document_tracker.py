@@ -11,6 +11,8 @@ from datetime import datetime
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +54,7 @@ class DocumentTracker:
         if not document_ids:
             return
 
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             # Prepare batch insert data
             insert_data = [
                 (research_question_id, query_id, doc_id, rank)
@@ -89,7 +91,7 @@ class DocumentTracker:
         Returns:
             True if already scored by this evaluator, False otherwise
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute(
                 "SELECT audit.is_document_scored(%s, %s, %s)",
                 (research_question_id, document_id, evaluator_id)
@@ -113,7 +115,7 @@ class DocumentTracker:
         Returns:
             List of document IDs that haven't been scored by this evaluator yet
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute(
                 "SELECT * FROM audit.get_unscored_document_ids(%s, %s)",
                 (research_question_id, evaluator_id)
@@ -148,7 +150,7 @@ class DocumentTracker:
         Returns:
             scoring_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.document_scores (
                     research_question_id, document_id, session_id, first_query_id,
@@ -183,7 +185,7 @@ class DocumentTracker:
             new_score: Updated relevance score (0-5)
             new_reasoning: Optional updated reasoning
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             if new_reasoning:
                 cur.execute("""
                     UPDATE audit.document_scores
@@ -218,7 +220,7 @@ class DocumentTracker:
         Returns:
             Dictionary with scoring data, or None if not scored
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.document_scores
                 WHERE research_question_id = %s AND document_id = %s
@@ -240,7 +242,7 @@ class DocumentTracker:
         Returns:
             List of dictionaries with scoring data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.document_scores
                 WHERE research_question_id = %s
@@ -265,7 +267,7 @@ class DocumentTracker:
         Returns:
             List of dictionaries with processing status
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.v_document_processing_status
                 WHERE research_question_id = %s
@@ -288,7 +290,7 @@ class DocumentTracker:
         Returns:
             Dictionary mapping score -> count
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 SELECT relevance_score, COUNT(*) as count
                 FROM audit.document_scores

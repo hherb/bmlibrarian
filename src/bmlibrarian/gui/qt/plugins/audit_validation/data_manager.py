@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 import psycopg
 from psycopg.rows import dict_row
 
+from bmlibrarian.audit.connection import audit_cursor
 from bmlibrarian.audit import (
     ValidationTracker,
     TargetType,
@@ -192,7 +193,7 @@ class AuditValidationDataManager:
         params.append(limit)
 
         results = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, params)
             for row in cur.fetchall():
                 summary = ResearchQuestionSummary(
@@ -252,7 +253,7 @@ class AuditValidationDataManager:
         """
 
         items = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, (research_question_id,))
             for row in cur.fetchall():
                 item = QueryAuditItem(
@@ -318,7 +319,7 @@ class AuditValidationDataManager:
         """
 
         items = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, (research_question_id,))
             for row in cur.fetchall():
                 item = ScoreAuditItem(
@@ -389,7 +390,7 @@ class AuditValidationDataManager:
         """
 
         items = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, (research_question_id,))
             for row in cur.fetchall():
                 item = CitationAuditItem(
@@ -453,7 +454,7 @@ class AuditValidationDataManager:
         """
 
         items = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, (research_question_id,))
             for row in cur.fetchall():
                 item = ReportAuditItem(
@@ -510,7 +511,7 @@ class AuditValidationDataManager:
         """
 
         items = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, (research_question_id,))
             for row in cur.fetchall():
                 item = CounterfactualAuditItem(

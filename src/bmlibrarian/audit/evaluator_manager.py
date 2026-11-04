@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,7 +69,7 @@ class EvaluatorManager:
             ... )
         """
         # Try to find existing evaluator with same model/params
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             if user_id is not None and model_id is None:
                 # Human evaluator - match on user_id only
                 cur.execute("""
@@ -202,7 +204,7 @@ class EvaluatorManager:
         Returns:
             Dictionary with evaluator data, or None if not found
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM public.evaluators
                 WHERE id = %s
@@ -224,7 +226,7 @@ class EvaluatorManager:
         Returns:
             List of dictionaries with evaluator data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             if model_id is not None:
                 cur.execute("""
                     SELECT * FROM public.evaluators
@@ -257,7 +259,7 @@ class EvaluatorManager:
             evaluator_id: ID of the evaluator
             prompt: New system prompt
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 UPDATE public.evaluators
                 SET prompt = %s,

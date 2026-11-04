@@ -16,7 +16,7 @@ import json
 import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -28,6 +28,7 @@ from bmlibrarian.agents.citation_agent import (
     CitationFinderAgent,
 )
 from bmlibrarian.agents.query_agent import QueryAgent
+from bmlibrarian.factchecker.db.database import AIEvaluation, Evidence, FactCheckerDB, Statement
 from bmlibrarian.factchecker.agent.fact_checker_agent import (
     EVALUATION_ERROR,
     STAGE_CITATIONS,
@@ -38,6 +39,7 @@ from bmlibrarian.factchecker.agent.fact_checker_agent import (
     FactCheckResult,
     FactCheckStage,
     FactCheckStageError,
+    import_problems_suffix,
 )
 
 DOCUMENTS = [
@@ -232,8 +234,7 @@ def test_storing_an_error_result_is_refused(agent: FactCheckerAgent) -> None:
 def test_degradation_notes_are_stored(agent: FactCheckerAgent) -> None:
     """A partial-evidence verdict reaches the database with its notes."""
     agent.db = Mock()
-    agent.db.insert_statement.return_value = 1
-    agent.db.insert_ai_evaluation.return_value = 2
+    agent.db.store_verdict.return_value = (1, 2)
     result = FactCheckResult(
         statement="s", evaluation="no", reason="r", evidence_list=[], confidence="low",
         degradation_notes=["bm25 search failed: timeout"],
@@ -241,8 +242,110 @@ def test_degradation_notes_are_stored(agent: FactCheckerAgent) -> None:
 
     assert agent._store_result_in_database(result, None)
 
-    stored = agent.db.insert_ai_evaluation.call_args.args[0]
+    stored = agent.db.store_verdict.call_args.args[1]
     assert stored.degradation_notes == ["bm25 search failed: timeout"]
+
+
+def test_a_failed_store_is_counted_not_claimed(agent: FactCheckerAgent) -> None:
+    """When the verdict's transaction fails (e.g. an evidence insert), it is a storage failure."""
+    agent.db = Mock()
+    agent.db.store_verdict.side_effect = RuntimeError("evidence insert failed")
+    result = FactCheckResult(statement="s", evaluation="yes", reason="r", evidence_list=[],
+                             confidence="low")
+
+    assert not agent._store_result_in_database(result, None)
+    assert agent.storage_failures == 1
+
+
+def test_verdict_and_evidence_share_one_transaction() -> None:
+    """store_verdict runs every insert on one pooled connection, so a failure rolls back all."""
+    conn = MagicMock()
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = MagicMock()
+    db.db_manager.get_connection.return_value.__enter__.return_value = conn
+    db.insert_statement = MagicMock(return_value=1)
+    db.insert_ai_evaluation = MagicMock(return_value=2)
+    db.insert_evidence = MagicMock(side_effect=RuntimeError("undefined column"))
+    evaluation = AIEvaluation(evaluation="yes")
+
+    with pytest.raises(RuntimeError):
+        db.store_verdict(Statement(statement_text="s"), evaluation, [Evidence(citation_text="c")])
+
+    assert db.db_manager.get_connection.call_count == 1
+    exit_args = db.db_manager.get_connection.return_value.__exit__.call_args.args
+    assert exit_args[0] is RuntimeError  # the transaction saw the error and rolls back
+    for insert in (db.insert_statement, db.insert_ai_evaluation, db.insert_evidence):
+        assert insert.call_args.kwargs["conn"] is conn
+    assert evaluation.statement_id == 1
+    assert db.insert_evidence.call_args.args[0].evaluation_id == 2
+    conn.commit.assert_not_called()  # only the pooled connection's exit commits
+
+
+def test_inserts_join_the_callers_transaction() -> None:
+    """Given a connection, the real inserts neither open their own nor commit."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = (7,)
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = MagicMock()
+
+    db.insert_statement(Statement(statement_text="s"), conn=conn)
+    db.insert_ai_evaluation(AIEvaluation(evaluation="yes"), conn=conn)
+    db.insert_evidence(Evidence(citation_text="c", document_id=1), conn=conn)
+
+    db.db_manager.get_connection.assert_not_called()
+    conn.commit.assert_not_called()
+    assert conn.cursor.return_value.__enter__.return_value.execute.call_count == 3
+
+
+def test_failed_verdict_import_keeps_the_statement_for_rechecking(tmp_path: Path) -> None:
+    """A verdict that cannot be stored is an error; its statement is imported alone, the next row still is."""
+    results = [
+        {"statement": "bad", "evaluation": "yes", "reason": "r",
+         "evidence_list": [{"document_id": "1"}, {"document_id": None}, {"document_id": "x"}]},
+        {"statement": "good", "evaluation": "no", "reason": "r", "evidence_list": [{"document_id": 2}]},
+    ]
+    json_file = tmp_path / "results.json"
+    json_file.write_text(json.dumps(results))
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = MagicMock()
+    db.db_manager.get_connection.return_value.__enter__.return_value.cursor.return_value \
+        .__enter__.return_value.fetchone.return_value = None
+    db.store_verdict = MagicMock(side_effect=[RuntimeError("fk violation"), (2, 3)])
+    db.insert_statement = MagicMock(return_value=1)
+
+    stats = db.import_json_results(str(json_file))
+
+    assert [c.args[0].statement_text for c in db.insert_statement.call_args_list] == ["bad"]
+    assert [len(c.args[2]) for c in db.store_verdict.call_args_list] == [1, 1]
+    assert {k: stats[k] for k in ("errors", "new_statements", "imported_evaluations",
+                                  "imported_evidence", "dropped_evidence")} == {
+        "errors": 1, "new_statements": 2, "imported_evaluations": 1,
+        "imported_evidence": 1, "dropped_evidence": 2,
+    }
+
+
+def test_a_non_string_statement_is_rejected_before_any_query(tmp_path: Path) -> None:
+    """A numeric statement would abort the import's connection for every later row."""
+    json_file = tmp_path / "results.json"
+    json_file.write_text(json.dumps([{"statement": 42}]))
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = MagicMock()
+    cursor = db.db_manager.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+
+    stats = db.import_json_results(str(json_file))
+
+    cursor.execute.assert_not_called()
+    assert stats["errors"] == 1
+
+
+@pytest.mark.parametrize("stats, expected", [
+    ({"errors": 0, "dropped_evidence": 0}, ""),
+    ({"errors": 2, "dropped_evidence": 0}, "; 2 results failed (see log)"),
+    ({"errors": 1, "dropped_evidence": 3}, "; 1 results failed, 3 evidence rows dropped (see log)"),
+])
+def test_import_problems_are_reported(stats: Dict[str, int], expected: str) -> None:
+    """The import progress message says what could not be stored."""
+    assert import_problems_suffix(stats) == expected
 
 
 # ---- Recoverable failures are retried -------------------------------------

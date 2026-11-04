@@ -132,6 +132,24 @@ def _count_reasons(rejections: List[Dict[str, Any]]) -> str:
     return ", ".join(f"{reason} ×{count}" for reason, count in counts.items())
 
 
+def import_problems_suffix(import_stats: Dict[str, int]) -> str:
+    """
+    Describe what a JSON import could not store, for the import progress message.
+
+    Args:
+        import_stats: Statistics returned by ``FactCheckerDB.import_json_results``.
+
+    Returns:
+        e.g. ``"; 2 results failed, 3 evidence rows dropped (see log)"``, or ``""``.
+    """
+    problems = []
+    if import_stats.get('errors'):
+        problems.append(f"{import_stats['errors']} results failed")
+    if import_stats.get('dropped_evidence'):
+        problems.append(f"{import_stats['dropped_evidence']} evidence rows dropped")
+    return f"; {', '.join(problems)} (see log)" if problems else ""
+
+
 def _require_sub_agent(agent: Optional[_SubAgent], name: str) -> _SubAgent:
     """
     Return a sub-agent, failing loudly if it was never initialised.
@@ -1529,7 +1547,8 @@ Respond ONLY with the JSON object, no additional text."""
                         import_stats = self.db.import_json_results(tmp_file, skip_existing=False)
                         self._call_callback("import",
                             f"Import complete: {import_stats['new_statements']} imported, "
-                            f"{existing_count} already in database")
+                            f"{existing_count} already in database"
+                            f"{import_problems_suffix(import_stats)}")
                     finally:
                         os.unlink(tmp_file)
                 else:
@@ -1565,7 +1584,8 @@ Respond ONLY with the JSON object, no additional text."""
                 import_stats = self.db.import_json_results(input_file, skip_existing=True)
                 self._call_callback("import",
                     f"Import complete: {import_stats['new_statements']} new, "
-                    f"{import_stats['skipped_existing']} already in database")
+                    f"{import_stats['skipped_existing']} already in database"
+                    f"{import_problems_suffix(import_stats)}")
 
             return self.check_batch(statements, output_file, source_file=input_file)
 
@@ -1628,7 +1648,7 @@ Respond ONLY with the JSON object, no additional text."""
             return False
 
         try:
-            # Insert or get statement
+            # Build the rows; store_verdict stores them together
             stmt = Statement(
                 statement_text=result.statement,
                 input_statement_id=result.input_statement_id,
@@ -1636,11 +1656,7 @@ Respond ONLY with the JSON object, no additional text."""
                 source_file=source_file or 'unknown',
                 review_status='pending'
             )
-            statement_id = self.db.insert_statement(stmt)
-
-            # Insert AI evaluation
             ai_eval = AIEvaluation(
-                statement_id=statement_id,
                 evaluation=result.evaluation,
                 reason=result.reason,
                 confidence=result.confidence,
@@ -1654,12 +1670,8 @@ Respond ONLY with the JSON object, no additional text."""
                 version=1,
                 degradation_notes=list(result.degradation_notes) or None
             )
-            eval_id = self.db.insert_ai_evaluation(ai_eval)
-
-            # Insert evidence citations
-            for evidence_ref in result.evidence_list:
-                evidence = Evidence(
-                    evaluation_id=eval_id,
+            evidence = [
+                Evidence(
                     citation_text=evidence_ref.citation_text,
                     pmid=evidence_ref.pmid,
                     doi=evidence_ref.doi,
@@ -1670,7 +1682,10 @@ Respond ONLY with the JSON object, no additional text."""
                                       "neutral",
                     widened_from=evidence_ref.widened_from
                 )
-                self.db.insert_evidence(evidence)
+                for evidence_ref in result.evidence_list
+            ]
+            # One transaction: a verdict is never stored without its evidence (#340)
+            statement_id, _ = self.db.store_verdict(stmt, ai_eval, evidence)
 
             logger.debug(f"Stored result for statement {statement_id} in database")
             return True

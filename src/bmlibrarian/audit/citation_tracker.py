@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +65,7 @@ class CitationTracker:
         Returns:
             citation_id (BIGINT)
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.extracted_citations (
                     research_question_id, document_id, session_id, scoring_id,
@@ -94,7 +96,7 @@ class CitationTracker:
             citation_id: ID of the citation
             status: Review status ('accepted', 'rejected', 'modified')
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 UPDATE audit.extracted_citations
                 SET human_review_status = %s
@@ -119,7 +121,7 @@ class CitationTracker:
         Returns:
             List of dictionaries with citation data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.extracted_citations
                 WHERE research_question_id = %s
@@ -143,7 +145,7 @@ class CitationTracker:
         Returns:
             List of dictionaries with citation data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             if session_id is not None:
                 cur.execute("""
                     SELECT * FROM audit.extracted_citations
@@ -174,7 +176,7 @@ class CitationTracker:
         Returns:
             List of dictionaries with citation data
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.extracted_citations
                 WHERE research_question_id = %s AND document_id = %s
@@ -198,7 +200,7 @@ class CitationTracker:
             Dictionary with counts
         """
         if by_status:
-            with self.conn.cursor() as cur:
+            with audit_cursor(self.conn) as cur:
                 cur.execute("""
                     SELECT
                         COALESCE(human_review_status, 'unreviewed') as status,
@@ -214,7 +216,7 @@ class CitationTracker:
 
                 return result
         else:
-            with self.conn.cursor() as cur:
+            with audit_cursor(self.conn) as cur:
                 cur.execute("""
                     SELECT COUNT(*) as total
                     FROM audit.extracted_citations
@@ -236,7 +238,7 @@ class CitationTracker:
         Returns:
             Dictionary with citation data, or None if not found
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute("""
                 SELECT * FROM audit.extracted_citations
                 WHERE citation_id = %s

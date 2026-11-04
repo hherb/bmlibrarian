@@ -16,6 +16,8 @@ from typing import Optional, List, Dict, Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .connection import audit_cursor
+
 logger = logging.getLogger(__name__)
 
 
@@ -161,7 +163,7 @@ class ValidationTracker:
         """
         severity_value = severity.value if severity else None
 
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute("""
                 INSERT INTO audit.human_validations (
                     research_question_id, session_id, target_type, target_id,
@@ -256,7 +258,7 @@ class ValidationTracker:
             updates.append("validated_at = NOW()")
             params.append(validation_id)
 
-            with self.conn.cursor() as cur:
+            with audit_cursor(self.conn) as cur:
                 cur.execute(f"""
                     UPDATE audit.human_validations
                     SET {', '.join(updates)}
@@ -286,7 +288,7 @@ class ValidationTracker:
         Returns:
             HumanValidation or None if not found
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             if reviewer_id is not None:
                 cur.execute("""
                     SELECT * FROM audit.human_validations
@@ -335,7 +337,7 @@ class ValidationTracker:
 
         query += " ORDER BY validated_at DESC"
 
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, params)
             return [self._row_to_validation(row) for row in cur.fetchall()]
 
@@ -356,7 +358,7 @@ class ValidationTracker:
         Returns:
             True if validated, False otherwise
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             if reviewer_id is not None:
                 cur.execute(
                     "SELECT audit.is_validated_by_reviewer(%s, %s, %s)",
@@ -398,7 +400,7 @@ class ValidationTracker:
 
         query += " ORDER BY target_type, category_name"
 
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, params)
             return [
                 ValidationCategory(
@@ -432,7 +434,7 @@ class ValidationTracker:
             query += " WHERE target_type = %s"
             params.append(target_type.value)
 
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(query, params)
             return [
                 ValidationStatistics(
@@ -462,7 +464,7 @@ class ValidationTracker:
         Returns:
             List of UnvalidatedCounts records
         """
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with audit_cursor(self.conn, row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT * FROM audit.get_unvalidated_counts(%s)",
                 (research_question_id,)
@@ -506,7 +508,7 @@ class ValidationTracker:
         Returns:
             True if deleted, False if not found
         """
-        with self.conn.cursor() as cur:
+        with audit_cursor(self.conn) as cur:
             cur.execute(
                 "DELETE FROM audit.human_validations WHERE validation_id = %s",
                 (validation_id,)

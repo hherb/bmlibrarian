@@ -12,11 +12,13 @@ Uses the centralized DatabaseManager and factcheck schema (no data duplication).
 
 import json
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Iterator, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
@@ -129,19 +131,57 @@ class FactCheckerDB:
         self.db_manager = get_db_manager()
         logger.info("FactCheckerDB initialized with centralized DatabaseManager")
 
+    @contextmanager
+    def _connection(self, conn: Optional[psycopg.Connection]) -> Iterator[psycopg.Connection]:
+        """Yield ``conn`` (the caller's transaction) or a pooled connection that commits on exit."""
+        if conn is not None:
+            yield conn
+        else:
+            with self.db_manager.get_connection() as pooled:
+                yield pooled
+
+    def store_verdict(self, statement: Statement, evaluation: AIEvaluation,
+                      evidence: List[Evidence]) -> Tuple[int, int]:
+        """
+        Store a statement, its AI evaluation and the evaluation's evidence in one transaction.
+
+        If any insert fails nothing is committed, so a verdict is never stored
+        without its evidence (incremental mode would otherwise treat the
+        statement as done and never retry the evidence).
+
+        Args:
+            statement: The statement (an existing one is reused).
+            evaluation: The verdict; its ``statement_id`` is set here.
+            evidence: Evidence rows; their ``evaluation_id`` is set here.
+                On failure these ids refer to rows that were rolled back.
+
+        Returns:
+            (statement_id, evaluation_id)
+        """
+        with self.db_manager.get_connection() as conn:
+            statement_id = self.insert_statement(statement, conn=conn)
+            evaluation.statement_id = statement_id
+            evaluation_id = self.insert_ai_evaluation(evaluation, conn=conn)
+            for item in evidence:
+                item.evaluation_id = evaluation_id
+                self.insert_evidence(item, conn=conn)
+        return statement_id, evaluation_id
+
     # ========== Statement Operations ==========
 
-    def insert_statement(self, statement: Statement) -> int:
+    def insert_statement(self, statement: Statement,
+                         conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a new statement or return existing ID if duplicate.
 
         Args:
             statement: Statement object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Statement ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Use helper function for upsert
                 cur.execute("""
@@ -239,7 +279,8 @@ class FactCheckerDB:
 
     # ========== AI Evaluation Operations ==========
 
-    def insert_ai_evaluation(self, evaluation: AIEvaluation) -> int:
+    def insert_ai_evaluation(self, evaluation: AIEvaluation,
+                             conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a new AI evaluation as the next version for its statement.
 
@@ -251,11 +292,12 @@ class FactCheckerDB:
 
         Args:
             evaluation: AIEvaluation object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Evaluation ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Convert agent_config to JSONB if it's a string
                 agent_config_jsonb = None
@@ -360,9 +402,10 @@ class FactCheckerDB:
 
     # ========== Evidence Operations ==========
 
-    def insert_evidence(self, evidence: Evidence) -> int:
-        """Insert a new evidence citation."""
-        with self.db_manager.get_connection() as conn:
+    def insert_evidence(self, evidence: Evidence,
+                        conn: Optional[psycopg.Connection] = None) -> int:
+        """Insert a new evidence citation (inside ``conn``'s transaction if given)."""
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO factcheck.evidence (
@@ -703,6 +746,11 @@ class FactCheckerDB:
         """
         Import fact-check results from legacy JSON format.
 
+        A result whose verdict cannot be stored is counted in ``errors`` and its
+        statement is imported alone, so incremental mode still checks it.
+        Evidence without a usable ``document_id`` is dropped and counted in
+        ``dropped_evidence``.
+
         Args:
             json_file: Path to JSON file with results
             skip_existing: If True, skip statements with existing evaluations
@@ -716,6 +764,7 @@ class FactCheckerDB:
             'skipped_existing': 0,
             'imported_evaluations': 0,
             'imported_evidence': 0,
+            'dropped_evidence': 0,
             'errors': 0
         }
 
@@ -739,7 +788,9 @@ class FactCheckerDB:
                         try:
                             # Support both 'statement' and 'question' keys
                             statement_text = result.get('statement') or result.get('question', '')
-                            if not statement_text:
+                            # A non-string would abort this connection's transaction, failing every later row
+                            if not statement_text or not isinstance(statement_text, str):
+                                logger.warning(f"Skipping result without a statement text: {statement_text!r}")
                                 stats['errors'] += 1
                                 continue
 
@@ -759,7 +810,6 @@ class FactCheckerDB:
                                 logger.debug(f"Skipping existing statement: {statement_text[:50]}")
                                 continue
 
-                            # Import new statement
                             # Support both 'answer' and 'expected_answer' keys
                             # Support both 'id' and 'input_statement_id' keys
                             stmt = Statement(
@@ -769,9 +819,6 @@ class FactCheckerDB:
                                 source_file=json_file,
                                 review_status='pending'
                             )
-                            statement_id = self.insert_statement(stmt)
-                            stats['new_statements'] += 1
-
                             # Import AI evaluation if present. A failed check
                             # ('error') is not a verdict: storing it would stop
                             # incremental mode from re-checking the statement.
@@ -781,9 +828,11 @@ class FactCheckerDB:
                                     f"Not importing evaluation {evaluation!r} as a verdict "
                                     f"for statement: {statement_text[:50]}"
                                 )
-                            elif evaluation:
+                            if evaluation not in STORABLE_VERDICTS:
+                                self.insert_statement(stmt)
+                                stats['new_statements'] += 1
+                            else:
                                 ai_eval = AIEvaluation(
-                                    statement_id=statement_id,
                                     evaluation=result['evaluation'],
                                     reason=result.get('reason', ''),
                                     confidence=result.get('confidence'),
@@ -797,35 +846,57 @@ class FactCheckerDB:
                                     version=1,
                                     degradation_notes=_as_notes(result.get('degradation_notes'))
                                 )
-                                eval_id = self.insert_ai_evaluation(ai_eval)
-                                stats['imported_evaluations'] += 1
-
-                                # Import evidence
+                                evidence_rows = []
                                 for evidence_data in result.get('evidence_list', []):
                                     # Extract document_id (convert to int if needed)
                                     doc_id_str = evidence_data.get('document_id')
-                                    if doc_id_str:
-                                        try:
-                                            doc_id = int(doc_id_str) if isinstance(doc_id_str, str) else doc_id_str
-                                        except (ValueError, TypeError):
-                                            logger.warning(f"Invalid document_id: {doc_id_str}")
-                                            continue
-
-                                        evidence = Evidence(
-                                            evaluation_id=eval_id,
-                                            citation_text=evidence_data.get('citation', ''),
-                                            document_id=doc_id,
-                                            pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
-                                            doi=evidence_data.get('doi', '').replace('DOI:', ''),
-                                            relevance_score=evidence_data.get('relevance_score'),
-                                            supports_statement=evidence_data.get('stance'),
-                                            widened_from=evidence_data.get('widened_from')
+                                    if not doc_id_str:
+                                        logger.warning(
+                                            f"Dropping evidence without a document_id for statement: "
+                                            f"{statement_text[:50]}"
                                         )
-                                        self.insert_evidence(evidence)
-                                        stats['imported_evidence'] += 1
+                                        stats['dropped_evidence'] += 1
+                                        continue
+                                    try:
+                                        doc_id = int(doc_id_str) if isinstance(doc_id_str, str) else doc_id_str
+                                    except (ValueError, TypeError):
+                                        logger.warning(
+                                            f"Dropping evidence with invalid document_id {doc_id_str!r} "
+                                            f"for statement: {statement_text[:50]}"
+                                        )
+                                        stats['dropped_evidence'] += 1
+                                        continue
+
+                                    evidence_rows.append(Evidence(
+                                        citation_text=evidence_data.get('citation', ''),
+                                        document_id=doc_id,
+                                        pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
+                                        doi=evidence_data.get('doi', '').replace('DOI:', ''),
+                                        relevance_score=evidence_data.get('relevance_score'),
+                                        supports_statement=evidence_data.get('stance'),
+                                        widened_from=evidence_data.get('widened_from')
+                                    ))
+
+                                # One transaction: a verdict is never stored without its evidence
+                                try:
+                                    self.store_verdict(stmt, ai_eval, evidence_rows)
+                                except Exception:
+                                    logger.error(
+                                        f"Could not import the verdict for statement {statement_text[:50]!r}; "
+                                        f"importing the statement alone so it is checked again",
+                                        exc_info=True,
+                                    )
+                                    # Rolled back with the verdict; without it incremental mode never checks it
+                                    self.insert_statement(stmt)
+                                    stats['new_statements'] += 1
+                                    stats['errors'] += 1
+                                    continue
+                                stats['new_statements'] += 1
+                                stats['imported_evaluations'] += 1
+                                stats['imported_evidence'] += len(evidence_rows)
 
                         except Exception as e:
-                            logger.error(f"Error importing result: {e}")
+                            logger.error(f"Error importing result: {e}", exc_info=True)
                             stats['errors'] += 1
                             continue
 
