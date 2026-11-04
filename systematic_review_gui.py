@@ -95,6 +95,12 @@ def main() -> int:
     app.setApplicationName("BMLibrarian Systematic Review")
     app.setOrganizationName("BMLibrarian")
 
+    from bmlibrarian.gui.qt.core.schema_check import check_schema_current
+    from bmlibrarian.gui.qt.core.standalone import STARTUP_FAILURE_EXIT_CODE
+
+    if not check_schema_current():
+        return STARTUP_FAILURE_EXIT_CODE
+
     # Import and create the tab widget
     try:
         from bmlibrarian.gui.qt.plugins.systematic_review.systematic_review_tab import (

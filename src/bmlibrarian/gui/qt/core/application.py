@@ -373,37 +373,17 @@ class BMLibrarianApplication:
                     self.logger.warning(f"Failed to parse {env_path}: {e}")
 
     def _check_schema_current(self) -> bool:
-        """Create the shared DatabaseManager, which applies pending migrations.
+        """Create the shared DatabaseManager, refusing to start if a migration failed.
 
-        A migration that fails while being applied leaves the schema outdated,
-        so every later write to the affected tables would fail (#342): show
-        the error and refuse to start. Any other failure to create the
-        manager is left to the tabs, which report it when they use it.
+        See :func:`schema_check.check_schema_current` (shared with the
+        standalone windows, #378).
 
         Returns:
             False if a migration failed (the app must not start), else True.
         """
-        from PySide6.QtWidgets import QMessageBox
+        from .schema_check import check_schema_current
 
-        from ....database import get_db_manager
-        from ....migrations import MigrationError
-
-        try:
-            get_db_manager()
-        except MigrationError as e:
-            self.logger.error(f"Database migration failed: {e}")
-            # No main window exists yet, so there is nowhere to show a toast.
-            QMessageBox.critical(
-                None,
-                "Database Migration Failed",
-                f"{e}\n\nThe database schema is out of date, so BMLibrarian "
-                "cannot start. Fix the cause (often missing table ownership "
-                "for the database user) and restart.",
-            )
-            return False
-        except Exception as e:
-            self.logger.warning(f"Database manager not available at startup: {e}")
-        return True
+        return check_schema_current()
 
     def _setup_user_context(self) -> None:
         """Set up user context on the global config for database-backed settings.

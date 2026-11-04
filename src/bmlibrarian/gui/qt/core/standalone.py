@@ -16,6 +16,7 @@ from PySide6.QtCore import SignalInstance
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QWidget
 
 from .config_manager import GUIConfigManager
+from .schema_check import check_schema_current
 
 if TYPE_CHECKING:
     from ..plugins.base_tab import BaseTabPlugin
@@ -102,6 +103,7 @@ def run_widget_standalone(
     widget_factory: Callable[[], QWidget],
     title: str,
     argv: Optional[List[str]] = None,
+    check_schema: bool = True,
 ) -> int:
     """Show a widget as the central widget of its own main window.
 
@@ -113,13 +115,17 @@ def run_widget_standalone(
         widget_factory: Creates the widget; called after the QApplication exists
         title: Window title
         argv: Arguments for QApplication (defaults to ``sys.argv``)
+        check_schema: Refuse to start if a PostgreSQL migration failed
+            (False for a widget that does not use PostgreSQL)
 
     Returns:
-        The Qt event loop's exit code, or STARTUP_FAILURE_EXIT_CODE if the
-        widget could not be created
+        The Qt event loop's exit code, or STARTUP_FAILURE_EXIT_CODE if a
+        migration failed or the widget could not be created
     """
     qapp = _ensure_application(argv)
     _apply_theme(qapp)
+    if check_schema and not check_schema_current():
+        return STARTUP_FAILURE_EXIT_CODE
 
     try:
         widget = widget_factory()
@@ -150,12 +156,14 @@ def run_plugin_standalone(
         argv: Arguments for QApplication (defaults to ``sys.argv``)
 
     Returns:
-        The Qt event loop's exit code, or STARTUP_FAILURE_EXIT_CODE if the
-        plugin could not be created
+        The Qt event loop's exit code, or STARTUP_FAILURE_EXIT_CODE if a
+        migration failed or the plugin could not be created
     """
     # QApplication must exist before the plugin builds any widget
     qapp = _ensure_application(argv)
     _apply_theme(qapp)
+    if not check_schema_current():
+        return STARTUP_FAILURE_EXIT_CODE
 
     try:
         plugin = create_plugin()

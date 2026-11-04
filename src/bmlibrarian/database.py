@@ -345,13 +345,31 @@ class PersistentConnection:
 
 # Global database manager instance
 _db_manager = None
+# The MigrationError that stopped the global manager being created (#379)
+_db_manager_error: Optional[Exception] = None
 
 
 def get_db_manager() -> DatabaseManager:
-    """Get the global database manager instance."""
-    global _db_manager
+    """Get the global database manager instance.
+
+    Raises:
+        MigrationError: A pending migration failed. The failure is remembered
+            and re-raised on every later call without re-running the
+            migration (#379); fix the cause and restart, or call
+            :func:`close_database` to allow one more attempt.
+    """
+    global _db_manager, _db_manager_error
+    if _db_manager_error is not None:
+        # Fresh traceback each time, so repeated callers don't grow it
+        raise _db_manager_error.with_traceback(None)
     if _db_manager is None:
-        _db_manager = DatabaseManager()
+        from bmlibrarian.migrations import MigrationError
+
+        try:
+            _db_manager = DatabaseManager()
+        except MigrationError as e:
+            _db_manager_error = e
+            raise
     return _db_manager
 
 
@@ -1844,8 +1862,9 @@ def resolve_pdf_path(doc: Dict[str, Any]) -> Optional[str]:
 
 
 def close_database():
-    """Close the database connection pool."""
-    global _db_manager
+    """Close the database connection pool and forget a failed migration."""
+    global _db_manager, _db_manager_error
+    _db_manager_error = None
     if _db_manager:
         _db_manager.close()
         _db_manager = None

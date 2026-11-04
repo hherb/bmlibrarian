@@ -444,6 +444,12 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
+    from bmlibrarian.gui.qt.core.schema_check import check_schema_current
+    from bmlibrarian.gui.qt.core.standalone import STARTUP_FAILURE_EXIT_CODE
+
+    if not check_schema_current():
+        sys.exit(STARTUP_FAILURE_EXIT_CODE)
+
     lab = PaperWeightLab()
     lab.show()
 

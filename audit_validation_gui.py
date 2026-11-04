@@ -194,6 +194,12 @@ def main() -> int:
     app.setApplicationName("BMLibrarian Audit Validation")
     app.setOrganizationName("BMLibrarian")
 
+    from bmlibrarian.gui.qt.core.schema_check import check_schema_current
+    from bmlibrarian.gui.qt.core.standalone import STARTUP_FAILURE_EXIT_CODE
+
+    if not check_schema_current():
+        return STARTUP_FAILURE_EXIT_CODE
+
     # Create and show main window
     window = AuditValidationMainWindow(
         reviewer_name=args.reviewer_name,
