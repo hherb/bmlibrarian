@@ -21,6 +21,7 @@ from ...tabs.general_tab import GeneralSettingsTab
 from ...tabs.agent_tab import AgentConfigTab
 from ...tabs.search_tab import SearchSettingsTab
 from ..base_tab import BaseTabPlugin, TabPluginMetadata
+from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 
 
 class SettingsWidget(QWidget):
@@ -566,11 +567,19 @@ class SettingsPlugin(BaseTabPlugin):
         self.settings_widget = SettingsWidget(parent)
 
         # Connect signals
-        self.settings_widget.agents_need_reinit.connect(
-            lambda: self.status_changed.emit("Configuration updated - agents reinitialized")
-        )
+        self.settings_widget.agents_need_reinit.connect(self._on_agents_need_reinit)
 
         return self.settings_widget
+
+    @Slot()
+    def _on_agents_need_reinit(self) -> None:
+        """Tell the other tabs (the research tab) that saved settings need new agents."""
+        EventBus().publish_data(
+            self.get_metadata().plugin_id, {"event": AGENTS_NEED_REINIT_EVENT}
+        )
+        self.status_changed.emit(
+            "Configuration updated - agents will be rebuilt at the next research start"
+        )
 
     def on_tab_activated(self):
         """Called when this tab becomes active."""

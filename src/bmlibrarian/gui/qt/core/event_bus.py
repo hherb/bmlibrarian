@@ -9,6 +9,9 @@ from PySide6.QtCore import QObject, Signal
 from typing import Any, Dict, List, Optional, Callable
 import logging
 
+# Event published when saved settings require the agents to be rebuilt
+AGENTS_NEED_REINIT_EVENT = "agents_need_reinit"
+
 
 class EventBus(QObject):
     """Central event bus for inter-plugin communication.

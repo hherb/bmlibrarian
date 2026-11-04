@@ -6,6 +6,7 @@ Provides settings and configuration interface for agents and system settings.
 
 from ...plugins.base_tab import BaseTabPlugin, TabPluginMetadata
 from .config_tab import ConfigurationTabWidget
+from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 from PySide6.QtWidgets import QWidget
 from typing import Optional
 
@@ -57,8 +58,19 @@ class ConfigurationPlugin(BaseTabPlugin):
         self.config_widget.status_message.connect(
             lambda msg: self.status_changed.emit(msg)
         )
+        self.config_widget.config_saved.connect(self._on_config_saved)
 
         return self.config_widget
+
+    def _on_config_saved(self, path: str) -> None:
+        """Tell the other tabs (the research tab) that saved settings need new agents.
+
+        Args:
+            path: File the configuration was saved to.
+        """
+        EventBus().publish_data(
+            self.get_metadata().plugin_id, {"event": AGENTS_NEED_REINIT_EVENT}
+        )
 
     def on_tab_activated(self):
         """Called when configuration tab becomes active."""

@@ -10,6 +10,20 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Settings saved in other tabs reach the research tab; Chrome fallback
+  takes PDFs by content; medRxiv test stays out of `~`** (2026-11-04,
+  closes #372, #329, #335). The main Settings tab and the Configuration
+  tab's save publish `AGENTS_NEED_REINIT_EVENT` on the `EventBus`
+  (`core/event_bus.py`); `ResearchTabWidget` listens and marks its agents
+  stale, so the next Start rebuilds them (disconnected in `cleanup()`). The
+  Configuration tab's "Save As" announces too (harmless rebuild, same
+  config). `promote_downloaded_pdf` considers every finished file
+  (`finished_downloads()`: not `*.crdownload`) and relies on `is_pdf_file`,
+  so a PDF saved as `fulltext`/`article.PDF` is promoted; the "not a valid
+  PDF" error uses the same list. `test_initialization_with_env_var` points
+  `HOME` at `tmp_path` (an empty `~/test_pdfs` from March was removed).
+  Tests: `tests/test_qt_research_tab.py`,
+  `tests/test_undetected_chrome_download_dir.py`.
 - **Lab cleanup, transparency batches, research-tab settings** (2026-10-30,
   closes #331, #370, #330). The PICO, Study Assessment and PRISMA labs'
   `cleanup()` calls `orchestrator.stop_processing()` (PICO/Study called a
@@ -26,8 +40,7 @@ off new work. Longer-term structural items live in
   main window's agents). Review follow-ups: the rebuild stops the old
   orchestrator; a failed rebuild says "Settings Not Applied"; PICO/Study
   lab `print`s are logger calls; `BaseAgent.test_connection` logs the
-  traceback. Open: the main Settings tab does not mark the research agents
-  stale (#372). Tests: `tests/test_lab_tab_cleanup.py`,
+  traceback. Main Settings tab follow-up: #372, done (entry above). Tests: `tests/test_lab_tab_cleanup.py`,
   `tests/test_qt_research_tab.py`, `tests/test_transparency_agent.py`.
 - **TransparencyAgent failures are surfaced** (2026-10-30, closes #274).
   `assess_transparency` raises `TransparencyAssessmentError` (reason in the
@@ -393,8 +406,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-10-30
-  (#331/#370/#330 branch): **4613 passed, 50 skipped** in 9–17 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-04
+  (#372/#329/#335 branch): **4621 passed, 50 skipped** in 9–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

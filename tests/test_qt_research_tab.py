@@ -380,6 +380,28 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertEqual(title, "Settings Not Applied")
         self.assertIn("model missing", message)
 
+    def test_main_settings_tab_marks_agents_stale(self):
+        """Settings saved in the main Settings tab reach the research tab (#372)."""
+        from bmlibrarian.gui.qt.plugins.settings.plugin import SettingsPlugin
+
+        SettingsPlugin()._on_agents_need_reinit()
+        self.assertTrue(self.widget._agents_stale)
+
+    def test_configuration_tab_save_marks_agents_stale(self):
+        """A save in the Configuration tab reaches the research tab too."""
+        from bmlibrarian.gui.qt.plugins.configuration.plugin import ConfigurationPlugin
+
+        ConfigurationPlugin()._on_config_saved("/tmp/config.json")
+        self.assertTrue(self.widget._agents_stale)
+
+    def test_cleanup_stops_listening_to_settings_events(self):
+        """A cleaned-up research tab ignores later settings events."""
+        from bmlibrarian.gui.qt.core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
+
+        self.widget.cleanup()
+        EventBus().publish_data("settings", {"event": AGENTS_NEED_REINIT_EVENT})
+        self.assertFalse(self.widget._agents_stale)
+
     def test_cleanup_tears_down_workflow_executor(self):
         """cleanup() releases the executor and is safe to call twice."""
         executor = self.widget.workflow_executor

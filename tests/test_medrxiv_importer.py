@@ -132,15 +132,16 @@ class TestMedRxivImporter:
         assert custom_dir.is_dir()
 
     @patch('src.bmlibrarian.importers.medrxiv_importer.get_db_manager')
-    def test_initialization_with_env_var(self, mock_db):
+    def test_initialization_with_env_var(self, mock_db, tmp_path):
         """Test initialization using environment variable."""
         mock_db.return_value.get_cached_source_ids.return_value = {'medrxiv': 1}
 
-        with patch.dict('os.environ', {'PDF_BASE_DIR': '~/test_pdfs'}):
+        # HOME points at tmp_path so the importer's mkdir stays out of the real home
+        with patch.dict('os.environ', {'PDF_BASE_DIR': '~/test_pdfs', 'HOME': str(tmp_path)}):
             importer = MedRxivImporter()
 
             # Should expand the tilde
-            assert 'test_pdfs' in str(importer.pdf_base_dir)
+            assert importer.pdf_base_dir == tmp_path / 'test_pdfs'
 
 
 def test_module_constants():

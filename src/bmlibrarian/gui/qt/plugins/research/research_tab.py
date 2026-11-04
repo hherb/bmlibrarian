@@ -42,6 +42,7 @@ from . import export_utils
 
 # Import document card factory
 from ...qt_document_card_factory import QtDocumentCardFactory
+from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 from ...resources.styles import get_font_scale
 
 # Import PDF manager
@@ -107,6 +108,8 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.workflow_executor: Optional['QtWorkflowExecutor'] = None
         # Set when settings change; the next start rebuilds the agents
         self._agents_stale = False
+        # The main Settings tab announces saved settings on the event bus
+        EventBus().data_shared.connect(self._on_event_bus_data)
 
         # Initialize workflow executor if agents available
         if self.agents:
@@ -407,6 +410,17 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self._agents_stale = True
         self.logger.info("Settings changed - agents will be rebuilt at the next research start")
 
+    @Slot(str, dict)
+    def _on_event_bus_data(self, source_plugin_id: str, data: dict) -> None:
+        """Mark the agents stale when another tab announces saved settings.
+
+        Args:
+            source_plugin_id: Plugin that published the event.
+            data: Event payload; only ``AGENTS_NEED_REINIT_EVENT`` is handled.
+        """
+        if isinstance(data, dict) and data.get("event") == AGENTS_NEED_REINIT_EVENT:
+            self._reinitialize_agents()
+
     def _rebuild_agents(self) -> None:
         """Rebuild the agents and workflow executor from the current settings.
 
@@ -689,6 +703,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                 self.workflow_thread = None
 
             self._teardown_workflow_executor()
+            self._safe_disconnect(EventBus().data_shared, self._on_event_bus_data)
 
             # Disconnect UI element signals
             self._safe_disconnect(self.question_input.textChanged, self._on_question_changed)
