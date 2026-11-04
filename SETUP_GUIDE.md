@@ -308,8 +308,8 @@ with db.get_connection() as conn:
 
 ### Error: "Database Migration Failed" / "✗ Failed to apply NNN_….sql"
 
-**Symptom**: BMLibrarian refuses to start (the Qt app shows "Database
-Migration Failed"; a CLI stops with an error containing
+**Symptom**: BMLibrarian refuses to start (the Qt app, a lab or a review
+window shows "Database Migration Failed"; a CLI stops with an error containing
 `✗ Failed to apply NNN_….sql`).
 
 **Cause**: A pending migration could not be applied, so the schema is out of

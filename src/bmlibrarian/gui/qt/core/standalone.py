@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 # Fraction of the available screen width and height a standalone window
 # initially covers
 STANDALONE_WINDOW_SCREEN_FRACTION = 0.8
-# Process exit code when the tool could not be created
+# Process exit code when a standalone tool cannot start (a migration failed
+# or the tool could not be created)
 STARTUP_FAILURE_EXIT_CODE = 1
 
 

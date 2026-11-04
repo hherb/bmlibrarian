@@ -1053,6 +1053,12 @@ def main() -> int:
     app.setApplicationName("PDF Verification Review")
     app.setOrganizationName("BMLibrarian")
 
+    from bmlibrarian.gui.qt.core.schema_check import check_schema_current
+    from bmlibrarian.gui.qt.core.standalone import STARTUP_FAILURE_EXIT_CODE
+
+    if not check_schema_current():
+        return STARTUP_FAILURE_EXIT_CODE
+
     # Create and show main window
     window = PDFVerificationGUI(year=args.year, limit=args.limit)
     window.show()

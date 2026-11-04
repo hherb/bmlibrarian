@@ -1,14 +1,15 @@
 """Refuse to start a Qt window on a database whose migrations failed.
 
-Shared by the main app (``BMLibrarianApplication``) and the standalone
-windows (labs, review GUIs) so all of them show the same "Database Migration
-Failed" dialog instead of a generic per-widget error (#342, #378).
+Shared by the main app (``BMLibrarianApplication``) and every standalone
+window that uses PostgreSQL (labs, review GUIs), so they show the same
+"Database Migration Failed" dialog instead of a generic per-widget error
+(#342, #378). It runs once at startup; a migration that first fails later
+(e.g. the server was down at startup) is reported by the widget that hit it.
 """
 
 import logging
-from typing import Optional
 
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import QMessageBox
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ MIGRATION_FAILED_HINT = (
 )
 
 
-def check_schema_current(parent: Optional[QWidget] = None) -> bool:
+def check_schema_current() -> bool:
     """Create the shared DatabaseManager, which applies pending migrations.
 
     A migration that fails while being applied leaves the schema outdated,
@@ -29,10 +30,8 @@ def check_schema_current(parent: Optional[QWidget] = None) -> bool:
     manager (no credentials, server down) is left to the widgets, which
     report it when they use the database.
 
-    Needs a QApplication (it may show a dialog).
-
-    Args:
-        parent: Parent for the error dialog (None before any window exists).
+    Needs a QApplication (it may show a dialog). Call it before building the
+    tool's window.
 
     Returns:
         False if a migration failed (the window must not start), else True.
@@ -44,8 +43,8 @@ def check_schema_current(parent: Optional[QWidget] = None) -> bool:
         get_db_manager()
     except MigrationError as e:
         logger.error(f"Database migration failed: {e}")
-        # No window exists yet, so there is nowhere to show a toast.
-        QMessageBox.critical(parent, MIGRATION_FAILED_TITLE, f"{e}\n\n{MIGRATION_FAILED_HINT}")
+        # Called before any window is built, so there is nowhere to show a toast.
+        QMessageBox.critical(None, MIGRATION_FAILED_TITLE, f"{e}\n\n{MIGRATION_FAILED_HINT}")
         return False
     except Exception as e:
         logger.warning(f"Database manager not available at startup: {e}")

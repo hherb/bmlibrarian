@@ -204,10 +204,13 @@ bmlibrarian migrate init --user username --password password
   `standalone.run_plugin_standalone` / `run_widget_standalone` (the
   Query/PICO/PRISMA/Study labs and `fact_checker_review_gui.py`, which
   skips the check with `--db-file`), `systematic_review_gui.py`,
-  `audit_validation_gui.py` and the Paper Weight / Paper Checker / Paper
-  Reviewer / Transparency labs. On `MigrationError` they show "Database
-  Migration Failed" and exit with status 1; other manager errors (no
-  credentials, server down) are left to the widgets (#378).
+  `audit_validation_gui.py`, `scripts/pdf_verification_gui.py`,
+  `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
+  Reviewer / Transparency / PubMed Search labs. On `MigrationError` they
+  show "Database Migration Failed" and exit with status 1; other manager
+  errors (no credentials, server down) are left to the widgets (#378). The
+  check runs once: if the server was down at startup, a migration that
+  fails later is reported by the widget that hit it.
   `bmlibrarian_cli.py` stops in agent setup with the message. Other CLIs
   should fail at their first database use (not checked per CLI).
 - `get_db_manager()` remembers the `MigrationError` and re-raises it on

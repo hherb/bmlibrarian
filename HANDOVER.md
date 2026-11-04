@@ -19,8 +19,10 @@ off new work. Longer-term structural items live in
   `_check_schema_current` delegates), called by `run_plugin_standalone`,
   `run_widget_standalone` (new `check_schema=`; `fact_checker_review_gui.py`
   passes False with `--db-file`), `systematic_review_gui.py`,
-  `audit_validation_gui.py` and the Paper Weight / Paper Checker / Paper
-  Reviewer / Transparency lab `main()`s. Docs: `architecture.md` "Failed
+  `audit_validation_gui.py`, `scripts/pdf_verification_gui.py`,
+  `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
+  Reviewer / Transparency / PubMed Search lab entry points. Creating the
+  manager is serialised by a lock (one migration run per process). Docs: `architecture.md` "Failed
   auto-migration is fatal". Tests: `tests/test_auto_migration_failure.py`
   (`TestGetDbManagerRemembersFailure`, `TestStandaloneWindowsCheckSchema`).
 
@@ -460,7 +462,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-04
-  (#379/#378 branch): **4680 passed, 53 skipped** in 8–17 min. Without
+  (#379/#378 branch, after review fixes): **4686 passed, 53 skipped** in 8–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
