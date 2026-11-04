@@ -10,15 +10,12 @@ and need to consolidate large amounts of context (e.g., PRISMA assessments,
 citation finding, document interrogation).
 
 Usage:
-    from bmlibrarian.agents.context_processor import (
-        ProcessingConfig,
-        SemanticChunkProcessor,
-    )
+    from bmlibrarian.agents.context_processor import SemanticChunkProcessor
+    from bmlibrarian.llm import LLMClient
 
     processor = SemanticChunkProcessor(
         llm_client=LLMClient(),
         model="gpt-oss:20b",
-        extraction_prompt_template=EXTRACTION_PROMPT,
     )
     result = processor.process(
         items=chunks,  # List of (text, score) tuples
@@ -31,7 +28,7 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from bmlibrarian.llm import LLMClient, LLMMessage
+from bmlibrarian.llm import LLMClient, LLMMessage, checked_content
 
 from .base import IterativeContextProcessor, ProgressCallback
 from .data_types import (
@@ -268,6 +265,49 @@ class SemanticChunkProcessor(IterativeContextProcessor):
         # Delegate to parent for other types
         return super().split_oversized_item(item, max_chars, overlap)
 
+    @staticmethod
+    def _parse_structured_output(
+        raw_content: str, batch_metadata: Dict[str, Any]
+    ) -> Tuple[str, float]:
+        """
+        Parse a structured JSON extraction, keeping the raw text on any mismatch.
+
+        A reply that is not a JSON object, or carries an unusable confidence,
+        keeps its text rather than losing the whole batch.
+
+        Args:
+            raw_content: The model's stripped reply.
+            batch_metadata: Batch metadata; receives ``key_findings`` when present.
+
+        Returns:
+            (extracted_content, confidence).
+        """
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError:
+            logger.debug("Could not parse structured output, using raw content")
+            return raw_content, DEFAULT_EXTRACTION_CONFIDENCE
+
+        if not isinstance(parsed, dict):
+            logger.debug("Structured output is not a JSON object, using raw content")
+            return raw_content, DEFAULT_EXTRACTION_CONFIDENCE
+
+        content = parsed.get("extracted_content")
+        if not isinstance(content, str) or not content.strip():
+            content = raw_content
+
+        try:
+            confidence = float(parsed.get("confidence", DEFAULT_EXTRACTION_CONFIDENCE))
+        except (TypeError, ValueError):
+            confidence = DEFAULT_EXTRACTION_CONFIDENCE
+        if not 0.0 <= confidence <= 1.0:
+            logger.debug(f"Confidence {confidence} out of range, using default")
+            confidence = DEFAULT_EXTRACTION_CONFIDENCE
+
+        key_findings = parsed.get("key_findings", [])
+        batch_metadata["key_findings"] = key_findings if isinstance(key_findings, list) else []
+        return content, confidence
+
     def extract_from_batch(
         self,
         batch_content: str,
@@ -311,21 +351,16 @@ class SemanticChunkProcessor(IterativeContextProcessor):
                 max_tokens=self.max_tokens,
             )
 
-            extracted_content = response.content.strip()
+            # An empty reply must fail the batch, not count as a success
+            # that silently contributes nothing.
+            extracted_content = checked_content(response, self.max_tokens).strip()
             confidence = DEFAULT_EXTRACTION_CONFIDENCE
 
             # Try to parse structured output if enabled
             if self.use_structured_output and recursion_level == 0:
-                try:
-                    parsed = json.loads(extracted_content)
-                    extracted_content = parsed.get(
-                        "extracted_content", extracted_content
-                    )
-                    confidence = float(parsed.get("confidence", DEFAULT_EXTRACTION_CONFIDENCE))
-                    batch_metadata["key_findings"] = parsed.get("key_findings", [])
-                except (json.JSONDecodeError, ValueError):
-                    # Keep the raw content if JSON parsing fails
-                    logger.debug("Could not parse structured output, using raw content")
+                extracted_content, confidence = self._parse_structured_output(
+                    extracted_content, batch_metadata
+                )
 
             logger.debug(
                 f"Extracted {len(extracted_content)} chars from batch "
@@ -344,17 +379,18 @@ class SemanticChunkProcessor(IterativeContextProcessor):
             raise RuntimeError(error_msg) from e
 
 
-def _escape_braces(text: str) -> str:
+def _escape_braces(text: Optional[str]) -> str:
     """
     Escape braces so text survives inside a str.format() template.
 
     Args:
-        text: Text to embed literally in a template.
+        text: Text to embed literally in a template. None (e.g. a NULL
+            title column) is treated as empty.
 
     Returns:
         The text with every brace doubled.
     """
-    return text.replace("{", "{{").replace("}", "}}")
+    return str(text or "").replace("{", "{{").replace("}", "}}")
 
 
 def create_prisma_chunk_processor(
@@ -363,8 +399,8 @@ def create_prisma_chunk_processor(
     item_name: str,
     item_description: str,
     original_score: float,
-    original_explanation: str,
-    document_title: str,
+    original_explanation: Optional[str],
+    document_title: Optional[str],
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> SemanticChunkProcessor:
@@ -381,7 +417,8 @@ def create_prisma_chunk_processor(
         item_description: Description of what the item requires.
         original_score: Original score from first-pass assessment.
         original_explanation: Original explanation from first-pass assessment.
-        document_title: Title of the document being assessed.
+        document_title: Title of the document being assessed (None, from a
+            NULL title column, is treated as empty; so is a None explanation).
         max_context_chars: Maximum characters per batch.
         progress_callback: Optional progress callback.
 
@@ -389,7 +426,7 @@ def create_prisma_chunk_processor(
         Configured SemanticChunkProcessor for PRISMA re-assessment.
     """
     # The templates below are .format()ed again with {query}/{content}, so
-    # literal braces in paper text (e.g. LaTeX in a title) must be escaped.
+    # literal braces in interpolated text (e.g. LaTeX in a title) must be escaped.
     document_title = _escape_braces(document_title)
     item_description = _escape_braces(item_description)
     original_explanation = _escape_braces(original_explanation)

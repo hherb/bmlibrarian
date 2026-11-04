@@ -17,6 +17,9 @@ from bmlibrarian.agents.context_processor import (
     DEFAULT_EXTRACTION_PROMPT,
     DEFAULT_CONSOLIDATION_PROMPT,
 )
+from bmlibrarian.agents.context_processor.semantic_chunk_processor import (
+    DEFAULT_EXTRACTION_CONFIDENCE,
+)
 from bmlibrarian.llm import LLMClient
 from tests.llm_test_support import llm_response, patch_llm
 
@@ -53,7 +56,7 @@ class FakeModel:
         test.addCleanup(patcher.__exit__, None, None, None)
         self.client = LLMClient()
 
-    def _answer(self, **kwargs: Any):
+    def _answer(self, **kwargs: Any) -> Any:
         """Record the provider call and return the next scripted reply."""
         self.call_history.append({
             "model": kwargs["model"],
@@ -185,6 +188,23 @@ class TestSemanticChunkProcessor(unittest.TestCase):
             )
 
         self.assertIn("LLM extraction failed", str(ctx.exception))
+
+    def test_empty_reply_fails_the_batch(self):
+        """An empty reply is an error, not a success that contributes nothing."""
+        empty_client = FakeModel(self, responses=["   "])
+        processor = SemanticChunkProcessor(
+            llm_client=empty_client.client,
+            model="test-model",
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            processor.extract_from_batch(
+                "content", "query", {"batch_index": 0, "recursion_level": 0}
+            )
+        self.assertIn("Empty response", str(ctx.exception))
+
+        result = processor.process([("Some text", 0.9)], "query")
+        self.assertNotEqual(result.status, ProcessingStatus.COMPLETED)
 
     def test_process_small_chunks_single_batch(self):
         """Test that small chunks fit in a single batch and complete successfully."""
@@ -349,6 +369,25 @@ class TestCreatePrismaChunkProcessor(unittest.TestCase):
         self.assertIn("Strategy {with braces}", prompt)
         self.assertIn("Found {x}", prompt)
 
+    def test_prisma_processor_accepts_null_title(self):
+        """A NULL title column (None) must not break the processor."""
+        mock_client = FakeModel(self)
+
+        processor = create_prisma_chunk_processor(
+            llm_client=mock_client.client,
+            model="test-model",
+            item_name="search_strategy",
+            item_description="Full search strategy",
+            original_score=1.0,
+            original_explanation=None,
+            document_title=None,
+        )
+
+        result = processor.extract_from_batch(
+            "batch content", "query", {"batch_index": 0, "recursion_level": 0}
+        )
+        self.assertEqual(result.content, "Extracted content from batch.")
+
 
 class TestStructuredOutput(unittest.TestCase):
     """Tests for structured JSON output mode."""
@@ -387,6 +426,34 @@ class TestStructuredOutput(unittest.TestCase):
 
         # Should use raw content as fallback
         self.assertEqual(result.content, "Not valid JSON")
+
+
+    def _extract(self, reply: str) -> ExtractionResult:
+        """Run one structured-output extraction against a scripted reply."""
+        mock_client = FakeModel(self, responses=[reply])
+        processor = SemanticChunkProcessor(
+            llm_client=mock_client.client,
+            model="test-model",
+            use_structured_output=True,
+        )
+        return processor.extract_from_batch(
+            "content", "query", {"batch_index": 0, "recursion_level": 0}
+        )
+
+    def test_structured_output_non_object_keeps_raw_content(self):
+        """A JSON list is valid JSON but not the expected shape: keep the text."""
+        result = self._extract('["a", "b"]')
+        self.assertEqual(result.content, '["a", "b"]')
+
+    def test_structured_output_unusable_confidence_uses_default(self):
+        """A null or out-of-range confidence keeps the content and the default."""
+        for raw in ("null", "85"):
+            with self.subTest(confidence=raw):
+                result = self._extract(
+                    f'{{"extracted_content": "Parsed", "confidence": {raw}}}'
+                )
+                self.assertEqual(result.content, "Parsed")
+                self.assertEqual(result.confidence, DEFAULT_EXTRACTION_CONFIDENCE)
 
 
 class TestIntegrationWithPRISMA(unittest.TestCase):

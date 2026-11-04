@@ -8,14 +8,19 @@ retries and token accounting — an ``anthropic:`` model configured by the
 user silently does not apply to them.
 
 The migration of the modules that predated the abstraction is complete:
-the allowlist below is empty, and nothing under ``src/bmlibrarian/``
-outside the LLM layer imports ollama. These tests keep it that way:
+the import allowlist (``KNOWN_DIRECT_OLLAMA_MODULES``) is empty, and nothing
+under ``src/bmlibrarian/`` outside the LLM layer imports ollama. These tests
+keep it that way:
 
 - ``test_no_new_direct_ollama_imports`` fails when any module starts
   importing ollama, so the debt cannot come back.
 - ``test_allowlist_contains_no_stale_entries`` is now vacuous, and stays
   only so that a temporary entry, should one ever be justified, must be
   removed again once its module is migrated rather than left to rot.
+- ``test_no_new_raw_ollama_http`` and
+  ``test_raw_http_allowlist_contains_no_stale_entries`` do the same for raw
+  HTTP calls (``KNOWN_RAW_OLLAMA_HTTP_MODULES``); see below.
+- ``test_endpoint_detection_ignores_docstrings`` tests that detector itself.
 
 Scope note: this covers the package only. Standalone tooling under
 ``scripts/`` is not part of the shipped library and is not scanned.
@@ -24,13 +29,16 @@ Imports are detected by parsing the AST, not by grepping, so ``import
 ollama`` appearing inside a docstring example is correctly ignored.
 
 Raw HTTP to the Ollama REST API (``/api/tags``, ``/api/chat``, …) bypasses
-the layer just as surely without importing anything (#250, #252), so
+the layer just as surely without importing anything (#250), so
 ``test_no_new_raw_ollama_http`` also flags string literals naming those
-endpoints. Docstrings and comments do not count.
+endpoints. Docstrings and comments do not count. URLs assembled from parts
+without the literal ``/api/<endpoint>`` (``urljoin(host, "api/tags")``,
+``f"{host}/api/{name}"``) are not detected.
 """
 
 import ast
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -62,7 +70,9 @@ OLLAMA_ENDPOINT_PATTERN = re.compile(
 # LLM layer cannot serve.
 KNOWN_RAW_OLLAMA_HTTP_MODULES: frozenset[str] = frozenset({
     # Batch embedding server for bulk chunk embedding (/api/embed takes a
-    # list of inputs); the LLM layer embeds one text per request.
+    # list of inputs); the LLM layer embeds one text per request. Its
+    # /api/tags model check could already use list_ollama_models: remaining
+    # debt, kept here because the module is allowlisted as a whole.
     "embeddings/embedding_server.py",
 })
 
@@ -149,7 +159,7 @@ def _modules_importing_ollama() -> set[str]:
     return _scan_package(_imports_ollama)
 
 
-def _scan_package(check) -> set[str]:
+def _scan_package(check: Callable[[str], bool]) -> set[str]:
     """
     Find every package module, outside the LLM layer, whose source fails a check.
 

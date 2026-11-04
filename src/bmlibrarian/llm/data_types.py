@@ -8,12 +8,15 @@ bmlibrarian-specific types (Provider enum, LLMResponse with extra fields,
 GenerationParams, etc.) are defined here.
 """
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Any
 
 # Re-export LLMMessage from bmlib (canonical source)
 from bmlib.llm import LLMMessage  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 
 # Provider stop reasons meaning generation hit the max_tokens ceiling
@@ -91,6 +94,41 @@ class LLMResponse:
     thinking: Optional[str] = None
 
     stop_reason: Optional[str] = None
+
+
+def checked_content(response: LLMResponse, max_tokens: Optional[int]) -> str:
+    """
+    Return a response's content, refusing an empty one.
+
+    A truncated but non-empty answer is passed on with a warning: callers
+    validate it, and dropping partial evidence loses more than it protects.
+
+    Args:
+        response: The provider's response.
+        max_tokens: The generation ceiling that was requested, for messages.
+
+    Returns:
+        The content (not stripped).
+
+    Raises:
+        ValueError: If the content is empty; the message says when the
+            model used up ``max_tokens`` (e.g. on reasoning) first.
+    """
+    content = response.content
+    truncated = response.stop_reason in TRUNCATION_STOP_REASONS
+    if not content or not content.strip():
+        if truncated:
+            raise ValueError(
+                f"Model hit the max_tokens limit ({max_tokens}) before producing "
+                f"an answer"
+            )
+        raise ValueError("Empty response from model")
+    if truncated:
+        logger.warning(
+            f"Response from {response.model} was cut off at the max_tokens "
+            f"limit ({max_tokens})"
+        )
+    return content
 
 
 @dataclass
