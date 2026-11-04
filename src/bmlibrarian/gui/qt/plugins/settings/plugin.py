@@ -333,6 +333,8 @@ class SettingsWidget(QWidget):
 
                 # Save configuration
                 self.config.save_config(file_path)
+                # The live config changed above, so the agents are stale
+                self.agents_need_reinit.emit()
 
                 # Verify the file was created
                 if os.path.exists(file_path):
@@ -375,6 +377,7 @@ class SettingsWidget(QWidget):
 
                 # Update configuration
                 self.config._merge_config(config_data)
+                self.agents_need_reinit.emit()
 
                 # Refresh all tabs
                 self._refresh_all_tabs()
@@ -401,6 +404,7 @@ class SettingsWidget(QWidget):
 
             # Save to default location
             self.config.save_config(None)
+            self.agents_need_reinit.emit()
 
             # Get the actual path
             default_path = Path.home() / ".bmlibrarian" / "config.json"
@@ -414,8 +418,7 @@ class SettingsWidget(QWidget):
                     f"✅ Your configuration has been saved successfully!\n\n"
                     f"Location: {default_path}\n"
                     f"Size: {file_size} bytes\n\n"
-                    "Changes will be loaded on next application start.\n"
-                    "Use 'Apply Changes' for immediate effect."
+                    "The Research tab uses them from its next Start."
                 )
             else:
                 QMessageBox.warning(
@@ -447,6 +450,7 @@ class SettingsWidget(QWidget):
             try:
                 # Reset to defaults
                 self.config._config = DEFAULT_CONFIG.copy()
+                self.agents_need_reinit.emit()
                 self._refresh_all_tabs()
 
                 QMessageBox.information(

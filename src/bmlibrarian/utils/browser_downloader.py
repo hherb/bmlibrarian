@@ -1946,7 +1946,11 @@ def wait_for_chrome_download(
 
 
 def finished_downloads(download_dir: Path) -> list[Path]:
-    """List the regular files in a download dir, skipping Chrome's ``*.crdownload``.
+    """List the regular files in a download dir, skipping unfinished ones.
+
+    Chrome's ``*.crdownload`` files are skipped, and so are hidden files
+    (e.g. macOS ``.com.google.Chrome.*`` temporaries): a partly written one
+    can already start with the PDF magic bytes ``is_pdf_file`` checks.
 
     Args:
         download_dir: Directory Chrome downloaded into for this call only.
@@ -1956,7 +1960,9 @@ def finished_downloads(download_dir: Path) -> list[Path]:
     """
     return [
         f for f in download_dir.iterdir()
-        if f.is_file() and not f.match(CHROME_PARTIAL_DOWNLOAD_GLOB)
+        if f.is_file()
+        and not f.name.startswith('.')
+        and not f.match(CHROME_PARTIAL_DOWNLOAD_GLOB)
     ]
 
 

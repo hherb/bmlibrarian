@@ -384,14 +384,38 @@ class TestResearchTabWidget(unittest.TestCase):
         """Settings saved in the main Settings tab reach the research tab (#372)."""
         from bmlibrarian.gui.qt.plugins.settings.plugin import SettingsPlugin
 
-        SettingsPlugin()._on_agents_need_reinit()
+        plugin = SettingsPlugin()  # the app's plugin manager keeps it alive
+        settings = plugin.create_widget()
+        self.addCleanup(settings.deleteLater)
+        settings.agents_need_reinit.emit()
+        self.assertTrue(self.widget._agents_stale)
+
+    def test_main_settings_tab_save_marks_agents_stale(self):
+        """Save (not only Apply) in the main Settings tab marks the agents stale."""
+        from bmlibrarian.gui.qt.plugins.settings.plugin import SettingsPlugin
+
+        plugin = SettingsPlugin()  # the app's plugin manager keeps it alive
+        settings = plugin.create_widget()
+        self.addCleanup(settings.deleteLater)
+        module = 'bmlibrarian.gui.qt.plugins.settings.plugin'
+        with patch(f'{module}.QMessageBox'), \
+                patch.object(settings, '_update_config_from_ui'), \
+                patch.object(settings.config, 'save_config'):
+            settings._save_to_default()
         self.assertTrue(self.widget._agents_stale)
 
     def test_configuration_tab_save_marks_agents_stale(self):
         """A save in the Configuration tab reaches the research tab too."""
         from bmlibrarian.gui.qt.plugins.configuration.plugin import ConfigurationPlugin
 
-        ConfigurationPlugin()._on_config_saved("/tmp/config.json")
+        with patch(
+            'bmlibrarian.gui.qt.plugins.configuration.config_tab.list_ollama_models',
+            return_value=[],
+        ):
+            plugin = ConfigurationPlugin()  # the app's plugin manager keeps it alive
+            config_widget = plugin.create_widget()
+        self.addCleanup(config_widget.deleteLater)
+        config_widget.config_saved.emit("config.json")
         self.assertTrue(self.widget._agents_stale)
 
     def test_cleanup_stops_listening_to_settings_events(self):

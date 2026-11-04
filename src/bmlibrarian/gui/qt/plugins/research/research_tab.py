@@ -108,7 +108,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.workflow_executor: Optional['QtWorkflowExecutor'] = None
         # Set when settings change; the next start rebuilds the agents
         self._agents_stale = False
-        # The main Settings tab announces saved settings on the event bus
+        # The Settings and Configuration tabs announce changed settings on the event bus
         EventBus().data_shared.connect(self._on_event_bus_data)
 
         # Initialize workflow executor if agents available

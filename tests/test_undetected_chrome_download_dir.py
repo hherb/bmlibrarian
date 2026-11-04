@@ -100,6 +100,16 @@ class TestPromoteDownloadedPdf:
         assert promote_downloaded_pdf(download_dir, save_path) is None
         assert not save_path.exists()
 
+    def test_hidden_temp_file_is_ignored(self, tmp_path: Path) -> None:
+        """A hidden temporary (e.g. ``.com.google.Chrome.*``) is not taken."""
+        download_dir = tmp_path / "dl"
+        download_dir.mkdir()
+        (download_dir / ".com.google.Chrome.abc123").write_bytes(PDF_BYTES)
+        save_path = tmp_path / "target.pdf"
+
+        assert promote_downloaded_pdf(download_dir, save_path) is None
+        assert not save_path.exists()
+
 
 class TestWaitForChromeDownload:
     """wait_for_chrome_download waits for a started download, not a fixed time."""
