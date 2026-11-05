@@ -227,13 +227,15 @@ class TestRecoverStuckTasks:
         task = claim(queue, max_retries=1)
         backdate_started_at(queue, task.id)
 
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1) == 1
+        assert queue.recover_stuck_tasks(
+            stuck_timeout_minutes=1, force=True) == qm.RecoveryCounts(reset=1)
         reset = queue.get_task_status(task.id)
         assert (reset.status, reset.retry_count) == (TaskStatus.PENDING, 1)
 
         assert queue.get_next_task(AGENT).id == task.id
         backdate_started_at(queue, task.id)
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1) == 1
+        assert queue.recover_stuck_tasks(
+            stuck_timeout_minutes=1, force=True) == qm.RecoveryCounts(failed=1)
         failed = queue.get_task_status(task.id)
         assert failed.status == TaskStatus.FAILED
         assert failed.retry_count == 2
@@ -245,7 +247,7 @@ class TestProcessWideHandlers:
 
     def test_many_managers_install_handlers_once(
             self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Three managers register one atexit hook and two signal handlers."""
+        """Three managers register one atexit hook and one SIGTERM handler."""
         monkeypatch.setattr(qm, "_live_managers", weakref.WeakSet())
         monkeypatch.setattr(qm, "_atexit_registered", False)
         monkeypatch.setattr(qm, "_signal_handlers_installed", False)
@@ -256,8 +258,7 @@ class TestProcessWideHandlers:
         managers = [QueueManager(str(tmp_path / f"q{i}.db")) for i in range(3)]
 
         atexit_register.assert_called_once_with(qm._cleanup_all_on_exit)
-        assert sorted(c.args[0] for c in signal_install.call_args_list) == sorted(
-            [signal.SIGINT, signal.SIGTERM])
+        assert [c.args[0] for c in signal_install.call_args_list] == [signal.SIGTERM]
         assert set(qm._live_managers) == set(managers)
 
     def test_signal_handlers_wait_for_a_main_thread_manager(
@@ -276,8 +277,7 @@ class TestProcessWideHandlers:
         signal_install.assert_not_called()
 
         QueueManager(str(tmp_path / "m.db"))
-        assert sorted(c.args[0] for c in signal_install.call_args_list) == sorted(
-            [signal.SIGINT, signal.SIGTERM])
+        assert [c.args[0] for c in signal_install.call_args_list] == [signal.SIGTERM]
 
     def test_signal_cleanup_does_not_take_the_queue_lock(
             self, queue: QueueManager) -> None:

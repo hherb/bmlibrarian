@@ -114,8 +114,9 @@ def demo_stuck_task_recovery():
     print("\n2. Recovering stuck tasks...")
     
     # Recover stuck tasks (reset to pending)
-    recovered = queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False)
-    print(f"   Reset {recovered} stuck tasks to PENDING")
+    counts = queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False)
+    print(f"   {counts.reset} reset to PENDING, {counts.failed} marked FAILED, "
+          f"{counts.skipped_running} skipped (process still running)")
     
     # Clean up orphaned tasks from dead processes
     cleaned = queue.cleanup_dead_process_tasks()
@@ -199,8 +200,8 @@ exit(1)  # Sudden exit without cleanup
     print(f"   Cleaned up {cleaned} orphaned tasks from dead processes")
     
     # Recover any stuck tasks
-    recovered = queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=False)
-    print(f"   Recovered {recovered} stuck tasks")
+    counts = queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=False)
+    print(f"   Recovered {counts.recovered} stuck tasks")
     
     print("✅ Crash recovery completed\n")
     
@@ -246,6 +247,7 @@ def demo_preservation_options():
     print("🔐 Option 1: Preserve Queue (for intentional restarts)")
     print("   - Use recover_stuck_tasks(mark_as_failed=False)")
     print("   - Resets stuck tasks to PENDING for retry")
+    print("   - Tasks of a still-running process need force=True")
     print("   - Suitable for: Planned maintenance, intentional restarts")
     print()
     

@@ -63,8 +63,9 @@ CREATE INDEX idx_target_agent ON queue_tasks(target_agent, status);
 def add_task(target_agent: str, method_name: str, data: Dict) -> str
 def add_batch_tasks(target_agent: str, method_name: str, data_list: List[Dict]) -> List[str]
 def get_next_task(target_agent: str) -> Optional[QueueTask]
-def complete_task(task_id: str, result: Dict)
-def fail_task(task_id: str, error_message: str, retry: bool = True)
+def complete_task(task_id: str, result: Dict, worker_id: Optional[str] = None) -> bool
+def fail_task(task_id: str, error_message: str, retry: bool = True,
+              worker_id: Optional[str] = None) -> Optional[TaskStatus]
 ```
 
 **Monitoring and Management**:
@@ -157,7 +158,7 @@ resets it and loops:
    `status` `failed` / `cancelled` / `missing`) and skips its dependents.
 
 Any other exception (queue errors, `KeyboardInterrupt`, or the `SystemExit`
-raised by QueueManager's signal handler) cancels the run's
+raised by QueueManager's SIGTERM handler) cancels the run's
 pending tasks, emits `workflow_aborted` and is re-raised. Cancellation uses
 `QueueManager.cancel_task(task_id)`, which only moves a `PENDING` task to
 `CANCELLED`; workers claim tasks with one atomic `UPDATE … WHERE status =
@@ -312,6 +313,9 @@ else:
     FAILED,  retry_count = new_retry_count
 ```
 
+With `worker_id` the write applies only while the task is still PROCESSING
+and held by that worker; without it, only while it is pending or processing.
+
 ### Error Categories
 1. **Agent method raises** (network issues, Ollama unavailable, missing model,
    bad document data): retried up to `max_retries`, then FAILED. The message
@@ -323,8 +327,16 @@ else:
    timeout): re-queued like case 1, so the work is not discarded for good.
 5. **Any other error after the task was claimed**: FAILED, no retry
    (`Worker error: ...`). If even that write fails, a `task_stuck` progress
-   event and log entry say how to release the task (`queue_cli recover` /
-   `cleanup-dead`).
+   event and log entry say how to release the task (`python -m
+   bmlibrarian.queue_cli recover --force --timeout 0` while this process runs,
+   `cleanup-dead` after it has exited).
+6. **Task taken away while running** (recovered, and possibly re-claimed or
+   cancelled since): the worker's result or failure is discarded with a
+   warning; the queue keeps the new state and a `task_discarded` event is sent
+   instead of `task_completed`/`task_failed`.
+
+`task_failed` events carry `will_retry` (True when the task went back to
+PENDING), so a progress display need not report a retried task as lost.
 
 ### Recovery Mechanisms
 - **Queue persistence**: Tasks survive application crashes

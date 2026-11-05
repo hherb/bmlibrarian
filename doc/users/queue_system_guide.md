@@ -171,6 +171,7 @@ def detailed_progress_callback(event_type, message, data=None):
     if event_type == "task_completed":
         print(f"[{timestamp}] ✅ Task completed: {message}")
     elif event_type == "task_failed":
+        # data["will_retry"]: True if the task went back to the queue
         print(f"[{timestamp}] ❌ Task failed: {message}")
     elif event_type == "batch_tasks_submitted":
         count = data.get("count", 0) if data else 0
@@ -355,7 +356,9 @@ else:
 
 `workflow_completed` means the run *finished*; `success` is false when any
 step failed or was skipped. Task-level events (`task_submitted`,
-`task_started`, `task_completed`, `task_failed`) are sent as well.
+`task_started`, `task_completed`, `task_failed`) are sent as well, plus
+`task_discarded` (`task_id`, `agent_type`, `reason`) when a started task was
+recovered away from its worker, so its result or failure was not stored.
 
 > The interactive research workflow (CLI and Qt research tab) does not use
 > this class: it runs on the enum-based `cli/workflow_steps.py` system.
