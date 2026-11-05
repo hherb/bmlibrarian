@@ -166,6 +166,55 @@ class TestQtIntegration(unittest.TestCase):
         self.assertIn("Test error message", message)
         self.assertEqual(level, ToastLevel.ERROR)
 
+    def test_workflow_error_names_an_exception_with_no_message(self):
+        """An exception with an empty message still says what failed."""
+        thread = self._attach_workflow_thread()
+
+        thread.workflow_error.emit(TimeoutError())
+        QApplication.processEvents()
+
+        _, message, _ = self.show_toast.call_args.args
+        self.assertEqual(message, "Research workflow failed: TimeoutError")
+
+    def test_workflow_warning_shows_warning_toast(self):
+        """A step that failed without stopping the run is shown as a warning."""
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        thread = self._attach_workflow_thread()
+        thread.workflow_warning.emit("Counterfactual analysis failed")
+        QApplication.processEvents()
+
+        self.show_toast.assert_called_once()
+        _, message, level = self.show_toast.call_args.args
+        self.assertEqual(message, "Counterfactual analysis failed")
+        self.assertEqual(level, ToastLevel.WARNING)
+
+    def test_early_end_explains_why_there_is_no_report(self):
+        """no_documents / no_scores / no_citations runs say why they stopped."""
+        from bmlibrarian.gui.qt.plugins.research.workflow_handlers import EARLY_END_MESSAGES
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        thread = self._attach_workflow_thread()
+        for status, expected in EARLY_END_MESSAGES.items():
+            self.show_toast.reset_mock()
+            thread.workflow_completed.emit({'status': status, 'document_count': 0})
+            QApplication.processEvents()
+
+            self.show_toast.assert_called_once()
+            _, message, level = self.show_toast.call_args.args
+            self.assertEqual(message, expected)
+            self.assertEqual(level, ToastLevel.WARNING)
+            self.assertEqual(self.widget.status_label.text(), "Completed - no report")
+
+    def test_full_completion_shows_no_toast(self):
+        """A normal completion needs no notification beyond the status line."""
+        thread = self._attach_workflow_thread()
+        thread.workflow_completed.emit({'status': 'completed', 'document_count': 3})
+        QApplication.processEvents()
+
+        self.show_toast.assert_not_called()
+        self.assertEqual(self.widget.status_label.text(), "Completed")
+
     # ========================================================================
     # Lifecycle Integration Tests
     # ========================================================================

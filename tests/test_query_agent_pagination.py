@@ -73,3 +73,25 @@ def test_offset_without_max_rows(hybrid_search) -> None:
     result = list(agent.find_abstracts("q?", max_rows=0, offset=8))
 
     assert [d["id"] for d in result] == [8, 9]
+
+
+def test_given_ts_query_is_searched_without_reconverting(monkeypatch) -> None:
+    """A ts_query from the caller is the one searched; the question is not reconverted."""
+    search = Mock(return_value=([], {}))
+    monkeypatch.setattr(query_agent_module, "search_hybrid", search)
+    agent = _make_agent()
+
+    list(agent.find_abstracts("q?", ts_query="shown&query"))
+
+    agent.convert_question.assert_not_called()
+    assert search.call_args.kwargs["query_text"] == "shown&query"
+    assert search.call_args.kwargs["search_text"] == "q?"
+
+
+def test_blank_ts_query_falls_back_to_conversion(hybrid_search) -> None:
+    """An empty ts_query behaves like none: the question is converted."""
+    agent = _make_agent()
+
+    list(agent.find_abstracts("q?", ts_query="  "))
+
+    agent.convert_question.assert_called_once_with("q?")

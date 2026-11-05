@@ -1,9 +1,8 @@
 """
 Export utilities for the Research Tab.
 
-This module contains pure functions for file I/O operations,
-including safe file writing and standardized success/error notifications
-(non-modal toasts).
+Helper functions for saving research results: safe file writing, the save
+dialogs, and standardized success/error notifications (non-modal toasts).
 """
 
 import errno
@@ -16,6 +15,8 @@ from typing import Optional, Callable
 from PySide6.QtWidgets import QWidget, QFileDialog
 
 from ...widgets.toast import ToastLevel, show_toast
+
+module_logger = logging.getLogger(__name__)
 
 
 def safe_write_file(
@@ -75,6 +76,7 @@ def safe_write_file(
     except UnicodeEncodeError as e:
         return False, f"Encoding error: {str(e)}"
     except Exception as e:
+        module_logger.exception(f"Unexpected error writing {file_type} to {filename}")
         return False, f"Unexpected error: {str(e)}"
 
 
@@ -112,10 +114,11 @@ def show_save_success(
     if word_count != "N/A":
         message_parts.append(f"Words: ~{word_count}")
 
-    show_toast(parent, "\n".join(message_parts), ToastLevel.SUCCESS)
-
+    # Log first, so the record survives if showing the toast fails
     if logger:
         logger.info(f"{file_type} saved to: {filename} ({file_size_kb:.1f} KB)")
+
+    show_toast(parent, "\n".join(message_parts), ToastLevel.SUCCESS)
 
     if status_callback:
         status_callback(f"{file_type} saved to {filename}")
@@ -125,7 +128,8 @@ def show_save_error(
     parent: QWidget,
     error_msg: str,
     file_type: str = "file",
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    filename: Optional[str] = None,
 ) -> None:
     """
     Show a standardized error message for file save failures.
@@ -135,15 +139,18 @@ def show_save_error(
         error_msg: Error message to display
         file_type: Type of file being saved (for display)
         logger: Optional logger for error logging
+        filename: Path that failed (logged; e.g. "Permission denied" omits it)
     """
+    # Log first, so the error is recorded even if showing the toast fails
+    if logger:
+        target = f" to {filename}" if filename else ""
+        logger.error(f"Error saving {file_type}{target}: {error_msg}")
+
     show_toast(
         parent,
         f"Could not save the {file_type}: {error_msg}",
         ToastLevel.ERROR,
     )
-
-    if logger:
-        logger.error(f"Error saving {file_type}: {error_msg}")
 
 
 def save_markdown_report(
@@ -198,7 +205,7 @@ def save_markdown_report(
         )
         return True
     else:
-        show_save_error(parent, error_msg, "markdown report", logger)
+        show_save_error(parent, error_msg, "markdown report", logger, filename)
         return False
 
 
@@ -278,7 +285,9 @@ def export_json_report(
         # Serialize to JSON string
         json_content = json.dumps(export_data, indent=2, ensure_ascii=False)
     except (TypeError, ValueError) as e:
-        show_save_error(parent, f"Failed to serialize data to JSON: {str(e)}", "JSON export", logger)
+        show_save_error(
+            parent, f"Failed to serialize data to JSON: {str(e)}", "JSON export", logger, filename
+        )
         return False
 
     # Save the JSON using safe write helper
@@ -291,5 +300,5 @@ def export_json_report(
         )
         return True
     else:
-        show_save_error(parent, error_msg, "JSON export", logger)
+        show_save_error(parent, error_msg, "JSON export", logger, filename)
         return False

@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt
 from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
 from bmlibrarian.gui.qt.plugins.research.tab_updaters import clear_layout_widgets
 from bmlibrarian.gui.qt.widgets.citation_card import CitationCard
+from bmlibrarian.gui.qt.widgets.toast import ToastLevel
 
 # Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
 AGENT_NAMES = (
@@ -292,7 +293,8 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertIn("research question", message)
         self.assertEqual(level, ToastLevel.WARNING)
         from bmlibrarian.gui.qt.plugins.research import research_tab
-        research_tab.QMessageBox.assert_not_called()
+        # mock_calls includes calls to child attributes like QMessageBox.warning
+        self.assertEqual(research_tab.QMessageBox.mock_calls, [])
 
     def test_start_button_click_triggers_workflow(self):
         """Test that start button click starts a background WorkflowThread."""
@@ -374,9 +376,84 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertFalse(self.widget.workflow_running)
         self.assertIs(self.widget.workflow_executor, old_executor)
         self.assertTrue(self.widget._agents_stale)
-        _, message, _ = self.show_toast.call_args.args
+        _, message, level = self.show_toast.call_args.args
         self.assertIn("Settings not applied", message)
-        self.assertIn("model missing", message)
+        self.assertIn("RuntimeError: model missing", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+
+    # ========================================================================
+    # Start-path notifications (#332)
+    # ========================================================================
+
+    def test_start_while_running_warns_and_starts_nothing(self):
+        """A second Start during a run is refused with a warning toast."""
+        self.widget.workflow_running = True
+        self.widget.question_input.setPlainText("Test research question")
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.WorkflowThread'
+        ) as MockThread:
+            self.widget._on_start_research()
+
+        MockThread.assert_not_called()
+        _, message, level = self.show_toast.call_args.args
+        self.assertIn("already in progress", message)
+        self.assertEqual(level, ToastLevel.WARNING)
+
+    def test_start_without_executor_shows_error(self):
+        """Without agents there is no executor; Start says so in an error toast."""
+        self.widget.workflow_executor = None
+        MockThread = self._start_with_mocked_thread()
+
+        MockThread.assert_not_called()
+        self.assertFalse(self.widget.workflow_running)
+        _, message, level = self.show_toast.call_args.args
+        self.assertIn("not initialized", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+
+    def test_start_failure_resets_the_tab_and_reports_the_error(self):
+        """If starting raises, Start works again and the error is shown and emitted."""
+        errors = []
+        self.widget.workflow_error.connect(errors.append)
+        self.widget.question_input.setPlainText("Test research question")
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.WorkflowThread',
+            side_effect=TimeoutError(),
+        ):
+            self.widget._on_start_research()
+
+        self.assertTrue(self.widget.start_button.isEnabled())
+        self.assertFalse(self.widget.workflow_running)
+        self.assertEqual(len(errors), 1)
+        _, message, level = self.show_toast.call_args.args
+        self.assertIn("Could not start the research workflow: TimeoutError", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+
+    def test_start_emits_workflow_started(self):
+        """workflow_started fires once the thread is started."""
+        started = []
+        self.widget.workflow_started.connect(lambda: started.append(True))
+        self._start_with_mocked_thread()
+
+        self.assertEqual(started, [True])
+
+    def test_start_forgets_the_previous_report(self):
+        """A new run cannot export the previous run's final report."""
+        self.widget._on_final_report_generated("# Old report")
+        save = self.widget.report_refs.widgets['save_markdown_button']
+        self.assertTrue(save.isEnabled())
+
+        self._start_with_mocked_thread()
+
+        self.assertEqual(self.widget.final_report_markdown, "")
+        self.assertFalse(save.isEnabled())
+        self.assertFalse(self.widget.report_refs.widgets['export_json_button'].isEnabled())
+
+    def test_new_research_forgets_the_report(self):
+        """'New' clears the stored final report along with the results."""
+        self.widget._on_final_report_generated("# Old report")
+        self.widget._on_new_research()  # no results yet, so no confirmation
+
+        self.assertEqual(self.widget.final_report_markdown, "")
 
     def test_main_settings_tab_marks_agents_stale(self):
         """Settings saved in the main Settings tab reach the research tab (#372)."""

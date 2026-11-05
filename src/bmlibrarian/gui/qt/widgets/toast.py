@@ -52,6 +52,45 @@ _LEVEL_COLORS: Dict[ToastLevel, Tuple[str, str]] = {
 
 DISMISS_TEXT = "×"  # multiplication sign, the usual "close" glyph
 
+# Longest message shown in a toast; the full text goes in its tooltip (and
+# callers log it), so a huge provider/SQL error cannot outgrow the window
+TOAST_MAX_MESSAGE_CHARS = 500
+ELLIPSIS = "…"
+
+
+def error_text(error: BaseException) -> str:
+    """
+    Describe an exception for a user-facing message.
+
+    ``str(error)`` is empty for e.g. ``TimeoutError()`` and bare for
+    ``KeyError('score')``, so the exception type is always included.
+
+    Args:
+        error: The exception to describe
+
+    Returns:
+        ``"TypeName: message"``, or just ``"TypeName"`` when the message is empty
+    """
+    message = str(error).strip()
+    name = type(error).__name__
+    return f"{name}: {message}" if message else name
+
+
+def truncate_message(message: str, limit: int = TOAST_MAX_MESSAGE_CHARS) -> str:
+    """
+    Shorten a message to at most ``limit`` characters, ending in an ellipsis.
+
+    Args:
+        message: Text to shorten
+        limit: Maximum length of the result (at least 1)
+
+    Returns:
+        ``message`` unchanged if it fits, else its start plus an ellipsis
+    """
+    if len(message) <= limit:
+        return message
+    return message[:max(0, limit - len(ELLIPSIS))] + ELLIPSIS
+
 
 class Toast(QFrame):
     """A single dismissable notification overlaid on a host window."""
@@ -61,12 +100,19 @@ class Toast(QFrame):
         Create a toast (hidden; use ``show_toast`` to display one).
 
         Args:
-            host: Top-level window the toast is overlaid on (its parent)
-            message: Plain-text message (never interpreted as rich text)
+            host: Widget whose top-level window the toast is overlaid on
+            message: Plain-text message (never interpreted as rich text);
+                long messages are truncated, the full text is the tooltip
             level: Severity, selects color and lifetime
+
+        Raises:
+            ValueError: If ``level`` is not a ToastLevel value
         """
+        level = ToastLevel(level)
+        host = host.window()
         super().__init__(host)
-        self.level = level
+        self._level = level
+        self._message = message
         self.setObjectName(TOAST_OBJECT_NAME)
         bg_color, border_color = _LEVEL_COLORS[level]
         self.setStyleSheet(StylesheetGenerator().toast_stylesheet(
@@ -80,8 +126,10 @@ class Toast(QFrame):
         layout.setContentsMargins(pad, pad, pad, pad)
         layout.setSpacing(scale['spacing_medium'])
 
-        self.message_label = QLabel(message)
+        self.message_label = QLabel(truncate_message(message))
         self.message_label.setTextFormat(Qt.TextFormat.PlainText)
+        if self.message_label.text() != message:
+            self.message_label.setToolTip(message)
         self.message_label.setWordWrap(True)
         # Let the user copy an error message (e.g. into a bug report)
         self.message_label.setTextInteractionFlags(
@@ -103,18 +151,29 @@ class Toast(QFrame):
             QTimer.singleShot(timeout, self, self.dismiss)
 
     @property
+    def level(self) -> ToastLevel:
+        """The toast's severity (fixed at construction)."""
+        return self._level
+
+    @property
     def message(self) -> str:
-        """The toast's message text."""
-        return self.message_label.text()
+        """The toast's full message text (the label may show it truncated)."""
+        return self._message
 
     def dismiss(self) -> None:
         """Hide and delete the toast; the remaining toasts close the gap."""
+        host = self.parentWidget()
+        self._discard()
+        if host is not None:
+            _layout_toasts(host)
+
+    def _discard(self) -> None:
+        """Hide and delete the toast without re-laying out the others."""
         host = self.parentWidget()
         self.hide()
         self.deleteLater()
         if host is not None:
             host.removeEventFilter(self)
-            _layout_toasts(host)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Re-place the host's toasts when the host is resized."""
@@ -142,16 +201,27 @@ def active_toasts(host: QWidget) -> List[Toast]:
 
 
 def _layout_toasts(host: QWidget) -> None:
-    """Stack the host's toasts upwards from its bottom-right corner, newest lowest."""
+    """
+    Stack the host's toasts upwards from its bottom-right corner, newest lowest.
+
+    A toast is never taller than the window (its dismiss button, at the top,
+    stays reachable), and older toasts that no longer fit above the newer
+    ones are dropped: off-screen they could be neither read nor dismissed.
+    """
     scale = get_font_scale()
     margin = scale['spacing_large']
     width = max(1, min(scale['control_width_xlarge'], host.width() - 2 * margin))
+    max_height = max(1, host.height() - 2 * margin)
     bottom = host.height() - margin
-    for toast in reversed(active_toasts(host)):
+    for index, toast in enumerate(reversed(active_toasts(host))):
         toast.setFixedWidth(width)
         height = toast.heightForWidth(width)
         if height <= 0:
             height = toast.sizeHint().height()
+        height = min(height, max_height)
+        if index > 0 and bottom - height < margin:
+            toast._discard()
+            continue
         toast.setFixedHeight(height)
         bottom -= height
         toast.move(host.width() - margin - width, bottom)
@@ -174,9 +244,8 @@ def show_toast(
     Returns:
         The shown toast
     """
-    host = parent.window()
-    toast = Toast(host, message, level)
+    toast = Toast(parent, message, level)
     toast.show()
     toast.raise_()
-    _layout_toasts(host)
+    _layout_toasts(toast.parentWidget())
     return toast

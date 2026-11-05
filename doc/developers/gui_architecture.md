@@ -434,7 +434,7 @@ class QtWorkflowExecutor(QObject):
 
     # Steps called by WorkflowThread
     def generate_query(self) -> str          # uses self.current_question
-    def search_documents(self, query: str) -> List[dict]
+    def search_documents(self, query: str) -> List[dict]  # searches exactly `query`
     def generate_preliminary_report(self, citations: List) -> str
 
     # Lifecycle management
@@ -442,8 +442,9 @@ class QtWorkflowExecutor(QObject):
 ```
 
 The executor's old self-driving path (`start_workflow` / `execute_workflow`,
-its own `score_documents` / `extract_citations`, and the "Phase 2" /
-"Milestone 3" completion dialogs) was removed in #332; it had no callers.
+its own `score_documents` / `extract_citations`) and the tab's "Phase 2" /
+"Milestone 3" completion dialogs it triggered were removed in #332; they had
+no callers.
 
 **WorkflowThread Methods** (handles background execution):
 
@@ -451,8 +452,10 @@ its own `score_documents` / `extract_citations`, and the "Phase 2" /
 class WorkflowThread(QThread):
     """Background thread for complete workflow execution.
 
-    Handles counterfactual analysis and final report generation
-    internally by calling agent methods directly.
+    Scores documents, extracts citations, and runs counterfactual
+    analysis and final report generation by calling agent methods directly.
+    If the final report cannot be built it publishes the preliminary
+    report through final_report_generated, so export never sees a stale one.
     """
 
     # Control
@@ -464,6 +467,7 @@ class WorkflowThread(QThread):
     workflow_completed = Signal(dict)
     workflow_error = Signal(Exception)
     workflow_cancelled = Signal()
+    workflow_warning = Signal(str)  # a step failed, the run continued -> WARNING toast
 ```
 
 ## User Notifications: Toasts, Not Modals
@@ -476,20 +480,29 @@ instead of failing. Keep a modal only when the user must decide something
 before the code can continue (e.g. "clear current results? Yes/No").
 
 ```python
-from bmlibrarian.gui.qt.widgets.toast import ToastLevel, show_toast
+from bmlibrarian.gui.qt.widgets.toast import ToastLevel, error_text, show_toast
 
 show_toast(self, "Report saved", ToastLevel.SUCCESS)
-show_toast(self, f"Research workflow failed: {error}", ToastLevel.ERROR)
+show_toast(self, f"Research workflow failed: {error_text(error)}", ToastLevel.ERROR)
 ```
 
+`error_text(error)` (same module) gives `"TypeName: message"`, so an
+exception with an empty message (`TimeoutError()`) still says something.
+Log the error before showing the toast.
+
 - The toast is overlaid at the bottom right of the caller's top-level
-  window; several stack upwards and follow window resizes.
+  window; several stack upwards and follow window resizes. A toast is
+  never taller than the window, messages over `TOAST_MAX_MESSAGE_CHARS`
+  are cut off (full text in the tooltip), and older toasts that no longer
+  fit above the newer ones are dropped.
 - Info and success toasts hide after 5 s, warnings after 10 s
   (`TOAST_TIMEOUT_MS`); errors stay until dismissed with the × button.
 - The message is plain text (never rich text), selectable for copying.
 - Colors come from `ThemeColors`, sizes from the font scale, and the
   stylesheet from `StylesheetGenerator.toast_stylesheet`.
-- In tests, patch the module's `show_toast` to assert on what was shown
+- In tests, patch `show_toast` where it is imported (e.g.
+  `bmlibrarian.gui.qt.plugins.research.export_utils.show_toast`, not
+  `widgets.toast.show_toast`) to assert on what was shown
   (`call_args.args == (parent, message, level)`); real toasts are harmless
   too. Widget tests: `tests/test_toast.py`.
 

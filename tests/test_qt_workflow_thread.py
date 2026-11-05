@@ -673,6 +673,113 @@ class TestWorkflowThread(unittest.TestCase):
         thread.deleteLater()
 
 
+class TestWorkflowThreadDegradedSteps(unittest.TestCase):
+    """Steps that fail without stopping the run must still be visible (#332 review)."""
+
+    # Same QApplication and mocked executor as TestWorkflowThread (not
+    # subclassed, which would run its tests twice)
+    setUpClass = TestWorkflowThread.setUpClass
+    setUp = TestWorkflowThread.setUp
+
+    def _prime_successful_run(self) -> None:
+        """Make every step up to the preliminary report succeed."""
+        self.mock_executor.generate_query.return_value = "test & query"
+        self.mock_executor.search_documents.return_value = [
+            {"doc_id": 1, "title": "Test Doc", "abstract": "Test abstract"}
+        ]
+        self.mock_executor.scoring_agent.evaluate_document.return_value = {
+            "score": 4.0, "reasoning": "Relevant"
+        }
+        self.mock_executor.citation_agent.extract_citation_from_document.return_value = Mock(
+            passage="Test citation", document_id=1, widened_from=None
+        )
+        self.mock_executor.generate_preliminary_report.return_value = "# Preliminary"
+
+    def _run(self, **kwargs) -> Dict[str, QSignalSpy]:
+        """Run a thread synchronously and spy on its outcome signals."""
+        thread = WorkflowThread(executor=self.mock_executor, question="Q", **kwargs)
+        self.addCleanup(thread.deleteLater)
+        spies = {
+            name: QSignalSpy(getattr(thread, name))
+            for name in ('final_report_generated', 'workflow_warning',
+                         'workflow_completed', 'workflow_error')
+        }
+        thread.run()
+        return spies
+
+    def test_failed_final_report_publishes_the_preliminary_one(self) -> None:
+        """If ReportBuilder raises, the preliminary report is emitted as final, with a warning."""
+        self._prime_successful_run()
+        self.mock_executor.counterfactual_agent.find_contradictory_literature.return_value = {
+            'analysis': None, 'summary': {}
+        }
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.ReportBuilder'
+        ) as builder:
+            builder.return_value.build_final_report.side_effect = RuntimeError("boom")
+            spies = self._run(enable_counterfactual=True)
+
+        self.assertEqual(spies['final_report_generated'].count(), 1)
+        self.assertEqual(spies['final_report_generated'].at(0)[0], "# Preliminary")
+        self.assertEqual(spies['workflow_warning'].count(), 1)
+        self.assertIn("RuntimeError: boom", spies['workflow_warning'].at(0)[0])
+        self.assertEqual(spies['workflow_completed'].count(), 1)
+
+    def test_empty_final_report_publishes_the_preliminary_one(self) -> None:
+        """An empty ReportBuilder result also falls back visibly."""
+        self._prime_successful_run()
+        self.mock_executor.counterfactual_agent.find_contradictory_literature.return_value = {
+            'analysis': None, 'summary': {}
+        }
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_thread.ReportBuilder'
+        ) as builder:
+            builder.return_value.build_final_report.return_value = ""
+            spies = self._run(enable_counterfactual=True)
+
+        self.assertEqual(spies['final_report_generated'].at(0)[0], "# Preliminary")
+        self.assertEqual(spies['workflow_warning'].count(), 1)
+
+    def test_counterfactual_failure_warns(self) -> None:
+        """A failed counterfactual analysis is reported, not just logged."""
+        self._prime_successful_run()
+        self.mock_executor.counterfactual_agent.find_contradictory_literature.side_effect = (
+            TimeoutError()
+        )
+        spies = self._run(enable_counterfactual=True)
+
+        self.assertEqual(spies['workflow_warning'].count(), 1)
+        self.assertIn("TimeoutError", spies['workflow_warning'].at(0)[0])
+        self.assertEqual(spies['final_report_generated'].at(0)[0], "# Preliminary")
+
+    def test_empty_counterfactual_result_warns(self) -> None:
+        """A counterfactual analysis that returns nothing is reported."""
+        self._prime_successful_run()
+        self.mock_executor.counterfactual_agent.find_contradictory_literature.return_value = None
+        spies = self._run(enable_counterfactual=True)
+
+        self.assertEqual(spies['workflow_warning'].count(), 1)
+        self.assertIn("no result", spies['workflow_warning'].at(0)[0])
+
+    def test_missing_citation_agent_is_an_error_not_an_empty_result(self) -> None:
+        """No citation agent fails the run instead of reading as 'no citations'."""
+        self._prime_successful_run()
+        self.mock_executor.citation_agent = None
+        spies = self._run(enable_counterfactual=False)
+
+        self.assertEqual(spies['workflow_error'].count(), 1)
+        self.assertEqual(spies['workflow_completed'].count(), 0)
+
+    def test_missing_scoring_agent_is_a_clear_error(self) -> None:
+        """No scoring agent fails the run with a message naming the agent."""
+        self._prime_successful_run()
+        self.mock_executor.scoring_agent = None
+        spies = self._run(enable_counterfactual=False)
+
+        self.assertEqual(spies['workflow_error'].count(), 1)
+        self.assertIn("scoring agent", str(spies['workflow_error'].at(0)[0]))
+
+
 class TestWorkflowThreadIntegration(unittest.TestCase):
     """Integration tests for WorkflowThread with ResearchTabWidget signal handlers."""
 

@@ -2,18 +2,30 @@
 Workflow signal handlers for the Research Tab.
 
 This module contains a mixin class that handles all workflow-related signals
-from the workflow executor and workflow thread.
+from the workflow thread.
 """
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict
 
 from PySide6.QtCore import Slot
 
-from ...widgets.toast import ToastLevel, show_toast
+from ...widgets.toast import ToastLevel, error_text, show_toast
 
 if TYPE_CHECKING:
     from .research_tab import ResearchTabWidget
+
+
+# Why a run ended without a report, keyed on WorkflowThread's result status
+EARLY_END_MESSAGES: Dict[str, str] = {
+    'no_documents': "No documents matched the search. Try rephrasing the question "
+                    "or raising Max Results.",
+    'no_scores': "The documents could not be scored. Check the scoring model "
+                 "settings and the logs.",
+    'no_citations': "No citations could be extracted from the relevant documents. "
+                    "Try a broader question; the Citations tab shows why passages "
+                    "were rejected.",
+}
 
 
 class WorkflowHandlersMixin:
@@ -65,6 +77,7 @@ class WorkflowHandlersMixin:
         self.workflow_thread.step_progress.connect(self._on_thread_step_progress)
         self.workflow_thread.step_completed.connect(self._on_thread_step_completed)
         self.workflow_thread.status_message.connect(self._on_workflow_status)
+        self.workflow_thread.workflow_warning.connect(self._on_thread_workflow_warning)
 
         # Result signals (reuse existing handlers)
         self.workflow_thread.query_generated.connect(self._on_query_generated)
@@ -150,13 +163,20 @@ class WorkflowHandlersMixin:
         # Store results
         self.current_results = results
 
+        # A run that stopped early is not a failure, but say why it stopped
+        early_end = EARLY_END_MESSAGES.get(str(results.get('status', '')))
+        if early_end:
+            self.status_label.setText("Completed - no report")
+            show_toast(self, early_end, ToastLevel.WARNING)
+
         # Emit completion signal
         self.workflow_completed.emit(results)
 
     @Slot(Exception)
     def _on_thread_workflow_error(self: 'ResearchTabWidget', error: Exception) -> None:
         """Handle workflow error signal from thread."""
-        self.logger.error(f"Thread workflow error: {error}", exc_info=True)
+        # The thread already logged the traceback; exc_info=error repeats it here
+        self.logger.error(f"Thread workflow error: {error_text(error)}", exc_info=error)
 
         # Update UI state
         self.workflow_running = False
@@ -173,7 +193,13 @@ class WorkflowHandlersMixin:
         # Emit error signal
         self.workflow_error.emit(error)
 
-        show_toast(self, f"Research workflow failed: {error}", ToastLevel.ERROR)
+        show_toast(self, f"Research workflow failed: {error_text(error)}", ToastLevel.ERROR)
+
+    @Slot(str)
+    def _on_thread_workflow_warning(self: 'ResearchTabWidget', message: str) -> None:
+        """Show a step that failed without stopping the run (e.g. counterfactual analysis)."""
+        self.logger.warning(f"Workflow warning: {message}")
+        show_toast(self, message, ToastLevel.WARNING)
 
     @Slot()
     def _on_thread_workflow_cancelled(self: 'ResearchTabWidget') -> None:

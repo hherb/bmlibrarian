@@ -44,7 +44,7 @@ from . import export_utils
 from ...qt_document_card_factory import QtDocumentCardFactory
 from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 from ...resources.styles import get_font_scale
-from ...widgets.toast import ToastLevel, show_toast
+from ...widgets.toast import ToastLevel, error_text, show_toast
 
 # Import PDF manager
 from bmlibrarian.utils.pdf_manager import PDFManager
@@ -530,7 +530,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                     self.logger.error(f"Agent rebuild failed: {e}", exc_info=True)
                     show_toast(
                         self,
-                        f"Settings not applied: could not rebuild the agents ({e}). "
+                        f"Settings not applied: could not rebuild the agents ({error_text(e)}). "
                         "Check the model and provider settings and try again.",
                         ToastLevel.ERROR,
                     )
@@ -550,6 +550,8 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             self.progress_label.setText("Initializing workflow...")
             self.status_label.setText("Starting")
             self.workflow_running = True
+            # A report from an earlier run must not be saved with this run's results
+            self._clear_final_report()
 
             self.logger.info(f"Research started: {question[:100]}")
             self.logger.debug(
@@ -577,12 +579,15 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             # Start thread
             self.workflow_thread.start()
             self.logger.info("Background workflow thread started")
+            self.workflow_started.emit()
 
         except Exception as e:
             self.logger.error(f"Error in _on_start_research: {e}", exc_info=True)
             self.start_button.setEnabled(True)
             self.workflow_running = False
-            show_toast(self, f"Could not start the research workflow: {e}", ToastLevel.ERROR)
+            show_toast(
+                self, f"Could not start the research workflow: {error_text(e)}", ToastLevel.ERROR
+            )
             self.workflow_error.emit(e)
 
     @Slot()
@@ -614,12 +619,22 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
 
         self.current_results = {}
         self.counterfactual_results = None
+        self._clear_final_report()
         self.question_input.clear()
 
         self.logger.info("Starting new research session - clearing previous results")
         self.status_label.setText("Ready")
         self.progress_label.setText("")
         self.question_input.setFocus()
+
+    def _clear_final_report(self) -> None:
+        """Forget the stored final report and disable the buttons that export it."""
+        self.final_report_markdown = ""
+        if self.report_refs:
+            for name in ('save_markdown_button', 'export_json_button'):
+                button = self.report_refs.widgets.get(name)
+                if button is not None:
+                    button.setEnabled(False)
 
     # ========================================================================
     # Export Handlers

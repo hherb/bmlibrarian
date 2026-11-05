@@ -415,6 +415,11 @@ class TestTabUpdatersEdgeCases(unittest.TestCase):
             card = add_single_citation(self.layout, citation, i, self.ui, self.logger)
             self.assertIsNotNone(card)
 
+    def test_handles_citation_with_missing_fields(self):
+        """A sparse citation dict still produces a card (was covered by the removed update_citations_tab tests)."""
+        card = add_single_citation(self.layout, {"citation_id": 1}, 1, self.ui, self.logger)
+        self.assertIsNotNone(card)
+
     def test_handles_score_edge_values(self):
         """Test that edge score values are handled."""
         scored_docs = [

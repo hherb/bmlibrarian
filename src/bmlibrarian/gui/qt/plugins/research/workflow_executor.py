@@ -1,7 +1,8 @@
 """
 Qt-specific workflow executor for BMLibrarian research workflow.
 
-Adapts the agent-based workflow to Qt's signal/slot architecture.
+Holds the research agents and per-run state; ``WorkflowThread`` calls its
+query, search and report steps.
 """
 
 from typing import Dict, Any, Optional
@@ -19,21 +20,9 @@ class QtWorkflowExecutor(QObject):
 
     The executor holds the agents and the run's state (question, query,
     documents, scored documents) and runs the query, search and report
-    steps; ``WorkflowThread`` drives the steps and emits every
+    steps; ``WorkflowThread`` drives the steps (including scoring, citation
+    extraction, counterfactual analysis and the final report) and emits every
     progress/result signal to the tab.
-
-    Workflow Steps:
-    1. COLLECT_RESEARCH_QUESTION - Already have from UI
-    2. GENERATE_AND_EDIT_QUERY - QueryAgent
-    3. SEARCH_DOCUMENTS - Execute query
-    4. REVIEW_SEARCH_RESULTS - Display documents
-    5. SCORE_DOCUMENTS - DocumentScoringAgent
-    6. EXTRACT_CITATIONS - CitationFinderAgent
-    7. GENERATE_REPORT - ReportingAgent
-    8. PERFORM_COUNTERFACTUAL_ANALYSIS - CounterfactualAgent (optional)
-    9. SEARCH_CONTRADICTORY_EVIDENCE - Query contradictory docs
-    10. EDIT_COMPREHENSIVE_REPORT - EditorAgent
-    11. EXPORT_REPORT - Save to file
     """
 
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
@@ -161,8 +150,11 @@ class QtWorkflowExecutor(QObject):
         """
         Execute database search with the generated query.
 
+        The query shown to the user and recorded for the methodology section
+        is the one searched; the question is not converted a second time.
+
         Args:
-            query: PostgreSQL tsquery string
+            query: PostgreSQL tsquery string from ``generate_query``
 
         Returns:
             list: List of document dictionaries
@@ -179,6 +171,7 @@ class QtWorkflowExecutor(QObject):
             # This returns a generator, so we convert to list
             documents = list(self.query_agent.find_abstracts(
                 question=self.current_question,
+                ts_query=query,
                 max_rows=self.max_results,
                 use_pubmed=True,
                 use_medrxiv=True,

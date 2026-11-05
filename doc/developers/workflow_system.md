@@ -186,7 +186,8 @@ def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> 
 **GUI Interface**: the former Flet handler (`gui/workflow.py`) was removed on 2026-10-16. The Qt
 Research tab does not use `WorkflowStep` handlers; `WorkflowThread`
 (`gui/qt/plugins/research/workflow_thread.py`) drives the agents (some steps through
-`workflow_executor.py`), so a new step must be added there separately.
+`workflow_executor.py`), so a new step must be added to `WorkflowThread.run()`
+(and to the executor if it needs agent state).
 
 ## Context Management
 

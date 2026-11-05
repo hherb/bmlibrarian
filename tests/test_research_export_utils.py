@@ -315,6 +315,56 @@ class TestShowSaveError(unittest.TestCase):
 
         mock_logger.error.assert_called_once()
 
+    def test_logs_filename_before_showing_the_toast(self):
+        """The error (with the path) is logged even if showing the toast fails."""
+        mock_logger = Mock()
+        with patch(
+            'bmlibrarian.gui.qt.plugins.research.export_utils.show_toast',
+            side_effect=RuntimeError("window deleted"),
+        ):
+            with self.assertRaises(RuntimeError):
+                show_save_error(
+                    self.mock_parent, "Permission denied", "file",
+                    logger=mock_logger, filename="/tmp/report.md",
+                )
+
+        logged = mock_logger.error.call_args[0][0]
+        self.assertIn("/tmp/report.md", logged)
+        self.assertIn("Permission denied", logged)
+
+
+class TestSaveFailureFlow(unittest.TestCase):
+    """A failed write reaches the user as an error toast."""
+
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.safe_write_file',
+           return_value=(False, "No space left on device"))
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_markdown_write_failure_shows_error(self, mock_toast, mock_dialog, _write):
+        """save_markdown_report returns False and shows the write error."""
+        mock_dialog.getSaveFileName.return_value = ("/x/report.md", "")
+        mock_logger = Mock()
+
+        self.assertFalse(save_markdown_report(Mock(), "# Report", mock_logger))
+
+        _, message, level = mock_toast.call_args.args
+        self.assertIn("No space left on device", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+        self.assertIn("/x/report.md", mock_logger.error.call_args[0][0])
+
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_json_serialization_failure_shows_error(self, mock_toast, mock_dialog):
+        """export_json_report reports data that cannot be serialized."""
+        mock_dialog.getSaveFileName.return_value = ("/x/results.json", "")
+        results = {'question': object()}  # not JSON-serializable
+
+        self.assertFalse(export_json_report(Mock(), results, "# Report"))
+
+        _, message, level = mock_toast.call_args.args
+        self.assertIn("serialize", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+
 
 class TestSaveMarkdownReport(unittest.TestCase):
     """Test cases for save_markdown_report function."""

@@ -398,7 +398,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         human_in_the_loop: bool = False,
         human_query_modifier: Optional[Callable[[str], str]] = None,
         offset: int = 0,
-        search_config: Optional[Dict[str, Any]] = None
+        search_config: Optional[Dict[str, Any]] = None,
+        ts_query: Optional[str] = None,
     ) -> Generator[Dict, None, None]:
         """
         Find biomedical abstracts using natural language questions.
@@ -420,6 +421,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             human_query_modifier: Optional function to modify query when human_in_the_loop=True
             offset: Number of rows to skip before returning results (default: 0)
             search_config: Optional search strategy configuration (keyword, bm25, semantic, hyde)
+            ts_query: Already generated tsquery to search with; skips converting
+                ``question`` again (the question is still used for semantic search)
 
         Yields:
             Dict containing document information (same format as database.find_abstracts)
@@ -431,14 +434,17 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         if not question or not question.strip():
             raise ValueError("Question cannot be empty")
 
-        # Step 1: Convert natural language question to ts_query
-        try:
-            ts_query_str = self.convert_question(question)
-            logger.info(f"Generated ts_query: {ts_query_str}")
+        # Step 1: Convert natural language question to ts_query (unless given)
+        if ts_query and ts_query.strip():
+            ts_query_str = ts_query.strip()
+        else:
+            try:
+                ts_query_str = self.convert_question(question)
+                logger.info(f"Generated ts_query: {ts_query_str}")
 
-        except Exception as e:
-            self._call_callback("conversion_failed", str(e))
-            raise
+            except Exception as e:
+                self._call_callback("conversion_failed", str(e))
+                raise
 
         # Step 2: Human-in-the-loop query modification
         if human_in_the_loop and human_query_modifier:

@@ -29,7 +29,19 @@ off new work. Longer-term structural items live in
   `update_citations_tab`. Bug fixed on the way: the thread now copies the
   scored documents and threshold onto the executor, so the preliminary
   report's methodology section no longer shows an empty score
-  distribution and 0 documents processed for citations. The other ~39
+  distribution and 0 documents processed for citations. PR #389 review
+  fixes: toasts are never taller than the window (messages over
+  `TOAST_MAX_MESSAGE_CHARS` are cut off on screen, full text in the
+  tooltip and log; older toasts that don't fit are dropped), messages use
+  `error_text(e)` (`"TypeName: message"`); `WorkflowThread.workflow_warning`
+  → WARNING toast for a failed counterfactual analysis or final report
+  (the preliminary report is then emitted as final, so export never sees a
+  stale report; the tab also clears `final_report_markdown` at start and
+  on New); missing scoring/citation agents fail the run instead of looking
+  like "no citations"; early-ending runs (`no_documents`/`no_scores`/
+  `no_citations`) explain why; `QueryAgent.find_abstracts(ts_query=)` lets
+  the executor search the query it showed instead of converting the
+  question again. The other ~39
   modules with non-decision modals: ROADMAP §5. Docs:
   `gui_architecture.md` "User Notifications", `PLUGIN_DEVELOPER_MANUAL.md`
   error handling, `qt_gui_user_guide.md` "Notifications". Tests:

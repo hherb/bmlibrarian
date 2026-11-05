@@ -161,6 +161,19 @@ class TestQtWorkflowExecutor(unittest.TestCase):
         self.assertEqual(result, mock_query)
         self.assertEqual(self.executor.generated_query, mock_query)
 
+    def test_search_documents_searches_the_generated_query(self):
+        """The query shown to the user is the one searched (no second conversion)."""
+        self.executor.query_agent = Mock()
+        self.executor.query_agent.find_abstracts.return_value = iter([{"id": 1}])
+        self.executor.current_question = "Test question"
+
+        documents = self.executor.search_documents("shown & query")
+
+        self.assertEqual(documents, [{"id": 1}])
+        kwargs = self.executor.query_agent.find_abstracts.call_args.kwargs
+        self.assertEqual(kwargs['ts_query'], "shown & query")
+        self.assertEqual(kwargs['question'], "Test question")
+
     def test_methodology_metadata_counts_scored_documents(self):
         """The report's methodology reflects the scored documents and threshold."""
         self.executor.current_question = "Test question"
