@@ -129,7 +129,8 @@ def cmd_recover(args):
     if args.mark_failed:
         print("   Mode: Mark stuck tasks as FAILED")
     else:
-        print("   Mode: Reset stuck tasks to PENDING for retry")
+        print("   Mode: Reset stuck tasks to PENDING for retry "
+              "(tasks out of retries or from dead processes are marked FAILED)")
     
     recovered = queue.recover_stuck_tasks(
         stuck_timeout_minutes=args.timeout,

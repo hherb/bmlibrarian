@@ -10,6 +10,30 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Queue worker robustness** (2026-11-05, closes #294). The orchestrator
+  worker (`_process_agent_tasks(agent_type)` → `_run_task`) looks the agent
+  up per task, so re-registering a type takes effect on its next task. An
+  exception from the agent method is retried (`Task execution failed:
+  <Type>: <msg>`, traceback logged), and so is an `sqlite3.Error` while
+  storing the result; a result json cannot serialise
+  (`ResultNotSerializableError` from `complete_task`, raised before any
+  write) fails the task without retry, so side effects are not repeated.
+  Any other error after a claim goes to `_abandon_task` (FAILED, `Worker
+  error: ...`; if that write fails too, a `task_stuck` event), so a claimed
+  task never stays PROCESSING silently. A worker whose queue file is deleted
+  stops (`worker_stopped`). `QueueManager` installs one `atexit` hook and one
+  SIGINT/SIGTERM handler per process (weak registry of live managers;
+  signals only from the main thread); a signal exits `128 + signum`, waits
+  at most 1 s for the SQLite lock (atexit retries), cleanup errors go to
+  stderr, a deleted queue file is skipped; `db_path` is stored absolute.
+  `recover_stuck_tasks(mark_as_failed=False)` counts the reset as a retry and
+  fails a task out of retries (dead-process tasks are failed in either
+  mode). Docs: `queue_recovery.md`, `queue_system_architecture.md`,
+  `doc/users/queue_management_guide.md`, `queue_system_guide.md`. Tests:
+  `tests/test_queue_worker_robustness.py`. Follow-ups: #384 (Ctrl-C is
+  `SystemExit`, not `KeyboardInterrupt`, in the CLI), #385 (no ownership
+  check when a recovered task's worker finishes), #386 (recover counts,
+  `task_failed` retry flag).
 - **A migration that fails after startup is fatal too; no direct
   `DatabaseManager()` callers left** (2026-11-05, closes #381; owner
   decision: central fatal handler). `database.set_migration_failure_handler()`
@@ -297,7 +321,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-05
-  (#381 branch): **4696 passed, 53 skipped** in 7–17 min. Without
+  (#294 branch): **4715 passed, 53 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -7,10 +7,13 @@ with progress tracking and error recovery.
 
 from typing import Dict, Any, List, Optional, Callable, Set
 import logging
+import sqlite3
 import threading
 import time
 
-from .queue_manager import QueueManager, TaskStatus, TaskPriority, QueueTask
+from .queue_manager import (
+    QueueManager, TaskStatus, TaskPriority, QueueTask, ResultNotSerializableError,
+)
 from .base import BaseAgent
 
 
@@ -295,19 +298,13 @@ class AgentOrchestrator:
         """Register an agent for task processing.
 
         If processing is already running, a processing thread is started for
-        the new agent type straight away.
+        the new agent type straight away. Re-registering a type replaces its
+        agent from that type's next task on.
         """
         self.agents[agent_type] = agent
         logger.info(f"Registered agent: {agent_type}")
-        if not self._processing_started:
-            return
-        if agent_type in self._agent_types_without_workers([agent_type]):
-            self._start_agent_thread(agent_type, agent)
-        else:
-            logger.warning(
-                f"Agent {agent_type} re-registered while processing; its running "
-                f"thread keeps the previous agent until processing restarts"
-            )
+        if self._processing_started and agent_type in self._agent_types_without_workers([agent_type]):
+            self._start_agent_thread(agent_type)
 
     def add_progress_callback(self, callback: Callable[[str, str, Any], None]):
         """Add a progress tracking callback."""
@@ -673,11 +670,11 @@ class AgentOrchestrator:
 
         return results
 
-    def _start_agent_thread(self, agent_type: str, agent: BaseAgent) -> None:
+    def _start_agent_thread(self, agent_type: str) -> None:
         """Start the background thread that processes one agent type's tasks."""
         thread = threading.Thread(
             target=self._process_agent_tasks,
-            args=(agent_type, agent),
+            args=(agent_type,),
             daemon=True,
             name=f"AgentProcessor-{agent_type}"
         )
@@ -707,8 +704,8 @@ class AgentOrchestrator:
         self._stop_processing.clear()
         self._processing_started = True
 
-        for agent_type, agent in self.agents.items():
-            self._start_agent_thread(agent_type, agent)
+        for agent_type in list(self.agents):
+            self._start_agent_thread(agent_type)
 
         logger.info(f"Started {len(self._processing_threads)} agent processing threads")
 
@@ -727,68 +724,131 @@ class AgentOrchestrator:
         self._agent_threads.clear()
         logger.info("Stopped agent processing")
     
-    def _process_agent_tasks(self, agent_type: str, agent: BaseAgent):
-        """Process tasks for a specific agent type."""
+    def _process_agent_tasks(self, agent_type: str) -> None:
+        """Process tasks for a specific agent type.
+
+        The agent is looked up per task, so re-registering the type takes
+        effect on its next task.
+        """
         logger.info(f"Started processing tasks for agent: {agent_type}")
-        
+
         while not self._stop_processing.is_set():
+            if self.queue.queue_file_missing():
+                # Polling would recreate an empty file and fail on every call.
+                error_msg = (f"Queue file {self.queue.db_path} is missing; "
+                             f"stopping the {agent_type} worker")
+                logger.error(error_msg)
+                self._notify_progress("worker_stopped", error_msg, {
+                    "agent_type": agent_type, "error": error_msg})
+                return
             try:
                 task = self.queue.get_next_task(agent_type)
                 if task is None:
                     time.sleep(self.polling_interval)
                     continue
-                
-                self._notify_progress("task_started", f"Processing task {task.id}", {
-                    "task_id": task.id,
-                    "agent_type": agent_type,
-                    "method_name": task.method_name
-                })
-                
-                # Execute the task
-                method = getattr(agent, task.method_name, None)
-                if method is None:
-                    error_msg = f"Method {task.method_name} not found on agent {agent_type}"
-                    logger.error(error_msg)
-                    self.queue.fail_task(task.id, error_msg, retry=False)
-                    continue
-                
-                try:
-                    # Call the agent method with task data
-                    result = method(**task.data)
-                    
-                    # Handle different result types
-                    if hasattr(result, '__dict__'):
-                        # Convert dataclass/object to dict
-                        result_dict = result.__dict__ if hasattr(result, '__dict__') else {}
-                    elif isinstance(result, dict):
-                        result_dict = result
-                    else:
-                        # Wrap primitive results
-                        result_dict = {"result": result}
-                    
-                    self.queue.complete_task(task.id, result_dict)
-                    
-                    self._notify_progress("task_completed", f"Task {task.id} completed", {
-                        "task_id": task.id,
-                        "agent_type": agent_type,
-                        "result": result_dict
-                    })
-                    
-                except Exception as e:
-                    error_msg = f"Task execution failed: {str(e)}"
-                    logger.error(f"Task {task.id} failed: {error_msg}")
-                    self.queue.fail_task(task.id, error_msg)
-                    
-                    self._notify_progress("task_failed", f"Task {task.id} failed", {
-                        "task_id": task.id,
-                        "agent_type": agent_type,
-                        "error": error_msg
-                    })
-            
             except Exception as e:
-                logger.error(f"Error in task processing loop for {agent_type}: {e}")
+                logger.exception(
+                    f"Error in task processing loop for {agent_type}: "
+                    f"{type(e).__name__}: {e}"
+                )
                 time.sleep(self.polling_interval * 2)  # Back off on errors
-    
+                continue
+            try:
+                self._run_task(agent_type, task)
+            except Exception as e:
+                self._abandon_task(agent_type, task, e)
+
+    def _abandon_task(self, agent_type: str, task: QueueTask, error: Exception) -> None:
+        """Last resort for a claimed task whose processing raised unexpectedly.
+
+        Fails it without retry so it does not stay PROCESSING; if even that
+        fails (e.g. the queue database is unwritable), say so and how to
+        release it, since nothing in this process will.
+        """
+        error_msg = f"Worker error: {type(error).__name__}: {error}"
+        logger.exception(f"Task {task.id} could not be processed: {error_msg}")
+        try:
+            self._fail_task(task, agent_type, error_msg, retry=False)
+        except Exception as fail_error:
+            stuck_msg = (f"Task {task.id} is stuck in PROCESSING "
+                         f"({type(fail_error).__name__}: {fail_error}); release it "
+                         f"with `queue_cli recover` or `queue_cli cleanup-dead`")
+            logger.exception(stuck_msg)
+            self._notify_progress("task_stuck", stuck_msg, {
+                "task_id": task.id, "agent_type": agent_type, "error": stuck_msg})
+
+    def _fail_task(self, task: QueueTask, agent_type: str, error_msg: str,
+                   retry: bool) -> None:
+        """Fail a task in the queue and report it to the progress callbacks."""
+        self.queue.fail_task(task.id, error_msg, retry=retry)
+        self._notify_progress("task_failed", f"Task {task.id} failed", {
+            "task_id": task.id,
+            "agent_type": agent_type,
+            "error": error_msg
+        })
+
+    def _run_task(self, agent_type: str, task: QueueTask) -> None:
+        """Run one claimed task on the agent currently registered for its type.
+
+        A failure of the agent method is retried. Once the method has
+        succeeded, a result json cannot serialise fails the task without retry:
+        re-running would repeat the method's side effects (LLM calls, database
+        writes) only to fail the same way. A database error while storing the
+        result is transient, so it re-queues the task (within ``max_retries``)
+        rather than discard the work for good. Anything else propagates to the
+        worker loop, which fails the task via ``_abandon_task``.
+        """
+        self._notify_progress("task_started", f"Processing task {task.id}", {
+            "task_id": task.id,
+            "agent_type": agent_type,
+            "method_name": task.method_name
+        })
+
+        agent = self.agents[agent_type]
+        method = getattr(agent, task.method_name, None)
+        if method is None:
+            error_msg = f"Method {task.method_name} not found on agent {agent_type}"
+            logger.error(error_msg)
+            self._fail_task(task, agent_type, error_msg, retry=False)
+            return
+
+        try:
+            result = method(**task.data)
+        except Exception as e:
+            error_msg = f"Task execution failed: {type(e).__name__}: {e}"
+            logger.exception(f"Task {task.id} failed: {error_msg}")
+            self._fail_task(task, agent_type, error_msg, retry=True)
+            return
+
+        if isinstance(result, dict):
+            result_dict = result
+        elif hasattr(result, '__dict__'):
+            # Convert dataclass/object to dict
+            result_dict = result.__dict__
+        else:
+            # Wrap primitive results
+            result_dict = {"result": result}
+
+        try:
+            self.queue.complete_task(task.id, result_dict)
+        except ResultNotSerializableError as e:
+            error_msg = f"Task result is not JSON-serialisable: {e}"
+            logger.exception(f"Task {task.id} failed: {error_msg}")
+            self._fail_task(task, agent_type, error_msg, retry=False)
+            return
+        except sqlite3.Error as e:
+            error_msg = (f"Task result could not be written to the queue: "
+                         f"{type(e).__name__}: {e}")
+            logger.exception(f"Task {task.id} failed: {error_msg}")
+            self._fail_task(task, agent_type, error_msg, retry=True)
+            return
+
+        self._notify_progress("task_completed", f"Task {task.id} completed", {
+            "task_id": task.id,
+            "agent_type": agent_type,
+            "result": result_dict
+        })
+
     def wait_for_completion(self, task_ids: List[str], timeout: Optional[float] = None) -> Dict[str, QueueTask]:
         """
         Wait for specific tasks to complete.

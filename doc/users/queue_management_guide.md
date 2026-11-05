@@ -33,7 +33,8 @@ This shows you:
 
 **Problem**: Tasks are stuck (processing for too long)
 ```bash
-# Reset stuck tasks to retry them
+# Reset stuck tasks of a still-running process to retry them
+# (tasks out of retries, or from processes that have died, are marked failed)
 python -m bmlibrarian.queue_cli recover --timeout 30
 
 # Or mark stuck tasks as failed if they can't be recovered
@@ -61,18 +62,24 @@ python -m bmlibrarian.queue_cli cleanup-old --hours 0
 
 **What happened**: You pressed Ctrl+C or closed the terminal while documents were being processed.
 
+**What happens**: on Ctrl+C (or a normal exit) the application marks the tasks
+it was working on as **failed** ("Process terminated by signal 2"). Pending
+tasks it had not started stay pending. Interrupted tasks are not resumed
+automatically.
+
 **What to do**:
 1. Check the queue status:
    ```bash
    python -m bmlibrarian.queue_cli status
    ```
 
-2. If you see "processing" tasks that are no longer running, recover them:
+2. If you closed the terminal instead, tasks may still show as "processing".
+   Clean them up (they are marked failed):
    ```bash
-   python -m bmlibrarian.queue_cli recover --timeout 5
+   python -m bmlibrarian.queue_cli cleanup-dead
    ```
 
-3. Restart your application to continue processing.
+3. Restart your application and run the interrupted work again.
 
 ### Scenario 2: System Crashed or Lost Power
 
@@ -141,14 +148,20 @@ When you run `python -m bmlibrarian.queue_cli status`, you'll see:
 
 ## Recovery Strategy Guide
 
-### When to Retry Tasks (Preserve Queue)
-Use this when you had a planned interruption and want to continue where you left off:
+### When to Retry Tasks
+Use this when an application that is **still running** has tasks stuck in
+"processing" (e.g. a hung worker):
 
 ```bash
 python -m bmlibrarian.queue_cli recover --timeout 30
 ```
 
-**Good for**: Intentional stops, system updates, planned restarts
+Each reset uses one of the task's retries; a task with no retries left is
+marked failed. Tasks from an application that has stopped are marked failed
+either way, so after a planned stop or restart, run the interrupted work
+again instead.
+
+**Good for**: Hung workers in a long-running application
 
 ### When to Mark Tasks as Failed
 Use this when tasks are genuinely broken and shouldn't be retried:
