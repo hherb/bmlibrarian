@@ -1,5 +1,6 @@
 """Tests for the non-modal toast notifications (gui/qt/widgets/toast.py)."""
 
+from typing import Callable
 from unittest.mock import patch
 
 import pytest
@@ -32,7 +33,7 @@ SHORT_TIMEOUT_MS = 20
 TIMER_DEADLINE_MS = 5000
 
 
-def wait_until(condition, deadline_ms: int = TIMER_DEADLINE_MS) -> bool:
+def wait_until(condition: Callable[[], bool], deadline_ms: int = TIMER_DEADLINE_MS) -> bool:
     """Process Qt events until ``condition()`` is true or ``deadline_ms`` passes; return the last result."""
     for _ in range(deadline_ms // SHORT_TIMEOUT_MS):
         if condition():
