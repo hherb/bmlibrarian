@@ -28,6 +28,17 @@ pytestmark = pytest.mark.skipif(not HAS_QT, reason="Qt not available")
 # Window size for the tests (logical pixels; any size well above a toast)
 WINDOW_WIDTH, WINDOW_HEIGHT = 900, 700
 SHORT_TIMEOUT_MS = 20
+# Upper bound for a short timer to fire on a loaded machine (a fixed wait flaked in the full suite)
+TIMER_DEADLINE_MS = 5000
+
+
+def wait_until(condition, deadline_ms: int = TIMER_DEADLINE_MS) -> bool:
+    """Process Qt events until ``condition()`` is true or ``deadline_ms`` passes; return the last result."""
+    for _ in range(deadline_ms // SHORT_TIMEOUT_MS):
+        if condition():
+            return True
+        QTest.qWait(SHORT_TIMEOUT_MS)
+    return condition()
 
 
 @pytest.fixture
@@ -102,9 +113,7 @@ def test_non_error_levels_time_out_but_error_stays(window, level):
         error = show_toast(win, "error", ToastLevel.ERROR)
         show_toast(win, "transient", level)
 
-    QTest.qWait(SHORT_TIMEOUT_MS * 10)
-
-    assert active_toasts(win) == [error]
+    assert wait_until(lambda: active_toasts(win) == [error]), active_toasts(win)
 
 
 def test_toasts_follow_a_window_resize(window):

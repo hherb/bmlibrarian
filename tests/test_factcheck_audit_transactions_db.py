@@ -1,9 +1,10 @@
 """
-Real-SQL checks that failed writes leave nothing behind (#340, #341).
+Real-SQL checks that failed writes leave nothing behind (#340, #341) and that
+concurrent evaluations of one statement do not collide (#230).
 
 Opt-in: set BMLIBRARIAN_TEST_DB_ENV to an env file for a *development* database
 with the BMLibrarian schema (e.g. ~/.bmlibrarian/.env_pg18_dev). Refuses any
-database the test guard protects. Every test makes a write fail on a foreign
+database the test guard protects. Most tests make a write fail on a foreign
 key; the test statement is deleted before and after each test.
 """
 
@@ -129,3 +130,42 @@ def test_failed_audit_write_does_not_poison_the_connection(db_manager) -> None:
     finally:
         conn.rollback()
         db_manager._pool.putconn(conn)
+
+
+# How long the second writer is given to show it waits for the first (#230)
+BLOCKED_WRITER_WAIT_S = 1.0
+
+
+def test_concurrent_evaluations_get_consecutive_versions(db_manager) -> None:
+    """A writer whose first evaluation is still uncommitted makes a second writer wait, not collide (#230)."""
+    import threading
+
+    from bmlibrarian.factchecker.db.database import AIEvaluation, FactCheckerDB, Statement
+
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = db_manager
+    statement_id = db.insert_statement(Statement(statement_text=TEST_STATEMENT, source_file="test"))
+    errors: list[BaseException] = []
+
+    def second_writer() -> None:
+        """Insert an evaluation on its own pooled connection."""
+        try:
+            db.insert_ai_evaluation(AIEvaluation(statement_id=statement_id, evaluation="no", reason="r"))
+        except BaseException as exc:  # reported by the assertion below
+            errors.append(exc)
+
+    with db_manager.get_connection() as first:
+        db.insert_ai_evaluation(AIEvaluation(statement_id=statement_id, evaluation="yes", reason="r"), conn=first)
+        writer = threading.Thread(target=second_writer)
+        writer.start()
+        writer.join(BLOCKED_WRITER_WAIT_S)
+        assert writer.is_alive(), "second writer did not wait for the first transaction"
+    writer.join()
+
+    assert errors == []
+    with db_manager.get_connection() as conn:
+        versions = conn.execute(
+            "SELECT evaluation, version FROM factcheck.ai_evaluations WHERE statement_id = %s ORDER BY version",
+            (statement_id,),
+        ).fetchall()
+    assert versions == [("yes", 1), ("no", 2)]

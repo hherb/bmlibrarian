@@ -294,7 +294,8 @@ def test_inserts_join_the_callers_transaction() -> None:
 
     db.db_manager.get_connection.assert_not_called()
     conn.commit.assert_not_called()
-    assert conn.cursor.return_value.__enter__.return_value.execute.call_count == 3
+    # 4 statements: the evaluation also locks its statement row (#230)
+    assert conn.cursor.return_value.__enter__.return_value.execute.call_count == 4
 
 
 def test_failed_verdict_import_keeps_the_statement_for_rechecking(tmp_path: Path) -> None:
