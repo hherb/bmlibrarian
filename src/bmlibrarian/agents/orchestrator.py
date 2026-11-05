@@ -7,10 +7,13 @@ with progress tracking and error recovery.
 
 from typing import Dict, Any, List, Optional, Callable, Set
 import logging
+import sqlite3
 import threading
 import time
 
-from .queue_manager import QueueManager, TaskStatus, TaskPriority, QueueTask
+from .queue_manager import (
+    QueueManager, TaskStatus, TaskPriority, QueueTask, ResultNotSerializableError,
+)
 from .base import BaseAgent
 
 
@@ -730,18 +733,49 @@ class AgentOrchestrator:
         logger.info(f"Started processing tasks for agent: {agent_type}")
 
         while not self._stop_processing.is_set():
+            if self.queue.queue_file_missing():
+                # Polling would recreate an empty file and fail on every call.
+                error_msg = (f"Queue file {self.queue.db_path} is missing; "
+                             f"stopping the {agent_type} worker")
+                logger.error(error_msg)
+                self._notify_progress("worker_stopped", error_msg, {
+                    "agent_type": agent_type, "error": error_msg})
+                return
             try:
                 task = self.queue.get_next_task(agent_type)
                 if task is None:
                     time.sleep(self.polling_interval)
                     continue
-                self._run_task(agent_type, task)
             except Exception as e:
                 logger.exception(
                     f"Error in task processing loop for {agent_type}: "
                     f"{type(e).__name__}: {e}"
                 )
                 time.sleep(self.polling_interval * 2)  # Back off on errors
+                continue
+            try:
+                self._run_task(agent_type, task)
+            except Exception as e:
+                self._abandon_task(agent_type, task, e)
+
+    def _abandon_task(self, agent_type: str, task: QueueTask, error: Exception) -> None:
+        """Last resort for a claimed task whose processing raised unexpectedly.
+
+        Fails it without retry so it does not stay PROCESSING; if even that
+        fails (e.g. the queue database is unwritable), say so and how to
+        release it, since nothing in this process will.
+        """
+        error_msg = f"Worker error: {type(error).__name__}: {error}"
+        logger.exception(f"Task {task.id} could not be processed: {error_msg}")
+        try:
+            self._fail_task(task, agent_type, error_msg, retry=False)
+        except Exception as fail_error:
+            stuck_msg = (f"Task {task.id} is stuck in PROCESSING "
+                         f"({type(fail_error).__name__}: {fail_error}); release it "
+                         f"with `queue_cli recover` or `queue_cli cleanup-dead`")
+            logger.exception(stuck_msg)
+            self._notify_progress("task_stuck", stuck_msg, {
+                "task_id": task.id, "agent_type": agent_type, "error": stuck_msg})
 
     def _fail_task(self, task: QueueTask, agent_type: str, error_msg: str,
                    retry: bool) -> None:
@@ -756,10 +790,13 @@ class AgentOrchestrator:
     def _run_task(self, agent_type: str, task: QueueTask) -> None:
         """Run one claimed task on the agent currently registered for its type.
 
-        Only a failure of the agent method itself is retried. Once the method
-        has succeeded, a failure to store its result (e.g. a value json cannot
-        serialise) fails the task without retry, so the method's side effects
-        (LLM calls, database writes) are not repeated.
+        A failure of the agent method is retried. Once the method has
+        succeeded, a result json cannot serialise fails the task without retry:
+        re-running would repeat the method's side effects (LLM calls, database
+        writes) only to fail the same way. A database error while storing the
+        result is transient, so it re-queues the task (within ``max_retries``)
+        rather than discard the work for good. Anything else propagates to the
+        worker loop, which fails the task via ``_abandon_task``.
         """
         self._notify_progress("task_started", f"Processing task {task.id}", {
             "task_id": task.id,
@@ -794,11 +831,16 @@ class AgentOrchestrator:
 
         try:
             self.queue.complete_task(task.id, result_dict)
-        except Exception as e:
-            error_msg = (f"Task result could not be stored: "
-                         f"{type(e).__name__}: {e}")
+        except ResultNotSerializableError as e:
+            error_msg = f"Task result is not JSON-serialisable: {e}"
             logger.exception(f"Task {task.id} failed: {error_msg}")
             self._fail_task(task, agent_type, error_msg, retry=False)
+            return
+        except sqlite3.Error as e:
+            error_msg = (f"Task result could not be written to the queue: "
+                         f"{type(e).__name__}: {e}")
+            logger.exception(f"Task {task.id} failed: {error_msg}")
+            self._fail_task(task, agent_type, error_msg, retry=True)
             return
 
         self._notify_progress("task_completed", f"Task {task.id} completed", {

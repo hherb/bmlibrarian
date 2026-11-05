@@ -33,10 +33,12 @@ Each queue task tracks:
 ### 1. Graceful Shutdown
 
 Automatically triggered when the process receives SIGTERM or SIGINT, or exits.
-The first `QueueManager` created in a process installs one `atexit` hook and
-(from the main thread only) one SIGINT/SIGTERM handler for the whole process;
-later managers just join a weak registry of live managers, so creating many
-managers (e.g. one per test) installs nothing extra.
+The first `QueueManager` created in a process installs one `atexit` hook; the
+first one created *on the main thread* installs one SIGINT/SIGTERM handler for
+the whole process (if none is ever built on the main thread, no signal handler
+is installed). Every manager joins a weak registry, so creating many managers
+(e.g. one per test) installs nothing extra, and a manager that has been
+garbage-collected is no longer cleaned up.
 
 **Behavior**: In every live queue, tasks with status `PROCESSING` and this
 process's `process_id` are marked `FAILED` ("Process terminated" at exit,
@@ -44,7 +46,19 @@ process's `process_id` are marked `FAILED` ("Process terminated" at exit,
 exits with status `128 + signum` (130 for Ctrl-C, 143 for SIGTERM), so shells
 and CI see the termination. A cleanup failure is written to stderr; a queue
 whose database file has been deleted is skipped (reconnecting would recreate
-it empty).
+it empty). The signal handler waits at most `SIGNAL_CLEANUP_BUSY_TIMEOUT_MS`
+(1 s) for the SQLite write lock, since the interrupted code may be holding it;
+if it gives up, the `atexit` pass that runs during the exit retries.
+
+Interrupted tasks are therefore `FAILED`, not resumable: to re-run interrupted
+work, resubmit it. SIGHUP (closing the terminal) is not handled; such tasks
+stay `PROCESSING` until `cleanup-dead` or `recover` marks them `FAILED`.
+
+QueueManager owns SIGINT once a main-thread manager exists, so Ctrl-C raises
+`SystemExit(130)` rather than `KeyboardInterrupt` in that process.
+
+A worker thread whose queue file is deleted stops (event `worker_stopped`)
+instead of recreating an empty file on every poll.
 
 ### 2. Stuck Task Recovery
 
@@ -58,10 +72,15 @@ recovered = queue.recover_stuck_tasks(
 ```
 
 **Options**:
-- `mark_as_failed=False`: Reset stuck tasks to PENDING status for retry. The
-  reset counts as a retry (`retry_count` + 1); a task already at
-  `max_retries` is marked FAILED ("retries exhausted") instead
+- `mark_as_failed=False`: Reset stuck tasks whose process is still running to
+  PENDING for retry. The reset counts as a retry (`retry_count` + 1); a task
+  already at `max_retries` is marked FAILED ("retries exhausted") instead. A
+  task whose process has died is marked FAILED in either mode
 - `mark_as_failed=True`: Permanently mark stuck tasks as FAILED
+
+Note that "stuck" only means "processing longer than the timeout": a live
+process may still be working on a long task, and resetting it lets a second
+worker run it too.
 
 ### 3. Dead Process Cleanup
 
@@ -136,16 +155,18 @@ python -m bmlibrarian.queue_cli export backup.json -d queue.db
 
 ## Recovery Strategies
 
-### Strategy 1: Preserve Queue (Planned Restarts)
-Best for planned maintenance or intentional process restarts:
+### Strategy 1: Retry Stuck Tasks (Live Process)
+Best for tasks stuck in a process that is still running (e.g. a hung worker):
 
 ```python
-# Reset stuck tasks to pending for retry
+# Reset stuck tasks to pending for retry (uses one of each task's retries)
 queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False)
 queue.cleanup_dead_process_tasks()  # Clean orphaned tasks
 ```
 
-**Use cases**: System updates, planned restarts, configuration changes
+**Use cases**: Hung workers in a long-running application. For planned
+restarts, note that a stopped process marks its in-flight tasks FAILED on
+exit, so interrupted work must be resubmitted after the restart.
 
 ### Strategy 2: Mark as Failed (Crash Recovery)
 Best for handling unrecoverable crashes or data corruption:
@@ -239,15 +260,24 @@ while True:
 ```
 
 ### 3. Graceful Application Shutdown
+QueueManager installs a process-wide SIGINT/SIGTERM handler when the first
+main-thread manager is created; it fails in-flight tasks and exits with
+`128 + signum`. An application handler installed *before* that is silently
+replaced; one installed *after* replaces QueueManager's, which then cleans up
+only through `atexit` ("Process terminated"). So install yours after creating
+the orchestrator, and keep the exit status convention:
+
 ```python
 import signal
 import sys
 
+from bmlibrarian.agents.queue_manager import SIGNAL_EXIT_STATUS_BASE
+
 def signal_handler(signum, frame):
     logger.info("Shutting down gracefully...")
     orchestrator.stop_processing()
-    # QueueManager cleanup happens automatically
-    sys.exit(0)
+    # In-flight tasks are marked FAILED by QueueManager's atexit hook
+    sys.exit(SIGNAL_EXIT_STATUS_BASE + signum)
 
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)

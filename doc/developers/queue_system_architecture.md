@@ -22,7 +22,7 @@ The BMLibrarian queue system provides a scalable, memory-efficient solution for 
 - **Priority queuing**: Important tasks processed first
 
 ### 4. Fault Tolerance
-- **Automatic retries**: Failed tasks automatically retry with backoff
+- **Automatic retries**: Tasks whose agent method raises are re-queued (no delay) up to `max_retries`
 - **Error isolation**: One failed task doesn't affect others
 - **Progress tracking**: Detailed status monitoring and recovery
 
@@ -76,28 +76,17 @@ def cancel_tasks(target_agent: Optional[str] = None)
 ```
 
 #### Thread Safety Implementation
-```python
-def __init__(self):
-    self.lock = threading.Lock()
-    
-def get_next_task(self, target_agent: str) -> Optional[QueueTask]:
-    with self.lock:
-        with sqlite3.connect(self.db_path) as conn:
-            # Atomic: query + update status in single transaction
-            cursor = conn.execute("""
-                SELECT * FROM queue_tasks 
-                WHERE target_agent = ? AND status = ?
-                ORDER BY priority DESC, created_at ASC
-                LIMIT 1
-            """, (target_agent, TaskStatus.PENDING.value))
-            
-            row = cursor.fetchone()
-            if row:
-                # Atomically mark as processing
-                conn.execute("""
-                    UPDATE queue_tasks SET status = ?, started_at = ?
-                    WHERE id = ?
-                """, (TaskStatus.PROCESSING.value, datetime.now().isoformat(), row[0]))
+`self.lock` serialises access within a process; across processes, a task is
+claimed with a single atomic statement (SQLite >= 3.35 for `RETURNING`), on a
+connection from `_get_connection()` with `busy_timeout` applied:
+
+```sql
+UPDATE queue_tasks
+SET status = 'processing', started_at = :now_utc, process_id = :pid, worker_id = :worker
+WHERE id = (SELECT id FROM queue_tasks
+            WHERE target_agent = :agent AND status = 'pending'
+            ORDER BY priority DESC, created_at ASC LIMIT 1)
+RETURNING *
 ```
 
 ### AgentOrchestrator (`orchestrator.py`)
@@ -167,7 +156,8 @@ resets it and loops:
    `CANCELLED` or a task missing from the queue fails the step (event
    `status` `failed` / `cancelled` / `missing`) and skips its dependents.
 
-Any other exception (queue errors, `KeyboardInterrupt`) cancels the run's
+Any other exception (queue errors, `KeyboardInterrupt`, or the `SystemExit`
+raised by QueueManager's signal handler) cancels the run's
 pending tasks, emits `workflow_aborted` and is re-raised. Cancellation uses
 `QueueManager.cancel_task(task_id)`, which only moves a `PENDING` task to
 `CANCELLED`; workers claim tasks with one atomic `UPDATE … WHERE status =
@@ -275,12 +265,15 @@ User/Agent → QueueManager.add_task() → SQLite Database
 
 ### 2. Task Processing
 ```
-AgentOrchestrator.get_next_task() → TaskStatus.PROCESSING
-                                  ↓
-                      Agent.method(**task.data)
-                                  ↓
-                     Success: TaskStatus.COMPLETED
-                     Failure: TaskStatus.PENDING (retry) or FAILED (max retries)
+QueueManager.get_next_task() → TaskStatus.PROCESSING
+                              ↓
+                  Agent.method(**task.data)
+                              ↓
+   Success: TaskStatus.COMPLETED
+   Method raised / DB error storing result:
+            TaskStatus.PENDING (retry) or FAILED (max retries)
+   Missing method / result not JSON-serialisable / unexpected worker error:
+            TaskStatus.FAILED, no retry
 ```
 
 ### 3. Result Collection
@@ -309,25 +302,29 @@ TaskStatus.FAILED → QueueTask.error_message → Error Handling
 ## Error Handling Strategy
 
 ### Retry Logic
-```python
-def fail_task(self, task_id: str, error_message: str, retry: bool = True):
-    if retry and retry_count < max_retries:
-        # Reset to PENDING for retry with exponential backoff
-        self.update_task_status(task_id, TaskStatus.PENDING, retry_count + 1)
-    else:
-        # Mark as permanently FAILED
-        self.update_task_status(task_id, TaskStatus.FAILED)
+`QueueManager.fail_task(task_id, error_message, retry=True)`:
+
+```
+new_retry_count = retry_count + 1
+if retry and new_retry_count <= max_retries:
+    PENDING, retry_count = new_retry_count   # re-queued at once, no delay
+else:
+    FAILED,  retry_count = new_retry_count
 ```
 
 ### Error Categories
-1. **Transient errors**: Network issues, temporary Ollama unavailability
-   - **Action**: Automatic retry with backoff
-   
-2. **Configuration errors**: Missing model, invalid method name
-   - **Action**: Immediate failure, no retry
-   
-3. **Data errors**: Invalid document format, empty content
-   - **Action**: Log error, continue processing other tasks
+1. **Agent method raises** (network issues, Ollama unavailable, missing model,
+   bad document data): retried up to `max_retries`, then FAILED. The message
+   names the exception type (`Task execution failed: KeyError: 'x'`).
+2. **Method not found on the agent**: FAILED at once, no retry.
+3. **Result not JSON-serialisable**: FAILED at once, no retry; the method is
+   not re-run, since it would repeat its side effects and fail the same way.
+4. **Database error while storing the result** (e.g. locked after the busy
+   timeout): re-queued like case 1, so the work is not discarded for good.
+5. **Any other error after the task was claimed**: FAILED, no retry
+   (`Worker error: ...`). If even that write fails, a `task_stuck` progress
+   event and log entry say how to release the task (`queue_cli recover` /
+   `cleanup-dead`).
 
 ### Recovery Mechanisms
 - **Queue persistence**: Tasks survive application crashes

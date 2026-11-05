@@ -200,7 +200,9 @@ for agent_name, agent_stats in stats["by_agent"].items():
 ## Error Handling and Recovery
 
 ### Automatic Retry
-Failed tasks are automatically retried:
+Tasks whose agent method raises an error are automatically retried. A missing
+method, or a result that cannot be stored as JSON, fails the task at once (the
+method is not run again):
 
 ```python
 # Tasks are retried up to max_retries (default: 3)
