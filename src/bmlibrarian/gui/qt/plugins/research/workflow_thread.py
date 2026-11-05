@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 import logging
 
 from .report_builder import ReportBuilder
+from .workflow_executor import DEFAULT_SCORING_THRESHOLD
 from bmlibrarian.agents.citation_agent import Citation
 
 
@@ -58,7 +59,7 @@ class WorkflowThread(QThread):
         executor: 'QtWorkflowExecutor',
         question: str,
         max_results: int = 100,
-        score_threshold: float = 3.0,
+        score_threshold: float = DEFAULT_SCORING_THRESHOLD,
         enable_counterfactual: bool = False,
         parent: Optional[QThread] = None
     ):
@@ -150,6 +151,9 @@ class WorkflowThread(QThread):
             # Set the research question on the executor before starting workflow
             self.executor.current_question = self.question
             self.executor.max_results = self.max_results
+            # The report's methodology section reads the threshold and the
+            # scored documents from the executor
+            self.executor.scoring_threshold = self.score_threshold
             self.logger.debug(f"Executor configured: question='{self.question[:50]}...', max_results={self.max_results}")
 
             # ==================================================================
@@ -220,6 +224,7 @@ class WorkflowThread(QThread):
                     # Emit per-document signal for progressive Scoring tab display
                     self.document_scored.emit(doc, score_result, i, total)
 
+            self.executor.scored_documents = self.scored_documents
             self.documents_scored.emit(self.scored_documents)
             self.step_completed.emit(step_name)
 

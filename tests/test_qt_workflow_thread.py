@@ -253,6 +253,43 @@ class TestWorkflowThread(unittest.TestCase):
 
         thread.deleteLater()
 
+    def test_run_hands_scores_to_executor_for_methodology(self) -> None:
+        """The report's methodology sees the scored documents and threshold (#332).
+
+        Only the removed QtWorkflowExecutor.score_documents used to set
+        executor.scored_documents, so every report showed an empty score
+        distribution.
+        """
+        doc = {"doc_id": 1, "title": "Test Doc", "abstract": "Test abstract"}
+        score = {"score": 4.0, "reasoning": "Relevant"}
+        self.mock_executor.generate_query.return_value = "test & query"
+        self.mock_executor.search_documents.return_value = [doc]
+        self.mock_executor.scoring_agent.evaluate_document.return_value = score
+        self.mock_executor.citation_agent.extract_citation_from_document.return_value = Mock(
+            passage="Test citation", document_id=1
+        )
+
+        def report_from_executor_state(citations: list) -> str:
+            """Record the state generate_preliminary_report would read."""
+            self.assertEqual(self.mock_executor.scored_documents, [(doc, score)])
+            self.assertEqual(self.mock_executor.scoring_threshold, 2.5)
+            return "# Test Report"
+
+        self.mock_executor.generate_preliminary_report.side_effect = report_from_executor_state
+
+        thread = WorkflowThread(
+            executor=self.mock_executor,
+            question="Test question",
+            score_threshold=2.5,
+            enable_counterfactual=False,
+        )
+        errors = QSignalSpy(thread.workflow_error)
+        thread.run()
+
+        self.assertEqual(errors.count(), 0)
+        self.mock_executor.generate_preliminary_report.assert_called_once()
+        thread.deleteLater()
+
     def test_status_message_signal_emission(self) -> None:
         """Test that status_message signals are emitted during workflow."""
         # Setup mock executor

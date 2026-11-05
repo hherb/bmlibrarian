@@ -42,13 +42,13 @@ class TestResearchTabWidget(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Modal dialogs would block the test run
-        for module in ('research_tab', 'workflow_handlers'):
-            patcher = patch(
-                f'bmlibrarian.gui.qt.plugins.research.{module}.QMessageBox'
-            )
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # A modal dialog would block the test run; toasts are recorded
+        patcher = patch('bmlibrarian.gui.qt.plugins.research.research_tab.QMessageBox')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        toast_patcher = patch('bmlibrarian.gui.qt.plugins.research.research_tab.show_toast')
+        self.show_toast = toast_patcher.start()
+        self.addCleanup(toast_patcher.stop)
 
         # Without agents the tab has no workflow executor
         self.agents = {name: Mock() for name in AGENT_NAMES}
@@ -278,22 +278,21 @@ class TestResearchTabWidget(unittest.TestCase):
     # Signal Connection Tests
     # ========================================================================
 
-    def test_workflow_executor_signals_connected(self):
-        """Test that workflow executor signals are connected."""
-        # Setup: create test slot
-        status_received = []
-        def on_status(message):
-            status_received.append(message)
+    def test_start_without_question_shows_warning_toast(self):
+        """An empty question is reported in a toast, not a modal (#332)."""
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
 
-        self.widget.workflow_executor.status_message.connect(on_status)
+        self.widget.question_input.clear()
+        with patch('bmlibrarian.gui.qt.plugins.research.workflow_thread.WorkflowThread') as MockThread:
+            self.widget._on_start_research()
 
-        # Test: emit signal
-        test_message = "Test status"
-        self.widget.workflow_executor.status_message.emit(test_message)
-
-        # Verify: signal received
-        self.assertEqual(len(status_received), 1)
-        self.assertEqual(status_received[0], test_message)
+        MockThread.assert_not_called()
+        self.show_toast.assert_called_once()
+        _, message, level = self.show_toast.call_args.args
+        self.assertIn("research question", message)
+        self.assertEqual(level, ToastLevel.WARNING)
+        from bmlibrarian.gui.qt.plugins.research import research_tab
+        research_tab.QMessageBox.assert_not_called()
 
     def test_start_button_click_triggers_workflow(self):
         """Test that start button click starts a background WorkflowThread."""
@@ -375,9 +374,8 @@ class TestResearchTabWidget(unittest.TestCase):
         self.assertFalse(self.widget.workflow_running)
         self.assertIs(self.widget.workflow_executor, old_executor)
         self.assertTrue(self.widget._agents_stale)
-        from bmlibrarian.gui.qt.plugins.research import research_tab
-        title, message = research_tab.QMessageBox.critical.call_args.args[1:3]
-        self.assertEqual(title, "Settings Not Applied")
+        _, message, _ = self.show_toast.call_args.args
+        self.assertIn("Settings not applied", message)
         self.assertIn("model missing", message)
 
     def test_main_settings_tab_marks_agents_stale(self):

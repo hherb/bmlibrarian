@@ -373,7 +373,7 @@ The Research plugin demonstrates best practices for complex plugin organization,
 | `constants.py` | UI constants, color schemes, stylesheet generators |
 | `tab_builders.py` | Tab construction functions, widget creation |
 | `tab_updaters.py` | State update handlers, UI refresh logic |
-| `workflow_executor.py` | Agent coordination, workflow state, business logic |
+| `workflow_executor.py` | Agent references, run state, query/search/report steps (no signals) |
 | `workflow_handlers.py` | Signal connections, event response handlers |
 | `workflow_thread.py` | Background thread execution, cancellation support |
 | `report_builder.py` | Comprehensive report construction (counterfactual analysis, methodology sections) |
@@ -425,23 +425,25 @@ The Research plugin demonstrates best practices for complex plugin organization,
 
 ```python
 class QtWorkflowExecutor(QObject):
-    """Coordinates agent-based workflow with Qt signals.
+    """Holds the agents and the run's state; emits no signals.
 
-    Note: Counterfactual analysis and final report generation are handled
-    by WorkflowThread, which calls agent methods directly for these steps.
+    WorkflowThread drives every step: it scores documents and extracts
+    citations itself, and copies the scored documents and the threshold
+    onto the executor so the report's methodology section can read them.
     """
 
-    # Core workflow steps (used by WorkflowThread)
-    def generate_query(self, question: str) -> str
+    # Steps called by WorkflowThread
+    def generate_query(self) -> str          # uses self.current_question
     def search_documents(self, query: str) -> List[dict]
-    def score_documents(self, documents: List[dict]) -> List[Tuple[dict, dict]]
-    def extract_citations(self, scored_docs: List) -> List[dict]
     def generate_preliminary_report(self, citations: List) -> str
 
     # Lifecycle management
-    def check_agents_ready(self) -> bool
     def cleanup(self) -> None
 ```
+
+The executor's old self-driving path (`start_workflow` / `execute_workflow`,
+its own `score_documents` / `extract_citations`, and the "Phase 2" /
+"Milestone 3" completion dialogs) was removed in #332; it had no callers.
 
 **WorkflowThread Methods** (handles background execution):
 
@@ -463,6 +465,36 @@ class WorkflowThread(QThread):
     workflow_error = Signal(Exception)
     workflow_cancelled = Signal()
 ```
+
+## User Notifications: Toasts, Not Modals
+
+Report errors, warnings and results with a non-modal toast
+(`gui/qt/widgets/toast.py`), not `QMessageBox.warning/critical/information`.
+A modal dialog steals focus and blocks the user, and in the test suite it
+waits for a click that never comes inside Qt's event loop, so the run hangs
+instead of failing. Keep a modal only when the user must decide something
+before the code can continue (e.g. "clear current results? Yes/No").
+
+```python
+from bmlibrarian.gui.qt.widgets.toast import ToastLevel, show_toast
+
+show_toast(self, "Report saved", ToastLevel.SUCCESS)
+show_toast(self, f"Research workflow failed: {error}", ToastLevel.ERROR)
+```
+
+- The toast is overlaid at the bottom right of the caller's top-level
+  window; several stack upwards and follow window resizes.
+- Info and success toasts hide after 5 s, warnings after 10 s
+  (`TOAST_TIMEOUT_MS`); errors stay until dismissed with the × button.
+- The message is plain text (never rich text), selectable for copying.
+- Colors come from `ThemeColors`, sizes from the font scale, and the
+  stylesheet from `StylesheetGenerator.toast_stylesheet`.
+- In tests, patch the module's `show_toast` to assert on what was shown
+  (`call_args.args == (parent, message, level)`); real toasts are harmless
+  too. Widget tests: `tests/test_toast.py`.
+
+Used by the research tab (`research_tab.py`, `workflow_handlers.py`,
+`export_utils.py`).
 
 ## Signal/Slot Communication
 

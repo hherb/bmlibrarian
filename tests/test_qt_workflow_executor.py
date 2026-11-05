@@ -18,13 +18,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 try:
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import Qt, Signal, QObject
-    from PySide6.QtTest import QSignalSpy
     PYSIDE6_AVAILABLE = True
 except ImportError:
     PYSIDE6_AVAILABLE = False
     QApplication = None
     Signal = None
-    QSignalSpy = None
 
 # Skip all tests in this module if PySide6 is not available
 pytestmark = pytest.mark.skipif(
@@ -147,79 +145,39 @@ class TestQtWorkflowExecutor(unittest.TestCase):
         # Verify error message
         self.assertIn("empty research question", str(context.exception))
 
-    def test_execute_workflow_returns_early_when_inactive(self):
-        """Test that execute_workflow returns early when executor is inactive."""
-        # Setup: mark executor as inactive
-        self.executor._is_active = False
-        self.executor.current_question = "Test question"
-
-        # Mock query agent that should NOT be called
-        self.executor.query_agent = Mock()
-
-        # Test: execute workflow
-        self.executor.execute_workflow()
-
-        # Verify: query agent was never called
-        self.executor.query_agent.convert_question.assert_not_called()
-
     # ========================================================================
-    # Signal Emission Tests
+    # Query and Methodology Tests
     # ========================================================================
 
-    def test_query_generated_signal_emission(self):
-        """Test that query_generated signal is emitted."""
-        # Setup signal spy
-        spy = QSignalSpy(self.executor.query_generated)
-
-        # Setup: mock query agent
+    def test_generate_query_returns_and_stores_query(self):
+        """generate_query returns the agent's query and keeps it for the methodology."""
         mock_query = "cardiovascular & exercise"
         self.executor.query_agent = Mock()
         self.executor.query_agent.convert_question.return_value = mock_query
         self.executor.current_question = "Test question"
 
-        # Test: generate query
         result = self.executor.generate_query()
 
-        # Verify: signal emitted with correct query
-        self.assertEqual(spy.count(), 1)
-        self.assertEqual(spy.at(0)[0], mock_query)
         self.assertEqual(result, mock_query)
+        self.assertEqual(self.executor.generated_query, mock_query)
 
-    def test_status_message_signal_emission(self):
-        """Test that status_message signal is emitted during workflow."""
-        # Setup signal spy
-        spy = QSignalSpy(self.executor.status_message)
-
-        # Setup: mock agents
-        self.executor.query_agent = Mock()
-        self.executor.query_agent.convert_question.return_value = "test & query"
-        self.executor.query_agent.search_documents.return_value = []
+    def test_methodology_metadata_counts_scored_documents(self):
+        """The report's methodology reflects the scored documents and threshold."""
         self.executor.current_question = "Test question"
+        self.executor.documents = [{'id': 1}, {'id': 2}, {'id': 3}]
+        self.executor.scored_documents = [
+            ({'id': 1}, {'score': 5}),
+            ({'id': 2}, {'score': 3}),
+            ({'id': 3}, {'score': 1}),
+        ]
+        self.executor.scoring_threshold = 3.0
 
-        # Test: execute workflow (will emit status messages)
-        self.executor.execute_workflow()
+        metadata = self.executor._generate_methodology_metadata()
 
-        # Verify: at least one status message emitted
-        self.assertGreater(spy.count(), 0)
-
-    def test_workflow_error_signal_emission(self):
-        """Test that workflow_error signal is emitted on error."""
-        # Setup signal spy
-        spy = QSignalSpy(self.executor.workflow_error)
-
-        # Setup: mock query agent that raises exception
-        self.executor.query_agent = Mock()
-        self.executor.query_agent.convert_question.side_effect = Exception("Test error")
-        self.executor.current_question = "Test question"
-
-        # Test: execute workflow
-        self.executor.execute_workflow()
-
-        # Verify: error signal emitted
-        self.assertEqual(spy.count(), 1)
-        error = spy.at(0)[0]
-        self.assertIsInstance(error, Exception)
-        self.assertEqual(str(error), "Test error")
+        self.assertEqual(metadata.total_documents_found, 3)
+        self.assertEqual(metadata.documents_by_score, {5: 1, 3: 1, 1: 1})
+        self.assertEqual(metadata.documents_above_threshold, 2)
+        self.assertEqual(metadata.documents_processed_for_citations, 2)
 
     # ========================================================================
     # Agent Initialization Tests
@@ -243,9 +201,7 @@ class TestQtWorkflowExecutor(unittest.TestCase):
             self.assertIs(executor.scoring_agent, agents['scoring_agent'])
             self.assertIs(executor.citation_agent, agents['citation_agent'])
             self.assertIs(executor.reporting_agent, agents['reporting_agent'])
-            self.assertTrue(executor.check_agents_ready())
-            # The default fixture has no agents
-            self.assertFalse(self.executor.check_agents_ready())
+            self.assertIs(executor.editor_agent, agents['editor_agent'])
         finally:
             executor.cleanup()
             executor.deleteLater()

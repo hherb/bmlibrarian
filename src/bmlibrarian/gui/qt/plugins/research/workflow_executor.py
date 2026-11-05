@@ -5,7 +5,7 @@ Adapts the agent-based workflow to Qt's signal/slot architecture.
 """
 
 from typing import Dict, Any, Optional
-from PySide6.QtCore import QObject, Signal, QRunnable, Slot
+from PySide6.QtCore import QObject
 import logging
 
 # Default threshold constants
@@ -13,40 +13,14 @@ DEFAULT_SCORING_THRESHOLD = 3.0  # Minimum score for citation extraction
 DEFAULT_CITATION_EXTRACTION_THRESHOLD = 0.7  # Citation relevance threshold
 
 
-class WorkflowSignals(QObject):
-    """
-    Signals for workflow execution progress and results.
-
-    These signals allow background workflow execution to communicate
-    with the main Qt GUI thread.
-    """
-
-    # Progress signals
-    progress = Signal(int)  # Progress percentage (0-100)
-    status = Signal(str)  # Status message
-    step_started = Signal(str)  # Workflow step name
-    step_completed = Signal(str)  # Workflow step name
-
-    # Result signals
-    workflow_completed = Signal(dict)  # Final results
-    workflow_error = Signal(Exception)  # Error occurred
-
-    # Step-specific data signals
-    query_generated = Signal(str)  # SQL query generated
-    documents_found = Signal(list)  # List of documents
-    documents_scored = Signal(list)  # List of (doc, score) tuples
-    citations_extracted = Signal(list)  # List of citations
-    preliminary_report_generated = Signal(str)  # Markdown report
-    counterfactual_analysis_complete = Signal(dict)  # Analysis results
-    final_report_generated = Signal(str)  # Markdown report
-
-
 class QtWorkflowExecutor(QObject):
     """
     Qt-specific workflow executor using real BMLibrarian agents.
 
-    This class wraps the agent-based workflow to work with Qt's
-    signal/slot architecture and threading model.
+    The executor holds the agents and the run's state (question, query,
+    documents, scored documents) and runs the query, search and report
+    steps; ``WorkflowThread`` drives the steps and emits every
+    progress/result signal to the tab.
 
     Workflow Steps:
     1. COLLECT_RESEARCH_QUESTION - Already have from UI
@@ -61,20 +35,6 @@ class QtWorkflowExecutor(QObject):
     10. EDIT_COMPREHENSIVE_REPORT - EditorAgent
     11. EXPORT_REPORT - Save to file
     """
-
-    # Signals
-    workflow_started = Signal()
-    workflow_completed = Signal(dict)
-    workflow_error = Signal(Exception)
-    status_message = Signal(str)
-
-    # Step-specific signals for UI updates
-    query_generated = Signal(str)  # Emitted when query is generated
-    documents_found = Signal(list)  # Emitted when documents are retrieved
-    scoring_progress = Signal(int, int)  # Emitted during scoring (current, total)
-    documents_scored = Signal(list)  # Emitted when all documents are scored
-    citations_extracted = Signal(list)  # Emitted when citations are extracted
-    preliminary_report_generated = Signal(str)  # Emitted when preliminary report is generated
 
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
         """
@@ -142,293 +102,6 @@ class QtWorkflowExecutor(QObject):
             else:
                 self.logger.warning(f"  ✗ {name}: NOT INITIALIZED")
 
-    def check_agents_ready(self) -> bool:
-        """
-        Check if all required agents are initialized.
-
-        Returns:
-            True if agents are ready, False otherwise
-        """
-        required_agents = [
-            'query_agent', 'scoring_agent', 'citation_agent',
-            'reporting_agent', 'editor_agent'
-        ]
-
-        for agent_name in required_agents:
-            if not self.agents.get(agent_name):
-                self.logger.error(f"Required agent '{agent_name}' not initialized")
-                return False
-
-        return True
-
-    def start_workflow(
-        self,
-        question: str,
-        max_results: int = 100,
-        min_relevant: int = 10,
-        interactive: bool = False,
-        counterfactual: bool = True,
-        scoring_threshold: float = DEFAULT_SCORING_THRESHOLD,
-        citation_extraction_threshold: float = DEFAULT_CITATION_EXTRACTION_THRESHOLD
-    ) -> None:
-        """
-        Start the research workflow (Phase 2: just validate, don't execute).
-
-        Args:
-            question: Research question
-            max_results: Maximum documents to retrieve
-            min_relevant: Minimum relevant documents to find
-            interactive: Enable interactive mode
-            counterfactual: Enable counterfactual analysis
-            scoring_threshold: Minimum score for citation extraction
-            citation_extraction_threshold: Citation relevance threshold
-        """
-        try:
-            # Validate agents
-            if not self.check_agents_ready():
-                error = RuntimeError("Agents not properly initialized")
-                self.workflow_error.emit(error)
-                return
-
-            # Store parameters
-            self.current_question = question
-            self.max_results = max_results
-            self.min_relevant = min_relevant
-            self.interactive_mode = interactive
-            self.counterfactual_enabled = counterfactual
-            self.scoring_threshold = scoring_threshold
-            self.citation_extraction_threshold = citation_extraction_threshold
-
-            # Log workflow start
-            self.logger.info(f"Workflow started: {question[:100]}")
-            self.logger.debug(
-                f"Parameters: max_results={max_results}, min_relevant={min_relevant}, "
-                f"interactive={interactive}, counterfactual={counterfactual}"
-            )
-
-            # Emit started signal
-            self.workflow_started.emit()
-
-            # Phase 3: Execute the actual workflow
-            self.execute_workflow()
-
-        except Exception as e:
-            self.logger.error(f"Error starting workflow: {e}", exc_info=True)
-            self.workflow_error.emit(e)
-
-    def _test_agent_connection(self) -> None:
-        """
-        Test that agents can be called (Phase 2 only).
-
-        This is a lightweight test to confirm agents are initialized
-        and can respond to method calls.
-        """
-        try:
-            self.status_message.emit("Testing agent connections...")
-
-            # Test QueryAgent
-            if self.query_agent:
-                # Use explicit runtime checks instead of assertions
-                if not hasattr(self.query_agent, 'convert_question'):
-                    raise RuntimeError("QueryAgent missing convert_question method")
-                self.status_message.emit("✓ QueryAgent ready")
-            else:
-                raise RuntimeError("QueryAgent not initialized")
-
-            # Test ScoringAgent
-            if self.scoring_agent:
-                if not hasattr(self.scoring_agent, 'evaluate_document'):
-                    raise RuntimeError("ScoringAgent missing evaluate_document method")
-                self.status_message.emit("✓ ScoringAgent ready")
-            else:
-                raise RuntimeError("ScoringAgent not initialized")
-
-            # Test CitationAgent
-            if self.citation_agent:
-                if not hasattr(self.citation_agent, 'process_scored_documents_for_citations'):
-                    raise RuntimeError("CitationAgent missing citation method")
-                self.status_message.emit("✓ CitationAgent ready")
-            else:
-                raise RuntimeError("CitationAgent not initialized")
-
-            # Test ReportingAgent
-            if self.reporting_agent:
-                if not hasattr(self.reporting_agent, 'generate_citation_based_report'):
-                    raise RuntimeError("ReportingAgent missing report method")
-                self.status_message.emit("✓ ReportingAgent ready")
-            else:
-                raise RuntimeError("ReportingAgent not initialized")
-
-            # Test EditorAgent
-            if self.editor_agent:
-                if not hasattr(self.editor_agent, 'edit_comprehensive_report'):
-                    raise RuntimeError("EditorAgent missing edit method")
-                self.status_message.emit("✓ EditorAgent ready")
-            else:
-                raise RuntimeError("EditorAgent not initialized")
-
-            # Test CounterfactualAgent (optional)
-            if self.counterfactual_enabled:
-                if self.counterfactual_agent:
-                    if not hasattr(self.counterfactual_agent, 'generate_counterfactual_questions'):
-                        raise RuntimeError("CounterfactualAgent missing counterfactual method")
-                    self.status_message.emit("✓ CounterfactualAgent ready")
-                else:
-                    self.logger.warning("CounterfactualAgent not initialized (optional)")
-
-            # All agents passed
-            self.status_message.emit("✅ All agents connected and ready!")
-
-            # Emit success (Phase 2: no actual results yet)
-            self.workflow_completed.emit({
-                'phase': 2,
-                'status': 'agents_connected',
-                'question': self.current_question,
-                'agents_ready': True
-            })
-
-        except Exception as e:
-            self.logger.error(f"Agent connection test failed: {e}", exc_info=True)
-            self.workflow_error.emit(e)
-
-    # ========================================================================
-    # Phase 3+ Methods (to be implemented later)
-    # ========================================================================
-
-    def execute_workflow(self) -> None:
-        """
-        Execute the workflow (Milestone 3: Add citations and preliminary report).
-
-        This method orchestrates the workflow steps in sequence.
-        For Milestone 3, we implement:
-        1. Query generation
-        2. Document search
-        3. Document scoring
-        4. Citation extraction (NEW)
-        5. Preliminary report generation (NEW)
-        6. Display results
-
-        Later milestones will add counterfactual analysis and final report.
-        """
-        try:
-            # Early check: if executor has been cleaned up, return silently
-            # This prevents errors when user closes tab during workflow execution
-            if not self._is_active:
-                self.logger.warning("Workflow executor is not active - aborting workflow")
-                return
-
-            # Step 1: Generate query
-            self.status_message.emit("🔍 Generating database query from your question...")
-            query = self.generate_query()
-
-            if not query:
-                raise ValueError("Query generation failed - no query returned")
-
-            # Step 2: Search for documents
-            self.status_message.emit(f"📚 Searching database with query: {query[:100]}...")
-            documents = self.search_documents(query)
-
-            if not documents:
-                self.status_message.emit("⚠️ No documents found")
-                self.workflow_completed.emit({
-                    'phase': 3,
-                    'milestone': 3,
-                    'status': 'no_documents',
-                    'question': self.current_question,
-                    'query': query,
-                    'documents': [],
-                    'scored_documents': [],
-                    'citations': [],
-                    'preliminary_report': '',
-                    'document_count': 0
-                })
-                return
-
-            # Step 3: Score documents for relevance
-            self.status_message.emit(f"📊 Scoring {len(documents)} documents for relevance...")
-            scored_documents = self.score_documents(documents)
-
-            if not scored_documents:
-                self.status_message.emit("⚠️ No documents could be scored")
-                self.workflow_completed.emit({
-                    'phase': 3,
-                    'milestone': 3,
-                    'status': 'no_scores',
-                    'question': self.current_question,
-                    'query': query,
-                    'documents': documents,
-                    'scored_documents': [],
-                    'citations': [],
-                    'preliminary_report': '',
-                    'document_count': len(documents)
-                })
-                return
-
-            # Step 4: Extract citations from high-scoring documents (NEW in Milestone 3)
-            high_scoring = len([
-                d for d, s in scored_documents
-                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.scoring_threshold
-            ])
-            self.status_message.emit(
-                f"💬 Extracting citations from {high_scoring} high-scoring documents..."
-            )
-            citations = self.extract_citations(scored_documents, score_threshold=self.scoring_threshold)
-
-            # Emit citations signal for UI update
-            self.citations_extracted.emit(citations)
-
-            if not citations:
-                self.status_message.emit("⚠️ No citations could be extracted")
-                self.workflow_completed.emit({
-                    'phase': 3,
-                    'milestone': 3,
-                    'status': 'no_citations',
-                    'question': self.current_question,
-                    'query': query,
-                    'documents': documents,
-                    'scored_documents': scored_documents,
-                    'citations': [],
-                    'preliminary_report': '',
-                    'document_count': len(documents),
-                    'high_scoring_count': high_scoring
-                })
-                return
-
-            # Step 5: Generate preliminary report (NEW in Milestone 3)
-            self.status_message.emit(
-                f"📄 Generating preliminary report from {len(citations)} citations..."
-            )
-            preliminary_report = self.generate_preliminary_report(citations)
-
-            # Emit preliminary report signal for UI update
-            self.preliminary_report_generated.emit(preliminary_report)
-
-            # Step 6: Emit completion with all results
-            self.status_message.emit(
-                f"✅ Workflow complete! {len(citations)} citations, "
-                f"{len(preliminary_report)} character report"
-            )
-
-            self.workflow_completed.emit({
-                'phase': 3,
-                'milestone': 3,
-                'status': 'preliminary_report_completed',
-                'question': self.current_question,
-                'query': query,
-                'documents': documents,
-                'scored_documents': scored_documents,
-                'citations': citations,
-                'preliminary_report': preliminary_report,
-                'document_count': len(documents),
-                'high_scoring_count': high_scoring,
-                'citation_count': len(citations),
-                'report_length': len(preliminary_report)
-            })
-
-        except Exception as e:
-            self.logger.error(f"Workflow execution failed: {e}", exc_info=True)
-            self.workflow_error.emit(e)
-
     def generate_query(self) -> str:
         """
         Generate PostgreSQL tsquery from research question.
@@ -447,8 +120,6 @@ class QtWorkflowExecutor(QObject):
             to avoid unnecessary errors.
         """
         if not self._is_active:
-            # This should be caught by execute_workflow's early check
-            # If we reach here, it means the method was called directly
             self.logger.warning("Attempted to generate query after executor cleanup")
             raise RuntimeError(
                 "Workflow executor is not active - cannot generate query. "
@@ -479,9 +150,6 @@ class QtWorkflowExecutor(QObject):
 
             # Store query for methodology metadata
             self.generated_query = query
-
-            # Emit query_generated signal for UI update
-            self.query_generated.emit(query)
 
             return query
 
@@ -522,127 +190,10 @@ class QtWorkflowExecutor(QObject):
             # Store documents in workflow state
             self.documents = documents
 
-            # Emit documents_found signal for UI update
-            self.documents_found.emit(documents)
-
             return documents
 
         except Exception as e:
             self.logger.error(f"Document search failed: {e}", exc_info=True)
-            raise
-
-    def score_documents(self, documents: list) -> list:
-        """
-        Score documents for relevance using DocumentScoringAgent.
-
-        Args:
-            documents: List of document dictionaries to score
-
-        Returns:
-            list: List of (document, score_result) tuples
-
-        Raises:
-            RuntimeError: If ScoringAgent is not initialized
-            Exception: If scoring fails
-        """
-        if not self.scoring_agent:
-            raise RuntimeError("ScoringAgent not initialized")
-
-        if not documents:
-            self.logger.warning("No documents to score")
-            return []
-
-        try:
-            self.logger.info(f"Scoring {len(documents)} documents for relevance...")
-
-            scored_documents = []
-            total = len(documents)
-
-            for i, doc in enumerate(documents, 1):
-                # Score this document
-                score_result = self.scoring_agent.evaluate_document(
-                    user_question=self.current_question,
-                    document=doc
-                )
-
-                if score_result:
-                    scored_documents.append((doc, score_result))
-
-                    # Emit progress for every document
-                    self.scoring_progress.emit(i, total)
-
-                    # Log progress every 10 documents or at end
-                    if i % 10 == 0 or i == total:
-                        self.status_message.emit(f"📊 Scored {i}/{total} documents...")
-                        self.logger.debug(f"Progress: {i}/{total} documents scored")
-
-            self.logger.info(f"Successfully scored {len(scored_documents)} documents")
-
-            # Store in workflow state
-            self.scored_documents = scored_documents
-
-            # Emit signal for UI update
-            self.documents_scored.emit(scored_documents)
-
-            return scored_documents
-
-        except Exception as e:
-            self.logger.error(f"Document scoring failed: {e}", exc_info=True)
-            raise
-
-    def extract_citations(self, scored_documents: list, score_threshold: float = 3.0) -> list:
-        """
-        Extract citations from high-scoring documents.
-
-        Args:
-            scored_documents: List of (document, score_result) tuples
-            score_threshold: Minimum score to include for citation extraction
-
-        Returns:
-            list: List of citations extracted from documents
-
-        Raises:
-            RuntimeError: If CitationAgent is not initialized
-            Exception: If citation extraction fails
-        """
-        if not self.citation_agent:
-            raise RuntimeError("CitationAgent not initialized")
-
-        if not scored_documents:
-            self.logger.warning("No scored documents to extract citations from")
-            return []
-
-        try:
-            # Filter documents above threshold
-            high_scoring = [
-                (doc, score_result) for doc, score_result in scored_documents
-                if isinstance(score_result.get('score'), (int, float)) and score_result.get('score', 0) >= score_threshold
-            ]
-
-            self.logger.info(
-                f"Extracting citations from {len(high_scoring)} documents (score >= {score_threshold})"
-            )
-
-            if not high_scoring:
-                self.logger.warning(f"No documents meet the threshold of {score_threshold}")
-                return []
-
-            # Call citation agent to extract citations
-            citations = self.citation_agent.process_scored_documents_for_citations(
-                user_question=self.current_question,
-                scored_documents=high_scoring,
-                score_threshold=score_threshold
-            )
-
-            self.logger.info(f"Successfully extracted {len(citations)} citations")
-
-            # Store in workflow state
-            self.citations = citations
-
-            return citations
-
-        except Exception as e:
-            self.logger.error(f"Citation extraction failed: {e}", exc_info=True)
             raise
 
     def _generate_methodology_metadata(self) -> Optional['MethodologyMetadata']:

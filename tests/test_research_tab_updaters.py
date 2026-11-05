@@ -25,8 +25,8 @@ try:
     from bmlibrarian.gui.qt.plugins.research.tab_updaters import (
         clear_layout_widgets,
         populate_unscored_documents,
-        update_literature_tab,
-        update_citations_tab,
+        add_single_scored_document,
+        add_single_citation,
         update_counterfactual_tab,
     )
     QT_AVAILABLE = True
@@ -42,8 +42,8 @@ except ImportError:
     UIConstants = None
     clear_layout_widgets = None
     populate_unscored_documents = None
-    update_literature_tab = None
-    update_citations_tab = None
+    add_single_scored_document = None
+    add_single_citation = None
     update_counterfactual_tab = None
 
 pytestmark = pytest.mark.skipif(not QT_AVAILABLE, reason="Qt/PySide6 not available in this environment")
@@ -224,185 +224,6 @@ class TestPopulateUnscoredDocuments(unittest.TestCase):
         )
 
         self.assertEqual(len(self.card_factory.cards_created), 3)
-
-
-class TestUpdateLiteratureTab(unittest.TestCase):
-    """Test cases for update_literature_tab function."""
-
-    @classmethod
-    def setUpClass(cls):
-        """Set up QApplication for all tests."""
-        if not QApplication.instance():
-            cls.app = QApplication([])
-        else:
-            cls.app = QApplication.instance()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.scale_dict = {
-            'font_xlarge': 14,
-            'font_large': 12,
-            'font_medium': 11,
-            'font_normal': 10,
-            'font_small': 9,
-            'spacing_large': 20,
-            'spacing_medium': 10,
-            'spacing_small': 5,
-            'padding_small': 5,
-            'padding_medium': 10,
-            'radius_medium': 8,
-            'radius_small': 4,
-            'control_height_large': 40,
-            'control_height_xlarge': 60,
-        }
-        self.ui = UIConstants(self.scale_dict)
-        self.container = QWidget()
-        self.layout = QVBoxLayout(self.container)
-        self.card_factory = MockCardFactory()
-        self.logger = logging.getLogger('test')
-
-    def tearDown(self):
-        """Clean up widgets."""
-        self.container.deleteLater()
-
-    def test_returns_count_of_documents(self):
-        """Test that function returns document count."""
-        scored_docs = [
-            ({"doc_id": 1, "title": "Doc 1"}, {"score": 4.5, "reasoning": "Good"}),
-            ({"doc_id": 2, "title": "Doc 2"}, {"score": 3.0, "reasoning": "OK"}),
-        ]
-
-        count = update_literature_tab(
-            self.layout, scored_docs, self.card_factory, self.ui, self.logger
-        )
-
-        self.assertEqual(count, 2)
-
-    def test_adds_widgets_for_scored_documents(self):
-        """Test that widgets are added for scored documents."""
-        scored_docs = [
-            ({"doc_id": 1, "title": "Doc 1"}, {"score": 4.5, "reasoning": "Good"}),
-        ]
-
-        update_literature_tab(
-            self.layout, scored_docs, self.card_factory, self.ui, self.logger
-        )
-
-        self.assertGreater(self.layout.count(), 0)
-
-    def test_handles_empty_scored_list(self):
-        """Test that empty scored list is handled."""
-        count = update_literature_tab(
-            self.layout, [], self.card_factory, self.ui, self.logger
-        )
-
-        self.assertEqual(count, 0)
-
-    def test_clears_existing_content_first(self):
-        """Test that existing content is cleared before adding new."""
-        # Add initial content
-        self.layout.addWidget(QLabel("Existing"))
-
-        scored_docs = [
-            ({"doc_id": 1, "title": "Doc 1"}, {"score": 4.5, "reasoning": "Good"}),
-        ]
-
-        update_literature_tab(
-            self.layout, scored_docs, self.card_factory, self.ui, self.logger
-        )
-
-        # Should not contain "Existing" label anymore
-        found_existing = False
-        for i in range(self.layout.count()):
-            item = self.layout.itemAt(i)
-            if item.widget() and isinstance(item.widget(), QLabel):
-                if "Existing" in item.widget().text():
-                    found_existing = True
-
-        self.assertFalse(found_existing)
-
-
-class TestUpdateCitationsTab(unittest.TestCase):
-    """Test cases for update_citations_tab function."""
-
-    @classmethod
-    def setUpClass(cls):
-        """Set up QApplication for all tests."""
-        if not QApplication.instance():
-            cls.app = QApplication([])
-        else:
-            cls.app = QApplication.instance()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.scale_dict = {
-            'font_xlarge': 14,
-            'font_large': 12,
-            'font_medium': 11,
-            'font_normal': 10,
-            'font_small': 9,
-            'spacing_large': 20,
-            'spacing_medium': 10,
-            'spacing_small': 5,
-            'padding_small': 5,
-            'padding_medium': 10,
-            'radius_medium': 8,
-            'radius_small': 4,
-            'control_height_large': 40,
-            'control_height_xlarge': 60,
-        }
-        self.ui = UIConstants(self.scale_dict)
-        self.container = QWidget()
-        self.layout = QVBoxLayout(self.container)
-        self.logger = logging.getLogger('test')
-
-    def tearDown(self):
-        """Clean up widgets."""
-        self.container.deleteLater()
-
-    def test_returns_count_of_citations(self):
-        """Test that function returns citation count."""
-        citations = [
-            {"citation_id": 1, "doc_id": 1, "title": "Paper 1", "passage": "Text 1"},
-            {"citation_id": 2, "doc_id": 2, "title": "Paper 2", "passage": "Text 2"},
-        ]
-
-        count = update_citations_tab(
-            self.layout, citations, self.ui, self.logger
-        )
-
-        self.assertEqual(count, 2)
-
-    def test_adds_widgets_for_citations(self):
-        """Test that widgets are added for citations."""
-        citations = [
-            {"citation_id": 1, "doc_id": 1, "title": "Paper 1", "passage": "Text 1", "reasoning": "Relevant"},
-        ]
-
-        update_citations_tab(self.layout, citations, self.ui, self.logger)
-
-        self.assertGreater(self.layout.count(), 0)
-
-    def test_handles_empty_citation_list(self):
-        """Test that empty citation list shows empty state."""
-        count = update_citations_tab(
-            self.layout, [], self.ui, self.logger
-        )
-
-        self.assertEqual(count, 0)
-
-    def test_handles_citations_with_missing_fields(self):
-        """Test that citations with missing fields are handled."""
-        citations = [
-            {"citation_id": 1},  # Missing most fields
-        ]
-
-        # Should not raise exception
-        count = update_citations_tab(
-            self.layout, citations, self.ui, self.logger
-        )
-
-        self.assertIsInstance(count, int)
 
 
 class TestUpdateCounterfactualTab(unittest.TestCase):
@@ -590,11 +411,9 @@ class TestTabUpdatersEdgeCases(unittest.TestCase):
         ]
 
         # Should not raise exception and should handle safely
-        count = update_citations_tab(
-            self.layout, citations, self.ui, self.logger
-        )
-
-        self.assertEqual(count, 1)
+        for i, citation in enumerate(citations, 1):
+            card = add_single_citation(self.layout, citation, i, self.ui, self.logger)
+            self.assertIsNotNone(card)
 
     def test_handles_score_edge_values(self):
         """Test that edge score values are handled."""
@@ -605,11 +424,11 @@ class TestTabUpdatersEdgeCases(unittest.TestCase):
             ({"doc_id": 4, "title": "Above max"}, {"score": 10.0, "reasoning": "High"}),
         ]
 
-        count = update_literature_tab(
-            self.layout, scored_docs, self.card_factory, self.ui, self.logger
-        )
-
-        self.assertEqual(count, 4)
+        for i, (doc, score) in enumerate(scored_docs, 1):
+            card = add_single_scored_document(
+                self.layout, doc, score, i, self.card_factory, self.ui, self.logger
+            )
+            self.assertIsNotNone(card)
 
 
 if __name__ == '__main__':

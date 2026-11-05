@@ -97,15 +97,16 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 - Split `config.py` (1,625 lines): extract paper-weight validation and
   OpenAthens URL validation; replace debug `print()` with logger calls.
 - Split `utils/browser_downloader.py` (2,402 lines) per download strategy.
-- **A shared Qt toast widget.** The project prefers dismissable toasts to
-  modal `QMessageBox`es (modals interrupt the user and can hang the Qt test
-  suite), but there is no toast component yet, so status messages still use
-  modals. Example: in the Paper Weight Lab, "find full text" can show the
+- **Move the remaining non-decision modals to toasts.** The shared toast
+  exists (`gui/qt/widgets/toast.py`, `show_toast(widget, message, level)`;
+  see `doc/developers/gui_architecture.md` "User Notifications") and the
+  research tab uses it (#332). About 39 other modules still call
+  `QMessageBox.warning/critical/information` for messages that need no
+  decision. Example: in the Paper Weight Lab, "find full text" can show the
   verification prompt and then a "Full Text Not Available" warning
-  (`search_tab._continue_with_abstract`), and that warning repeats what the
-  progress dialog already says. Build one toast under `gui/qt/widgets/`,
-  styled through the stylesheet generator and sized with `dpi_scale`, then
-  move non-decision modals over to it.
+  (`search_tab._continue_with_abstract`) that repeats what the progress
+  dialog already says. Convert tab by tab; switch each tab's tests from
+  patching `QMessageBox` to patching `show_toast`.
 - Delete or de-duplicate the dormant `gui/qt/plugins/settings/` +
   `gui/qt/tabs/*` mirror of `gui/qt/plugins/configuration/`.
 - **Pool the Qt GUI session's DB connection.** Login (`gui/qt/core/

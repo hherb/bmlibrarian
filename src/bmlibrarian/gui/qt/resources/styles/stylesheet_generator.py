@@ -302,6 +302,49 @@ class StylesheetGenerator:
             }}
         """
 
+    def toast_stylesheet(
+        self,
+        object_name: str,
+        bg_color: str,
+        border_color: str,
+        text_color: str,
+    ) -> str:
+        """
+        Generate the stylesheet for a toast notification frame.
+
+        Args:
+            object_name: Object name of the toast frame (scopes the rules so
+                they do not cascade into unrelated widgets)
+            bg_color: Background color
+            border_color: Border (accent) color
+            text_color: Message and close-button text color
+
+        Returns:
+            Stylesheet for the frame, its message label and close button
+        """
+        s = self._s
+        return f"""
+            QFrame#{object_name} {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-left: {s['spacing_small']}px solid {border_color};
+                border-radius: {s['radius_small']}px;
+            }}
+            QFrame#{object_name} QLabel {{
+                color: {text_color};
+                background: transparent;
+                border: none;
+                font-size: {s['font_normal']}pt;
+            }}
+            QFrame#{object_name} QToolButton {{
+                color: {text_color};
+                background: transparent;
+                border: none;
+                font-size: {s['font_medium']}pt;
+                font-weight: bold;
+            }}
+        """
+
     def custom(self, template: str) -> str:
         """
         Generate custom stylesheet with access to all scale values.

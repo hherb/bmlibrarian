@@ -9,7 +9,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Slot
-from PySide6.QtWidgets import QMessageBox
+
+from ...widgets.toast import ToastLevel, show_toast
 
 if TYPE_CHECKING:
     from .research_tab import ResearchTabWidget
@@ -21,7 +22,7 @@ class WorkflowHandlersMixin:
 
     This mixin is designed to be used with ResearchTabWidget and provides
     all the signal handlers for workflow execution, including:
-    - Workflow lifecycle (started, completed, error)
+    - Workflow status, completion, error and cancellation
     - Step progress tracking
     - Query generation and document search
     - Document scoring
@@ -36,73 +37,11 @@ class WorkflowHandlersMixin:
     current_results: dict
     counterfactual_results: dict
     final_report_markdown: str
-    workflow_executor: any
     workflow_thread: any
 
     # ========================================================================
     # Workflow Lifecycle Handlers
     # ========================================================================
-
-    @Slot()
-    def _on_workflow_started(self: 'ResearchTabWidget') -> None:
-        """Handle workflow started signal."""
-        self.logger.info("Workflow started")
-        self.workflow_running = True
-
-        # Hide Start button, show Cancel button
-        self.start_button.setVisible(False)
-        self.cancel_button.setVisible(True)
-        self.cancel_button.setEnabled(True)
-
-        # Update status bar
-        self.status_label.setText("Running")
-        self.progress_label.setText("Starting research workflow...")
-
-        self.workflow_started.emit()
-
-    @Slot(dict)
-    def _on_workflow_completed(self: 'ResearchTabWidget', results: dict) -> None:
-        """Handle workflow completed signal."""
-        self.logger.info(f"Workflow completed: {results.get('status', 'unknown')}")
-        self.workflow_running = False
-
-        # Show Start button, hide Cancel button
-        self.start_button.setVisible(True)
-        self.start_button.setEnabled(True)
-        self.cancel_button.setVisible(False)
-
-        # Update status bar
-        self.status_label.setText("Completed")
-        self.progress_label.setText("Research workflow completed successfully")
-
-        self.current_results = results
-        self.workflow_completed.emit(results)
-
-        # Check which phase/milestone completed and show appropriate message
-        self._show_completion_message(results)
-
-    @Slot(Exception)
-    def _on_workflow_error(self: 'ResearchTabWidget', error: Exception) -> None:
-        """Handle workflow error signal."""
-        self.logger.error(f"Workflow error: {error}", exc_info=True)
-        self.workflow_running = False
-
-        # Show Start button, hide Cancel button
-        self.start_button.setVisible(True)
-        self.start_button.setEnabled(True)
-        self.cancel_button.setVisible(False)
-
-        # Update status bar
-        self.status_label.setText("Error")
-        self.progress_label.setText("Workflow failed - see error message")
-
-        self.workflow_error.emit(error)
-
-        QMessageBox.critical(
-            self,
-            "Workflow Error",
-            f"An error occurred during workflow execution:\n\n{str(error)}"
-        )
 
     @Slot(str)
     def _on_workflow_status(self: 'ResearchTabWidget', message: str) -> None:
@@ -111,62 +50,6 @@ class WorkflowHandlersMixin:
         # Update progress label with status messages
         self.progress_label.setText(message)
         self.status_message.emit(message)
-
-    def _show_completion_message(self: 'ResearchTabWidget', results: dict) -> None:
-        """Show appropriate completion message based on phase/milestone."""
-        phase = results.get('phase', 'unknown')
-        milestone = results.get('milestone', None)
-
-        if phase == 2:
-            # Phase 2: Agent connection test
-            QMessageBox.information(
-                self,
-                "Phase 2 Complete - Agents Connected!",
-                f"Research question: {results.get('question', 'N/A')}\n\n"
-                "All agents are initialized and ready!\n\n"
-                "Agent connection test successful:\n"
-                "- QueryAgent\n"
-                "- ScoringAgent\n"
-                "- CitationAgent\n"
-                "- ReportingAgent\n"
-                "- EditorAgent\n"
-                "- CounterfactualAgent (optional)\n\n"
-                "Phase 3 will implement full workflow execution."
-            )
-        elif phase == 3 and milestone == 1:
-            # Milestone 1: Query generation and search complete
-            document_count = results.get('document_count', 0)
-            query = results.get('query', 'N/A')
-
-            QMessageBox.information(
-                self,
-                "Milestone 1 Complete - Search Successful!",
-                f"Research question: {results.get('question', 'N/A')}\n\n"
-                f"Search completed successfully!\n\n"
-                f"Query: {query[:100]}{'...' if len(query) > 100 else ''}\n\n"
-                f"Found {document_count} documents\n\n"
-                "Check the 'Search' tab to see the query and results summary."
-            )
-        elif phase == 3 and milestone == 3:
-            # Milestone 3: Citations and preliminary report complete
-            document_count = results.get('document_count', 0)
-            citation_count = results.get('citation_count', 0)
-            word_count = len(results.get('preliminary_report', '').split())
-
-            QMessageBox.information(
-                self,
-                "Milestone 3 Complete - Report Generated!",
-                f"Research question: {results.get('question', 'N/A')}\n\n"
-                f"Research workflow completed successfully!\n\n"
-                f"Results:\n"
-                f"- {document_count} documents found and scored\n"
-                f"- {citation_count} citations extracted\n"
-                f"- Preliminary report generated (~{word_count} words)\n\n"
-                "Check the tabs:\n"
-                "- 'Citations' tab - Extracted citations\n"
-                "- 'Preliminary' tab - Generated report\n\n"
-                "Next milestone will add counterfactual analysis."
-            )
 
     # ========================================================================
     # Workflow Thread Signal Handlers
@@ -284,18 +167,13 @@ class WorkflowHandlersMixin:
         self.cancel_button.setVisible(False)
 
         # Update status bar
-        self.progress_label.setText("Workflow failed - see error message")
+        self.progress_label.setText("Workflow failed - see the error notification")
         self.status_label.setText("Error")
 
         # Emit error signal
         self.workflow_error.emit(error)
 
-        # Show error dialog
-        QMessageBox.critical(
-            self,
-            "Workflow Error",
-            f"An error occurred during workflow execution:\n\n{str(error)}"
-        )
+        show_toast(self, f"Research workflow failed: {error}", ToastLevel.ERROR)
 
     @Slot()
     def _on_thread_workflow_cancelled(self: 'ResearchTabWidget') -> None:

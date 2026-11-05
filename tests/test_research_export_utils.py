@@ -25,6 +25,7 @@ try:
         save_markdown_report,
         export_json_report,
     )
+    from bmlibrarian.gui.qt.widgets.toast import ToastLevel
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
@@ -33,6 +34,7 @@ except ImportError:
     show_save_error = None
     save_markdown_report = None
     export_json_report = None
+    ToastLevel = None
 
 pytestmark = pytest.mark.skipif(not QT_AVAILABLE, reason="Qt/PySide6 not available in this environment")
 
@@ -203,8 +205,8 @@ class TestShowSaveSuccess(unittest.TestCase):
         """Set up test fixtures."""
         self.mock_parent = Mock()
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_information_dialog(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_information_dialog(self, mock_toast):
         """Test that information dialog is shown."""
         show_save_success(
             self.mock_parent,
@@ -213,10 +215,11 @@ class TestShowSaveSuccess(unittest.TestCase):
             "Report"
         )
 
-        mock_msgbox.information.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.SUCCESS)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_includes_file_info_in_message(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_includes_file_info_in_message(self, mock_toast):
         """Test that file info is included in message."""
         content = "Test content with some words"
 
@@ -228,14 +231,14 @@ class TestShowSaveSuccess(unittest.TestCase):
         )
 
         # Get the message passed to information()
-        call_args = mock_msgbox.information.call_args
-        message = call_args[0][2]  # Third positional argument is message
+        call_args = mock_toast.call_args
+        message = call_args[0][1]  # Second positional argument is the message
 
         self.assertIn("file.md", message)
         self.assertIn("KB", message)  # File size
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_logs_when_logger_provided(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_logs_when_logger_provided(self, mock_toast):
         """Test that logger is called when provided."""
         mock_logger = Mock()
 
@@ -249,8 +252,8 @@ class TestShowSaveSuccess(unittest.TestCase):
 
         mock_logger.info.assert_called_once()
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_calls_status_callback(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_calls_status_callback(self, mock_toast):
         """Test that status callback is called when provided."""
         mock_callback = Mock()
 
@@ -272,8 +275,8 @@ class TestShowSaveError(unittest.TestCase):
         """Set up test fixtures."""
         self.mock_parent = Mock()
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_critical_dialog(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_critical_dialog(self, mock_toast):
         """Test that critical dialog is shown."""
         show_save_error(
             self.mock_parent,
@@ -281,10 +284,11 @@ class TestShowSaveError(unittest.TestCase):
             "file"
         )
 
-        mock_msgbox.critical.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.ERROR)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_includes_error_message(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_includes_error_message(self, mock_toast):
         """Test that error message is included."""
         show_save_error(
             self.mock_parent,
@@ -292,13 +296,13 @@ class TestShowSaveError(unittest.TestCase):
             "file"
         )
 
-        call_args = mock_msgbox.critical.call_args
-        message = call_args[0][2]
+        call_args = mock_toast.call_args
+        message = call_args[0][1]
 
         self.assertIn("Permission denied", message)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_logs_error_when_logger_provided(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_logs_error_when_logger_provided(self, mock_toast):
         """Test that error is logged when logger provided."""
         mock_logger = Mock()
 
@@ -325,25 +329,27 @@ class TestSaveMarkdownReport(unittest.TestCase):
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_warning_when_no_content(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_warning_when_no_content(self, mock_toast):
         """Test that warning is shown when report content is empty."""
         result = save_markdown_report(self.mock_parent, "")
 
         self.assertFalse(result)
-        mock_msgbox.warning.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.WARNING)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_warning_when_content_is_none(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_warning_when_content_is_none(self, mock_toast):
         """Test that warning is shown when report content is None."""
         result = save_markdown_report(self.mock_parent, None)
 
         self.assertFalse(result)
-        mock_msgbox.warning.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.WARNING)
 
     @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_returns_false_when_user_cancels(self, mock_msgbox, mock_dialog):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_returns_false_when_user_cancels(self, mock_toast, mock_dialog):
         """Test that False is returned when user cancels file dialog."""
         mock_dialog.getSaveFileName.return_value = ("", "")
 
@@ -352,8 +358,8 @@ class TestSaveMarkdownReport(unittest.TestCase):
         self.assertFalse(result)
 
     @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_saves_file_successfully(self, mock_msgbox, mock_dialog):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_saves_file_successfully(self, mock_toast, mock_dialog):
         """Test that file is saved successfully."""
         filename = os.path.join(self.temp_dir, "report.md")
         mock_dialog.getSaveFileName.return_value = (filename, "Markdown Files (*.md)")
@@ -379,16 +385,17 @@ class TestExportJsonReport(unittest.TestCase):
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_warning_when_no_results(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_warning_when_no_results(self, mock_toast):
         """Test that warning is shown when results are empty."""
         result = export_json_report(self.mock_parent, {}, "report content")
 
         self.assertFalse(result)
-        mock_msgbox.warning.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.WARNING)
 
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_shows_warning_when_no_report(self, mock_msgbox):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_shows_warning_when_no_report(self, mock_toast):
         """Test that warning is shown when report content is empty."""
         result = export_json_report(
             self.mock_parent,
@@ -397,11 +404,12 @@ class TestExportJsonReport(unittest.TestCase):
         )
 
         self.assertFalse(result)
-        mock_msgbox.warning.assert_called_once()
+        mock_toast.assert_called_once()
+        self.assertEqual(mock_toast.call_args[0][2], ToastLevel.WARNING)
 
     @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_returns_false_when_user_cancels(self, mock_msgbox, mock_dialog):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_returns_false_when_user_cancels(self, mock_toast, mock_dialog):
         """Test that False is returned when user cancels."""
         mock_dialog.getSaveFileName.return_value = ("", "")
 
@@ -414,8 +422,8 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertFalse(result)
 
     @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_exports_valid_json(self, mock_msgbox, mock_dialog):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_exports_valid_json(self, mock_toast, mock_dialog):
         """Test that valid JSON is exported."""
         import json
         filename = os.path.join(self.temp_dir, "results.json")
@@ -446,8 +454,8 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(data['final_report_markdown'], "# Test Report")
 
     @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QFileDialog')
-    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.QMessageBox')
-    def test_handles_unicode_in_json(self, mock_msgbox, mock_dialog):
+    @patch('bmlibrarian.gui.qt.plugins.research.export_utils.show_toast')
+    def test_handles_unicode_in_json(self, mock_toast, mock_dialog):
         """Test that unicode content is exported correctly."""
         import json
         filename = os.path.join(self.temp_dir, "unicode.json")
