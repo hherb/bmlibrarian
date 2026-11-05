@@ -20,7 +20,7 @@ import logging
 import sys
 from typing import Optional
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QInputDialog
+from PySide6.QtWidgets import QApplication, QMainWindow, QInputDialog
 from PySide6.QtCore import Qt
 from psycopg.rows import dict_row
 
@@ -99,16 +99,7 @@ class AuditValidationMainWindow(QMainWindow):
         self.plugin = AuditValidationPlugin()
         self.plugin.set_reviewer(self.reviewer_id, self.reviewer_name)
 
-        if not self.plugin.initialize():
-            QMessageBox.critical(
-                self,
-                "Initialization Error",
-                "Failed to initialize the audit validation plugin.\n"
-                "Please check your database connection settings."
-            )
-            return
-
-        # Create and set the main widget
+        # create_widget() connects to the database; on failure it shows an error label
         main_widget = self.plugin.create_widget(self)
         self.setCentralWidget(main_widget)
 

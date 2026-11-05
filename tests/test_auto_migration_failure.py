@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -260,6 +260,34 @@ class TestGetDbManagerRemembersFailure:
             database.get_db_manager()
         handler.assert_not_called()
 
+    def test_handler_calling_get_db_manager_does_not_deadlock(self) -> None:
+        """The handler runs outside the (non-reentrant) lock."""
+        import threading
+
+        seen: list = []
+
+        def handler(error: Exception) -> None:
+            """Ask for the manager again, as a careless handler might."""
+            try:
+                database.get_db_manager()
+            except MigrationError as again:
+                seen.append(again)
+
+        database.set_migration_failure_handler(handler)
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+
+        def first_call() -> None:
+            """The call that runs the failing migration."""
+            with pytest.raises(MigrationError):
+                database.get_db_manager()
+
+        with patch.object(database, "DatabaseManager", side_effect=error):
+            thread = threading.Thread(target=first_call, daemon=True)
+            thread.start()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert seen == [error]
+
 
 class TestLateMigrationFailureIsFatal:
     """A migration first failing after startup shows the fatal dialog (#381)."""
@@ -269,8 +297,12 @@ class TestLateMigrationFailureIsFatal:
         """No global manager, no stored error, a QApplication to deliver signals."""
         from PySide6.QtWidgets import QApplication
 
+        from bmlibrarian.gui.qt.core import schema_check
+
         monkeypatch.setattr(database, "_db_manager", None)
         monkeypatch.setattr(database, "_db_manager_error", None)
+        # A fresh notifier, so nothing queued here outlives the test
+        monkeypatch.setattr(schema_check, "_notifier", None)
         self.qapp = QApplication.instance() or QApplication([])
 
     def test_worker_thread_failure_reaches_gui_thread_and_quits(self) -> None:
@@ -304,13 +336,32 @@ class TestLateMigrationFailureIsFatal:
             thread.join()
             assert critical.call_count == 0  # queued, not shown on the worker
             deadline = time.monotonic() + 5
-            while not critical.called and time.monotonic() < deadline:
+            # The immediate exit, then the re-posted one
+            while fake_qapp.exit.call_count < 2 and time.monotonic() < deadline:
                 self.qapp.processEvents()
         assert worker_errors == [error]
         assert shown_in == [threading.main_thread()]
         assert critical.call_args.args[1] == schema_check.MIGRATION_FAILED_TITLE
         assert "035_x.sql" in critical.call_args.args[2]
-        fake_qapp.exit.assert_called_once_with(schema_check.MIGRATION_FAILED_EXIT_CODE)
+        fake_qapp.closeAllWindows.assert_called_once_with()
+        assert fake_qapp.exit.call_args_list == [call(schema_check.MIGRATION_FAILED_EXIT_CODE)] * 2
+
+    def test_exit_survives_a_modal_loop_before_app_exec(self) -> None:
+        """A failure handled in a nested loop before exec() still ends exec() with 1."""
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        notifier = schema_check._MigrationFailureNotifier()
+        with patch.object(schema_check.QMessageBox, "critical"), \
+             patch.object(schema_check.QApplication, "closeAllWindows"):
+            notifier.failed.emit("✗ Failed to apply 035_x.sql: denied")
+            modal = QEventLoop()  # stands in for a QMessageBox opened before exec()
+            QTimer.singleShot(0, modal.quit)
+            modal.exec()
+            # Without the re-posted exit this loop would run until the fallback
+            QTimer.singleShot(5000, lambda: self.qapp.exit(0))
+            assert self.qapp.exec() == schema_check.MIGRATION_FAILED_EXIT_CODE
 
     def test_startup_migration_failure_installs_no_handler(self) -> None:
         """The startup dialog already covers it; the window never starts."""
@@ -357,6 +408,15 @@ class TestDirectCallersUseSharedManager:
             gui.AuditValidationMainWindow._lookup_reviewer(window)
         assert window.reviewer_id == 7
         manager.close.assert_not_called()
+
+        # Building the window uses only methods the plugin has (no initialize())
+        window.setCentralWidget = MagicMock()
+        window._lookup_reviewer = MagicMock()
+        with patch.object(gui, "AuditValidationPlugin", autospec=True) as plugin_cls:
+            gui.AuditValidationMainWindow._initialize_plugin(window)
+        window.setCentralWidget.assert_called_once_with(
+            plugin_cls.return_value.create_widget.return_value
+        )
 
 
 def _exit_code(entry: Any) -> Any:
@@ -450,6 +510,19 @@ class TestStandaloneWindowsCheckSchema:
              patch.object(schema_check, "check_schema_current", return_value=False):
             assert _exit_code(getattr(lab, entry)) == 1
         window_cls.assert_not_called()
+
+    def test_pubmed_lab_returns_event_loop_exit_code(self) -> None:
+        """A late migration failure's exit code 1 reaches the caller (#381)."""
+        from bmlibrarian.gui.qt.core import schema_check
+        from bmlibrarian.gui.qt.resources.styles import theme_generator
+        from bmlibrarian.lab import pubmed_search_lab as lab
+
+        with patch.object(lab, "QApplication") as qapp_cls, \
+             patch.object(theme_generator, "generate_default_theme", return_value=""), \
+             patch.object(lab, "PubMedSearchLabWindow"), \
+             patch.object(schema_check, "check_schema_current", return_value=True):
+            qapp_cls.instance.return_value.exec.return_value = 1
+            assert lab.run_pubmed_search_lab() == 1
 
     @pytest.mark.parametrize("script, window, argv", [
         ("systematic_review_gui.py", "SystematicReviewMainWindow", ["--review-dir"]),

@@ -997,8 +997,12 @@ class PubMedSearchLabWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def run_pubmed_search_lab() -> None:
-    """Run the PubMed Search Lab application."""
+def run_pubmed_search_lab() -> int:
+    """Run the PubMed Search Lab application.
+
+    Returns:
+        The event loop's exit code (1 after a late migration failure, #381).
+    """
     app = QApplication.instance() or QApplication(sys.argv)
 
     # Apply stylesheet
@@ -1019,8 +1023,8 @@ def run_pubmed_search_lab() -> None:
     window = PubMedSearchLabWindow()
     window.show()
 
-    app.exec()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    run_pubmed_search_lab()
+    sys.exit(run_pubmed_search_lab())

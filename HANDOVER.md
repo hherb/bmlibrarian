@@ -15,10 +15,16 @@ off new work. Longer-term structural items live in
   decision: central fatal handler). `database.set_migration_failure_handler()`
   registers a function that `get_db_manager()` calls (outside its lock,
   handler errors logged) the first time it remembers a `MigrationError`.
-  `check_schema_current()` installs a Qt handler when startup could not
-  verify the schema: a `QObject` notifier created in the GUI thread queues
-  the same "Database Migration Failed" dialog onto it and calls
-  `QApplication.exit(MIGRATION_FAILED_EXIT_CODE)` (1). `audit_validation_gui.py`
+  `check_schema_current()` installs a Qt handler whenever it lets the window
+  start: a `QObject` notifier created in the GUI thread queues the same
+  "Database Migration Failed" dialog onto it, calls
+  `QApplication.closeAllWindows()` (the main window stops plugin workers in
+  `closeEvent`) and `QApplication.exit(MIGRATION_FAILED_EXIT_CODE)` (1), and
+  re-posts the exit with `QTimer.singleShot(0, …)` (an `exit()` from a
+  modal's loop before `app.exec()` is otherwise lost). `run_pubmed_search_lab()`
+  now returns `app.exec()` (it dropped the exit code). `audit_validation_gui.py`
+  no longer calls the nonexistent `plugin.initialize()` (it crashed every
+  start). `audit_validation_gui.py`
   (reviewer lookup), the audit validation plugin (its `cleanup()` no longer
   closes the shared pool), `scripts/pdflab.py` and `thesaurus_import_cli.py`
   use `get_db_manager()`; the GUIs skip their own error message on
@@ -291,7 +297,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-05
-  (#381 branch): **4694 passed, 53 skipped** in 7–17 min. Without
+  (#381 branch): **4696 passed, 53 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

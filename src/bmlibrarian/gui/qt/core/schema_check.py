@@ -11,7 +11,7 @@ app (#381).
 
 import logging
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class _MigrationFailureNotifier(QObject):
 
     @Slot(str)
     def _show_and_quit(self, message: str) -> None:
-        """Show the fatal migration dialog, then end the event loop.
+        """Show the fatal migration dialog, close the windows, end the event loop.
 
         Args:
             message: The migration error's text.
@@ -48,10 +48,21 @@ class _MigrationFailureNotifier(QObject):
             MIGRATION_FAILED_TITLE,
             f"{message}\n\n{MIGRATION_FAILED_HINT}",
         )
+        # exit() skips closeEvent, where the main window stops plugin workers
+        QApplication.closeAllWindows()
         QApplication.exit(MIGRATION_FAILED_EXIT_CODE)
+        # exit() only ends loops already running: if this ran in a modal's loop
+        # before app.exec(), the re-posted exit ends app.exec() too
+        QTimer.singleShot(0, _exit_migration_failed)
+
+
+def _exit_migration_failed() -> None:
+    """End the running event loop with ``MIGRATION_FAILED_EXIT_CODE``."""
+    QApplication.exit(MIGRATION_FAILED_EXIT_CODE)
 
 
 # Kept alive for the process; created by the first check_schema_current()
+# that lets the window start
 _notifier: _MigrationFailureNotifier | None = None
 
 
@@ -77,15 +88,15 @@ def _install_late_failure_handler() -> None:
 
 
 def check_schema_current() -> bool:
-    """Create the shared DatabaseManager, which applies pending migrations.
+    """Create the shared DatabaseManager (applying pending migrations) and install the late-failure handler.
 
     A migration that fails while being applied leaves the schema outdated,
     so every later write to the affected tables would fail: show the error
     and tell the caller not to start. Any other failure to create the
     manager (no credentials, server down) is left to the widgets, which
     report it when they use the database; if the migration then fails on
-    that later attempt, the same dialog is shown and the app quits with
-    ``MIGRATION_FAILED_EXIT_CODE``.
+    that later attempt, the same dialog is shown, the windows are closed and
+    the event loop exits with ``MIGRATION_FAILED_EXIT_CODE``.
 
     Needs a QApplication (it may show a dialog) and must run in the GUI
     thread. Call it before building the tool's window.

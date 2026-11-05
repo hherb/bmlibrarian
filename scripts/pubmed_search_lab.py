@@ -19,4 +19,4 @@ from bmlibrarian.lab.pubmed_search_lab import run_pubmed_search_lab
 
 
 if __name__ == "__main__":
-    run_pubmed_search_lab()
+    sys.exit(run_pubmed_search_lab())

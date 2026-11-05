@@ -355,14 +355,16 @@ _migration_failure_handler: Callable[[Exception], None] | None = None
 
 
 def set_migration_failure_handler(handler: Callable[[Exception], None] | None) -> None:
-    """Register the function told when creating the global manager fails on a migration.
+    """Set (replacing any previous one) the function told when creating the global manager fails on a migration.
 
     It is called once per remembered failure, with the ``MigrationError``, in
-    whichever thread called :func:`get_db_manager` (often a worker thread),
-    after the lock is released and before the error is raised to that
-    caller. The Qt apps use it to show one fatal "Database Migration Failed"
-    dialog however late the failure happens. Exceptions it raises are logged
-    and ignored.
+    the thread whose :func:`get_db_manager` call ran the failing migration
+    (often a worker thread), after the lock is released and before the error
+    is raised to that caller; later callers get the remembered error without
+    a call. A failure already remembered when the handler is set is never
+    reported to it. The Qt apps use it to show one fatal "Database Migration
+    Failed" dialog however late the failure happens. Exceptions it raises are
+    logged and ignored.
 
     Args:
         handler: The function, or None to remove it.
