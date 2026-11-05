@@ -150,15 +150,13 @@ class TestMeshImporter:
         assert importer.stats.concepts_imported == 0
 
     def test_importer_initialization_default_db(self):
-        """Test MeshImporter initialization with default DatabaseManager."""
-        with patch('thesaurus_import_cli.DatabaseManager') as mock_db_class:
-            mock_db_instance = MagicMock()
-            mock_db_class.return_value = mock_db_instance
-
+        """Without a manager, MeshImporter uses the shared one (#381)."""
+        with patch('thesaurus_import_cli.get_db_manager') as get_db_manager, \
+             patch('thesaurus_import_cli.DatabaseManager') as mock_db_class:
             importer = MeshImporter()
 
-            assert importer.db == mock_db_instance
-            mock_db_class.assert_called_once()
+            assert importer.db is get_db_manager.return_value
+            mock_db_class.assert_not_called()
 
     def test_import_mesh_xml_file_not_found(self, importer):
         """Test import with non-existent file."""

@@ -11,14 +11,14 @@ in-memory state tracking in agents. It supports:
 - Progress tracking with automatic updates
 
 Quick Start:
-    from bmlibrarian.database import DatabaseManager
+    from bmlibrarian.database import get_db_manager
     from bmlibrarian.evaluations import (
         EvaluationStore, EvaluatorRegistry,
         EvaluationType, RunType, CheckpointType
     )
 
     # Initialize
-    db = DatabaseManager()
+    db = get_db_manager()
     store = EvaluationStore(db)
 
     # Get or create evaluator

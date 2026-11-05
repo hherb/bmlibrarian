@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -232,6 +232,192 @@ class TestGetDbManagerRemembersFailure:
         assert cls.call_count == 1
         assert results == [manager] * 4
 
+    def test_handler_told_once_about_a_failure(self) -> None:
+        """The failure handler hears about the first failure only (#381)."""
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        handler = MagicMock()
+        database.set_migration_failure_handler(handler)
+        with patch.object(database, "DatabaseManager", side_effect=error):
+            for _ in range(3):
+                with pytest.raises(MigrationError):
+                    database.get_db_manager()
+        handler.assert_called_once_with(error)
+
+    def test_failing_handler_still_raises_migration_error(self) -> None:
+        """A broken handler can't hide the migration failure from the caller."""
+        database.set_migration_failure_handler(MagicMock(side_effect=RuntimeError("boom")))
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        with patch.object(database, "DatabaseManager", side_effect=error), \
+             pytest.raises(MigrationError, match="035_x.sql"):
+            database.get_db_manager()
+
+    def test_handler_not_told_about_other_errors(self) -> None:
+        """No credentials / server down is not a migration failure."""
+        handler = MagicMock()
+        database.set_migration_failure_handler(handler)
+        with patch.object(database, "DatabaseManager", side_effect=ValueError("no creds")), \
+             pytest.raises(ValueError):
+            database.get_db_manager()
+        handler.assert_not_called()
+
+    def test_handler_calling_get_db_manager_does_not_deadlock(self) -> None:
+        """The handler runs outside the (non-reentrant) lock."""
+        import threading
+
+        seen: list = []
+
+        def handler(error: Exception) -> None:
+            """Ask for the manager again, as a careless handler might."""
+            try:
+                database.get_db_manager()
+            except MigrationError as again:
+                seen.append(again)
+
+        database.set_migration_failure_handler(handler)
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+
+        def first_call() -> None:
+            """The call that runs the failing migration."""
+            with pytest.raises(MigrationError):
+                database.get_db_manager()
+
+        with patch.object(database, "DatabaseManager", side_effect=error):
+            thread = threading.Thread(target=first_call, daemon=True)
+            thread.start()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert seen == [error]
+
+
+class TestLateMigrationFailureIsFatal:
+    """A migration first failing after startup shows the fatal dialog (#381)."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_globals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No global manager, no stored error, a QApplication to deliver signals."""
+        from PySide6.QtWidgets import QApplication
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        monkeypatch.setattr(database, "_db_manager", None)
+        monkeypatch.setattr(database, "_db_manager_error", None)
+        # A fresh notifier, so nothing queued here outlives the test
+        monkeypatch.setattr(schema_check, "_notifier", None)
+        self.qapp = QApplication.instance() or QApplication([])
+
+    def test_worker_thread_failure_reaches_gui_thread_and_quits(self) -> None:
+        """Startup could not connect; a worker's later migration failure is fatal."""
+        import threading
+        import time
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        with patch.object(database, "get_db_manager", side_effect=ValueError("server down")):
+            assert schema_check.check_schema_current() is True
+
+        shown_in: list = []
+        worker_errors: list = []
+
+        def worker() -> None:
+            """Stand in for a widget's QThread creating the manager."""
+            try:
+                database.get_db_manager()
+            except MigrationError as e:
+                worker_errors.append(e)
+
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        fake_qapp = MagicMock()
+        with patch.object(database, "DatabaseManager", side_effect=error), \
+             patch.object(schema_check, "QApplication", fake_qapp), \
+             patch.object(schema_check.QMessageBox, "critical",
+                          side_effect=lambda *a: shown_in.append(threading.current_thread())) as critical:
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            assert critical.call_count == 0  # queued, not shown on the worker
+            deadline = time.monotonic() + 5
+            # The immediate exit, then the re-posted one
+            while fake_qapp.exit.call_count < 2 and time.monotonic() < deadline:
+                self.qapp.processEvents()
+        assert worker_errors == [error]
+        assert shown_in == [threading.main_thread()]
+        assert critical.call_args.args[1] == schema_check.MIGRATION_FAILED_TITLE
+        assert "035_x.sql" in critical.call_args.args[2]
+        fake_qapp.closeAllWindows.assert_called_once_with()
+        assert fake_qapp.exit.call_args_list == [call(schema_check.MIGRATION_FAILED_EXIT_CODE)] * 2
+
+    def test_exit_survives_a_modal_loop_before_app_exec(self) -> None:
+        """A failure handled in a nested loop before exec() still ends exec() with 1."""
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        from bmlibrarian.gui.qt.core import schema_check
+
+        notifier = schema_check._MigrationFailureNotifier()
+        with patch.object(schema_check.QMessageBox, "critical"), \
+             patch.object(schema_check.QApplication, "closeAllWindows"):
+            notifier.failed.emit("✗ Failed to apply 035_x.sql: denied")
+            modal = QEventLoop()  # stands in for a QMessageBox opened before exec()
+            QTimer.singleShot(0, modal.quit)
+            modal.exec()
+            # Without the re-posted exit this loop would run until the fallback
+            QTimer.singleShot(5000, lambda: self.qapp.exit(0))
+            assert self.qapp.exec() == schema_check.MIGRATION_FAILED_EXIT_CODE
+
+    def test_startup_migration_failure_installs_no_handler(self) -> None:
+        """The startup dialog already covers it; the window never starts."""
+        from bmlibrarian.gui.qt.core import schema_check
+
+        error = MigrationError("✗ Failed to apply 035_x.sql: denied")
+        with patch.object(database, "get_db_manager", side_effect=error), \
+             patch.object(schema_check.QMessageBox, "critical"):
+            assert schema_check.check_schema_current() is False
+        assert database._migration_failure_handler is None
+
+
+class TestDirectCallersUseSharedManager:
+    """Former ``DatabaseManager()`` callers reuse the shared manager (#381)."""
+
+    def test_audit_plugin_cleanup_keeps_shared_pool_open(self) -> None:
+        """The plugin releases its connection but doesn't close the app's pool."""
+        from bmlibrarian.gui.qt.plugins.audit_validation import plugin as plugin_mod
+
+        manager = MagicMock()
+        with patch.object(plugin_mod, "get_db_manager", return_value=manager), \
+             patch.object(plugin_mod, "AuditValidationDataManager"):
+            plugin = plugin_mod.AuditValidationPlugin()
+            assert plugin._initialize_database() is True
+            plugin.cleanup()
+        manager.acquire_persistent_connection.return_value.release.assert_called_once()
+        manager.close.assert_not_called()
+
+    def test_audit_gui_reviewer_lookup_uses_shared_manager(self) -> None:
+        """The reviewer lookup neither builds nor closes its own manager."""
+        import importlib.util
+
+        root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location("gui_audit_validation", root / "audit_validation_gui.py")
+        assert spec is not None and spec.loader is not None
+        gui = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gui)
+
+        manager = MagicMock()
+        cursor = manager.get_connection.return_value.__enter__.return_value.cursor.return_value
+        cursor.__enter__.return_value.fetchone.return_value = {"id": 7}
+        window = SimpleNamespace(reviewer_name="alice", reviewer_id=None)
+        with patch.object(gui, "get_db_manager", return_value=manager):
+            gui.AuditValidationMainWindow._lookup_reviewer(window)
+        assert window.reviewer_id == 7
+        manager.close.assert_not_called()
+
+        # Building the window uses only methods the plugin has (no initialize())
+        window.setCentralWidget = MagicMock()
+        window._lookup_reviewer = MagicMock()
+        with patch.object(gui, "AuditValidationPlugin", autospec=True) as plugin_cls:
+            gui.AuditValidationMainWindow._initialize_plugin(window)
+        window.setCentralWidget.assert_called_once_with(
+            plugin_cls.return_value.create_widget.return_value
+        )
+
 
 def _exit_code(entry: Any) -> Any:
     """Run a launcher entry point; return its exit code (returned or via sys.exit)."""
@@ -324,6 +510,19 @@ class TestStandaloneWindowsCheckSchema:
              patch.object(schema_check, "check_schema_current", return_value=False):
             assert _exit_code(getattr(lab, entry)) == 1
         window_cls.assert_not_called()
+
+    def test_pubmed_lab_returns_event_loop_exit_code(self) -> None:
+        """A late migration failure's exit code 1 reaches the caller (#381)."""
+        from bmlibrarian.gui.qt.core import schema_check
+        from bmlibrarian.gui.qt.resources.styles import theme_generator
+        from bmlibrarian.lab import pubmed_search_lab as lab
+
+        with patch.object(lab, "QApplication") as qapp_cls, \
+             patch.object(theme_generator, "generate_default_theme", return_value=""), \
+             patch.object(lab, "PubMedSearchLabWindow"), \
+             patch.object(schema_check, "check_schema_current", return_value=True):
+            qapp_cls.instance.return_value.exec.return_value = 1
+            assert lab.run_pubmed_search_lab() == 1
 
     @pytest.mark.parametrize("script, window, argv", [
         ("systematic_review_gui.py", "SystematicReviewMainWindow", ["--review-dir"]),
