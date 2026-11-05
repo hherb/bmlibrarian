@@ -32,19 +32,18 @@ Each queue task tracks:
 
 ### 1. Graceful Shutdown
 
-Automatically triggered when the process receives SIGTERM or SIGINT, or exits.
-The first `QueueManager` created in a process installs one `atexit` hook; the
-first one created *on the main thread* installs one SIGINT/SIGTERM handler for
-the whole process (if none is ever built on the main thread, no signal handler
+Automatically triggered when the process receives SIGTERM, or exits (including
+an uncaught Ctrl-C). The first `QueueManager` created in a process installs one
+`atexit` hook; the first one created *on the main thread* installs one SIGTERM
+handler for the whole process (if none is ever built on the main thread, no signal handler
 is installed). Every manager joins a weak registry, so creating many managers
 (e.g. one per test) installs nothing extra, and a manager that has been
 garbage-collected is no longer cleaned up.
 
 **Behavior**: In every live queue, tasks with status `PROCESSING` and this
 process's `process_id` are marked `FAILED` ("Process terminated" at exit,
-"Process terminated by signal N" on a signal). After a signal the process
-exits with status `128 + signum` (130 for Ctrl-C, 143 for SIGTERM), so shells
-and CI see the termination. A cleanup failure is written to stderr; a queue
+"Process terminated by signal N" on a signal). After SIGTERM the process
+exits with status `128 + signum` (143), so shells and CI see the termination. A cleanup failure is written to stderr; a queue
 whose database file has been deleted is skipped (reconnecting would recreate
 it empty). The signal handler waits at most `SIGNAL_CLEANUP_BUSY_TIMEOUT_MS`
 (1 s) for the SQLite write lock, since the interrupted code may be holding it;
@@ -54,8 +53,10 @@ Interrupted tasks are therefore `FAILED`, not resumable: to re-run interrupted
 work, resubmit it. SIGHUP (closing the terminal) is not handled; such tasks
 stay `PROCESSING` until `cleanup-dead` or `recover` marks them `FAILED`.
 
-QueueManager owns SIGINT once a main-thread manager exists, so Ctrl-C raises
-`SystemExit(130)` rather than `KeyboardInterrupt` in that process.
+SIGINT is left to the application: Ctrl-C stays a `KeyboardInterrupt`, so
+`except KeyboardInterrupt` handlers (CLI prompts, session-end logging) keep
+working. If it ends the process, the `atexit` hook fails the in-flight tasks;
+if the application catches it and carries on, they keep running.
 
 A worker thread whose queue file is deleted stops (event `worker_stopped`)
 instead of recreating an empty file on every poll.
@@ -65,22 +66,37 @@ instead of recreating an empty file on every poll.
 Detects and recovers tasks processing longer than specified timeout:
 
 ```python
-recovered = queue.recover_stuck_tasks(
+counts = queue.recover_stuck_tasks(
     stuck_timeout_minutes=30,    # Consider stuck after 30 minutes
-    mark_as_failed=False        # Reset to PENDING for retry
+    mark_as_failed=False,        # Reset to PENDING for retry
+    force=False,                 # Leave tasks of a running process alone
 )
+counts.reset, counts.failed, counts.skipped_running  # RecoveryCounts
 ```
 
 **Options**:
-- `mark_as_failed=False`: Reset stuck tasks whose process is still running to
-  PENDING for retry. The reset counts as a retry (`retry_count` + 1); a task
-  already at `max_retries` is marked FAILED ("retries exhausted") instead. A
-  task whose process has died is marked FAILED in either mode
+- `mark_as_failed=False`: Reset stuck tasks to PENDING for retry. The reset
+  counts as a retry (`retry_count` + 1); a task already at `max_retries` is
+  marked FAILED ("retries exhausted") instead. A task whose process has died
+  is marked FAILED in either mode
 - `mark_as_failed=True`: Permanently mark stuck tasks as FAILED
+- `force=False` (default): a task whose process is still running is skipped
+  and counted in `skipped_running` (its worker may just be slow).
+  `force=True` recovers it too (`queue_cli recover --force`)
+
+**Ownership**: the orchestrator passes the claim's `worker_id` to
+`complete_task` / `fail_task`, which write only while that worker still holds
+the task (status PROCESSING, same `worker_id`). A task recovered, re-claimed or
+cancelled meanwhile keeps its new state; the late result is discarded with a
+warning (`complete_task` returns False, `fail_task` None) and no
+`task_completed`/`task_failed` event is sent. Without `worker_id` the write is
+unconditional, as before.
 
 Note that "stuck" only means "processing longer than the timeout": a live
-process may still be working on a long task, and resetting it lets a second
-worker run it too.
+process may still be working on a long task, which is why its tasks are
+skipped unless forced. Forcing lets a second worker run the task again (side
+effects such as LLM calls are repeated); the first worker's result is then
+discarded.
 
 ### 3. Dead Process Cleanup
 
@@ -211,8 +227,9 @@ All recovery methods include comprehensive error handling:
 
 ```python
 try:
-    recovered = queue.recover_stuck_tasks()
-    logger.info(f"Recovered {recovered} stuck tasks")
+    counts = queue.recover_stuck_tasks()
+    logger.info(f"Recovered {counts.recovered} stuck tasks "
+                f"({counts.skipped_running} still running, skipped)")
 except Exception as e:
     logger.error(f"Recovery failed: {e}")
     # Continue with fallback strategy
@@ -260,11 +277,12 @@ while True:
 ```
 
 ### 3. Graceful Application Shutdown
-QueueManager installs a process-wide SIGINT/SIGTERM handler when the first
+QueueManager installs a process-wide SIGTERM handler when the first
 main-thread manager is created; it fails in-flight tasks and exits with
-`128 + signum`. An application handler installed *before* that is silently
-replaced; one installed *after* replaces QueueManager's, which then cleans up
-only through `atexit` ("Process terminated"). So install yours after creating
+`128 + signum`. It does not touch SIGINT. An application SIGTERM handler
+installed *before* that is silently replaced; one installed *after* replaces
+QueueManager's, which then cleans up only through `atexit` ("Process
+terminated"). So install yours after creating
 the orchestrator, and keep the exit status convention:
 
 ```python

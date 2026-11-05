@@ -323,8 +323,14 @@ else:
    timeout): re-queued like case 1, so the work is not discarded for good.
 5. **Any other error after the task was claimed**: FAILED, no retry
    (`Worker error: ...`). If even that write fails, a `task_stuck` progress
-   event and log entry say how to release the task (`queue_cli recover` /
-   `cleanup-dead`).
+   event and log entry say how to release the task (`queue_cli recover
+   --force` while this process runs, `cleanup-dead` after it has exited).
+6. **Task taken away while running** (recovered, re-claimed or cancelled):
+   the worker's result or failure is discarded with a warning; the queue keeps
+   the new state and no `task_completed`/`task_failed` event is sent.
+
+`task_failed` events carry `will_retry` (True when the task went back to
+PENDING), so a progress display need not report a retried task as lost.
 
 ### Recovery Mechanisms
 - **Queue persistence**: Tasks survive application crashes

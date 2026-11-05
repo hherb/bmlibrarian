@@ -171,6 +171,7 @@ def detailed_progress_callback(event_type, message, data=None):
     if event_type == "task_completed":
         print(f"[{timestamp}] ✅ Task completed: {message}")
     elif event_type == "task_failed":
+        # data["will_retry"]: True if the task went back to the queue
         print(f"[{timestamp}] ❌ Task failed: {message}")
     elif event_type == "batch_tasks_submitted":
         count = data.get("count", 0) if data else 0

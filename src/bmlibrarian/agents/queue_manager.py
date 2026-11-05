@@ -7,6 +7,7 @@ with orchestration and handover capabilities.
 
 import sqlite3
 import json
+import logging
 import uuid
 import threading
 import os
@@ -19,6 +20,8 @@ from enum import Enum
 from typing import Optional, Dict, Any, List, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # The atomic dequeue (get_next_task) relies on the SQL ``RETURNING`` clause,
 # which SQLite added in 3.35.0 (2021-03-12). Guard against older engines so a
@@ -43,8 +46,9 @@ SIGNAL_CLEANUP_BUSY_TIMEOUT_MS: int = 1_000
 # Shell convention for a process killed by a signal: exit status 128 + signum.
 SIGNAL_EXIT_STATUS_BASE: int = 128
 
-# Process-wide cleanup: one atexit hook and one SIGINT/SIGTERM handler cover
-# every live QueueManager. The once-flags below install them a single time
+# Process-wide cleanup: one atexit hook and one SIGTERM handler cover every
+# live QueueManager. SIGINT is left alone: Ctrl-C stays a KeyboardInterrupt
+# (callers catch it), and if it ends the process the atexit hook cleans up. The once-flags below install them a single time
 # however many managers are created; the WeakSet lets garbage-collected
 # managers drop out instead of being kept alive by the registry.
 _live_managers: "weakref.WeakSet[QueueManager]" = weakref.WeakSet()
@@ -74,7 +78,7 @@ def _cleanup_all_on_exit() -> None:
 
 
 def _handle_termination_signal(signum: int, frame: Any) -> None:
-    """SIGINT/SIGTERM handler: fail in-flight tasks, then exit 128 + signum."""
+    """SIGTERM handler: fail in-flight tasks, then exit 128 + signum."""
     for manager in list(_live_managers):
         manager._signal_handler(signum, frame)
     sys.exit(SIGNAL_EXIT_STATUS_BASE + signum)
@@ -83,7 +87,7 @@ def _handle_termination_signal(signum: int, frame: Any) -> None:
 def _register_manager(manager: "QueueManager") -> None:
     """Track a manager and install the process-wide handlers once.
 
-    Signal handlers can only be installed from the main thread (signal.signal()
+    The SIGTERM handler can only be installed from the main thread (signal.signal()
     raises ValueError otherwise), so a manager built on a worker thread (e.g. a
     Qt background worker) leaves them for the first main-thread construction.
     """
@@ -96,8 +100,31 @@ def _register_manager(manager: "QueueManager") -> None:
         if (not _signal_handlers_installed
                 and threading.current_thread() is threading.main_thread()):
             signal.signal(signal.SIGTERM, _handle_termination_signal)
-            signal.signal(signal.SIGINT, _handle_termination_signal)
             _signal_handlers_installed = True
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether a process with this id exists (owned by any user)."""
+    try:
+        os.kill(pid, 0)  # Signal 0 checks existence without signalling
+    except PermissionError:
+        return True  # exists, but belongs to another user
+    except OSError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class RecoveryCounts:
+    """What ``recover_stuck_tasks`` did with the stuck tasks it found."""
+    reset: int = 0             # back to PENDING (one retry spent)
+    failed: int = 0            # marked FAILED (dead process, out of retries, or mark_as_failed)
+    skipped_running: int = 0   # left PROCESSING: their process is still running
+
+    @property
+    def recovered(self) -> int:
+        """Tasks reset or failed."""
+        return self.reset + self.failed
 
 
 class TaskStatus(Enum):
@@ -338,53 +365,62 @@ class QueueManager:
             if needs_close:
                 conn.close()
     
-    def recover_stuck_tasks(self, stuck_timeout_minutes: int = 30, 
-                           mark_as_failed: bool = False) -> int:
+    def recover_stuck_tasks(self, stuck_timeout_minutes: int = 30,
+                            mark_as_failed: bool = False,
+                            force: bool = False) -> RecoveryCounts:
         """
         Recover tasks that have been stuck in PROCESSING status.
-        
+
+        A task whose process is still running is left alone unless ``force``:
+        its worker may just be slow (a long LLM call), and resetting it would
+        let a second worker repeat its side effects. When forced, the original
+        worker's later result is discarded (see ``complete_task``).
+
         Args:
             stuck_timeout_minutes: Consider tasks stuck if processing longer than this
-            mark_as_failed: If True, mark stuck tasks as failed. If False, a task
-                whose process is still running is reset to pending; the reset
-                counts as a retry, so a task that has used up ``max_retries`` is
-                marked failed instead. A task whose process has died is marked
-                failed in either mode.
-            
+            mark_as_failed: If True, mark stuck tasks as failed. If False, the
+                task is reset to pending; the reset counts as a retry, so a task
+                that has used up ``max_retries`` is marked failed instead. A task
+                whose process has died is marked failed in either mode.
+            force: Also recover tasks whose process is still running.
+
         Returns:
-            Number of tasks recovered
+            How many tasks were reset, failed, or skipped as still running.
         """
         cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=stuck_timeout_minutes)
-        
+        reset = failed = skipped_running = 0
+
         with self.lock:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
-                # Find stuck tasks
                 cursor = conn.execute("""
                     SELECT id, process_id, retry_count, max_retries FROM queue_tasks
                     WHERE status = ? AND started_at < ?
                 """, (TaskStatus.PROCESSING.value, cutoff_time.isoformat()))
-                
-                stuck_tasks = cursor.fetchall()
-                recovered_count = 0
-                
-                for task_id, process_id, retry_count, max_retries in stuck_tasks:
-                    # Check if the process is still running (if we have a process_id)
-                    process_dead = False
-                    if process_id:
-                        try:
-                            os.kill(process_id, 0)  # Signal 0 checks if process exists
-                        except (OSError, ProcessLookupError):
-                            process_dead = True
-                    
+
+                for task_id, process_id, retry_count, max_retries in cursor.fetchall():
+                    # A task without a process id has an unknown owner: recoverable.
+                    process_alive = bool(process_id) and _process_alive(process_id)
+                    process_dead = bool(process_id) and not process_alive
+                    if process_alive and not force:
+                        skipped_running += 1
+                        continue
+
                     # A reset to pending is a retry and spends the retry budget.
                     new_retry_count = retry_count + 1
-                    retries_exhausted = new_retry_count > max_retries
-
-                    # Recover the task
-                    if retries_exhausted and not (mark_as_failed or process_dead):
-                        completed_at = datetime.now(timezone.utc).isoformat()
+                    completed_at = datetime.now(timezone.utc).isoformat()
+                    if mark_as_failed or process_dead:
+                        conn.execute("""
+                            UPDATE queue_tasks
+                            SET status = ?, error_message = ?, completed_at = ?,
+                                process_id = NULL, worker_id = NULL
+                            WHERE id = ?
+                        """, (TaskStatus.FAILED.value,
+                              "Task stuck in processing (process terminated or timeout)",
+                              completed_at, task_id))
+                        failed += 1
+                    elif new_retry_count > max_retries:
                         conn.execute("""
                             UPDATE queue_tasks
                             SET status = ?, retry_count = ?, error_message = ?,
@@ -393,35 +429,24 @@ class QueueManager:
                         """, (TaskStatus.FAILED.value, new_retry_count,
                               "Task stuck in processing; retries exhausted",
                               completed_at, task_id))
-                    elif mark_as_failed or process_dead:
-                        # Mark as failed
-                        completed_at = datetime.now(timezone.utc).isoformat()
-                        conn.execute("""
-                            UPDATE queue_tasks 
-                            SET status = ?, error_message = ?, completed_at = ?, 
-                                process_id = NULL, worker_id = NULL
-                            WHERE id = ?
-                        """, (TaskStatus.FAILED.value, 
-                              "Task stuck in processing (process terminated or timeout)", 
-                              completed_at, task_id))
+                        failed += 1
                     else:
-                        # Reset to pending for retry
                         conn.execute("""
                             UPDATE queue_tasks
                             SET status = ?, retry_count = ?, started_at = NULL,
                                 process_id = NULL, worker_id = NULL
                             WHERE id = ?
                         """, (TaskStatus.PENDING.value, new_retry_count, task_id))
-                    
-                    recovered_count += 1
-                
+                        reset += 1
+
                 conn.commit()
-                return recovered_count
-                
+                return RecoveryCounts(reset=reset, failed=failed,
+                                      skipped_running=skipped_running)
+
             finally:
                 if needs_close:
                     conn.close()
-    
+
     def cleanup_dead_process_tasks(self) -> int:
         """
         Clean up tasks from processes that are no longer running.
@@ -440,13 +465,7 @@ class QueueManager:
                 """, (TaskStatus.PROCESSING.value,))
                 
                 process_ids = [row[0] for row in cursor.fetchall()]
-                dead_processes = []
-                
-                for pid in process_ids:
-                    try:
-                        os.kill(pid, 0)  # Check if process exists
-                    except (OSError, ProcessLookupError):
-                        dead_processes.append(pid)
+                dead_processes = [pid for pid in process_ids if not _process_alive(pid)]
                 
                 # Clean up tasks from dead processes
                 cleaned_count = 0
@@ -687,8 +706,27 @@ class QueueManager:
 
         return None
     
-    def complete_task(self, task_id: str, result: Dict[str, Any]) -> None:
+    @staticmethod
+    def _owner_clause(worker_id: Optional[str]) -> tuple:
+        """SQL condition (and params) that the task is still claimed by ``worker_id``."""
+        if worker_id is None:
+            return "", ()
+        return " AND status = ? AND worker_id = ?", (TaskStatus.PROCESSING.value, worker_id)
+
+    def complete_task(self, task_id: str, result: Dict[str, Any],
+                      worker_id: Optional[str] = None) -> bool:
         """Mark a task as completed with result.
+
+        Args:
+            task_id: Task to complete.
+            result: Result to store (must be JSON-serialisable).
+            worker_id: The claiming worker (``QueueTask.worker_id``). When
+                given, the result is stored only if that worker still holds the
+                task; if it was recovered, re-claimed or cancelled meanwhile,
+                the result is discarded with a warning.
+
+        Returns:
+            True if the result was stored.
 
         Raises:
             ResultNotSerializableError: ``result`` cannot be stored as JSON
@@ -698,67 +736,92 @@ class QueueManager:
             payload = json.dumps(result)
         except (TypeError, ValueError) as e:
             raise ResultNotSerializableError(f"{type(e).__name__}: {e}") from e
+        owner_sql, owner_params = self._owner_clause(worker_id)
         with self.lock:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
                 completed_at = datetime.now(timezone.utc).isoformat()
-                conn.execute("""
+                cursor = conn.execute(f"""
                     UPDATE queue_tasks
                     SET status = ?, result = ?, completed_at = ?
-                    WHERE id = ?
-                """, (TaskStatus.COMPLETED.value, payload, completed_at, task_id))
+                    WHERE id = ?{owner_sql}
+                """, (TaskStatus.COMPLETED.value, payload, completed_at, task_id,
+                      *owner_params))
                 conn.commit()
             finally:
                 if needs_close:
                     conn.close()
-    
-    def fail_task(self, task_id: str, error_message: str, retry: bool = True):
+        if cursor.rowcount == 0:
+            logger.warning(f"Task {task_id} was recovered, re-claimed, cancelled or "
+                           f"removed while running; its result was discarded")
+            return False
+        return True
+
+    def fail_task(self, task_id: str, error_message: str, retry: bool = True,
+                  worker_id: Optional[str] = None) -> Optional[TaskStatus]:
         """
         Mark a task as failed.
-        
+
         Args:
             task_id: Task to fail
             error_message: Error description
             retry: Whether to retry if retries remain
+            worker_id: The claiming worker (``QueueTask.worker_id``). When
+                given, nothing is written unless that worker still holds the
+                task (see ``complete_task``).
+
+        Returns:
+            ``TaskStatus.PENDING`` if the task will be retried,
+            ``TaskStatus.FAILED`` if it failed for good, or None if nothing was
+            written (task missing, or no longer held by ``worker_id``).
         """
+        owner_sql, owner_params = self._owner_clause(worker_id)
+        outcome: Optional[TaskStatus] = None
         with self.lock:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
-                # Get current task state
                 cursor = conn.execute("""
                     SELECT retry_count, max_retries FROM queue_tasks WHERE id = ?
                 """, (task_id,))
                 row = cursor.fetchone()
-                
-                if not row:
-                    return
-                
-                retry_count, max_retries = row
-                new_retry_count = retry_count + 1
-                
-                if retry and new_retry_count <= max_retries:
-                    # Reset to pending for retry
-                    conn.execute("""
-                        UPDATE queue_tasks 
-                        SET status = ?, retry_count = ?, error_message = ?, started_at = NULL
-                        WHERE id = ?
-                    """, (TaskStatus.PENDING.value, new_retry_count, error_message, task_id))
-                else:
-                    # Mark as permanently failed
-                    completed_at = datetime.now(timezone.utc).isoformat()
-                    conn.execute("""
-                        UPDATE queue_tasks 
-                        SET status = ?, retry_count = ?, error_message = ?, completed_at = ?
-                        WHERE id = ?
-                    """, (TaskStatus.FAILED.value, new_retry_count, error_message, completed_at, task_id))
-                
-                conn.commit()
+
+                if row:
+                    retry_count, max_retries = row
+                    new_retry_count = retry_count + 1
+
+                    if retry and new_retry_count <= max_retries:
+                        cursor = conn.execute(f"""
+                            UPDATE queue_tasks
+                            SET status = ?, retry_count = ?, error_message = ?, started_at = NULL
+                            WHERE id = ?{owner_sql}
+                        """, (TaskStatus.PENDING.value, new_retry_count, error_message,
+                              task_id, *owner_params))
+                        new_status = TaskStatus.PENDING
+                    else:
+                        completed_at = datetime.now(timezone.utc).isoformat()
+                        cursor = conn.execute(f"""
+                            UPDATE queue_tasks
+                            SET status = ?, retry_count = ?, error_message = ?, completed_at = ?
+                            WHERE id = ?{owner_sql}
+                        """, (TaskStatus.FAILED.value, new_retry_count, error_message,
+                              completed_at, task_id, *owner_params))
+                        new_status = TaskStatus.FAILED
+                    conn.commit()
+                    if cursor.rowcount:
+                        outcome = new_status
             finally:
                 if needs_close:
                     conn.close()
-    
+
+        if not row:
+            logger.warning(f"Task {task_id} not found; failure not recorded: {error_message}")
+        elif outcome is None:
+            logger.warning(f"Task {task_id} was recovered, re-claimed or cancelled while "
+                           f"running; its failure was discarded: {error_message}")
+        return outcome
+
     def get_task_status(self, task_id: str) -> Optional[QueueTask]:
         """Get current status of a specific task."""
         conn = self._get_connection()

@@ -772,20 +772,33 @@ class AgentOrchestrator:
         except Exception as fail_error:
             stuck_msg = (f"Task {task.id} is stuck in PROCESSING "
                          f"({type(fail_error).__name__}: {fail_error}); release it "
-                         f"with `queue_cli recover` or `queue_cli cleanup-dead`")
+                         f"with `queue_cli recover --force` (or `queue_cli cleanup-dead` "
+                         f"once this process has exited)")
             logger.exception(stuck_msg)
             self._notify_progress("task_stuck", stuck_msg, {
                 "task_id": task.id, "agent_type": agent_type, "error": stuck_msg})
 
     def _fail_task(self, task: QueueTask, agent_type: str, error_msg: str,
                    retry: bool) -> None:
-        """Fail a task in the queue and report it to the progress callbacks."""
-        self.queue.fail_task(task.id, error_msg, retry=retry)
-        self._notify_progress("task_failed", f"Task {task.id} failed", {
-            "task_id": task.id,
-            "agent_type": agent_type,
-            "error": error_msg
-        })
+        """Fail a task in the queue and report it to the progress callbacks.
+
+        ``task_failed`` carries ``will_retry`` (the task went back to PENDING).
+        Nothing is reported if the task was no longer this worker's (recovered
+        or cancelled meanwhile); the queue logs that.
+        """
+        outcome = self.queue.fail_task(task.id, error_msg, retry=retry,
+                                       worker_id=task.worker_id)
+        if outcome is None:
+            return
+        will_retry = outcome is TaskStatus.PENDING
+        self._notify_progress(
+            "task_failed",
+            f"Task {task.id} failed{'; will retry' if will_retry else ''}", {
+                "task_id": task.id,
+                "agent_type": agent_type,
+                "error": error_msg,
+                "will_retry": will_retry,
+            })
 
     def _run_task(self, agent_type: str, task: QueueTask) -> None:
         """Run one claimed task on the agent currently registered for its type.
@@ -830,7 +843,8 @@ class AgentOrchestrator:
             result_dict = {"result": result}
 
         try:
-            self.queue.complete_task(task.id, result_dict)
+            stored = self.queue.complete_task(task.id, result_dict,
+                                              worker_id=task.worker_id)
         except ResultNotSerializableError as e:
             error_msg = f"Task result is not JSON-serialisable: {e}"
             logger.exception(f"Task {task.id} failed: {error_msg}")
@@ -842,6 +856,8 @@ class AgentOrchestrator:
             logger.exception(f"Task {task.id} failed: {error_msg}")
             self._fail_task(task, agent_type, error_msg, retry=True)
             return
+        if not stored:
+            return  # recovered or cancelled while running; the queue logged it
 
         self._notify_progress("task_completed", f"Task {task.id} completed", {
             "task_id": task.id,

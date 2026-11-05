@@ -10,6 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Queue follow-ups: Ctrl-C, task ownership, recovery reporting**
+  (2026-11-05, closes #384, #385, #386). QueueManager installs a SIGTERM
+  handler only; SIGINT is left alone, so Ctrl-C stays `KeyboardInterrupt`
+  (CLI `except KeyboardInterrupt` / session-end logging work again) and an
+  uncaught one fails in-flight tasks through the `atexit` hook.
+  `complete_task(…, worker_id=)` / `fail_task(…, worker_id=)` write only
+  while that worker still holds the task (PROCESSING, same `worker_id`); the
+  orchestrator passes `task.worker_id`, and a late result/failure is
+  discarded with a warning and no event (`complete_task` → bool,
+  `fail_task` → `TaskStatus.PENDING`/`FAILED`/None; a missing row is logged).
+  `recover_stuck_tasks(force=False)` skips tasks whose process is alive and
+  returns `RecoveryCounts(reset, failed, skipped_running)`; `queue_cli
+  recover` prints each count and has `--force`. `_process_alive` treats
+  `PermissionError` as alive (was "dead"; also in `cleanup_dead_process_tasks`).
+  `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
+  `queue_system_architecture.md`, `queue_management_guide.md`,
+  `queue_system_guide.md`. Tests: `tests/test_queue_ownership.py`.
 - **Queue worker robustness** (2026-11-05, closes #294). The orchestrator
   worker (`_process_agent_tasks(agent_type)` → `_run_task`) looks the agent
   up per task, so re-registering a type takes effect on its next task. An
@@ -30,10 +47,8 @@ off new work. Longer-term structural items live in
   fails a task out of retries (dead-process tasks are failed in either
   mode). Docs: `queue_recovery.md`, `queue_system_architecture.md`,
   `doc/users/queue_management_guide.md`, `queue_system_guide.md`. Tests:
-  `tests/test_queue_worker_robustness.py`. Follow-ups: #384 (Ctrl-C is
-  `SystemExit`, not `KeyboardInterrupt`, in the CLI), #385 (no ownership
-  check when a recovered task's worker finishes), #386 (recover counts,
-  `task_failed` retry flag).
+  `tests/test_queue_worker_robustness.py`. Follow-ups #384–#386: done
+  (entry above).
 - **A migration that fails after startup is fatal too; no direct
   `DatabaseManager()` callers left** (2026-11-05, closes #381; owner
   decision: central fatal handler). `database.set_migration_failure_handler()`
@@ -159,72 +174,14 @@ off new work. Longer-term structural items live in
   `HOME` at `tmp_path` (an empty `~/test_pdfs` from March was removed).
   Tests: `tests/test_qt_research_tab.py`,
   `tests/test_undetected_chrome_download_dir.py`.
-- **Lab cleanup, transparency batches, research-tab settings** (2026-10-30,
-  closes #331, #370, #330). The PICO, Study Assessment and PRISMA labs'
-  `cleanup()` calls `orchestrator.stop_processing()` (PICO/Study called a
-  nonexistent `shutdown()`, PRISMA called nothing; the GUI never starts
-  orchestrator processing, so this is hygiene). `TransparencyAgent.assess_batch`
-  checks the LLM connection once per batch (was 2 requests per document);
-  if it fails, every document is recorded as failed with that reason
-  (stats += N). Research tab: a settings change marks the agents stale and
-  the **next Start** rebuilds them via `AgentFactory.create_all_agents`
-  (keeping the main window's `_audit_conn`/`_db_manager`) and replaces the
-  workflow executor (it used to rebuild agents inline without audit tracking
-  and keep running the old executor); a failed rebuild aborts that start
-  with the error and is retried next time (only the research tab uses the
-  main window's agents). Review follow-ups: the rebuild stops the old
-  orchestrator; a failed rebuild says "Settings Not Applied"; PICO/Study
-  lab `print`s are logger calls; `BaseAgent.test_connection` logs the
-  traceback. Main Settings tab follow-up: #372, done (entry above).
-  Tests: `tests/test_lab_tab_cleanup.py`, `tests/test_qt_research_tab.py`,
-  `tests/test_transparency_agent.py`.
-- **TransparencyAgent failures are surfaced** (2026-10-30, closes #274).
-  `assess_transparency` raises `TransparencyAssessmentError` (reason in the
-  message: no Ollama, no text, unparseable/invalid LLM reply, request
-  failure) instead of returning `None`; `assess_batch` returns
-  `TransparencyBatchResult(assessments, failures=[(doc_id, reason)])`;
-  `total_assessments` counts every attempt (body moved to
-  `_assess_document`). `TransparencyAssessment.low_confidence` is set below
-  `min_confidence` (summary shows "LOW CONFIDENCE"; not a DB column).
-  Unrated `funding_disclosure_quality` / `coi_disclosure_quality` /
-  `industry_funding_confidence` are `None` ("not assessed", NULL in the DB;
-  CLI reloads no longer turn NULL into 0.0; older rows hold 0.0). CLI
-  `assess` prints "FAILED: N of M" plus each reason and exits 1; the lab
-  shows the reason. Also fixed: `enrich_with_metadata` and the lab's
-  document loader imported a nonexistent `bmlibrarian.database.get_db_connection`,
-  so **every CLI `assess` crashed after the batch, before saving**, and
-  the lab could not load any document; both use
-  `get_db_manager().get_connection()` now. Review follow-ups: an enrichment
-  DB error raises (was debug, "table may not exist"; migration 029 creates
-  it) and the CLI skips saving that document, since its upsert would reset
-  a stored `is_retracted`; non-`TransparencyAssessmentError` exceptions
-  (LLM timeouts etc.) are wrapped into it; a failed save rolls back, is
-  listed as "NOT SAVED" and exits 1; `export` now reads
-  `industry_funding_confidence` (was never selected); `show`/`export`
-  rebuild `low_confidence`; JSON export lists failures. Tests:
-  `tests/test_transparency_agent.py`, `tests/test_transparency_analyzer_cli.py`,
-  `tests/test_transparency_lab_worker.py`.
-- **Paper-weight sub-agent reads the review's database** (2026-10-30,
-  closes #366). `PaperWeightAssessmentAgent(db_manager=)` (from
-  `QualityAssessor`) reaches every DB step of `assess_paper`/
-  `assess_full_paper`: `get_cached_assessment`, `store_assessment`,
-  `get_document`, `check_replication_status`, `search_chunks_by_query`,
-  `get_all_document_chunks`, the two `validate_*_extraction`s, both
-  `extract_*_llm`s, `ensure_document_embeddings`, `_search_document_chunks`,
-  and new optional
-  `db_manager` on `ChunkEmbedder` and `PDFIngestor` (None → global, so the
-  lab is unchanged). PRISMA needs nothing (the review calls only
-  `assess_prisma_compliance` on the document dict). The remaining helpers in
-  `paper_weight/db.py` (`search_documents`, `semantic_search_documents`,
-  `get_recent_assessments`, …), used by the Paper Weight Lab and the citation
-  editor, still use the global manager. Review follow-ups: `assess_full_paper`
-  raises when ingestion stores no full text (it used to score and cache the
-  abstract); `ChunkEmbedder.chunk_and_embed` inserts each chunk in its own
-  savepoint (one failed INSERT used to abort the transaction and lose every
-  chunk at COMMIT while still counting them); the dead, uncallable
-  `SystematicReviewAgent._get_paper_weight_agent` was removed. Docs: `systematic_review_pipeline.md`.
-  Tests: `tests/test_paper_weight_db_manager.py`.
 - **October 2026 slices** (details in git history and the linked docs):
+  lab `cleanup()` stops the orchestrator, research tab rebuilds stale agents
+  on the next Start (#331, #370, #330); TransparencyAgent failures raise
+  `TransparencyAssessmentError`, batches return `TransparencyBatchResult`,
+  the CLI `assess` no longer crashes before saving (#274;
+  `tests/test_transparency_*`); paper-weight sub-agent uses the review's
+  `db_manager`, `assess_full_paper` raises without full text, chunk inserts
+  use savepoints (#366; `systematic_review_pipeline.md`);
   systematic-review search, resume and paper-weight steps take the agent's
   `db_manager` (#285, #366; `systematic_review_pipeline.md`); evaluation-run
   lifecycle tested on real SQL (#287); PMIDs come from the PubMed source id
@@ -266,6 +223,9 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
+- #332 — research tab still uses modal `QMessageBox`es and "Phase 2" /
+  "Milestone 3" wording; switch to toasts, drop dead `QtWorkflowExecutor`
+  / `tab_updaters` code (no owner decision needed).
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.
@@ -321,7 +281,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-05
-  (#294 branch): **4715 passed, 53 skipped** in 7–17 min. Without
+  (#384–#386 branch): **4729 passed, 53 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -33,9 +33,15 @@ This shows you:
 
 **Problem**: Tasks are stuck (processing for too long)
 ```bash
-# Reset stuck tasks of a still-running process to retry them
-# (tasks out of retries, or from processes that have died, are marked failed)
+# Reset stuck tasks to retry them (tasks out of retries, or from processes
+# that have died, are marked failed). Tasks whose process is still running are
+# skipped, since they may just be slow; the output says how many were reset,
+# failed and skipped
 python -m bmlibrarian.queue_cli recover --timeout 30
+
+# Also recover tasks of a process that is still running (e.g. a hung worker).
+# The task may then run twice; the first run's result is discarded
+python -m bmlibrarian.queue_cli recover --timeout 30 --force
 
 # Or mark stuck tasks as failed if they can't be recovered
 python -m bmlibrarian.queue_cli recover --timeout 30 --mark-failed
@@ -113,7 +119,8 @@ automatically.
 
 2. If they're genuinely stuck, recover them:
    ```bash
-   # Try to retry them
+   # Try to retry them (add --force if their process is still running,
+   # e.g. a hung worker; the output says how many were skipped)
    python -m bmlibrarian.queue_cli recover --timeout 60
    
    # Or mark as failed if they keep getting stuck

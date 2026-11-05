@@ -132,14 +132,21 @@ def cmd_recover(args):
         print("   Mode: Reset stuck tasks to PENDING for retry "
               "(tasks out of retries or from dead processes are marked FAILED)")
     
-    recovered = queue.recover_stuck_tasks(
+    counts = queue.recover_stuck_tasks(
         stuck_timeout_minutes=args.timeout,
-        mark_as_failed=args.mark_failed
+        mark_as_failed=args.mark_failed,
+        force=args.force,
     )
-    
-    if recovered > 0:
-        print(f"✅ Recovered {recovered} stuck tasks")
-    else:
+
+    if counts.recovered:
+        print(f"✅ {counts.reset} reset to PENDING, {counts.failed} marked FAILED")
+    if counts.failed:
+        print("   Inspect failed tasks with: queue-cli list --status failed -v")
+    if counts.skipped_running:
+        print(f"⏳ {counts.skipped_running} skipped: their process is still running "
+              f"(use --force to recover them anyway; a forced task's own result is "
+              f"then discarded)")
+    if not (counts.recovered or counts.skipped_running):
         print("✅ No stuck tasks found")
 
 
@@ -254,6 +261,8 @@ Examples:
                                help='Minutes after which tasks are considered stuck (default: 30)')
     recover_parser.add_argument('--mark-failed', action='store_true',
                                help='Mark stuck tasks as failed instead of retrying')
+    recover_parser.add_argument('--force', action='store_true',
+                               help='Also recover tasks whose process is still running')
     
     # Cleanup commands
     cleanup_dead_parser = subparsers.add_parser('cleanup-dead', help='Clean up tasks from dead processes')
