@@ -1,8 +1,8 @@
 """
 Export utilities for the Research Tab.
 
-This module contains pure functions for file I/O operations,
-including safe file writing and standardized success/error dialogs.
+Helper functions for saving research results: safe file writing, the save
+dialogs, and standardized success/error notifications (non-modal toasts).
 """
 
 import errno
@@ -12,7 +12,11 @@ import os
 from datetime import datetime
 from typing import Optional, Callable
 
-from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QWidget, QFileDialog
+
+from ...widgets.toast import ToastLevel, show_toast
+
+module_logger = logging.getLogger(__name__)
 
 
 def safe_write_file(
@@ -72,6 +76,7 @@ def safe_write_file(
     except UnicodeEncodeError as e:
         return False, f"Encoding error: {str(e)}"
     except Exception as e:
+        module_logger.exception(f"Unexpected error writing {file_type} to {filename}")
         return False, f"Unexpected error: {str(e)}"
 
 
@@ -87,7 +92,7 @@ def show_save_success(
     Show a standardized success message for file saves.
 
     Args:
-        parent: Parent widget for the message box
+        parent: Widget whose window shows the notification
         filename: Path to the saved file
         content: Content that was saved
         file_type: Type of file saved (for display)
@@ -101,7 +106,7 @@ def show_save_success(
     word_count = len(content.split()) if isinstance(content, str) else "N/A"
 
     message_parts = [
-        f"{file_type} saved successfully!\n",
+        f"{file_type} saved",
         f"File: {filename}",
         f"Size: {file_size_kb:.1f} KB"
     ]
@@ -109,14 +114,11 @@ def show_save_success(
     if word_count != "N/A":
         message_parts.append(f"Words: ~{word_count}")
 
-    QMessageBox.information(
-        parent,
-        f"{file_type} Saved",
-        "\n".join(message_parts)
-    )
-
+    # Log first, so the record survives if showing the toast fails
     if logger:
         logger.info(f"{file_type} saved to: {filename} ({file_size_kb:.1f} KB)")
+
+    show_toast(parent, "\n".join(message_parts), ToastLevel.SUCCESS)
 
     if status_callback:
         status_callback(f"{file_type} saved to {filename}")
@@ -126,25 +128,29 @@ def show_save_error(
     parent: QWidget,
     error_msg: str,
     file_type: str = "file",
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    filename: Optional[str] = None,
 ) -> None:
     """
     Show a standardized error message for file save failures.
 
     Args:
-        parent: Parent widget for the message box
+        parent: Widget whose window shows the notification
         error_msg: Error message to display
         file_type: Type of file being saved (for display)
         logger: Optional logger for error logging
+        filename: Path that failed (logged; e.g. "Permission denied" omits it)
     """
-    QMessageBox.critical(
-        parent,
-        "Save Error",
-        f"An error occurred while saving the {file_type}:\n\n{error_msg}"
-    )
-
+    # Log first, so the error is recorded even if showing the toast fails
     if logger:
-        logger.error(f"Error saving {file_type}: {error_msg}")
+        target = f" to {filename}" if filename else ""
+        logger.error(f"Error saving {file_type}{target}: {error_msg}")
+
+    show_toast(
+        parent,
+        f"Could not save the {file_type}: {error_msg}",
+        ToastLevel.ERROR,
+    )
 
 
 def save_markdown_report(
@@ -166,11 +172,10 @@ def save_markdown_report(
         True if save was successful, False otherwise
     """
     if not report_content:
-        QMessageBox.warning(
+        show_toast(
             parent,
-            "No Report Available",
-            "No final report is available to save.\n\n"
-            "Please complete a research workflow first."
+            "No final report to save yet. Complete a research workflow first.",
+            ToastLevel.WARNING,
         )
         return False
 
@@ -200,7 +205,7 @@ def save_markdown_report(
         )
         return True
     else:
-        show_save_error(parent, error_msg, "markdown report", logger)
+        show_save_error(parent, error_msg, "markdown report", logger, filename)
         return False
 
 
@@ -228,21 +233,19 @@ def export_json_report(
 
     # Validate that we have results
     if not results:
-        QMessageBox.warning(
+        show_toast(
             parent,
-            "No Results Available",
-            "No research results are available to export.\n\n"
-            "Please complete a research workflow first."
+            "No research results to export yet. Complete a research workflow first.",
+            ToastLevel.WARNING,
         )
         return False
 
     # Validate that we have a final report
     if not report_content:
-        QMessageBox.warning(
+        show_toast(
             parent,
-            "No Report Available",
-            "No final report is available to export.\n\n"
-            "Please complete the report generation step first."
+            "No final report to export yet. Complete the report generation step first.",
+            ToastLevel.WARNING,
         )
         return False
 
@@ -282,7 +285,9 @@ def export_json_report(
         # Serialize to JSON string
         json_content = json.dumps(export_data, indent=2, ensure_ascii=False)
     except (TypeError, ValueError) as e:
-        show_save_error(parent, f"Failed to serialize data to JSON: {str(e)}", "JSON export", logger)
+        show_save_error(
+            parent, f"Failed to serialize data to JSON: {str(e)}", "JSON export", logger, filename
+        )
         return False
 
     # Save the JSON using safe write helper
@@ -295,5 +300,5 @@ def export_json_report(
         )
         return True
     else:
-        show_save_error(parent, error_msg, "JSON export", logger)
+        show_save_error(parent, error_msg, "JSON export", logger, filename)
         return False

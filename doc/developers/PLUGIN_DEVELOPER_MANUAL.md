@@ -862,21 +862,19 @@ def process_documents(documents: List[Dict]) -> List[Dict]:
 
 ### 6. Error Handling
 
-**Always handle errors gracefully:**
+**Always handle errors gracefully.** Report them with a non-modal toast,
+not a `QMessageBox` (a modal blocks the user and hangs the test suite; see
+"User Notifications" in `gui_architecture.md`):
 
 ```python
-from PySide6.QtWidgets import QMessageBox
+from bmlibrarian.gui.qt.widgets.toast import ToastLevel, show_toast
 
 def perform_analysis(self):
     """Perform analysis with proper error handling."""
     try:
         # Input validation
         if not self.query_input.text().strip():
-            QMessageBox.warning(
-                self,
-                "Invalid Input",
-                "Please enter a search query"
-            )
+            show_toast(self, "Enter a search query", ToastLevel.WARNING)
             return
 
         # Perform operation
@@ -888,28 +886,24 @@ def perform_analysis(self):
 
     except ConnectionError as e:
         logger.error(f"Connection error: {e}")
-        QMessageBox.critical(
+        show_toast(
             self,
-            "Connection Error",
-            f"Cannot connect to database or Ollama server:\n{e}"
+            f"Cannot connect to database or Ollama server: {e}",
+            ToastLevel.ERROR,
         )
         self.status_message.emit("Analysis failed: connection error")
 
     except ValueError as e:
         logger.error(f"Invalid data: {e}")
-        QMessageBox.warning(
-            self,
-            "Invalid Data",
-            f"Invalid input or configuration:\n{e}"
-        )
+        show_toast(self, f"Invalid input or configuration: {e}", ToastLevel.WARNING)
         self.status_message.emit("Analysis failed: invalid data")
 
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
-        QMessageBox.critical(
+        show_toast(
             self,
-            "Error",
-            f"An unexpected error occurred:\n{e}\n\nCheck logs for details."
+            f"An unexpected error occurred: {e}. Check the logs for details.",
+            ToastLevel.ERROR,
         )
         self.status_message.emit("Analysis failed")
 ```

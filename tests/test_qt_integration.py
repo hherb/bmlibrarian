@@ -1,7 +1,7 @@
 """
 Integration Tests for Qt GUI Workflow
 
-Tests signal flow and integration between QtWorkflowExecutor and ResearchTabWidget.
+Tests signal flow between WorkflowThread, QtWorkflowExecutor and ResearchTabWidget.
 """
 
 import unittest
@@ -14,11 +14,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
-from PySide6.QtTest import QSignalSpy
 
 # Import the classes to test
 from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
-from bmlibrarian.gui.qt.plugins.research.workflow_executor import QtWorkflowExecutor
 from bmlibrarian.gui.qt.plugins.research.workflow_thread import WorkflowThread
 
 # Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
@@ -42,13 +40,15 @@ class TestQtIntegration(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Modal dialogs would block the test run
-        for module in ('research_tab', 'workflow_handlers'):
-            patcher = patch(
-                f'bmlibrarian.gui.qt.plugins.research.{module}.QMessageBox'
-            )
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # A modal dialog would block the test run; toasts are recorded
+        patcher = patch('bmlibrarian.gui.qt.plugins.research.research_tab.QMessageBox')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        toast_patcher = patch(
+            'bmlibrarian.gui.qt.plugins.research.workflow_handlers.show_toast'
+        )
+        self.show_toast = toast_patcher.start()
+        self.addCleanup(toast_patcher.stop)
 
         # Create research tab widget (creates the workflow executor from agents)
         agents = {name: Mock() for name in AGENT_NAMES}
@@ -75,14 +75,14 @@ class TestQtIntegration(unittest.TestCase):
     # Signal Flow Tests
     # ========================================================================
 
-    def test_workflow_executor_status_updates_ui(self):
-        """Test that workflow executor status messages update UI."""
-        # Setup: track progress label updates
+    def test_workflow_status_updates_ui(self):
+        """Test that the thread's status messages update the UI."""
+        thread = self._attach_workflow_thread()
         initial_text = self.widget.progress_label.text()
 
-        # Test: emit status message from executor
+        # Test: emit status message from the thread
         test_message = "Processing documents..."
-        self.executor.status_message.emit(test_message)
+        thread.status_message.emit(test_message)
 
         # Allow Qt to process events
         QApplication.processEvents()
@@ -148,23 +148,72 @@ class TestQtIntegration(unittest.TestCase):
         self.assertEqual(self.widget.status_label.text(), "Completed")
         self.assertEqual(self.widget.current_results, results)
 
-    def test_workflow_error_signal_displays_error(self):
-        """Test that workflow_error signal displays error in UI."""
-        # Setup: track status label
-        initial_text = self.widget.status_label.text()
+    def test_workflow_error_shows_error_toast(self):
+        """A failed run sets the error status and shows an error toast, not a modal (#332)."""
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        thread = self._attach_workflow_thread()
 
         # Test: emit workflow error
-        test_error = Exception("Test error message")
-        self.executor.workflow_error.emit(test_error)
-
-        # Allow Qt to process events
+        thread.workflow_error.emit(Exception("Test error message"))
         QApplication.processEvents()
 
-        # Verify: error displayed in status
-        self.assertNotEqual(self.widget.status_label.text(), initial_text)
-        # Status should contain error indication
-        status_text = self.widget.status_label.text().lower()
-        self.assertTrue('error' in status_text or 'failed' in status_text)
+        # Verify: error displayed in status and in a toast
+        self.assertEqual(self.widget.status_label.text(), "Error")
+        self.assertTrue(self.widget.start_button.isEnabled())
+        self.show_toast.assert_called_once()
+        _, message, level = self.show_toast.call_args.args
+        self.assertIn("Test error message", message)
+        self.assertEqual(level, ToastLevel.ERROR)
+
+    def test_workflow_error_names_an_exception_with_no_message(self):
+        """An exception with an empty message still says what failed."""
+        thread = self._attach_workflow_thread()
+
+        thread.workflow_error.emit(TimeoutError())
+        QApplication.processEvents()
+
+        _, message, _ = self.show_toast.call_args.args
+        self.assertEqual(message, "Research workflow failed: TimeoutError")
+
+    def test_workflow_warning_shows_warning_toast(self):
+        """A step that failed without stopping the run is shown as a warning."""
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        thread = self._attach_workflow_thread()
+        thread.workflow_warning.emit("Counterfactual analysis failed")
+        QApplication.processEvents()
+
+        self.show_toast.assert_called_once()
+        _, message, level = self.show_toast.call_args.args
+        self.assertEqual(message, "Counterfactual analysis failed")
+        self.assertEqual(level, ToastLevel.WARNING)
+
+    def test_early_end_explains_why_there_is_no_report(self):
+        """no_documents / no_scores / no_citations runs say why they stopped."""
+        from bmlibrarian.gui.qt.plugins.research.workflow_handlers import EARLY_END_MESSAGES
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        thread = self._attach_workflow_thread()
+        for status, expected in EARLY_END_MESSAGES.items():
+            self.show_toast.reset_mock()
+            thread.workflow_completed.emit({'status': status, 'document_count': 0})
+            QApplication.processEvents()
+
+            self.show_toast.assert_called_once()
+            _, message, level = self.show_toast.call_args.args
+            self.assertEqual(message, expected)
+            self.assertEqual(level, ToastLevel.WARNING)
+            self.assertEqual(self.widget.status_label.text(), "Completed - no report")
+
+    def test_full_completion_shows_no_toast(self):
+        """A normal completion needs no notification beyond the status line."""
+        thread = self._attach_workflow_thread()
+        thread.workflow_completed.emit({'status': 'completed', 'document_count': 3})
+        QApplication.processEvents()
+
+        self.show_toast.assert_not_called()
+        self.assertEqual(self.widget.status_label.text(), "Completed")
 
     # ========================================================================
     # Lifecycle Integration Tests
@@ -181,117 +230,16 @@ class TestQtIntegration(unittest.TestCase):
         # Verify: executor marked inactive
         self.assertFalse(self.executor._is_active)
 
-    def test_executor_cleanup_prevents_workflow_execution(self):
-        """Test that executor cleanup prevents further workflow execution."""
-        # Setup: cleanup executor
+    def test_executor_cleanup_prevents_query_generation(self):
+        """Test that executor cleanup prevents further query generation."""
         self.executor.cleanup()
-
-        # Setup: mock query agent (should not be called)
         self.executor.query_agent = Mock()
+        self.executor.current_question = "Test question"
 
-        # Test: attempt to execute workflow
-        self.executor.execute_workflow()
+        with self.assertRaises(RuntimeError):
+            self.executor.generate_query()
 
-        # Verify: workflow did not execute (query agent not called)
         self.executor.query_agent.convert_question.assert_not_called()
-
-    # ========================================================================
-    # Agent Error Scenario Tests
-    # ========================================================================
-
-    def test_agent_error_emits_workflow_error(self):
-        """Test that agent errors emit workflow_error signal."""
-        # Setup: signal spy
-        spy = QSignalSpy(self.executor.workflow_error)
-
-        # Setup: mock query agent that raises error
-        self.executor.query_agent = Mock()
-        self.executor.query_agent.convert_question.side_effect = Exception("Agent failed")
-        self.executor.current_question = "Test question"
-
-        # Test: execute workflow
-        self.executor.execute_workflow()
-
-        # Verify: workflow_error signal emitted
-        self.assertEqual(spy.count(), 1)
-        error = spy.at(0)[0]
-        self.assertIsInstance(error, Exception)
-        self.assertEqual(str(error), "Agent failed")
-
-    def test_query_validation_error_emits_workflow_error(self):
-        """Test that query validation errors emit workflow_error signal."""
-        # Setup: signal spy
-        spy = QSignalSpy(self.executor.workflow_error)
-
-        # Setup: mock query agent returning None
-        self.executor.query_agent = Mock()
-        self.executor.query_agent.convert_question.return_value = None
-        self.executor.current_question = "Test question"
-
-        # Test: execute workflow
-        self.executor.execute_workflow()
-
-        # Verify: workflow_error signal emitted
-        self.assertEqual(spy.count(), 1)
-        error = spy.at(0)[0]
-        self.assertIsInstance(error, ValueError)
-
-    # ========================================================================
-    # Multi-Agent Workflow Tests
-    # ========================================================================
-
-    def test_complete_workflow_signal_sequence(self):
-        """Test that complete workflow emits signals in correct sequence."""
-        # Setup: signal spies
-        status_spy = QSignalSpy(self.executor.status_message)
-        query_spy = QSignalSpy(self.executor.query_generated)
-        docs_spy = QSignalSpy(self.executor.documents_found)
-        scored_spy = QSignalSpy(self.executor.documents_scored)
-        citations_spy = QSignalSpy(self.executor.citations_extracted)
-        report_spy = QSignalSpy(self.executor.preliminary_report_generated)
-        completed_spy = QSignalSpy(self.executor.workflow_completed)
-
-        # Setup: mock all agents
-        self.executor.query_agent = Mock()
-        self.executor.query_agent.convert_question.return_value = "test & query"
-        self.executor.query_agent.find_abstracts.return_value = [
-            {'doc_id': 1, 'title': 'Paper 1', 'abstract': 'Abstract 1'}
-        ]
-
-        self.executor.scoring_agent = Mock()
-        self.executor.scoring_agent.evaluate_document.return_value = {
-            'score': 5,
-            'reasoning': 'Highly relevant'
-        }
-
-        self.executor.citation_agent = Mock()
-        self.executor.citation_agent.process_scored_documents_for_citations.return_value = [{
-            'citation_id': 1,
-            'doc_id': 1,
-            'title': 'Paper 1',
-            'passage': 'Test passage',
-            'reasoning': 'Test reasoning'
-        }]
-
-        self.executor.reporting_agent = Mock()
-        self.executor.reporting_agent.generate_citation_based_report.return_value = '# Test Report'
-
-        self.executor.current_question = "Test question"
-
-        # Test: execute complete workflow
-        self.executor.execute_workflow()
-
-        # Allow Qt to process all events
-        QApplication.processEvents()
-
-        # Verify: all major signals emitted
-        self.assertGreater(status_spy.count(), 0, "Status messages should be emitted")
-        self.assertEqual(query_spy.count(), 1, "Query should be generated once")
-        self.assertEqual(docs_spy.count(), 1, "Documents should be found once")
-        self.assertEqual(scored_spy.count(), 1, "Documents should be scored once")
-        self.assertEqual(citations_spy.count(), 1, "Citations should be extracted once")
-        self.assertEqual(report_spy.count(), 1, "Report should be generated once")
-        self.assertEqual(completed_spy.count(), 1, "Workflow should complete once")
 
 
 if __name__ == '__main__':

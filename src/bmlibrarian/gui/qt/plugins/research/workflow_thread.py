@@ -9,6 +9,8 @@ from PySide6.QtCore import QThread, Signal
 import logging
 
 from .report_builder import ReportBuilder
+from ...widgets.toast import error_text
+from .workflow_executor import DEFAULT_SCORING_THRESHOLD
 from bmlibrarian.agents.citation_agent import Citation
 
 
@@ -52,13 +54,14 @@ class WorkflowThread(QThread):
     workflow_completed = Signal(dict)  # Final results dictionary
     workflow_error = Signal(Exception)  # Error occurred
     workflow_cancelled = Signal()  # Workflow was cancelled
+    workflow_warning = Signal(str)  # A step failed but the run continued
 
     def __init__(
         self,
         executor: 'QtWorkflowExecutor',
         question: str,
         max_results: int = 100,
-        score_threshold: float = 3.0,
+        score_threshold: float = DEFAULT_SCORING_THRESHOLD,
         enable_counterfactual: bool = False,
         parent: Optional[QThread] = None
     ):
@@ -150,6 +153,9 @@ class WorkflowThread(QThread):
             # Set the research question on the executor before starting workflow
             self.executor.current_question = self.question
             self.executor.max_results = self.max_results
+            # The report's methodology section reads the threshold and the
+            # scored documents from the executor
+            self.executor.scoring_threshold = self.score_threshold
             self.logger.debug(f"Executor configured: question='{self.question[:50]}...', max_results={self.max_results}")
 
             # ==================================================================
@@ -203,6 +209,9 @@ class WorkflowThread(QThread):
             self.scored_documents = []
             total = len(self.documents)
 
+            if not self.executor.scoring_agent:
+                raise RuntimeError("Document scoring agent is not initialized")
+
             for i, doc in enumerate(self.documents, 1):
                 if self._check_cancellation(step_name):
                     return
@@ -220,6 +229,7 @@ class WorkflowThread(QThread):
                     # Emit per-document signal for progressive Scoring tab display
                     self.document_scored.emit(doc, score_result, i, total)
 
+            self.executor.scored_documents = self.scored_documents
             self.documents_scored.emit(self.scored_documents)
             self.step_completed.emit(step_name)
 
@@ -322,6 +332,10 @@ class WorkflowThread(QThread):
 
                     if not comprehensive_analysis:
                         self.logger.warning("Counterfactual analysis failed - skipping")
+                        self.workflow_warning.emit(
+                            "Counterfactual analysis returned no result; the final "
+                            "report has no contradictory-evidence section."
+                        )
                         self.step_completed.emit(step_name)
                         counterfactual_analysis = None
                     else:
@@ -376,6 +390,10 @@ class WorkflowThread(QThread):
                 except Exception as e:
                     self.logger.error(f"Comprehensive counterfactual analysis failed: {e}", exc_info=True)
                     self.status_message.emit(f"⚠️ Counterfactual analysis failed: {str(e)}")
+                    self.workflow_warning.emit(
+                        f"Counterfactual analysis failed ({error_text(e)}); the final "
+                        "report has no contradictory-evidence section."
+                    )
                     self.step_completed.emit(step_name)
                     counterfactual_analysis = None
 
@@ -426,12 +444,12 @@ class WorkflowThread(QThread):
                         self.logger.info(f"Final report generated with {final_word_count} words, {len(self.final_report)} characters")
                     else:
                         self.logger.warning("ReportBuilder returned empty final report")
-                        self.final_report = self.preliminary_report  # Fallback to preliminary
+                        self._use_preliminary_as_final("the final report came back empty")
 
                 except Exception as e:
                     self.logger.error(f"Final report generation failed: {e}", exc_info=True)
-                    self.final_report = self.preliminary_report  # Fallback to preliminary
                     self.status_message.emit(f"⚠️ Using preliminary report (final report generation failed)")
+                    self._use_preliminary_as_final(f"final report generation failed: {error_text(e)}")
             else:
                 # Case 2: No counterfactual analysis or it failed - use preliminary report as final
                 self.status_message.emit(f"📄 Using preliminary report as final report...")
@@ -496,8 +514,8 @@ class WorkflowThread(QThread):
             List of Citation objects (required by ReportingAgent)
         """
         if not self.executor.citation_agent:
-            self.logger.error("CitationAgent not initialized")
-            return []
+            # Raise rather than return []: an empty list reads as "no citations found"
+            raise RuntimeError("Citation extraction agent is not initialized")
 
         # Filter to high-scoring documents
         high_scoring = [
@@ -581,6 +599,20 @@ class WorkflowThread(QThread):
         )
         self.logger.info(self.citation_summary_text)
         return citations
+
+    def _use_preliminary_as_final(self, reason: str) -> None:
+        """
+        Publish the preliminary report as the final one after the final step failed.
+
+        Emitting ``final_report_generated`` keeps the Report tab and the export
+        buttons in step with this run instead of an earlier run's report.
+
+        Args:
+            reason: Why the final report could not be built (shown to the user)
+        """
+        self.final_report = self.preliminary_report
+        self.final_report_generated.emit(self.final_report)
+        self.workflow_warning.emit(f"Showing the preliminary report as the final report: {reason}.")
 
     def _emit_completion_no_documents(self) -> None:
         """Emit completion signal when no documents are found."""

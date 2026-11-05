@@ -7,7 +7,7 @@ analysis results.
 """
 
 import logging
-from typing import Optional, Any, List, Tuple, Protocol, Union
+from typing import Optional, Any, List, Protocol, Union
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -233,68 +233,6 @@ def populate_unscored_documents(
     return cards_created
 
 
-def update_literature_tab(
-    layout: QVBoxLayout,
-    scored_documents: List[Tuple[dict, dict]],
-    card_factory: CardFactoryProtocol,
-    ui: UIConstants,
-    logger: Optional[logging.Logger] = None
-) -> int:
-    """
-    Update a layout with scored documents.
-
-    Args:
-        layout: Layout to add cards to
-        scored_documents: List of (document, score_result) tuples
-        card_factory: QtDocumentCardFactory instance
-        ui: UI constants for styling
-        logger: Optional logger for error reporting
-
-    Returns:
-        Number of cards successfully created
-    """
-    logger = logger or logging.getLogger(__name__)
-
-    try:
-        clear_layout_widgets(layout)
-    except Exception as e:
-        logger.warning(f"Error clearing layout (will continue): {e}")
-
-    if not scored_documents:
-        # Show empty state
-        empty_label = QLabel("No documents to display")
-        empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
-        empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(empty_label)
-        layout.addStretch()
-        return 0
-
-    # Sort by score (highest first)
-    sorted_docs = sorted(
-        scored_documents,
-        key=lambda x: x[1].get('score', 0),
-        reverse=True
-    )
-
-    # Create document cards
-    cards_created = 0
-    for i, (doc, score_result) in enumerate(sorted_docs):
-        try:
-            card = create_document_score_card(
-                i + 1, doc, score_result, card_factory, ui, logger
-            )
-            layout.addWidget(card)
-            cards_created += 1
-        except Exception as e:
-            logger.error(f"Error creating card for document {i+1}: {e}", exc_info=True)
-
-    # Add stretch at the end
-    layout.addStretch()
-
-    logger.info(f"Literature tab updated with {cards_created}/{len(scored_documents)} documents")
-    return cards_created
-
-
 def create_document_score_card(
     index: int,
     doc: dict,
@@ -351,71 +289,6 @@ def create_document_score_card(
         error_widget = QLabel(f"Error displaying document: {str(e)}")
         error_widget.setStyleSheet(StyleSheets.error_label())
         return error_widget
-
-
-def update_citations_tab(
-    layout: QVBoxLayout,
-    citations: List[Any],
-    ui: UIConstants,
-    logger: Optional[logging.Logger] = None,
-    card_factory: Optional[CardFactoryProtocol] = None
-) -> int:
-    """
-    Update the Citations tab with extracted citations using CitationCard widget.
-
-    Args:
-        layout: Layout to add cards to
-        citations: List of citation dictionaries or citation objects
-        ui: UI constants for styling
-        logger: Optional logger for error reporting
-        card_factory: Optional card factory for creating PDF buttons
-
-    Returns:
-        Number of cards successfully created
-    """
-    logger = logger or logging.getLogger(__name__)
-
-    try:
-        clear_layout_widgets(layout)
-    except Exception as e:
-        logger.warning(f"Error clearing layout (will continue): {e}")
-
-    if not citations:
-        # Show empty state
-        empty_label = QLabel("No citations to display")
-        empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
-        empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(empty_label)
-        layout.addStretch()
-        return 0
-
-    # Import CitationCard widget
-    from ...widgets.citation_card import CitationCard
-
-    # Create citation cards using the CitationCard widget
-    cards_created = 0
-    for i, citation in enumerate(citations):
-        try:
-            # Create PDF button widget if factory available
-            pdf_button_widget = None
-            if card_factory:
-                pdf_button_widget = _create_citation_pdf_button(citation, card_factory, logger)
-
-            card = CitationCard(
-                citation_data=citation,
-                index=i + 1,
-                pdf_button_widget=pdf_button_widget
-            )
-            layout.addWidget(card)
-            cards_created += 1
-        except Exception as e:
-            logger.error(f"Error creating citation card {i+1}: {e}", exc_info=True)
-
-    # Add stretch at the end
-    layout.addStretch()
-
-    logger.info(f"Citations tab updated with {cards_created}/{len(citations)} citations using CitationCard widget")
-    return cards_created
 
 
 def _create_citation_pdf_button(

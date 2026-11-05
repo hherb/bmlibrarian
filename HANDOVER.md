@@ -10,6 +10,44 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Research tab: toasts instead of modals; dead executor path removed**
+  (2026-11-06, closes #332). New shared `gui/qt/widgets/toast.py`:
+  `show_toast(widget, message, ToastLevel.INFO|SUCCESS|WARNING|ERROR)`
+  overlays a plain-text, dismissable toast at the bottom right of the
+  widget's window (stacked, follows resizes; errors stay until dismissed,
+  others time out per `TOAST_TIMEOUT_MS`); styled by
+  `StylesheetGenerator.toast_stylesheet`. The research tab's start
+  validation, agent-rebuild failure, workflow error and export
+  success/failure messages use it (`research_tab.py`,
+  `workflow_handlers.py`, `export_utils.py`); only the "Start New
+  Research" Yes/No stays modal. Removed (no callers): the executor's
+  `start_workflow`/`execute_workflow`/`_test_agent_connection`/
+  `score_documents`/`extract_citations`/`check_agents_ready`, all its
+  signals and `WorkflowSignals`; the tab's `_on_workflow_started/
+  _completed/_error` and the "Phase 2"/"Milestone 3"
+  `_show_completion_message`; `tab_updaters.update_literature_tab`/
+  `update_citations_tab`. Bug fixed on the way: the thread now copies the
+  scored documents and threshold onto the executor, so the preliminary
+  report's methodology section no longer shows an empty score
+  distribution and 0 documents processed for citations. PR #389 review
+  fixes: toasts are never taller than the window (messages over
+  `TOAST_MAX_MESSAGE_CHARS` are cut off on screen, full text in the
+  tooltip and log; older toasts that don't fit are dropped), messages use
+  `error_text(e)` (`"TypeName: message"`); `WorkflowThread.workflow_warning`
+  → WARNING toast for a failed counterfactual analysis or final report
+  (the preliminary report is then emitted as final, so export never sees a
+  stale report; the tab also clears `final_report_markdown` at start and
+  on New); missing scoring/citation agents fail the run instead of looking
+  like "no citations"; early-ending runs (`no_documents`/`no_scores`/
+  `no_citations`) explain why; `QueryAgent.find_abstracts(ts_query=)` lets
+  the executor search the query it showed instead of converting the
+  question again. The other ~39
+  modules with non-decision modals: ROADMAP §5. Docs:
+  `gui_architecture.md` "User Notifications", `PLUGIN_DEVELOPER_MANUAL.md`
+  error handling, `qt_gui_user_guide.md` "Notifications". Tests:
+  `tests/test_toast.py`, `test_qt_workflow_thread.py::...methodology`,
+  `test_qt_workflow_executor.py`, `test_qt_research_tab.py`,
+  `test_qt_integration.py`, `test_research_export_utils.py`.
 - **Queue follow-ups: Ctrl-C, task ownership, recovery reporting**
   (2026-11-05, closes #384, #385, #386). QueueManager installs a SIGTERM
   handler only; SIGINT is left alone, so Ctrl-C stays `KeyboardInterrupt`
@@ -115,72 +153,14 @@ off new work. Longer-term structural items live in
   `doc/developers/architecture.md` "Failed auto-migration is fatal",
   `SETUP_GUIDE.md` + `doc/users/troubleshooting.md` "Database Migration
   Failed". Tests: `tests/test_auto_migration_failure.py`.
-- **A fact-check verdict is stored with its evidence or not at all; a
-  failed audit write no longer poisons the shared audit connection**
-  (2026-11-04, closes #340, #341). `FactCheckerDB.store_verdict(statement,
-  evaluation, evidence)` runs all inserts on one pooled connection in one
-  transaction (the three `insert_*` take an optional `conn`); used by
-  `FactCheckerAgent._store_result_in_database` and `import_json_results`
-  (same bug). When an imported verdict fails, `import_json_results` stores
-  the statement alone (`errors`) so `--incremental` still re-checks it;
-  evidence without a usable `document_id` is logged and counted
-  (`dropped_evidence`); both reach the import progress message
-  (`import_problems_suffix`). Every query on an audit connection — the
-  trackers and `AuditValidationDataManager` — runs in
-  `audit/connection.audit_cursor(conn)`, which rolls back on any
-  exception (including Ctrl-C) and re-raises; `tests/test_audit_cursor.py`
-  fails on any bare `conn.cursor(` there. Not done:
-  `extract_citations_with_audit` still drops a citation whose audit write
-  failed (no production callers); the SQLite→PostgreSQL migration script
-  is still not atomic (#376). Tests: `tests/test_audit_cursor.py`,
-  `tests/test_fact_checker_failure_handling.py`, opt-in real SQL
-  `tests/test_factcheck_audit_transactions_db.py` (passes on
-  `bmlibrarian_dev`). Docs: `fact_checker_system.md` "Failure handling",
-  `AUDIT_SYSTEM_DESIGN.md` "Connection handling".
-- **PRISMA chunk consolidation works; the LLM boundary guard sees raw
-  Ollama HTTP** (2026-11-04, closes #252, #250). `SemanticChunkProcessor`
-  called its client with ollama's API (`options=`, `response["message"]`),
-  so whenever a low-scoring PRISMA item's semantic chunks exceeded
-  `SEMANTIC_CONTEXT_MAX_CHARS`, every batch raised and
-  `PRISMA2020Agent._process_semantic_chunks_for_context` fell back to the
-  single best-scoring chunk (#252 called it unreachable; it is not). It now
-  calls `LLMClient.chat(messages=[LLMMessage], temperature=, max_tokens=)`;
-  the PRISMA factory escapes braces in title/description/explanation (a `{`
-  in a title broke `.format()`; a NULL title is treated as empty). Review
-  follow-ups: an empty model reply fails the batch (shared
-  `bmlibrarian.llm.checked_content`, which `BaseAgent._checked_content` now
-  delegates to; a truncated reply is kept with a warning), and a failed
-  consolidation no longer re-scores on a fallback chunk — the item keeps its
-  first-pass score and a `prisma_second_pass_error` callback reports it
-  (`_fallback_first_chunk` removed). The PICO lab model picker uses
-  `list_ollama_models(host)` (was `requests.get(/api/tags)`; the other two
-  #250 sites went with Flet) and reports failures in its status line, not a
-  modal (the refresh runs during tab construction).
-  `tests/test_llm_layer_boundary.py` also flags non-docstring string
-  literals naming Ollama REST endpoints; allowlist
-  `KNOWN_RAW_OLLAMA_HTTP_MODULES` = `embeddings/embedding_server.py` (batch
-  `/api/embed`; its `/api/tags` check is remaining debt). Tests:
-  `tests/test_semantic_chunk_processor.py` (now a real `LLMClient` patched
-  at the provider boundary; 11 of them fail on the old code),
-  `tests/test_prisma_semantic_context.py` (agent -> processor -> LLMClient),
-  `tests/test_pico_lab_model_refresh.py`.
-- **Settings saved in other tabs reach the research tab; Chrome fallback
-  takes PDFs by content; medRxiv test stays out of `~`** (2026-11-04,
-  closes #372, #329, #335). The main Settings tab (Apply, Save, Save As,
-  Load, Reset: each changes the live config) and the Configuration tab's
-  save publish `AGENTS_NEED_REINIT_EVENT` on the `EventBus`
-  (`core/event_bus.py`); `ResearchTabWidget` listens and marks its agents
-  stale, so the next Start rebuilds them (disconnected in `cleanup()`). The
-  Configuration tab's "Save As" announces too (harmless rebuild, same
-  config). `promote_downloaded_pdf` considers every finished file
-  (`finished_downloads()`: not `*.crdownload`, not hidden, e.g. macOS
-  `.com.google.Chrome.*` temporaries) and relies on `is_pdf_file`,
-  so a PDF saved as `fulltext`/`article.PDF` is promoted; the "not a valid
-  PDF" error uses the same list. `test_initialization_with_env_var` points
-  `HOME` at `tmp_path` (an empty `~/test_pdfs` from March was removed).
-  Tests: `tests/test_qt_research_tab.py`,
-  `tests/test_undetected_chrome_download_dir.py`.
-- **October 2026 slices** (details in git history and the linked docs):
+- **Early November / October 2026 slices** (details in git history and the
+  linked docs): fact-check verdicts stored with their evidence in one
+  transaction (`FactCheckerDB.store_verdict`), audit queries in
+  `audit_cursor` (#340, #341; open: #376); PRISMA semantic-chunk
+  consolidation calls `LLMClient.chat`, LLM boundary test also flags raw
+  Ollama REST literals (#252, #250); settings saved in other tabs publish
+  `AGENTS_NEED_REINIT_EVENT` so the research tab rebuilds its agents, Chrome
+  fallback promotes PDFs by content (#372, #329, #335);
   lab `cleanup()` stops the orchestrator, research tab rebuilds stale agents
   on the next Start (#331, #370, #330); TransparencyAgent failures raise
   `TransparencyAssessmentError`, batches return `TransparencyBatchResult`,
@@ -229,9 +209,6 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- #332 — research tab still uses modal `QMessageBox`es and "Phase 2" /
-  "Milestone 3" wording; switch to toasts, drop dead `QtWorkflowExecutor`
-  / `tab_updaters` code (no owner decision needed).
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
   space (`8.8%) MAE rates`), multi-word fused labels.

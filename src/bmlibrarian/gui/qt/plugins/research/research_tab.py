@@ -44,6 +44,7 @@ from . import export_utils
 from ...qt_document_card_factory import QtDocumentCardFactory
 from ...core.event_bus import EventBus, AGENTS_NEED_REINIT_EVENT
 from ...resources.styles import get_font_scale
+from ...widgets.toast import ToastLevel, error_text, show_toast
 
 # Import PDF manager
 from bmlibrarian.utils.pdf_manager import PDFManager
@@ -149,25 +150,12 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self._setup_ui()
 
     def _initialize_workflow_executor(self) -> None:
-        """Initialize the workflow executor with signal connections."""
+        """Create the workflow executor for the current agents."""
         from .workflow_executor import QtWorkflowExecutor
 
         self.workflow_executor = QtWorkflowExecutor(self.agents, parent=self)
-
-        # Connect workflow signals
-        self.workflow_executor.workflow_started.connect(self._on_workflow_started)
-        self.workflow_executor.workflow_completed.connect(self._on_workflow_completed)
-        self.workflow_executor.workflow_error.connect(self._on_workflow_error)
-        self.workflow_executor.status_message.connect(self._on_workflow_status)
-
-        # Step-data signals are NOT connected here: WorkflowThread re-emits
-        # query_generated/documents_found/documents_scored/citations_extracted/
-        # preliminary_report_generated itself (see
-        # _connect_workflow_thread_signals), and per-document scoring progress
-        # comes from its document_scored signal. Some executor helpers it calls
-        # also emit these, so connecting both would run handlers twice.
-        # (QtWorkflowExecutor.start_workflow() is unused; reviving it would
-        # need its own wiring.)
+        # The executor emits no signals: WorkflowThread drives it and emits
+        # every status/step result itself (see _connect_workflow_thread_signals).
 
         self.logger.info("Workflow executor initialized with agents")
 
@@ -511,28 +499,27 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         try:
             if self.workflow_running:
                 self.logger.warning("Workflow already running - ignoring duplicate start request")
-                QMessageBox.warning(
+                show_toast(
                     self,
-                    "Workflow Running",
-                    "A research workflow is already in progress.\n\n"
-                    "Please wait for it to complete before starting a new one."
+                    "A research workflow is already in progress. "
+                    "Wait for it to finish before starting a new one.",
+                    ToastLevel.WARNING,
                 )
                 return
 
             question = self.question_input.toPlainText().strip()
             if not question:
-                QMessageBox.warning(self, "No Question", "Please enter a research question before starting.")
+                show_toast(self, "Enter a research question before starting.", ToastLevel.WARNING)
                 return
 
             max_results = self.max_results_spin.value()
             min_relevant = self.min_relevant_spin.value()
 
             if min_relevant > max_results:
-                QMessageBox.warning(
+                show_toast(
                     self,
-                    "Invalid Parameters",
-                    f"Min relevant ({min_relevant}) cannot exceed max results ({max_results}).\n\n"
-                    "Please adjust the values."
+                    f"Min relevant ({min_relevant}) cannot exceed max results ({max_results}).",
+                    ToastLevel.WARNING,
                 )
                 return
 
@@ -541,21 +528,20 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                     self._rebuild_agents()
                 except Exception as e:
                     self.logger.error(f"Agent rebuild failed: {e}", exc_info=True)
-                    QMessageBox.critical(
+                    show_toast(
                         self,
-                        "Settings Not Applied",
-                        f"Could not apply the changed settings:\n\n{e}\n\n"
-                        "Check the model and provider settings and try again."
+                        f"Settings not applied: could not rebuild the agents ({error_text(e)}). "
+                        "Check the model and provider settings and try again.",
+                        ToastLevel.ERROR,
                     )
                     return
 
             if not self.workflow_executor:
-                QMessageBox.critical(
+                show_toast(
                     self,
-                    "Agents Not Initialized",
-                    "BMLibrarian agents are not initialized.\n\n"
-                    "The application may have failed to start properly.\n"
-                    "Please check the logs and restart the application."
+                    "Research agents are not initialized; the application may have "
+                    "failed to start properly. Check the logs and restart it.",
+                    ToastLevel.ERROR,
                 )
                 return
 
@@ -564,6 +550,8 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             self.progress_label.setText("Initializing workflow...")
             self.status_label.setText("Starting")
             self.workflow_running = True
+            # A report from an earlier run must not be saved with this run's results
+            self._clear_final_report()
 
             self.logger.info(f"Research started: {question[:100]}")
             self.logger.debug(
@@ -573,13 +561,14 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             )
 
             # Create and configure workflow thread
+            from .workflow_executor import DEFAULT_SCORING_THRESHOLD
             from .workflow_thread import WorkflowThread
 
             self.workflow_thread = WorkflowThread(
                 executor=self.workflow_executor,
                 question=question,
                 max_results=max_results,
-                score_threshold=3.0,
+                score_threshold=DEFAULT_SCORING_THRESHOLD,
                 enable_counterfactual=self.counterfactual_checkbox.isChecked(),
                 parent=self
             )
@@ -590,12 +579,15 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             # Start thread
             self.workflow_thread.start()
             self.logger.info("Background workflow thread started")
+            self.workflow_started.emit()
 
         except Exception as e:
             self.logger.error(f"Error in _on_start_research: {e}", exc_info=True)
             self.start_button.setEnabled(True)
             self.workflow_running = False
-            QMessageBox.critical(self, "Error", f"An error occurred while starting research:\n\n{str(e)}")
+            show_toast(
+                self, f"Could not start the research workflow: {error_text(e)}", ToastLevel.ERROR
+            )
             self.workflow_error.emit(e)
 
     @Slot()
@@ -627,12 +619,22 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
 
         self.current_results = {}
         self.counterfactual_results = None
+        self._clear_final_report()
         self.question_input.clear()
 
         self.logger.info("Starting new research session - clearing previous results")
         self.status_label.setText("Ready")
         self.progress_label.setText("")
         self.question_input.setFocus()
+
+    def _clear_final_report(self) -> None:
+        """Forget the stored final report and disable the buttons that export it."""
+        self.final_report_markdown = ""
+        if self.report_refs:
+            for name in ('save_markdown_button', 'export_json_button'):
+                button = self.report_refs.widgets.get(name)
+                if button is not None:
+                    button.setEnabled(False)
 
     # ========================================================================
     # Export Handlers
@@ -672,13 +674,9 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
             pass
 
     def _teardown_workflow_executor(self) -> None:
-        """Disconnect and clean up the workflow executor, if any."""
+        """Clean up the workflow executor, if any."""
         if not self.workflow_executor:
             return
-        self._safe_disconnect(self.workflow_executor.workflow_started, self._on_workflow_started)
-        self._safe_disconnect(self.workflow_executor.workflow_completed, self._on_workflow_completed)
-        self._safe_disconnect(self.workflow_executor.workflow_error, self._on_workflow_error)
-        self._safe_disconnect(self.workflow_executor.status_message, self._on_workflow_status)
 
         if hasattr(self.workflow_executor, 'cleanup'):
             self.workflow_executor.cleanup()

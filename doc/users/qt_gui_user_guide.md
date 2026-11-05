@@ -148,6 +148,27 @@ Shows messages from plugins:
 - Error messages
 - Progress updates
 
+### Notifications
+
+Tabs that have been switched to notifications (currently the Research tab)
+report problems and results in a small box at the bottom right of the
+window instead of a pop-up dialog, so you can keep working:
+
+- **Errors** (red edge) stay until you dismiss them with **×**.
+- **Warnings** (orange) disappear after about 10 seconds, **information and
+  success** messages (blue/green) after about 5 seconds; **×** closes them
+  sooner.
+- Several notifications stack on top of each other, newest at the bottom;
+  when they no longer fit in the window, the oldest are dropped.
+- You can select and copy the text of any notification. A very long message
+  is cut off; hover over it to see all of it.
+- A run that ends early (no documents found, none could be scored, no
+  citations) says why, and a step that fails without stopping the run (e.g.
+  counterfactual analysis) shows a warning.
+
+Questions that need an answer before anything can continue (e.g. "clear the
+current research results?") still open a dialog.
+
 ## Using the Tabs
 
 ### Research Tab
