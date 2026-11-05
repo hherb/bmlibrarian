@@ -32,18 +32,19 @@ Each queue task tracks:
 
 ### 1. Graceful Shutdown
 
-Automatically triggered when process receives SIGTERM or SIGINT:
+Automatically triggered when the process receives SIGTERM or SIGINT, or exits.
+The first `QueueManager` created in a process installs one `atexit` hook and
+(from the main thread only) one SIGINT/SIGTERM handler for the whole process;
+later managers just join a weak registry of live managers, so creating many
+managers (e.g. one per test) installs nothing extra.
 
-```python
-# Signal handlers automatically registered in QueueManager.__init__()
-signal.signal(signal.SIGTERM, self._signal_handler)
-signal.signal(signal.SIGINT, self._signal_handler)
-
-# Also registered as atexit handler
-atexit.register(self._cleanup_on_exit)
-```
-
-**Behavior**: All tasks with status `PROCESSING` and matching `process_id` are marked as `FAILED` with error message "Process terminated".
+**Behavior**: In every live queue, tasks with status `PROCESSING` and this
+process's `process_id` are marked `FAILED` ("Process terminated" at exit,
+"Process terminated by signal N" on a signal). After a signal the process
+exits with status `128 + signum` (130 for Ctrl-C, 143 for SIGTERM), so shells
+and CI see the termination. A cleanup failure is written to stderr; a queue
+whose database file has been deleted is skipped (reconnecting would recreate
+it empty).
 
 ### 2. Stuck Task Recovery
 
@@ -57,7 +58,9 @@ recovered = queue.recover_stuck_tasks(
 ```
 
 **Options**:
-- `mark_as_failed=False`: Reset stuck tasks to PENDING status for retry
+- `mark_as_failed=False`: Reset stuck tasks to PENDING status for retry. The
+  reset counts as a retry (`retry_count` + 1); a task already at
+  `max_retries` is marked FAILED ("retries exhausted") instead
 - `mark_as_failed=True`: Permanently mark stuck tasks as FAILED
 
 ### 3. Dead Process Cleanup

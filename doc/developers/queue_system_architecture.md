@@ -113,42 +113,23 @@ Coordinates multiple agents and manages complex workflows.
 5. **Error Handling and Recovery**
 
 #### Agent Processing Loop
-```python
-def _process_agent_tasks(self, agent_type: str, agent: BaseAgent):
-    """Main processing loop for each agent type."""
-    logger.info(f"Started processing tasks for agent: {agent_type}")
-    
-    while not self._stop_processing.is_set():
-        try:
-            # Get next task for this agent type
-            task = self.queue.get_next_task(agent_type)
-            if task is None:
-                time.sleep(self.polling_interval)
-                continue
-            
-            # Execute the task method
-            method = getattr(agent, task.method_name, None)
-            if method is None:
-                self.queue.fail_task(task.id, f"Method {task.method_name} not found", retry=False)
-                continue
-            
-            # Call method with task data
-            result = method(**task.data)
-            
-            # Handle result format conversion
-            if hasattr(result, '__dict__'):
-                result_dict = result.__dict__
-            elif isinstance(result, dict):
-                result_dict = result
-            else:
-                result_dict = {"result": result}
-            
-            self.queue.complete_task(task.id, result_dict)
-            
-        except Exception as e:
-            logger.error(f"Task {task.id} failed: {str(e)}")
-            self.queue.fail_task(task.id, str(e))
-```
+
+One thread per agent type (`_process_agent_tasks(agent_type)`) claims tasks
+with `get_next_task` and runs each with `_run_task`:
+
+- The agent is looked up in `self.agents` **per task**, so
+  `register_agent(t, new_agent)` while processing takes effect on the next
+  task (a type registered after `start_processing()` gets its own thread).
+- A missing method fails the task without retry.
+- An exception from the agent method fails the task **with** retry; the
+  message is `Task execution failed: <ExceptionType>: <message>` and the
+  traceback is logged.
+- Once the method has succeeded, a failure to store its result (most often
+  a value `json.dumps` cannot serialise, e.g. a `datetime`) fails the task
+  **without** retry (`Task result could not be stored: TypeError: ...`), so
+  the method's side effects (LLM calls, database writes) are not repeated.
+- Results are stored as-is if they are a `dict`, as `__dict__` for objects,
+  and as `{"result": value}` otherwise.
 
 #### Workflow Management
 

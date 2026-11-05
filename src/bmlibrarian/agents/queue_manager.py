@@ -12,6 +12,8 @@ import threading
 import os
 import signal
 import atexit
+import sys
+import weakref
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Optional, Dict, Any, List, Iterator
@@ -31,6 +33,59 @@ MIN_SQLITE_VERSION: tuple = (3, 35, 0)
 # own connection), so without this they would fail immediately on contention
 # instead of briefly blocking and retrying.
 QUEUE_BUSY_TIMEOUT_MS: int = 30_000
+
+# Shell convention for a process killed by a signal: exit status 128 + signum.
+SIGNAL_EXIT_STATUS_BASE: int = 128
+
+# Process-wide cleanup: one atexit hook and one SIGINT/SIGTERM handler cover
+# every live QueueManager. A WeakSet lets garbage-collected managers drop out,
+# so creating many managers (e.g. one per test) installs nothing extra.
+_live_managers: "weakref.WeakSet[QueueManager]" = weakref.WeakSet()
+_registry_lock = threading.Lock()
+_atexit_registered = False
+_signal_handlers_installed = False
+
+
+def _report_cleanup_error(manager: "QueueManager", error: Exception) -> None:
+    """Write a cleanup failure to stderr (logging may be shut down at exit)."""
+    print(
+        f"QueueManager cleanup failed for {manager.db_path}: "
+        f"{type(error).__name__}: {error}",
+        file=sys.stderr,
+    )
+
+
+def _cleanup_all_on_exit() -> None:
+    """atexit hook: mark this process's in-flight tasks failed in every live queue."""
+    for manager in list(_live_managers):
+        manager._cleanup_on_exit()
+
+
+def _handle_termination_signal(signum: int, frame: Any) -> None:
+    """SIGINT/SIGTERM handler: fail in-flight tasks, then exit 128 + signum."""
+    for manager in list(_live_managers):
+        manager._signal_handler(signum, frame)
+    sys.exit(SIGNAL_EXIT_STATUS_BASE + signum)
+
+
+def _register_manager(manager: "QueueManager") -> None:
+    """Track a manager and install the process-wide handlers once.
+
+    Signal handlers can only be installed from the main thread (signal.signal()
+    raises ValueError otherwise), so a manager built on a worker thread (e.g. a
+    Qt background worker) leaves them for the first main-thread construction.
+    """
+    global _atexit_registered, _signal_handlers_installed
+    with _registry_lock:
+        _live_managers.add(manager)
+        if not _atexit_registered:
+            atexit.register(_cleanup_all_on_exit)
+            _atexit_registered = True
+        if (not _signal_handlers_installed
+                and threading.current_thread() is threading.main_thread()):
+            signal.signal(signal.SIGTERM, _handle_termination_signal)
+            signal.signal(signal.SIGINT, _handle_termination_signal)
+            _signal_handlers_installed = True
 
 
 class TaskStatus(Enum):
@@ -124,14 +179,7 @@ class QueueManager:
         
         self._init_database()
         
-        # Register cleanup handlers. Signal handlers can only be installed from
-        # the main thread (signal.signal() raises ValueError otherwise), and are
-        # only meaningful there, so skip registration when a QueueManager is
-        # constructed on a worker thread (e.g. a Qt background worker).
-        atexit.register(self._cleanup_on_exit)
-        if threading.current_thread() is threading.main_thread():
-            signal.signal(signal.SIGTERM, self._signal_handler)
-            signal.signal(signal.SIGINT, self._signal_handler)
+        _register_manager(self)
     
     def _get_connection(self):
         """Get database connection, using persistent connection for in-memory databases.
@@ -210,28 +258,36 @@ class QueueManager:
             if needs_close:
                 conn.close()
     
-    def _cleanup_on_exit(self):
-        """Clean up tasks assigned to this process on exit."""
+    def _queue_file_missing(self) -> bool:
+        """True if the queue file is gone; reconnecting would recreate it empty."""
+        return self._persistent_conn is None and not os.path.exists(self.db_path)
+
+    def _cleanup_on_exit(self) -> None:
+        """Mark this process's in-flight tasks failed on exit; errors go to stderr."""
+        if self._queue_file_missing():
+            return
         try:
             self._mark_process_tasks_as_failed("Process terminated")
-        except Exception:
-            pass  # Ignore errors during cleanup
-    
-    def _signal_handler(self, signum, frame):
-        """Handle termination signals gracefully.
+        except Exception as e:
+            _report_cleanup_error(self, e)
 
-        Runs synchronously on the main thread in the context of whatever code
-        was interrupted, which may already hold ``self.lock``. Acquiring it here
+    def _signal_handler(self, signum: int, frame: Any) -> None:
+        """Mark this process's in-flight tasks failed for a termination signal.
+
+        Called by the process-wide handler, which then exits. It runs
+        synchronously on the main thread in the context of whatever code was
+        interrupted, which may already hold ``self.lock``. Acquiring it here
         would deadlock (threading.Lock is non-reentrant), so mark tasks failed
-        without taking the lock. Any error is swallowed since we are exiting.
+        without taking the lock. Errors go to stderr; we are exiting anyway.
         """
+        if self._queue_file_missing():
+            return
         try:
             self._mark_process_tasks_as_failed(
                 f"Process terminated by signal {signum}", acquire_lock=False
             )
-        except Exception:
-            pass
-        exit(0)
+        except Exception as e:
+            _report_cleanup_error(self, e)
 
     def _mark_process_tasks_as_failed(self, error_message: str, acquire_lock: bool = True):
         """Mark all processing tasks for this process as failed.
@@ -272,7 +328,9 @@ class QueueManager:
         
         Args:
             stuck_timeout_minutes: Consider tasks stuck if processing longer than this
-            mark_as_failed: If True, mark stuck tasks as failed. If False, reset to pending.
+            mark_as_failed: If True, mark stuck tasks as failed. If False, reset to
+                pending; the reset counts as a retry, so a task that has used up
+                ``max_retries`` is marked failed instead.
             
         Returns:
             Number of tasks recovered
@@ -285,14 +343,14 @@ class QueueManager:
             try:
                 # Find stuck tasks
                 cursor = conn.execute("""
-                    SELECT id, process_id FROM queue_tasks 
+                    SELECT id, process_id, retry_count, max_retries FROM queue_tasks
                     WHERE status = ? AND started_at < ?
                 """, (TaskStatus.PROCESSING.value, cutoff_time.isoformat()))
                 
                 stuck_tasks = cursor.fetchall()
                 recovered_count = 0
                 
-                for task_id, process_id in stuck_tasks:
+                for task_id, process_id, retry_count, max_retries in stuck_tasks:
                     # Check if the process is still running (if we have a process_id)
                     process_dead = False
                     if process_id:
@@ -301,8 +359,22 @@ class QueueManager:
                         except (OSError, ProcessLookupError):
                             process_dead = True
                     
+                    # A reset to pending is a retry and spends the retry budget.
+                    new_retry_count = retry_count + 1
+                    retries_exhausted = new_retry_count > max_retries
+
                     # Recover the task
-                    if mark_as_failed or process_dead:
+                    if retries_exhausted and not (mark_as_failed or process_dead):
+                        completed_at = datetime.now(timezone.utc).isoformat()
+                        conn.execute("""
+                            UPDATE queue_tasks
+                            SET status = ?, retry_count = ?, error_message = ?,
+                                completed_at = ?, process_id = NULL, worker_id = NULL
+                            WHERE id = ?
+                        """, (TaskStatus.FAILED.value, new_retry_count,
+                              "Task stuck in processing; retries exhausted",
+                              completed_at, task_id))
+                    elif mark_as_failed or process_dead:
                         # Mark as failed
                         completed_at = datetime.now(timezone.utc).isoformat()
                         conn.execute("""
@@ -316,10 +388,11 @@ class QueueManager:
                     else:
                         # Reset to pending for retry
                         conn.execute("""
-                            UPDATE queue_tasks 
-                            SET status = ?, started_at = NULL, process_id = NULL, worker_id = NULL
+                            UPDATE queue_tasks
+                            SET status = ?, retry_count = ?, started_at = NULL,
+                                process_id = NULL, worker_id = NULL
                             WHERE id = ?
-                        """, (TaskStatus.PENDING.value, task_id))
+                        """, (TaskStatus.PENDING.value, new_retry_count, task_id))
                     
                     recovered_count += 1
                 
