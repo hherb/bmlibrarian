@@ -772,23 +772,32 @@ class AgentOrchestrator:
         except Exception as fail_error:
             stuck_msg = (f"Task {task.id} is stuck in PROCESSING "
                          f"({type(fail_error).__name__}: {fail_error}); release it "
-                         f"with `queue_cli recover --force` (or `queue_cli cleanup-dead` "
-                         f"once this process has exited)")
+                         f"with `python -m bmlibrarian.queue_cli recover --force "
+                         f"--timeout 0`, or `cleanup-dead` once this process has "
+                         f"exited and could not mark it failed itself)")
             logger.exception(stuck_msg)
             self._notify_progress("task_stuck", stuck_msg, {
                 "task_id": task.id, "agent_type": agent_type, "error": stuck_msg})
+
+    def _notify_discarded(self, task: QueueTask, agent_type: str, reason: str) -> None:
+        """Tell listeners a started task ended here without a queue write."""
+        self._notify_progress(
+            "task_discarded",
+            f"Task {task.id} is no longer held by this worker; {reason}", {
+                "task_id": task.id, "agent_type": agent_type, "reason": reason})
 
     def _fail_task(self, task: QueueTask, agent_type: str, error_msg: str,
                    retry: bool) -> None:
         """Fail a task in the queue and report it to the progress callbacks.
 
         ``task_failed`` carries ``will_retry`` (the task went back to PENDING).
-        Nothing is reported if the task was no longer this worker's (recovered
-        or cancelled meanwhile); the queue logs that.
+        If nothing was written (the task is missing or no longer this
+        worker's), ``task_discarded`` is reported instead; the queue logs why.
         """
         outcome = self.queue.fail_task(task.id, error_msg, retry=retry,
                                        worker_id=task.worker_id)
         if outcome is None:
+            self._notify_discarded(task, agent_type, f"failure not recorded: {error_msg}")
             return
         will_retry = outcome is TaskStatus.PENDING
         self._notify_progress(
@@ -856,8 +865,9 @@ class AgentOrchestrator:
             logger.exception(f"Task {task.id} failed: {error_msg}")
             self._fail_task(task, agent_type, error_msg, retry=True)
             return
-        if not stored:
-            return  # recovered or cancelled while running; the queue logged it
+        if not stored:  # recovered while running; the queue logged it
+            self._notify_discarded(task, agent_type, "result not stored")
+            return
 
         self._notify_progress("task_completed", f"Task {task.id} completed", {
             "task_id": task.id,

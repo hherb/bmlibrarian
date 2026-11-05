@@ -488,6 +488,20 @@ class TestExecuteWorkflow:
         with pytest.raises(sqlite3.OperationalError):
             self.orchestrator.execute_workflow("wf", {}, timeout=DEADLINE_SECONDS)
 
+    def test_ctrl_c_aborts_and_stays_keyboard_interrupt(self) -> None:
+        """#384: Ctrl-C mid-run reaches the caller as KeyboardInterrupt, after cleanup."""
+        workflow = self.orchestrator.create_workflow("wf")
+        workflow.add_step("a", WorkflowStep("good", "run"))
+        self.orchestrator.queue.get_task_status = Mock(  # type: ignore[method-assign]
+            side_effect=KeyboardInterrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            self.orchestrator.execute_workflow("wf", {}, timeout=DEADLINE_SECONDS)
+
+        assert len(self._event_data("workflow_aborted")) == 1
+        stats = self.orchestrator.queue.get_queue_stats()
+        assert stats[TaskStatus.CANCELLED.value] == 1
+
     def test_task_status_missing_counts_as_failed(self) -> None:
         """A task that vanished from the queue fails its step and skips dependents."""
         workflow = self.orchestrator.create_workflow("wf")

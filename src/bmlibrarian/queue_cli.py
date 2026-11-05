@@ -6,12 +6,15 @@ Provides commands for queue inspection, cleanup, and recovery operations.
 """
 
 import argparse
+import logging
 import sys
 import json
 from pathlib import Path
 from datetime import datetime
 
 from .agents.queue_manager import QueueManager, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 
 def format_datetime(dt_str):
@@ -56,10 +59,11 @@ def cmd_status(args):
     
     # Recommendations
     if health['stuck_tasks'] > 0:
-        print(f"\n💡 Recommendation: Run 'queue-cli recover' to handle stuck tasks")
+        print(f"\n💡 Recommendation: Run 'python -m bmlibrarian.queue_cli recover' to handle stuck tasks "
+              f"(add --force for tasks whose process is still running)")
     
     if health['orphaned_tasks'] > 0:
-        print(f"💡 Recommendation: Run 'queue-cli cleanup-dead' to clean orphaned tasks")
+        print(f"💡 Recommendation: Run 'python -m bmlibrarian.queue_cli cleanup-dead' to clean orphaned tasks")
 
 
 def cmd_list_tasks(args):
@@ -131,6 +135,10 @@ def cmd_recover(args):
     else:
         print("   Mode: Reset stuck tasks to PENDING for retry "
               "(tasks out of retries or from dead processes are marked FAILED)")
+    if args.force:
+        print("   Including tasks whose process is still running (--force)")
+    else:
+        print("   Skipping tasks whose process is still running (use --force)")
     
     counts = queue.recover_stuck_tasks(
         stuck_timeout_minutes=args.timeout,
@@ -141,10 +149,11 @@ def cmd_recover(args):
     if counts.recovered:
         print(f"✅ {counts.reset} reset to PENDING, {counts.failed} marked FAILED")
     if counts.failed:
-        print("   Inspect failed tasks with: queue-cli list --status failed -v")
+        print("   Inspect failed tasks with: python -m bmlibrarian.queue_cli list --status failed -v")
     if counts.skipped_running:
-        print(f"⏳ {counts.skipped_running} skipped: their process is still running "
-              f"(use --force to recover them anyway; a forced task's own result is "
+        print(f"⏳ {counts.skipped_running} skipped: a process with their recorded "
+              f"PID is still running (it may not be the original worker; "
+              f"use --force to recover them anyway; a forced task's own result is "
               f"then discarded)")
     if not (counts.recovered or counts.skipped_running):
         print("✅ No stuck tasks found")
@@ -228,11 +237,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  queue-cli status                          # Show queue health
-  queue-cli list --status pending          # List pending tasks
-  queue-cli recover --timeout 15           # Recover tasks stuck > 15 minutes
-  queue-cli cleanup-dead                   # Clean tasks from dead processes
-  queue-cli cancel --agent scoring_agent   # Cancel tasks for specific agent
+  python -m bmlibrarian.queue_cli status                          # Show queue health
+  python -m bmlibrarian.queue_cli list --status pending          # List pending tasks
+  python -m bmlibrarian.queue_cli recover --timeout 15           # Recover tasks stuck > 15 minutes
+  python -m bmlibrarian.queue_cli cleanup-dead                   # Clean tasks from dead processes
+  python -m bmlibrarian.queue_cli cancel --agent scoring_agent   # Cancel tasks for specific agent
         """
     )
     
@@ -311,7 +320,8 @@ Examples:
         print("\n❌ Operation canceled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.exception(f"queue_cli {args.command} failed")
+        print(f"❌ Error: {type(e).__name__}: {e}")
         sys.exit(1)
 
 

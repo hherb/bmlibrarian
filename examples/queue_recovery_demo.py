@@ -115,8 +115,8 @@ def demo_stuck_task_recovery():
     
     # Recover stuck tasks (reset to pending)
     counts = queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False)
-    print(f"   {counts.reset} reset to PENDING, {counts.failed} marked FAILED "
-          f"(a dead process's task is failed)")
+    print(f"   {counts.reset} reset to PENDING, {counts.failed} marked FAILED, "
+          f"{counts.skipped_running} skipped (process still running)")
     
     # Clean up orphaned tasks from dead processes
     cleaned = queue.cleanup_dead_process_tasks()
@@ -247,6 +247,7 @@ def demo_preservation_options():
     print("🔐 Option 1: Preserve Queue (for intentional restarts)")
     print("   - Use recover_stuck_tasks(mark_as_failed=False)")
     print("   - Resets stuck tasks to PENDING for retry")
+    print("   - Tasks of a still-running process need force=True")
     print("   - Suitable for: Planned maintenance, intentional restarts")
     print()
     

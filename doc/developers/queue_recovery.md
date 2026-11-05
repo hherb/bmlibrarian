@@ -81,16 +81,29 @@ counts.reset, counts.failed, counts.skipped_running  # RecoveryCounts
   is marked FAILED in either mode
 - `mark_as_failed=True`: Permanently mark stuck tasks as FAILED
 - `force=False` (default): a task whose process is still running is skipped
-  and counted in `skipped_running` (its worker may just be slow).
-  `force=True` recovers it too (`queue_cli recover --force`)
+  and counted in `skipped_running` (its worker may just be slow). This applies
+  to `mark_as_failed=True` too. `force=True` recovers it as well
+  (`queue_cli recover --force`) and records "Task forcibly recovered while
+  process N was still running"
+- Liveness is checked with `psutil.pid_exists` (never `os.kill(pid, 0)`, which
+  on Windows sends Ctrl-C). A process ID that has since been reused by another
+  process reads as running, so such a task needs `force=True`.
+
+Recovery writes a task only if it is still the claim it inspected (status
+PROCESSING, same `worker_id` and `started_at`). A worker in another process
+that finishes the task in the meantime keeps its result, and the task is not
+counted.
 
 **Ownership**: the orchestrator passes the claim's `worker_id` to
 `complete_task` / `fail_task`, which write only while that worker still holds
-the task (status PROCESSING, same `worker_id`). A task recovered, re-claimed or
-cancelled meanwhile keeps its new state; the late result is discarded with a
-warning (`complete_task` returns False, `fail_task` None) and no
-`task_completed`/`task_failed` event is sent. Without `worker_id` the write is
-unconditional, as before.
+the task (status PROCESSING, same `worker_id`). A task recovered meanwhile
+(and possibly re-claimed or cancelled since) keeps its new state; the late
+result is discarded with a warning naming the task's current status and worker
+(`complete_task` returns False, `fail_task` None), and the orchestrator sends
+`task_discarded` instead of `task_completed`/`task_failed`. Without `worker_id`
+the write still never touches a finished (completed, failed or cancelled) task.
+A worker id is `{pid}-{thread ident}`, so this relies on each thread running
+one claimed task at a time, as the orchestrator's worker loop does.
 
 Note that "stuck" only means "processing longer than the timeout": a live
 process may still be working on a long task, which is why its tasks are
@@ -175,8 +188,10 @@ python -m bmlibrarian.queue_cli export backup.json -d queue.db
 Best for tasks stuck in a process that is still running (e.g. a hung worker):
 
 ```python
-# Reset stuck tasks to pending for retry (uses one of each task's retries)
-queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False)
+# Reset stuck tasks to pending for retry (uses one of each task's retries).
+# force=True is needed because their process is alive; the hung worker's own
+# result, should it ever arrive, is then discarded.
+queue.recover_stuck_tasks(stuck_timeout_minutes=30, mark_as_failed=False, force=True)
 queue.cleanup_dead_process_tasks()  # Clean orphaned tasks
 ```
 
@@ -253,8 +268,12 @@ with self.lock:
 # Check queue health periodically
 health = queue.get_queue_health()
 if health['stuck_tasks'] > 0:
-    logger.warning(f"Found {health['stuck_tasks']} stuck tasks")
-    queue.recover_stuck_tasks()
+    counts = queue.recover_stuck_tasks()
+    # stuck_tasks includes tasks of live processes, which are skipped unless
+    # force=True; say so instead of warning about them on every pass.
+    logger.warning(f"Found {health['stuck_tasks']} stuck tasks: "
+                   f"{counts.recovered} recovered, "
+                   f"{counts.skipped_running} still running (skipped)")
 ```
 
 ### 2. Automated Recovery in Production
@@ -265,7 +284,10 @@ import time
 
 def automated_recovery():
     queue.cleanup_dead_process_tasks()
-    queue.recover_stuck_tasks(stuck_timeout_minutes=60)
+    counts = queue.recover_stuck_tasks(stuck_timeout_minutes=60)
+    if counts.skipped_running:
+        logger.warning(f"{counts.skipped_running} tasks of running processes "
+                       f"left alone (recover them with force=True)")
     queue.cleanup_completed_tasks(older_than_hours=48)
 
 # Run recovery every hour
@@ -298,7 +320,8 @@ def signal_handler(signum, frame):
     sys.exit(SIGNAL_EXIT_STATUS_BASE + signum)
 
 signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+# Don't route SIGINT here: Ctrl-C would become sys.exit and callers would
+# lose their KeyboardInterrupt.
 ```
 
 ### 4. Recovery Logging

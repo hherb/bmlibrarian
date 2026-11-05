@@ -15,6 +15,7 @@ import signal
 import atexit
 import sys
 import weakref
+import psutil  # type: ignore[import-untyped]  # no stubs installed
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Optional, Dict, Any, List, Iterator
@@ -37,10 +38,10 @@ MIN_SQLITE_VERSION: tuple = (3, 35, 0)
 # instead of briefly blocking and retrying.
 QUEUE_BUSY_TIMEOUT_MS: int = 30_000
 
-# Busy timeout for the signal-handler cleanup. The interrupted code may hold the
-# write lock itself (e.g. between executemany and commit), so waiting the full
-# QUEUE_BUSY_TIMEOUT_MS would freeze Ctrl-C; the atexit pass retries once the
-# interrupted frame has unwound and released it.
+# Busy timeout for the SIGTERM-handler cleanup. The interrupted code may hold
+# the write lock itself (e.g. between executemany and commit), so waiting the
+# full QUEUE_BUSY_TIMEOUT_MS would stall termination; the atexit pass retries
+# once the interrupted frame has unwound and released it.
 SIGNAL_CLEANUP_BUSY_TIMEOUT_MS: int = 1_000
 
 # Shell convention for a process killed by a signal: exit status 128 + signum.
@@ -48,9 +49,10 @@ SIGNAL_EXIT_STATUS_BASE: int = 128
 
 # Process-wide cleanup: one atexit hook and one SIGTERM handler cover every
 # live QueueManager. SIGINT is left alone: Ctrl-C stays a KeyboardInterrupt
-# (callers catch it), and if it ends the process the atexit hook cleans up. The once-flags below install them a single time
-# however many managers are created; the WeakSet lets garbage-collected
-# managers drop out instead of being kept alive by the registry.
+# (callers catch it), and if it ends the process the atexit hook cleans up.
+# The once-flags below install them a single time however many managers are
+# created; the WeakSet lets garbage-collected managers drop out instead of
+# being kept alive by the registry.
 _live_managers: "weakref.WeakSet[QueueManager]" = weakref.WeakSet()
 _registry_lock = threading.Lock()
 _atexit_registered = False
@@ -104,14 +106,15 @@ def _register_manager(manager: "QueueManager") -> None:
 
 
 def _process_alive(pid: int) -> bool:
-    """Whether a process with this id exists (owned by any user)."""
-    try:
-        os.kill(pid, 0)  # Signal 0 checks existence without signalling
-    except PermissionError:
-        return True  # exists, but belongs to another user
-    except OSError:
-        return False
-    return True
+    """Whether a process with this id exists (owned by any user).
+
+    psutil, not ``os.kill(pid, 0)``: on Windows signal 0 is CTRL_C_EVENT and
+    would interrupt the process instead of probing it. (On POSIX psutil does
+    use signal 0, treating EPERM as "exists".)
+    """
+    # shortcut: a reused pid reads as alive, so a dead worker's task then needs
+    # ``force`` (issue #388: compare the process start time with started_at).
+    return psutil.pid_exists(pid)
 
 
 @dataclass(frozen=True)
@@ -395,11 +398,13 @@ class QueueManager:
             needs_close = not self._persistent_conn
             try:
                 cursor = conn.execute("""
-                    SELECT id, process_id, retry_count, max_retries FROM queue_tasks
+                    SELECT id, process_id, worker_id, started_at, retry_count, max_retries
+                    FROM queue_tasks
                     WHERE status = ? AND started_at < ?
                 """, (TaskStatus.PROCESSING.value, cutoff_time.isoformat()))
 
-                for task_id, process_id, retry_count, max_retries in cursor.fetchall():
+                for (task_id, process_id, worker_id, started_at,
+                     retry_count, max_retries) in cursor.fetchall():
                     # A task without a process id has an unknown owner: recoverable.
                     process_alive = bool(process_id) and _process_alive(process_id)
                     process_dead = bool(process_id) and not process_alive
@@ -407,37 +412,49 @@ class QueueManager:
                         skipped_running += 1
                         continue
 
+                    # Write only if the task is still the claim we inspected: a
+                    # worker in another process may have finished it (or it was
+                    # re-claimed) since the SELECT, which holds no lock.
+                    still_claimed = ("status = ? AND worker_id IS ? AND started_at IS ?",
+                                     (TaskStatus.PROCESSING.value, worker_id, started_at))
                     # A reset to pending is a retry and spends the retry budget.
                     new_retry_count = retry_count + 1
                     completed_at = datetime.now(timezone.utc).isoformat()
                     if mark_as_failed or process_dead:
-                        conn.execute("""
+                        if process_dead:
+                            reason = f"Task stuck in processing; process {process_id} no longer running"
+                        elif process_alive:
+                            reason = (f"Task forcibly recovered while process "
+                                      f"{process_id} was still running")
+                        else:
+                            reason = "Task stuck in processing (timeout)"
+                        update = conn.execute(f"""
                             UPDATE queue_tasks
                             SET status = ?, error_message = ?, completed_at = ?,
                                 process_id = NULL, worker_id = NULL
-                            WHERE id = ?
-                        """, (TaskStatus.FAILED.value,
-                              "Task stuck in processing (process terminated or timeout)",
-                              completed_at, task_id))
-                        failed += 1
+                            WHERE id = ? AND {still_claimed[0]}
+                        """, (TaskStatus.FAILED.value, reason, completed_at, task_id,
+                              *still_claimed[1]))
+                        failed += update.rowcount
                     elif new_retry_count > max_retries:
-                        conn.execute("""
+                        update = conn.execute(f"""
                             UPDATE queue_tasks
                             SET status = ?, retry_count = ?, error_message = ?,
                                 completed_at = ?, process_id = NULL, worker_id = NULL
-                            WHERE id = ?
+                            WHERE id = ? AND {still_claimed[0]}
                         """, (TaskStatus.FAILED.value, new_retry_count,
                               "Task stuck in processing; retries exhausted",
-                              completed_at, task_id))
-                        failed += 1
+                              completed_at, task_id, *still_claimed[1]))
+                        failed += update.rowcount
                     else:
-                        conn.execute("""
+                        update = conn.execute(f"""
                             UPDATE queue_tasks
                             SET status = ?, retry_count = ?, started_at = NULL,
                                 process_id = NULL, worker_id = NULL
-                            WHERE id = ?
-                        """, (TaskStatus.PENDING.value, new_retry_count, task_id))
-                        reset += 1
+                            WHERE id = ? AND {still_claimed[0]}
+                        """, (TaskStatus.PENDING.value, new_retry_count, task_id,
+                              *still_claimed[1]))
+                        reset += update.rowcount
 
                 conn.commit()
                 return RecoveryCounts(reset=reset, failed=failed,
@@ -521,9 +538,7 @@ class QueueManager:
             
             orphaned_tasks = 0
             for (pid,) in cursor.fetchall():
-                try:
-                    os.kill(pid, 0)
-                except (OSError, ProcessLookupError):
+                if not _process_alive(pid):
                     cursor2 = conn.execute("""
                         SELECT COUNT(*) FROM queue_tasks 
                         WHERE process_id = ? AND status = ?
@@ -708,10 +723,31 @@ class QueueManager:
     
     @staticmethod
     def _owner_clause(worker_id: Optional[str]) -> tuple:
-        """SQL condition (and params) that the task is still claimed by ``worker_id``."""
+        """SQL condition (and params) guarding a complete/fail write.
+
+        With ``worker_id``: the task is still PROCESSING and claimed by that
+        worker. A worker id is ``{pid}-{thread ident}``, so this relies on each
+        thread running one claimed task at a time (the orchestrator's loop).
+        Without it: the task is merely not finished yet (pending or processing).
+        """
         if worker_id is None:
-            return "", ()
+            return (" AND status IN (?, ?)",
+                    (TaskStatus.PENDING.value, TaskStatus.PROCESSING.value))
         return " AND status = ? AND worker_id = ?", (TaskStatus.PROCESSING.value, worker_id)
+
+    @staticmethod
+    def _lost_reason(worker_id: Optional[str]) -> str:
+        """Why a guarded complete/fail write matched no row, for the warning."""
+        if worker_id is None:
+            return "task already finished"
+        return f"worker {worker_id} no longer holds it (recovered, maybe re-claimed since)"
+
+    @staticmethod
+    def _describe_task_state(conn: sqlite3.Connection, task_id: str) -> str:
+        """Short "status=…, worker=…" note for a log line, or "task missing"."""
+        row = conn.execute("SELECT status, worker_id FROM queue_tasks WHERE id = ?",
+                           (task_id,)).fetchone()
+        return "task missing" if row is None else f"now status={row[0]}, worker={row[1]}"
 
     def complete_task(self, task_id: str, result: Dict[str, Any],
                       worker_id: Optional[str] = None) -> bool:
@@ -722,8 +758,10 @@ class QueueManager:
             result: Result to store (must be JSON-serialisable).
             worker_id: The claiming worker (``QueueTask.worker_id``). When
                 given, the result is stored only if that worker still holds the
-                task; if it was recovered, re-claimed or cancelled meanwhile,
-                the result is discarded with a warning.
+                task; if it was recovered meanwhile (and possibly re-claimed
+                or cancelled since), the result is discarded with a warning.
+                Without it, a task that is already completed, failed or
+                cancelled is left unchanged.
 
         Returns:
             True if the result was stored.
@@ -749,12 +787,13 @@ class QueueManager:
                 """, (TaskStatus.COMPLETED.value, payload, completed_at, task_id,
                       *owner_params))
                 conn.commit()
+                state = "" if cursor.rowcount else self._describe_task_state(conn, task_id)
             finally:
                 if needs_close:
                     conn.close()
-        if cursor.rowcount == 0:
-            logger.warning(f"Task {task_id} was recovered, re-claimed, cancelled or "
-                           f"removed while running; its result was discarded")
+        if state:
+            logger.warning(f"Task {task_id} result discarded: {self._lost_reason(worker_id)} "
+                           f"({state})")
             return False
         return True
 
@@ -769,7 +808,8 @@ class QueueManager:
             retry: Whether to retry if retries remain
             worker_id: The claiming worker (``QueueTask.worker_id``). When
                 given, nothing is written unless that worker still holds the
-                task (see ``complete_task``).
+                task (see ``complete_task``). Without it, a finished task is
+                left unchanged.
 
         Returns:
             ``TaskStatus.PENDING`` if the task will be retried,
@@ -778,6 +818,7 @@ class QueueManager:
         """
         owner_sql, owner_params = self._owner_clause(worker_id)
         outcome: Optional[TaskStatus] = None
+        state = ""
         with self.lock:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
@@ -811,6 +852,8 @@ class QueueManager:
                     conn.commit()
                     if cursor.rowcount:
                         outcome = new_status
+                    else:
+                        state = self._describe_task_state(conn, task_id)
             finally:
                 if needs_close:
                     conn.close()
@@ -818,8 +861,8 @@ class QueueManager:
         if not row:
             logger.warning(f"Task {task_id} not found; failure not recorded: {error_message}")
         elif outcome is None:
-            logger.warning(f"Task {task_id} was recovered, re-claimed or cancelled while "
-                           f"running; its failure was discarded: {error_message}")
+            logger.warning(f"Task {task_id} failure discarded: {self._lost_reason(worker_id)} "
+                           f"({state}): {error_message}")
         return outcome
 
     def get_task_status(self, task_id: str) -> Optional[QueueTask]:

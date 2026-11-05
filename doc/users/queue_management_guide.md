@@ -68,10 +68,11 @@ python -m bmlibrarian.queue_cli cleanup-old --hours 0
 
 **What happened**: You pressed Ctrl+C or closed the terminal while documents were being processed.
 
-**What happens**: on Ctrl+C (or a normal exit) the application marks the tasks
-it was working on as **failed** ("Process terminated by signal 2"). Pending
-tasks it had not started stay pending. Interrupted tasks are not resumed
-automatically.
+**What happens**: when the application exits after Ctrl+C (or a normal exit),
+it marks the tasks it was working on as **failed** ("Process terminated").
+If the application catches Ctrl+C and keeps running, nothing is marked.
+Pending tasks it had not started stay pending. Interrupted tasks are not
+resumed automatically.
 
 **What to do**:
 1. Check the queue status:

@@ -18,13 +18,19 @@ off new work. Longer-term structural items live in
   `complete_task(…, worker_id=)` / `fail_task(…, worker_id=)` write only
   while that worker still holds the task (PROCESSING, same `worker_id`); the
   orchestrator passes `task.worker_id`, and a late result/failure is
-  discarded with a warning and no event (`complete_task` → bool,
-  `fail_task` → `TaskStatus.PENDING`/`FAILED`/None; a missing row is logged).
-  `recover_stuck_tasks(force=False)` skips tasks whose process is alive and
-  returns `RecoveryCounts(reset, failed, skipped_running)`; `queue_cli
-  recover` prints each count and has `--force`. `_process_alive` treats
-  `PermissionError` as alive (was "dead"; also in `cleanup_dead_process_tasks`).
-  `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
+  discarded with a warning naming the task's current status/worker and a
+  `task_discarded` event (`complete_task` → bool, `fail_task` →
+  `TaskStatus.PENDING`/`FAILED`/None; a missing row is logged). Without
+  `worker_id` a finished (completed/failed/cancelled) task is never touched.
+  `recover_stuck_tasks(force=False)` skips tasks whose process is alive (also
+  with `mark_as_failed`) and returns `RecoveryCounts(reset, failed,
+  skipped_running)`; its UPDATEs re-check status/`worker_id`/`started_at`, so
+  a task finished by another process mid-recovery is not overwritten.
+  `queue_cli recover` prints each count and has `--force`; its hints print
+  runnable `python -m bmlibrarian.queue_cli …` commands. `_process_alive` is
+  `psutil.pid_exists` (Windows-safe; EPERM = alive) and is used by recover,
+  `cleanup_dead_process_tasks` and `get_queue_health`. A reused PID still
+  reads as alive: #388. `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
   `queue_system_architecture.md`, `queue_management_guide.md`,
   `queue_system_guide.md`. Tests: `tests/test_queue_ownership.py`.
 - **Queue worker robustness** (2026-11-05, closes #294). The orchestrator

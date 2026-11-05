@@ -10,6 +10,7 @@ whether the task will be retried.
 """
 
 import logging
+import os
 import signal
 import sqlite3
 import subprocess
@@ -67,6 +68,9 @@ class TestCtrlCStaysKeyboardInterrupt:
         proc = run_script(
             "import os, signal, sys, time\n"
             "from bmlibrarian.agents.queue_manager import QueueManager\n"
+            # A shell background job starts with SIGINT ignored; restore Python's
+            # default so the test does not depend on how pytest was launched.
+            "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
             "q = QueueManager(sys.argv[1])\n"
             "try:\n"
             "    os.kill(os.getpid(), signal.SIGINT)\n"
@@ -83,6 +87,9 @@ class TestCtrlCStaysKeyboardInterrupt:
         proc = run_script(
             "import os, signal, sys, time\n"
             "from bmlibrarian.agents.queue_manager import QueueManager\n"
+            # A shell background job starts with SIGINT ignored; restore Python's
+            # default so the test does not depend on how pytest was launched.
+            "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
             "q = QueueManager(sys.argv[1])\n"
             "q.add_task(target_agent='worker', method_name='run', data={})\n"
             "q.get_next_task('worker')\n"
@@ -111,7 +118,8 @@ class TestOwnership:
 
         stored = queue.get_task_status(task.id)
         assert (stored.status, stored.result) == (TaskStatus.PENDING, None)
-        assert "result was discarded" in caplog.text
+        assert "result discarded" in caplog.text
+        assert "now status=pending" in caplog.text
 
     def test_old_worker_cannot_overwrite_a_re_claimed_task(self, queue: QueueManager) -> None:
         """A second claim (another worker id) keeps PROCESSING after the first fails."""
@@ -147,6 +155,18 @@ class TestOwnership:
         again = queue.get_next_task(AGENT)
         assert queue.fail_task(again.id, "e", worker_id=again.worker_id) is TaskStatus.FAILED
 
+    def test_without_worker_id_finished_tasks_are_left_alone(self, queue: QueueManager) -> None:
+        """Legacy callers (no worker_id) cannot revive a cancelled or completed task."""
+        cancelled = queue.add_task(target_agent=AGENT, method_name="run", data={})
+        queue.cancel_task(cancelled)
+        assert queue.complete_task(cancelled, {"x": 1}) is False
+        assert queue.get_task_status(cancelled).status == TaskStatus.CANCELLED
+
+        done = claim(queue)
+        queue.complete_task(done.id, {"x": 1})
+        assert queue.fail_task(done.id, "late", retry=True) is None
+        assert queue.get_task_status(done.id).status == TaskStatus.COMPLETED
+
     def test_missing_task_failure_is_logged(
             self, queue: QueueManager, caplog: pytest.LogCaptureFixture) -> None:
         """Failing a removed task is reported, not silent."""
@@ -181,12 +201,50 @@ class TestRecoveryCounts:
         assert queue.get_task_status(dead.id).status == TaskStatus.FAILED
         assert queue.get_task_status(unowned.id).status == TaskStatus.PENDING
 
-    def test_another_users_process_counts_as_alive(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """os.kill raising PermissionError means the process exists."""
-        monkeypatch.setattr(qm.os, "kill", Mock(side_effect=PermissionError))
-        assert qm._process_alive(1) is True
-        monkeypatch.setattr(qm.os, "kill", Mock(side_effect=ProcessLookupError))
-        assert qm._process_alive(1) is False
+    def test_process_alive(self) -> None:
+        """This process is alive; an impossible pid is not."""
+        assert qm._process_alive(os.getpid()) is True
+        assert qm._process_alive(DEAD_PID) is False
+
+    def test_task_finished_during_recovery_is_not_overwritten(
+            self, queue: QueueManager, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A worker finishing between recovery's SELECT and UPDATE keeps its result."""
+        task = claim(queue)
+        make_stuck(queue, task.id)
+
+        def finish_then_report_alive(pid: int) -> bool:
+            """Another process completes the task while recovery inspects it."""
+            other = QueueManager(queue.db_path)
+            assert other.complete_task(task.id, {"done": 1}, worker_id=task.worker_id)
+            return True
+
+        monkeypatch.setattr(qm, "_process_alive", finish_then_report_alive)
+        counts = queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True)
+
+        assert counts == qm.RecoveryCounts()
+        stored = queue.get_task_status(task.id)
+        assert (stored.status, stored.result) == (TaskStatus.COMPLETED, {"done": 1})
+
+    def test_mark_failed_skips_live_process_unless_forced(self, queue: QueueManager) -> None:
+        """--mark-failed no longer fails a live worker's task without --force."""
+        task = claim(queue)
+        make_stuck(queue, task.id)
+
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=True) == \
+            qm.RecoveryCounts(skipped_running=1)
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=True,
+                                         force=True) == qm.RecoveryCounts(failed=1)
+        assert "forcibly recovered" in queue.get_task_status(task.id).error_message
+
+    def test_cleanup_dead_fails_only_dead_process_tasks(self, queue: QueueManager) -> None:
+        """cleanup-dead fails a dead process's task and leaves a live one running."""
+        dead, live = claim(queue), claim(queue)
+        make_stuck(queue, dead.id, process_id=DEAD_PID)
+
+        assert queue.get_queue_health()["orphaned_tasks"] == 1
+        assert queue.cleanup_dead_process_tasks() == 1
+        assert queue.get_task_status(dead.id).status == TaskStatus.FAILED
+        assert queue.get_task_status(live.id).status == TaskStatus.PROCESSING
 
     def test_cli_prints_each_count(self, queue: QueueManager,
                                    capsys: pytest.CaptureFixture) -> None:
@@ -204,6 +262,30 @@ class TestRecoveryCounts:
         assert "0 reset to PENDING, 1 marked FAILED" in out
         assert "list --status failed" in out
         assert "1 skipped" in out and "--force" in out
+
+    def test_cli_force_flag_recovers_live_tasks(
+            self, queue: QueueManager, capsys: pytest.CaptureFixture,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        """`recover --force` is parsed and resets a live process's stuck task."""
+        from bmlibrarian import queue_cli
+
+        task = claim(queue)
+        make_stuck(queue, task.id)
+        monkeypatch.setattr(sys, "argv", ["queue_cli", "--database", queue.db_path,
+                                          "recover", "--timeout", "1", "--force"])
+        queue_cli.main()
+
+        assert "1 reset to PENDING" in capsys.readouterr().out
+        assert queue.get_task_status(task.id).status == TaskStatus.PENDING
+
+    def test_cli_reports_nothing_stuck(self, queue: QueueManager,
+                                       capsys: pytest.CaptureFixture) -> None:
+        """An empty queue says so instead of printing nothing."""
+        from bmlibrarian import queue_cli
+
+        queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=1,
+                                   mark_failed=False, force=False))
+        assert "No stuck tasks found" in capsys.readouterr().out
 
 
 class TestTaskFailedEvent:
@@ -231,8 +313,8 @@ class TestTaskFailedEvent:
         assert data["will_retry"] is False
         assert message.endswith("failed")
 
-    def test_no_event_when_the_task_was_taken_away(self, queue: QueueManager) -> None:
-        """A failure discarded because the task was recovered sends no task_failed."""
+    def test_discarded_failure_reports_task_discarded(self, queue: QueueManager) -> None:
+        """A failure discarded because the task was taken away sends task_discarded."""
         orchestrator = AgentOrchestrator(queue_manager=queue)
         events: List[str] = []
         orchestrator.add_progress_callback(lambda e, _m, _d: events.append(e))
@@ -243,4 +325,26 @@ class TestTaskFailedEvent:
 
         orchestrator._fail_task(task, AGENT, "late", retry=True)
 
-        assert events == []
+        assert events == ["task_discarded"]
+
+    def test_discarded_result_sends_no_task_completed(self, queue: QueueManager) -> None:
+        """A result rejected by the queue is reported as discarded, not completed."""
+        orchestrator = AgentOrchestrator(queue_manager=queue)
+        task = claim(queue)
+
+        def taken_away_while_running() -> dict:
+            """Recovery resets the task while the agent is still working."""
+            make_stuck(queue, task.id)
+            queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True)
+            return {"late": True}
+
+        agent = Mock()
+        agent.run.side_effect = taken_away_while_running
+        orchestrator.register_agent(AGENT, agent)
+        events: List[str] = []
+        orchestrator.add_progress_callback(lambda e, _m, _d: events.append(e))
+
+        orchestrator._run_task(AGENT, task)
+
+        assert events == ["task_started", "task_discarded"]
+        assert queue.get_task_status(task.id).status == TaskStatus.PENDING

@@ -66,7 +66,7 @@ from .semantic_query_agent import (
     adaptive_semantic_search,
 )
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
-from .queue_manager import QueueManager, TaskStatus, TaskPriority
+from .queue_manager import QueueManager, TaskStatus, TaskPriority, RecoveryCounts
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep, WorkflowTimeoutError
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 from .factory import AgentFactory
@@ -137,6 +137,7 @@ __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_CHUNK_OVERLAP",
     "QueueManager",
+    "RecoveryCounts",
     "TaskStatus",
     "TaskPriority",
     "AgentOrchestrator",

@@ -356,7 +356,9 @@ else:
 
 `workflow_completed` means the run *finished*; `success` is false when any
 step failed or was skipped. Task-level events (`task_submitted`,
-`task_started`, `task_completed`, `task_failed`) are sent as well.
+`task_started`, `task_completed`, `task_failed`) are sent as well, plus
+`task_discarded` (`task_id`, `agent_type`, `reason`) when a started task was
+recovered away from its worker, so its result or failure was not stored.
 
 > The interactive research workflow (CLI and Qt research tab) does not use
 > this class: it runs on the enum-based `cli/workflow_steps.py` system.
