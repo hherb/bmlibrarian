@@ -688,7 +688,8 @@ def _store_result_in_database(result: FactCheckResult, source_file: str) -> bool
         matches_expected=result.matches_expected,
         model_used=self.model,
         session_id=self.current_session_id,
-        version=1,                          # assigned as MAX(version) + 1 by the insert
+        version=1,                          # ignored: the insert assigns MAX(version) + 1, locking the
+                                            # statement row so concurrent writers never collide (#230)
         degradation_notes=result.degradation_notes or None   # JSONB, NULL = complete
     )
     eval_id = db.insert_ai_evaluation(ai_eval)

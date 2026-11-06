@@ -10,6 +10,15 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Concurrent fact-check evaluations no longer collide** (2026-11-06,
+  closes #230). `FactCheckerDB.insert_ai_evaluation` locks the statement
+  row (`SELECT … FOR NO KEY UPDATE`) in its transaction before assigning
+  `MAX(version) + 1`, so a second writer for the same statement waits and
+  gets the next version instead of a `UniqueViolation` (the lock does not
+  block FK inserts referencing the statement). Test (opt-in dev DB):
+  `tests/test_factcheck_audit_transactions_db.py::test_concurrent_evaluations_get_consecutive_versions`
+  (fails on the old code). Also: `tests/test_toast.py` polls for the toast
+  timer instead of a fixed 200 ms wait, which flaked in the full suite.
 - **Research tab: toasts instead of modals; dead executor path removed**
   (2026-11-06, closes #332). New shared `gui/qt/widgets/toast.py`:
   `show_toast(widget, message, ToastLevel.INFO|SUCCESS|WARNING|ERROR)`
@@ -251,8 +260,6 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ## Also tracked on GitHub (not yet started)
 
-- [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker
-  `insert_ai_evaluation` MAX(version)+1 race under concurrent writers.
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
@@ -263,8 +270,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-05
-  (#384–#386 branch): **4729 passed, 53 skipped** in 7–17 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
+  (#230 branch): **4764 passed, 54 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

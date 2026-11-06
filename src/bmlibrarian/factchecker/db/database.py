@@ -289,6 +289,9 @@ class FactCheckerDB:
         This preserves the full evaluation history and means re-running the
         fact-checker records a new evaluation instead of colliding with the
         UNIQUE (statement_id, version) constraint and being silently lost.
+        The statement row is locked until the transaction ends, so concurrent
+        writers for the same statement get consecutive versions instead of
+        colliding.
 
         Args:
             evaluation: AIEvaluation object
@@ -308,6 +311,13 @@ class FactCheckerDB:
                         agent_config_jsonb = evaluation.agent_config
 
                 notes = _as_notes(evaluation.degradation_notes)
+                # Serialise version assignment per statement (#230): a concurrent writer waits
+                # here until this transaction ends, then reads the committed MAX(version).
+                # NO KEY UPDATE does not block foreign-key inserts that reference the statement.
+                cur.execute(
+                    "SELECT 1 FROM factcheck.statements WHERE statement_id = %s FOR NO KEY UPDATE",
+                    (evaluation.statement_id,),
+                )
                 cur.execute("""
                     INSERT INTO factcheck.ai_evaluations (
                         statement_id, evaluation, reason, confidence, documents_reviewed,
