@@ -86,9 +86,11 @@ uv run python scripts/migrate_factchecker_sqlite_to_postgres.py \
 ```
 
 **Options:**
-- `--skip-existing`: Skip statements already in PostgreSQL (useful for incremental migrations)
-- `--dry-run`: Preview without making changes
-- `--verbose`: Show detailed progress
+- `--skip-existing`: Don't migrate evaluations for statements that already have one in PostgreSQL (use it for incremental migrations: without it, a re-run stores every evaluation again as a new version)
+- `--dry-run`: Count what would be migrated without making changes. The counts are an upper bound: `--skip-existing` and PostgreSQL constraints (such as evidence citing a document missing from `public.document`) are not checked
+- `--verbose`: Also log statements skipped by `--skip-existing`
+
+The script exits with status 1 if any record failed to migrate.
 
 ### Step 5: Verify Migration
 
@@ -135,16 +137,20 @@ The script migrates all data from these SQLite tables:
 The script maintains internal ID mappings to preserve relationships:
 - SQLite `statements.id` → PostgreSQL `statements.statement_id`
 - SQLite `annotators.id` → PostgreSQL `annotators.annotator_id`
-- SQLite `ai_evaluations.id` → PostgreSQL `ai_evaluations.evaluation_id`
 
-All foreign key relationships are preserved.
+Evaluations and their evidence are stored together, so evidence keeps its
+evaluation. Versions are renumbered in order (1, 2, … per statement, after
+any versions the statement already has in PostgreSQL).
 
 ### Error Handling
 
-- Skips records with missing foreign key references
-- Logs errors without stopping the migration
-- Provides detailed summary at the end
-- Supports `--skip-existing` for idempotent migrations
+- Skips evaluations and annotations whose statement or annotator failed to migrate
+- All AI evaluations of a statement are stored together with their evidence in one transaction: if any insert fails (for example an evidence `document_id` missing from `public.document`), none of that statement's evaluations is stored, they count as errors, and the summary lists the statement's SQLite id. A statement with no verdicts in PostgreSQL then stays unevaluated, so `fact_checker_cli.py --incremental` checks it again; one evaluated in PostgreSQL before keeps its earlier verdicts
+- Evidence without a usable `document_id` cannot be stored; it is dropped (counted as "Dropped") and its verdict is stored without it
+- Evaluations of `error` (failed checks) are not verdicts and are skipped
+- Logs per-record errors without stopping the migration; a lost database connection or an unexpected SQLite layout stops it
+- Provides detailed summary at the end and exits 1 if any record failed
+- Re-runs: statements, annotators and human annotations are upserted; evaluations are stored again as new versions unless `--skip-existing` is given; processing sessions already present fail (counted as errors) and export history rows are inserted again
 
 ### Progress Reporting
 
@@ -244,7 +250,7 @@ After successful migration:
 If you've already migrated some data and want to add new records:
 
 ```bash
-# Only migrate new/missing records
+# Only migrate evaluations of statements not yet evaluated in PostgreSQL
 uv run python scripts/migrate_factchecker_sqlite_to_postgres.py \
     --sqlite-db /path/to/updated_factchecker.db \
     --skip-existing \
@@ -282,7 +288,7 @@ If you encounter issues:
 | SQLite Field | PostgreSQL Field | Notes |
 |--------------|------------------|-------|
 | `id` | `statement_id` | Auto-incrementing BIGSERIAL |
-| `id` (ai_evaluations) | `evaluation_id` | With version support |
+| `id` (ai_evaluations) | `evaluation_id` | New id; versions renumbered in order |
 | `id` (evidence) | `evidence_id` | References `public.document` |
 | `agent_config` (TEXT) | `agent_config` (JSONB) | Automatically converted |
 | `config_snapshot` (TEXT) | `config_snapshot` (JSONB) | Automatically converted |

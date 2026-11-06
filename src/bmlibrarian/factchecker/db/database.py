@@ -158,14 +158,37 @@ class FactCheckerDB:
         Returns:
             (statement_id, evaluation_id)
         """
+        statement_id, [evaluation_id] = self.store_verdicts(statement, [(evaluation, evidence)])
+        return statement_id, evaluation_id
+
+    def store_verdicts(self, statement: Statement,
+                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]]) -> Tuple[int, List[int]]:
+        """
+        Store a statement and several evaluations with their evidence in one transaction.
+
+        The evaluations become consecutive versions in the given order. If any
+        insert fails nothing is committed, so an older version is never left
+        as the statement's latest verdict when a newer one fails.
+
+        Args:
+            statement: The statement (an existing one is reused).
+            verdicts: (evaluation, evidence) pairs; ``statement_id`` and
+                ``evaluation_id`` are set here.
+
+        Returns:
+            (statement_id, evaluation ids in the given order)
+        """
         with self.db_manager.get_connection() as conn:
             statement_id = self.insert_statement(statement, conn=conn)
-            evaluation.statement_id = statement_id
-            evaluation_id = self.insert_ai_evaluation(evaluation, conn=conn)
-            for item in evidence:
-                item.evaluation_id = evaluation_id
-                self.insert_evidence(item, conn=conn)
-        return statement_id, evaluation_id
+            evaluation_ids = []
+            for evaluation, evidence in verdicts:
+                evaluation.statement_id = statement_id
+                evaluation_id = self.insert_ai_evaluation(evaluation, conn=conn)
+                for item in evidence:
+                    item.evaluation_id = evaluation_id
+                    self.insert_evidence(item, conn=conn)
+                evaluation_ids.append(evaluation_id)
+        return statement_id, evaluation_ids
 
     # ========== Statement Operations ==========
 

@@ -111,6 +111,28 @@ def test_failed_verdict_keeps_an_existing_statement_unevaluated(db_manager) -> N
     assert (evaluations, statements) == (0, 1)
 
 
+def test_failed_newer_version_rolls_back_the_older_one(db_manager) -> None:
+    """store_verdicts is one transaction: version 2 failing leaves no version 1 as the latest (#376)."""
+    from bmlibrarian.factchecker.db.database import AIEvaluation, Evidence, FactCheckerDB, Statement
+
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = db_manager
+    statement_id = db.insert_statement(Statement(statement_text=TEST_STATEMENT, source_file="test"))
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        db.store_verdicts(Statement(statement_text=TEST_STATEMENT, source_file="test"), [
+            (AIEvaluation(evaluation="no", reason="v1", model_used="test"), []),
+            (AIEvaluation(evaluation="yes", reason="v2", model_used="test"),
+             [Evidence(citation_text="c", document_id=NONEXISTENT_ID)]),
+        ])
+
+    with db_manager.get_connection() as conn:
+        evaluations = conn.execute(
+            "SELECT count(*) FROM factcheck.ai_evaluations WHERE statement_id = %s", (statement_id,)
+        ).fetchone()[0]
+    assert evaluations == 0
+
+
 def test_failed_audit_write_does_not_poison_the_connection(db_manager) -> None:
     """After a tracker write fails, the shared audit connection still works."""
     from bmlibrarian.audit import CitationTracker
