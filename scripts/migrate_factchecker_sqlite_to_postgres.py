@@ -11,7 +11,7 @@ Usage:
 
 Options:
     --sqlite-db PATH     Path to SQLite database file (required)
-    --skip-existing      Skip statements that already exist in PostgreSQL
+    --skip-existing      Don't migrate evaluations for statements already evaluated in PostgreSQL
     --dry-run           Show what would be migrated without actually migrating
     --verbose           Show detailed progress information
 """
@@ -21,13 +21,10 @@ import sqlite3
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from datetime import datetime
+from typing import Dict, List, Optional
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.bmlibrarian.factchecker.db.database import (
+from bmlibrarian.factchecker.db.database import (
+    STORABLE_VERDICTS,
     FactCheckerDB,
     Statement,
     Annotator,
@@ -41,6 +38,70 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Log a progress line every this many migrated rows
+PROGRESS_INTERVAL = 100
+
+
+def evaluation_from_row(row: sqlite3.Row) -> AIEvaluation:
+    """
+    Build an AIEvaluation from a legacy SQLite ``ai_evaluations`` row.
+
+    ``statement_id`` is left unset; ``FactCheckerDB.store_verdict`` fills it in.
+
+    Args:
+        row: Row with the legacy column names.
+
+    Returns:
+        The evaluation (its version is reassigned on insert).
+    """
+    return AIEvaluation(
+        evaluation=row['evaluation'],
+        reason=row['reason'] or '',
+        confidence=row['confidence'],
+        documents_reviewed=row['documents_reviewed'] or 0,
+        supporting_citations=row['supporting_citations'] or 0,
+        contradicting_citations=row['contradicting_citations'] or 0,
+        neutral_citations=row['neutral_citations'] or 0,
+        matches_expected=bool(row['matches_expected']) if row['matches_expected'] is not None else None,
+        model_used=row['model_used'],
+        model_version=row['model_version'],
+        agent_config=row['agent_config'],
+        session_id=row['session_id'],
+        version=row['version'] or 1
+    )
+
+
+def evidence_from_row(row: sqlite3.Row) -> Optional[Evidence]:
+    """
+    Build an Evidence item from a legacy SQLite ``evidence`` row.
+
+    ``evaluation_id`` is left unset; ``FactCheckerDB.store_verdict`` fills it in.
+
+    Args:
+        row: Row with the legacy column names.
+
+    Returns:
+        The evidence, or None if ``document_id`` is missing or not an integer
+        (evidence must reference a ``public.document`` row).
+    """
+    raw = row['document_id']
+    if isinstance(raw, str) and raw.strip().isdigit():
+        document_id = int(raw)
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        document_id = raw
+    else:
+        return None
+    if document_id <= 0:
+        return None
+    return Evidence(
+        citation_text=row['citation_text'] or '',
+        document_id=document_id,
+        pmid=row['pmid'],
+        doi=row['doi'],
+        relevance_score=row['relevance_score'],
+        supports_statement=row['supports_statement']
+    )
 
 
 class SQLiteToPostgresMigrator:
@@ -63,7 +124,8 @@ class SQLiteToPostgresMigrator:
 
         Args:
             sqlite_path: Path to SQLite database file
-            skip_existing: Skip statements that already exist in PostgreSQL
+            skip_existing: Don't migrate evaluations for statements that already
+                had one in PostgreSQL (without it, a re-run stores them as new versions)
             dry_run: Show what would be migrated without actually migrating
         """
         self.sqlite_path = Path(sqlite_path)
@@ -90,6 +152,9 @@ class SQLiteToPostgresMigrator:
         # Map SQLite annotator IDs to PostgreSQL annotator IDs
         self.annotator_id_map: Dict[int, int] = {}
 
+        # SQLite statement IDs -> the Statement migrated for them (store_verdict reuses it)
+        self.statements: Dict[int, Statement] = {}
+
         # Map SQLite ai_evaluation IDs to PostgreSQL evaluation IDs
         self.evaluation_id_map: Dict[int, int] = {}
 
@@ -110,8 +175,7 @@ class SQLiteToPostgresMigrator:
             # Order matters due to foreign key constraints
             self.migrate_statements()
             self.migrate_annotators()
-            self.migrate_ai_evaluations()
-            self.migrate_evidence()
+            self.migrate_verdicts()
             self.migrate_human_annotations()
             self.migrate_processing_metadata()
             self.migrate_export_history()
@@ -154,11 +218,12 @@ class SQLiteToPostgresMigrator:
                         # This will return existing ID if statement already exists
                         pg_id = self.pg_db.insert_statement(statement)
                         self.statement_id_map[sqlite_id] = pg_id
+                        self.statements[sqlite_id] = statement
                         self.stats['statements']['migrated'] += 1
                     else:
                         self.stats['statements']['migrated'] += 1
 
-                    if self.stats['statements']['migrated'] % 100 == 0:
+                    if self.stats['statements']['migrated'] % PROGRESS_INTERVAL == 0:
                         logger.info(f"  Migrated {self.stats['statements']['migrated']} statements...")
 
                 except Exception as e:
@@ -203,124 +268,101 @@ class SQLiteToPostgresMigrator:
 
         logger.info(f"✓ Annotators: {self.stats['annotators']['migrated']}/{self.stats['annotators']['total']}")
 
-    def migrate_ai_evaluations(self):
-        """Migrate ai_evaluations table."""
-        logger.info("Migrating AI evaluations...")
+    def migrate_verdicts(self):
+        """
+        Migrate AI evaluations together with their evidence, one transaction each.
+
+        Each evaluation and its evidence are stored with
+        ``FactCheckerDB.store_verdict``, so a verdict is never committed
+        without its evidence (#376): if any of its evidence rows fails to
+        insert, nothing of that verdict is stored, the error is counted, and
+        the statement (migrated earlier) stays unevaluated, so incremental
+        mode checks it again. 'error' evaluations (failed checks) are not
+        verdicts and are skipped for the same reason. Evidence without a
+        usable ``document_id`` is dropped and counted as skipped.
+        """
+        logger.info("Migrating AI evaluations with their evidence...")
 
         with self.get_sqlite_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM ai_evaluations ORDER BY statement_id, version")
             rows = cursor.fetchall()
+            cursor.execute("SELECT * FROM evidence ORDER BY id")
+            evidence_by_eval: Dict[int, List[sqlite3.Row]] = {}
+            for ev_row in cursor.fetchall():
+                evidence_by_eval.setdefault(ev_row['ai_evaluation_id'], []).append(ev_row)
 
-            self.stats['ai_evaluations']['total'] = len(rows)
+        eval_stats = self.stats['ai_evaluations']
+        ev_stats = self.stats['evidence']
+        eval_stats['total'] = len(rows)
+        ev_stats['total'] = sum(len(v) for v in evidence_by_eval.values())
+        known_eval_ids = {row['id'] for row in rows}
+        orphans = sum(len(v) for k, v in evidence_by_eval.items() if k not in known_eval_ids)
+        if orphans:
+            logger.warning(f"Skipping {orphans} evidence rows whose evaluation does not exist")
+            ev_stats['skipped'] += orphans
 
-            for row in rows:
-                try:
-                    sqlite_eval_id = row['id']
-                    sqlite_stmt_id = row['statement_id']
+        # PostgreSQL statement id -> whether it had an evaluation before this run
+        had_evaluation: Dict[int, bool] = {}
 
-                    # Skip if statement wasn't migrated
-                    if sqlite_stmt_id not in self.statement_id_map and not self.dry_run:
-                        logger.warning(f"Skipping evaluation {sqlite_eval_id}: statement {sqlite_stmt_id} not found")
-                        self.stats['ai_evaluations']['skipped'] += 1
-                        continue
-
-                    pg_stmt_id = self.statement_id_map.get(sqlite_stmt_id, sqlite_stmt_id)
-
-                    evaluation = AIEvaluation(
-                        statement_id=pg_stmt_id,
-                        evaluation=row['evaluation'],
-                        reason=row['reason'] or '',
-                        confidence=row['confidence'],
-                        documents_reviewed=row['documents_reviewed'] or 0,
-                        supporting_citations=row['supporting_citations'] or 0,
-                        contradicting_citations=row['contradicting_citations'] or 0,
-                        neutral_citations=row['neutral_citations'] or 0,
-                        matches_expected=bool(row['matches_expected']) if row['matches_expected'] is not None else None,
-                        model_used=row['model_used'],
-                        model_version=row['model_version'],
-                        agent_config=row['agent_config'],
-                        session_id=row['session_id'],
-                        version=row['version'] or 1
+        for row in rows:
+            sqlite_eval_id = row['id']
+            ev_rows = evidence_by_eval.get(sqlite_eval_id, [])
+            try:
+                if row['evaluation'] not in STORABLE_VERDICTS:
+                    logger.warning(
+                        f"Skipping evaluation {sqlite_eval_id}: {row['evaluation']!r} is not a verdict"
                     )
+                    eval_stats['skipped'] += 1
+                    ev_stats['skipped'] += len(ev_rows)
+                    continue
 
-                    if not self.dry_run:
-                        pg_eval_id = self.pg_db.insert_ai_evaluation(evaluation)
-                        self.evaluation_id_map[sqlite_eval_id] = pg_eval_id
-                        self.stats['ai_evaluations']['migrated'] += 1
+                evidence = []
+                for ev_row in ev_rows:
+                    item = evidence_from_row(ev_row)
+                    if item is None:
+                        logger.warning(f"Skipping evidence {ev_row['id']}: invalid document_id {ev_row['document_id']!r}")
+                        ev_stats['skipped'] += 1
                     else:
-                        self.stats['ai_evaluations']['migrated'] += 1
+                        evidence.append(item)
 
-                    if self.stats['ai_evaluations']['migrated'] % 100 == 0:
-                        logger.info(f"  Migrated {self.stats['ai_evaluations']['migrated']} evaluations...")
+                if self.dry_run:
+                    eval_stats['migrated'] += 1
+                    ev_stats['migrated'] += len(evidence)
+                    continue
 
-                except Exception as e:
-                    logger.error(f"Error migrating evaluation {row['id']}: {e}")
-                    self.stats['ai_evaluations']['errors'] += 1
+                statement = self.statements.get(row['statement_id'])
+                if statement is None:
+                    logger.warning(f"Skipping evaluation {sqlite_eval_id}: statement {row['statement_id']} not found")
+                    eval_stats['skipped'] += 1
+                    ev_stats['skipped'] += len(ev_rows)
+                    continue
 
-        logger.info(f"✓ AI Evaluations: {self.stats['ai_evaluations']['migrated']}/{self.stats['ai_evaluations']['total']}")
-
-    def migrate_evidence(self):
-        """Migrate evidence table."""
-        logger.info("Migrating evidence citations...")
-
-        with self.get_sqlite_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM evidence")
-            rows = cursor.fetchall()
-
-            self.stats['evidence']['total'] = len(rows)
-
-            for row in rows:
-                try:
-                    sqlite_eval_id = row['ai_evaluation_id']
-
-                    # Skip if evaluation wasn't migrated
-                    if sqlite_eval_id not in self.evaluation_id_map and not self.dry_run:
-                        logger.warning(f"Skipping evidence {row['id']}: evaluation {sqlite_eval_id} not found")
-                        self.stats['evidence']['skipped'] += 1
+                pg_stmt_id = self.statement_id_map[row['statement_id']]
+                if self.skip_existing:
+                    if pg_stmt_id not in had_evaluation:
+                        had_evaluation[pg_stmt_id] = self.pg_db.get_latest_ai_evaluation(pg_stmt_id) is not None
+                    if had_evaluation[pg_stmt_id]:
+                        eval_stats['skipped'] += 1
+                        ev_stats['skipped'] += len(evidence)
                         continue
 
-                    pg_eval_id = self.evaluation_id_map.get(sqlite_eval_id, sqlite_eval_id)
+                _, pg_eval_id = self.pg_db.store_verdict(statement, evaluation_from_row(row), evidence)
+                self.evaluation_id_map[sqlite_eval_id] = pg_eval_id
+                eval_stats['migrated'] += 1
+                ev_stats['migrated'] += len(evidence)
 
-                    # Handle document_id - in SQLite it might be stored as string
-                    document_id_raw = row['document_id']
-                    if document_id_raw:
-                        try:
-                            document_id = int(document_id_raw) if isinstance(document_id_raw, str) else document_id_raw
-                        except (ValueError, TypeError):
-                            logger.warning(f"Invalid document_id for evidence {row['id']}: {document_id_raw}")
-                            self.stats['evidence']['skipped'] += 1
-                            continue
-                    else:
-                        logger.warning(f"Missing document_id for evidence {row['id']}")
-                        self.stats['evidence']['skipped'] += 1
-                        continue
+                if eval_stats['migrated'] % PROGRESS_INTERVAL == 0:
+                    logger.info(f"  Migrated {eval_stats['migrated']} evaluations...")
 
-                    evidence = Evidence(
-                        evaluation_id=pg_eval_id,
-                        citation_text=row['citation_text'] or '',
-                        document_id=document_id,
-                        pmid=row['pmid'],
-                        doi=row['doi'],
-                        relevance_score=row['relevance_score'],
-                        supports_statement=row['supports_statement']
-                    )
+            except Exception as e:
+                # Rolled back as a whole: the statement stays unevaluated and is checked again
+                logger.error(f"Error migrating evaluation {sqlite_eval_id} with its evidence: {e}")
+                eval_stats['errors'] += 1
+                ev_stats['errors'] += len(ev_rows)
 
-                    if not self.dry_run:
-                        self.pg_db.insert_evidence(evidence)
-                        self.stats['evidence']['migrated'] += 1
-                    else:
-                        self.stats['evidence']['migrated'] += 1
-
-                    if self.stats['evidence']['migrated'] % 100 == 0:
-                        logger.info(f"  Migrated {self.stats['evidence']['migrated']} evidence citations...")
-
-                except Exception as e:
-                    logger.error(f"Error migrating evidence {row['id']}: {e}")
-                    self.stats['evidence']['errors'] += 1
-
-        logger.info(f"✓ Evidence: {self.stats['evidence']['migrated']}/{self.stats['evidence']['total']}")
+        logger.info(f"✓ AI Evaluations: {eval_stats['migrated']}/{eval_stats['total']}")
+        logger.info(f"✓ Evidence: {ev_stats['migrated']}/{ev_stats['total']}")
 
     def migrate_human_annotations(self):
         """Migrate human_annotations table."""
@@ -514,7 +556,7 @@ def main():
     parser.add_argument(
         '--skip-existing',
         action='store_true',
-        help='Skip statements that already exist in PostgreSQL'
+        help="Don't migrate evaluations for statements already evaluated in PostgreSQL"
     )
     parser.add_argument(
         '--dry-run',

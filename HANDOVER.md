@@ -10,6 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **SQLite → PostgreSQL fact-checker migration stores verdicts with their
+  evidence** (2026-11-06, closes #376).
+  `scripts/migrate_factchecker_sqlite_to_postgres.py` no longer migrates
+  `ai_evaluations` and `evidence` as separate passes: `migrate_verdicts()`
+  stores each evaluation with its evidence through
+  `FactCheckerDB.store_verdict` (one transaction). If an evidence row fails
+  (e.g. its `document_id` is not in `public.document`), none of that
+  verdict is stored, it counts as an error, and the statement (migrated
+  before) stays unevaluated, so `--incremental` re-checks it. `error`
+  evaluations are skipped (not verdicts). `--skip-existing` used to do
+  nothing (a re-run stored every verdict again as a new version); it now
+  skips evaluations of statements that already had one in PostgreSQL
+  before the run. The script imports `bmlibrarian.…` instead of
+  `src.bmlibrarian.…`. Docs: `scripts/MIGRATION_GUIDE.md`. Tests:
+  `tests/test_migrate_factchecker_sqlite.py` (fake `FactCheckerDB`).
+
 - **Concurrent fact-check evaluations no longer collide** (2026-11-06,
   closes #230). `FactCheckerDB.insert_ai_evaluation` locks the statement
   row (`SELECT … FOR NO KEY UPDATE`) in its transaction before assigning
@@ -123,49 +139,17 @@ off new work. Longer-term structural items live in
   `MigrationError`. `tests/conftest.py::isolate_tests` resets the handler.
   Tests: `tests/test_auto_migration_failure.py`
   (`TestLateMigrationFailureIsFatal`, `TestDirectCallersUseSharedManager`).
-
-- **A failed migration is remembered; standalone windows check the schema
-  too** (2026-11-04, closes #379, #378). `get_db_manager()` stores the
-  `MigrationError` (`database._db_manager_error`) and re-raises it on every
-  later call without re-running the migration; `close_database()` clears
-  it. Other construction errors are not remembered. The Qt startup check is
-  now `gui/qt/core/schema_check.check_schema_current()` (the main app's
-  `_check_schema_current` delegates), called by `run_plugin_standalone`,
-  `run_widget_standalone` (new `check_schema=`; `fact_checker_review_gui.py`
-  passes False with `--db-file`), `systematic_review_gui.py`,
-  `audit_validation_gui.py`, `scripts/pdf_verification_gui.py`,
-  `scripts/pdflab.py` and the Paper Weight / Paper Checker / Paper
-  Reviewer / Transparency / PubMed Search lab entry points. Creating the
-  manager is serialised by a lock (one migration run per process). Docs: `architecture.md` "Failed
-  auto-migration is fatal". Tests: `tests/test_auto_migration_failure.py`
-  (`TestGetDbManagerRemembersFailure`, `TestStandaloneWindowsCheckSchema`).
-
-- **A failed auto-migration stops startup** (2026-11-04, closes #342; owner
-  decision: fatal). A pending migration that fails while being applied
-  raises `bmlibrarian.migrations.MigrationError` (a `RuntimeError`, so
-  existing `except RuntimeError` callers still work); `DatabaseManager`
-  closes its pool and re-raises (it used to log "Auto-migration check
-  failed" and run on the outdated schema). An unreadable pending file is a
-  `MigrationError` too. Failing to *check* (no migrations dir, no
-  `MigrationManager`, tracking table neither creatable nor readable) is not
-  fatal; if only `CREATE TABLE IF NOT EXISTS bmlibrarian_migrations` fails
-  (no CREATE on the schema) but the table reads, pending files still run.
-  The Qt app creates the manager right after login
-  (`BMLibrarianApplication._check_schema_current`): on `MigrationError` it
-  shows a critical dialog (no window exists yet for a toast) and exits 1;
-  other manager errors are left to the tabs, as before.
-  `bmlibrarian_cli.py` no longer runs its own swallowing migration pass and
-  stops in agent setup; other CLIs fail at their first DB use (not checked
-  per CLI). The SETUP_GUIDE manual-recovery recipe uses
-  `psql -v ON_ERROR_STOP=1 -U <owner>` so a failed statement is never
-  marked applied. Docs:
-  `doc/developers/architecture.md` "Failed auto-migration is fatal",
-  `SETUP_GUIDE.md` + `doc/users/troubleshooting.md` "Database Migration
-  Failed". Tests: `tests/test_auto_migration_failure.py`.
+- **Failed auto-migration is fatal** (2026-11-04, closes #342, #378,
+  #379): a pending migration that fails raises `MigrationError`
+  (a `RuntimeError`), `get_db_manager()` remembers and re-raises it, and
+  every Qt entry point runs `gui/qt/core/schema_check.check_schema_current()`
+  (critical dialog, exit 1). Docs: `architecture.md` "Failed
+  auto-migration is fatal", `SETUP_GUIDE.md`, `troubleshooting.md`. Tests:
+  `tests/test_auto_migration_failure.py`.
 - **Early November / October 2026 slices** (details in git history and the
   linked docs): fact-check verdicts stored with their evidence in one
   transaction (`FactCheckerDB.store_verdict`), audit queries in
-  `audit_cursor` (#340, #341; open: #376); PRISMA semantic-chunk
+  `audit_cursor` (#340, #341, #376); PRISMA semantic-chunk
   consolidation calls `LLMClient.chat`, LLM boundary test also flags raw
   Ollama REST literals (#252, #250); settings saved in other tabs publish
   `AGENTS_NEED_REINIT_EVENT` so the research tab rebuilds its agents, Chrome
@@ -263,15 +247,12 @@ have drifted since the 2026-07-19 review. Full details, including the
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
-- #376 — `migrate_factchecker_sqlite_to_postgres.py` migrates table by
-  table, so a verdict can still be committed without its evidence; migrate
-  per evaluation with `FactCheckerDB.store_verdict` (one-off script).
 
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
-  (#230 branch): **4764 passed, 54 skipped** in 7–17 min. Without
+  (#376 branch): **4780 passed, 54 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

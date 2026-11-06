@@ -86,7 +86,7 @@ uv run python scripts/migrate_factchecker_sqlite_to_postgres.py \
 ```
 
 **Options:**
-- `--skip-existing`: Skip statements already in PostgreSQL (useful for incremental migrations)
+- `--skip-existing`: Don't migrate evaluations for statements that already have one in PostgreSQL (use it for incremental migrations: without it, a re-run stores every evaluation again as a new version)
 - `--dry-run`: Preview without making changes
 - `--verbose`: Show detailed progress
 
@@ -142,6 +142,8 @@ All foreign key relationships are preserved.
 ### Error Handling
 
 - Skips records with missing foreign key references
+- Each AI evaluation is stored together with its evidence in one transaction: if any of its evidence rows fails (for example a `document_id` missing from `public.document`), none of that verdict is stored and it counts as an error. The statement itself is still migrated without a verdict, so `fact_checker_cli.py --incremental` checks it again
+- Evaluations of `error` (failed checks) are not verdicts and are skipped
 - Logs errors without stopping the migration
 - Provides detailed summary at the end
 - Supports `--skip-existing` for idempotent migrations
