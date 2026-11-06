@@ -5,3 +5,5 @@
 //! non-standard port, and holds an empty `bmlibrarian` database with its
 //! extensions. It never touches another PostgreSQL or the Python app's
 //! configuration.
+
+pub mod port;
