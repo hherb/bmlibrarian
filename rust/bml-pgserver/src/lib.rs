@@ -6,4 +6,5 @@
 //! extensions. It never touches another PostgreSQL or the Python app's
 //! configuration.
 
+pub mod conf;
 pub mod port;
