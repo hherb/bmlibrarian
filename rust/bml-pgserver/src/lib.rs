@@ -6,6 +6,7 @@
 //! extensions. It never touches another PostgreSQL or the Python app's
 //! configuration.
 
+pub mod autostart;
 pub mod conf;
 pub mod control;
 pub mod envfile;

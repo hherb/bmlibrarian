@@ -48,7 +48,7 @@ pub fn parse_postgres_version(output: &str) -> Option<u32> {
 }
 
 /// Run `command`, turning a failed exit into [`PgServerError::Command`].
-fn run(mut command: Command) -> Result<Output, PgServerError> {
+pub(crate) fn run(mut command: Command) -> Result<Output, PgServerError> {
     let program = command.get_program().to_string_lossy().into_owned();
     let output = command.output()?;
     if output.status.success() {
