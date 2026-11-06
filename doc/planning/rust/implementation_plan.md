@@ -78,6 +78,17 @@ change together.
 | `bml-review` | Review workflow (planner → search → screen → grade → synthesise → report), audit trail, checkpoints | the above, bmlib `citations`, `context_processor` |
 | `bml-cli` | `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
 | `bml-mcp` | MCP server over the same services (`rmcp`) | `bml-search`, `bml-grade`, `bml-review` |
+| `bml-pgserver` | Private per-user PostgreSQL 18 for one-click installs: port choice, `initdb`, `bml.conf`, roles/database/extensions, autostart at login, start/stop/restart, RAM detection (built first, 2026-11) | `postgres` crate |
+| `bml-setup` | Requirement checks and resumable install steps (PostgreSQL, Ollama, models, GGUF); UI-free | `bml-pgserver`, bmlib `embed` |
+| `bml-app` | Tauri desktop app; its first screen is the installer/first-run setup (Tauri pulled forward from Phase F) | `bml-setup` |
+
+**One-click installer (added 2026-11-07,
+`docs/superpowers/specs/2026-11-07-one-click-installer-design.md`).** The
+installer is the first Rust code. Fresh installs get the Rust layout only, from
+a new migration history in `rust/migrations/` with no `plpython3u`; the Python
+history in `migrations/` stays for existing databases. `pg_search` does not run
+on Windows, so there the lexical index falls back to tsvector + GIN behind the
+same `bml-search` interface.
 
 Concurrency: tokio for I/O; a rayon pool for parsing and chunking; bounded
 channels between stages. bmlib Rust is synchronous by design, so its calls run
