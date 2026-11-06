@@ -7,6 +7,8 @@
 //! configuration.
 
 pub mod conf;
+pub mod control;
 pub mod envfile;
+pub mod error;
 pub mod port;
 pub mod state;

@@ -11,6 +11,8 @@ thiserror.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+postgres.workspace = true
+sysinfo.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
