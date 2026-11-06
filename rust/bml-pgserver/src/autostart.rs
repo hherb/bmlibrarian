@@ -304,9 +304,12 @@ mod tests {
         assert!(plist.contains("<string>/Users/a b/.bmlibrarian</string>"));
         assert!(plist.contains("<string>org.bmlibrarian.pgserver</string>"));
         assert!(!plist.contains("KeepAlive"));
-        let log = "<string>/Users/a b/.bmlibrarian/bml-autostart.log</string>";
-        assert!(compact_has(&plist, "<key>StandardErrorPath</key>", log));
-        assert!(compact_has(&plist, "<key>StandardOutPath</key>", log));
+        let log = format!(
+            "<string>{}</string>",
+            Path::new(CONFIG).join(AUTOSTART_LOG_NAME).display()
+        );
+        assert!(compact_has(&plist, "<key>StandardErrorPath</key>", &log));
+        assert!(compact_has(&plist, "<key>StandardOutPath</key>", &log));
     }
 
     /// Whether `key` is directly followed by `value` in `plist`.
