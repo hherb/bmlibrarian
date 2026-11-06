@@ -97,8 +97,13 @@ pub fn connect(info: &ConnInfo) -> Result<Client, PgServerError> {
 /// Set up, start and fill the private server described by `req`, keeping
 /// its files in `config_dir`.
 pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServerError> {
+    for path in [&req.bindir, &req.data_dir] {
+        check_shell_safe(path)?;
+    }
     let pg_major = pg_major_version(&req.bindir)?;
-    let port = match load_state(config_dir)? {
+    let saved = load_state(config_dir)?;
+    let managed_by_us = saved.is_some();
+    let port = match saved {
         Some(saved) => {
             if saved.data_dir != req.data_dir {
                 return Err(PgServerError::StateMismatch {
@@ -114,8 +119,11 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
         }
         None => choose_port(DEFAULT_PORT, port_is_free)?,
     };
-    let data_dir_kind = inspect_data_dir(&req.data_dir)?;
-    fs::create_dir_all(config_dir)?;
+    let data_dir_kind = inspect_data_dir(&req.data_dir, managed_by_us)?;
+    fs::create_dir_all(config_dir).map_err(|source| PgServerError::File {
+        path: config_dir.to_owned(),
+        source,
+    })?;
 
     let admin_env = config_dir.join(ADMIN_ENV_FILE_NAME);
     let admin_password = match (read_conn_info(&admin_env)?, &data_dir_kind) {
@@ -132,20 +140,7 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
     // Written before initdb, so the password can never be lost.
     write_if_changed(&admin_env, &render_env(&admin))?;
 
-    let mut created = false;
-    if let DataDir::Free = data_dir_kind {
-        run_initdb(req, config_dir, &admin_password)?;
-        created = true;
-    }
-
     let preload_pg_search = req.extension_dirs.iter().any(|d| provides_pg_search(d));
-    let config = ServerConfig {
-        port,
-        extension_dirs: req.extension_dirs.clone(),
-        preload_pg_search,
-    };
-    let config_changed = write_server_config(&req.data_dir, &config)?;
-
     let state = ServerState {
         pg_major,
         bindir: req.bindir.clone(),
@@ -153,7 +148,23 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
         port,
         extension_dirs: req.extension_dirs.clone(),
     };
+    // Saved before initdb: the state naming this folder is what makes an
+    // initialised folder ours when an interrupted run is repeated.
     save_state(config_dir, &state)?;
+
+    let mut created = false;
+    if let DataDir::Free = data_dir_kind {
+        run_initdb(req, config_dir, &admin_password)?;
+        created = true;
+    }
+
+    let config = ServerConfig {
+        port,
+        extension_dirs: req.extension_dirs.clone(),
+        preload_pg_search,
+    };
+    let config_changed = write_server_config(&req.data_dir, &config)?;
+
     if config_changed && status(&state)? == ServerStatus::Running {
         restart(&state)?;
     } else {
@@ -192,9 +203,19 @@ fn conn_info(port: u16, user: &str, password: &str) -> ConnInfo {
 }
 
 /// Whether `data_dir` is ours already, free to use, or someone else's.
-fn inspect_data_dir(data_dir: &Path) -> Result<DataDir, PgServerError> {
+///
+/// An initialised folder is ours only if our state file names it
+/// (`managed_by_us`) or it holds our `bml.conf`; any other PostgreSQL data
+/// folder belongs to another server and is never touched.
+fn inspect_data_dir(data_dir: &Path, managed_by_us: bool) -> Result<DataDir, PgServerError> {
     if data_dir.join(PG_VERSION_FILE).is_file() {
-        return Ok(DataDir::Initialised);
+        return if managed_by_us || data_dir.join(BML_CONF_NAME).is_file() {
+            Ok(DataDir::Initialised)
+        } else {
+            Err(PgServerError::ForeignDataDir {
+                path: data_dir.to_owned(),
+            })
+        };
     }
     match fs::read_dir(data_dir) {
         Ok(mut entries) => match entries.next() {
@@ -204,8 +225,33 @@ fn inspect_data_dir(data_dir: &Path) -> Result<DataDir, PgServerError> {
             }),
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(DataDir::Free),
-        Err(e) => Err(e.into()),
+        Err(source) => Err(PgServerError::File {
+            path: data_dir.to_owned(),
+            source,
+        }),
     }
+}
+
+/// Characters `pg_ctl` cannot pass through the `/bin/sh -c "…"` command it
+/// builds to start the server (they keep their meaning inside double quotes).
+#[cfg(unix)]
+const SHELL_UNSAFE_CHARS: [char; 4] = ['"', '$', '`', '\\'];
+
+/// Refuse a path `pg_ctl` would mangle, before anything is created.
+fn check_shell_safe(path: &Path) -> Result<(), PgServerError> {
+    #[cfg(unix)]
+    if let Some(ch) = path
+        .to_string_lossy()
+        .chars()
+        .find(|c| SHELL_UNSAFE_CHARS.contains(c))
+    {
+        return Err(PgServerError::UnsafePath {
+            path: path.to_owned(),
+            ch,
+        });
+    }
+    let _ = path;
+    Ok(())
 }
 
 /// Write `contents` to `path` (owner-only) unless it already holds them.
@@ -242,7 +288,10 @@ fn run_initdb(
         ])
         .output();
     let removed = fs::remove_file(&pwfile);
-    let output = result?;
+    let output = result.map_err(|source| PgServerError::Spawn {
+        program: program.clone(),
+        source,
+    })?;
     removed?;
     if !output.status.success() {
         return Err(PgServerError::Command {
@@ -260,7 +309,11 @@ fn write_server_config(data_dir: &Path, config: &ServerConfig) -> Result<bool, P
     let mut changed = write_if_changed(&data_dir.join(BML_CONF_NAME), &render_bml_conf(config))?;
     changed |= write_if_changed(&data_dir.join("pg_hba.conf"), &render_pg_hba())?;
     let main_conf = data_dir.join("postgresql.conf");
-    if let Some(text) = ensure_include(&fs::read_to_string(&main_conf)?) {
+    let current = fs::read_to_string(&main_conf).map_err(|source| PgServerError::File {
+        path: main_conf.clone(),
+        source,
+    })?;
+    if let Some(text) = ensure_include(&current) {
         write_private_file(&main_conf, &text)?;
         changed = true;
     }

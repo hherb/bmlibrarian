@@ -11,7 +11,7 @@ through the `postgres` crate.
 
 | Module | Responsibility |
 |---|---|
-| `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port`) |
+| `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port` **and** a loopback connect must be refused: on macOS a loopback bind succeeds while another process listens on `0.0.0.0`) |
 | `conf` | `render_bml_conf`, `render_pg_hba`, `ensure_include`, `quote_conf_value`, `provides_pg_search` |
 | `envfile` | `ConnInfo`; `render_env` / `parse_env` / `read_conn_info`; `generate_password` (64 hex characters); `write_private_file` (atomic; mode 600 / `icacls`) |
 | `state` | `ServerState` ↔ `bml-pgserver.json`; `resolve_config_dir(flag, env, home)` |
@@ -58,12 +58,19 @@ migration concern (Phase B/C).
 Each step checks before it acts, so `init` can be repeated, and it resumes
 after a kill at any point:
 
+0. **Path check (Unix).** The bin folder and data folder may not contain
+   `"`, `$`, a backtick or `\`: `pg_ctl` starts the server through
+   `/bin/sh -c "…"`, so a folder with them could be initialised but never
+   started. Such paths fail with `UnsafePath` before anything is created.
 1. **Version check.** `postgres --version` must report ≥ 18.
 2. **Port.** Take it from the state file. If there is no state file, use
    `choose_port`. A state file naming a different data or bin folder is
    `StateMismatch`.
 3. **Data folder.**
-   - `PG_VERSION` present: it's ours, continue.
+   - `PG_VERSION` present: it's ours only if our state file names it or it
+     holds our `bml.conf`. Any other PostgreSQL data folder is
+     `ForeignDataDir`, and nothing in it is touched, even if a leftover
+     `bml-admin.env` exists.
    - Missing or empty: free to initialise.
    - Anything else: `DataDirNotEmpty`, and nothing is touched.
 4. **Admin credentials.**
@@ -71,13 +78,15 @@ after a kill at any point:
    - If it is missing and the data folder is initialised: `AdminCredentialsLost`,
      with no re-initialisation.
    - Otherwise a password is generated and written **before** `initdb`.
+   The state file is saved here, **before** `initdb`. It is what lets a
+   repeated run recognise an initialised folder as ours.
 5. **`initdb`.** `-U bml_admin --pwfile=<private tmp> --auth=scram-sha-256
    --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8`. The
    pwfile is removed even if `initdb` fails. The builtin C.UTF-8 locale
    behaves the same on every OS.
 6. **Server config.** Write `bml.conf`, `pg_hba.conf` and the include line,
    each only if its content differs.
-7. **State.** Save the state file.
+7. **(State: already saved in step 4.)**
 8. **Start.** Start the server, or restart it if it was running and step 6
    changed something.
 9. **Role and database.**

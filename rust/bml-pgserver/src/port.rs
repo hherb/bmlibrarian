@@ -4,8 +4,9 @@
 //! ports other PostgreSQL servers and poolers commonly use, so a PostgreSQL
 //! installed later on this machine never collides with ours.
 
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::ops::RangeInclusive;
+use std::time::Duration;
 
 /// The port tried first for the private server.
 pub const DEFAULT_PORT: u16 = 5418;
@@ -43,9 +44,18 @@ pub fn choose_port(start: u16, is_free: impl Fn(u16) -> bool) -> Result<u16, Por
         .ok_or(PortError::NoFreePort { start })
 }
 
+/// How long a connection probe waits; loopback refusals are immediate.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// Whether nothing is listening on `127.0.0.1:port` right now.
+///
+/// Binding alone is not enough: on macOS/BSD a loopback bind succeeds while
+/// another process listens on the wildcard address (e.g. a Docker port
+/// mapping), so a connection attempt must also be refused. (Binding the
+/// wildcard address instead would raise a Windows firewall prompt.)
 pub fn port_is_free(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    TcpListener::bind(addr).is_ok() && TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_err()
 }
 
 #[cfg(test)]
@@ -88,6 +98,13 @@ mod tests {
             choose_port(49150, |_| false),
             Err(PortError::NoFreePort { start: 49150 })
         );
+    }
+
+    #[test]
+    fn wildcard_listener_is_taken() {
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(!port_is_free(port));
     }
 
     #[test]

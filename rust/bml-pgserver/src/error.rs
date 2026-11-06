@@ -23,8 +23,24 @@ pub enum PgServerError {
     #[error(transparent)]
     Io(#[from] io::Error),
     /// A database operation failed.
-    #[error("database error: {0}")]
+    #[error("database error: {}", describe_postgres_error(.0))]
     Postgres(#[from] postgres::Error),
+    /// A program could not be run at all (usually a wrong `--bindir`).
+    #[error("cannot run {program}: {source}")]
+    Spawn {
+        /// The program.
+        program: PathBuf,
+        /// Why it could not start.
+        source: io::Error,
+    },
+    /// A file could not be read or written.
+    #[error("{path}: {source}")]
+    File {
+        /// The file.
+        path: PathBuf,
+        /// The underlying error.
+        source: io::Error,
+    },
     /// A PostgreSQL tool exited unsuccessfully.
     #[error("{program} failed (exit {status:?}): {stderr}")]
     Command {
@@ -43,6 +59,22 @@ pub enum PgServerError {
     DataDirNotEmpty {
         /// The folder.
         path: PathBuf,
+    },
+    /// The folder is a PostgreSQL data directory that this configuration
+    /// did not set up, so it belongs to another server and is left alone.
+    #[error("{path} is another PostgreSQL server's data folder; choose an empty or new folder (nothing was changed)")]
+    ForeignDataDir {
+        /// The folder.
+        path: PathBuf,
+    },
+    /// A path contains a character `pg_ctl` cannot pass through the shell
+    /// it uses to start the server.
+    #[error("{path} contains the character {ch:?}, which PostgreSQL's server tools cannot handle; choose a folder without it")]
+    UnsafePath {
+        /// The path.
+        path: PathBuf,
+        /// The offending character.
+        ch: char,
     },
     /// The data directory is initialised but its superuser password file is
     /// gone, so the server can no longer be managed.
@@ -71,4 +103,22 @@ pub enum PgServerError {
         /// The major version found.
         found: u32,
     },
+}
+
+/// The server's own message for a database error (`postgres::Error`'s
+/// `Display` is only "db error"), else the whole cause chain.
+fn describe_postgres_error(error: &postgres::Error) -> String {
+    if let Some(db) = error.as_db_error() {
+        return match db.detail() {
+            Some(detail) => format!("{} ({detail})", db.message()),
+            None => db.message().to_owned(),
+        };
+    }
+    let mut text = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        text.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    text
 }

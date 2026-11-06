@@ -216,3 +216,83 @@ fn port_taken_moves_on() {
     assert_ne!(outcome.state.port, taken);
     assert!(!is_avoided(outcome.state.port));
 }
+
+#[cfg(unix)]
+#[test]
+fn unsafe_path_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let req = InitRequest {
+        bindir: tmp.path().join("bin"),
+        data_dir: tmp.path().join("data $USER \"q\""),
+        extension_dirs: vec![],
+    };
+    let err = init(&req, &config_dir).unwrap_err();
+    assert!(matches!(err, PgServerError::UnsafePath { .. }), "{err}");
+    assert!(!req.data_dir.exists());
+    assert!(!config_dir.exists());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn foreign_cluster_untouched() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir.clone());
+
+    let ok = std::process::Command::new(bml_pgserver::control::tool(&bindir, "initdb"))
+        .arg("-D")
+        .arg(&f.req.data_dir)
+        .output()
+        .unwrap();
+    assert!(ok.status.success());
+    let hba = f.req.data_dir.join("pg_hba.conf");
+    let marker = format!(
+        "{}# someone else's cluster\n",
+        std::fs::read_to_string(&hba).unwrap()
+    );
+    std::fs::write(&hba, &marker).unwrap();
+    let conf_before = std::fs::read(f.req.data_dir.join("postgresql.conf")).unwrap();
+    // A leftover admin file from an earlier failed run must not make it "ours".
+    std::fs::create_dir_all(&f.config_dir).unwrap();
+    std::fs::write(
+        f.config_dir.join(ADMIN_ENV_FILE_NAME),
+        "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=5418\nPOSTGRES_DB=bmlibrarian\nPOSTGRES_USER=bml_admin\nPOSTGRES_PASSWORD=00\n",
+    )
+    .unwrap();
+
+    let err = init(&f.req, &f.config_dir).unwrap_err();
+    assert!(matches!(err, PgServerError::ForeignDataDir { .. }), "{err}");
+    assert_eq!(std::fs::read_to_string(&hba).unwrap(), marker);
+    assert_eq!(
+        std::fs::read(f.req.data_dir.join("postgresql.conf")).unwrap(),
+        conf_before
+    );
+    assert!(!f.req.data_dir.join("bml.conf").exists());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn db_error_is_descriptive() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir);
+
+    init(&f.req, &f.config_dir).unwrap();
+    let mut app = read_conn_info(&f.config_dir.join(APP_ENV_FILE_NAME))
+        .unwrap()
+        .unwrap();
+    app.password = "wrong".into();
+    let err = match connect(&app) {
+        Ok(_) => panic!("connected with a wrong password"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("password authentication failed"),
+        "{err}"
+    );
+}

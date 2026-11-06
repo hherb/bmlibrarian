@@ -50,7 +50,10 @@ pub fn parse_postgres_version(output: &str) -> Option<u32> {
 /// Run `command`, turning a failed exit into [`PgServerError::Command`].
 pub(crate) fn run(mut command: Command) -> Result<Output, PgServerError> {
     let program = command.get_program().to_string_lossy().into_owned();
-    let output = command.output()?;
+    let output = command.output().map_err(|source| PgServerError::Spawn {
+        program: PathBuf::from(&program),
+        source,
+    })?;
     if output.status.success() {
         Ok(output)
     } else {
@@ -89,7 +92,10 @@ fn pg_ctl(state: &ServerState) -> Command {
 pub fn status(state: &ServerState) -> Result<ServerStatus, PgServerError> {
     let mut command = pg_ctl(state);
     command.arg("status").arg("-D").arg(&state.data_dir);
-    let output = command.output()?;
+    let output = command.output().map_err(|source| PgServerError::Spawn {
+        program: tool(&state.bindir, "pg_ctl"),
+        source,
+    })?;
     match output.status.code() {
         Some(PG_CTL_STATUS_RUNNING) => Ok(ServerStatus::Running),
         Some(PG_CTL_STATUS_STOPPED) => Ok(ServerStatus::Stopped),
@@ -180,6 +186,12 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert_eq!(parse_postgres_version("hello"), None);
+    }
+
+    #[test]
+    fn missing_bindir_names_path() {
+        let err = pg_major_version(Path::new("/nonexistent/pg bin")).unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/pg bin"), "{err}");
     }
 
     #[test]
