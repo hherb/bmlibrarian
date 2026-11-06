@@ -340,9 +340,21 @@ def test_invalid_status_is_an_error_but_verdicts_migrate(legacy_db: Path, fake_d
     _set_legacy_status(legacy_db, 1, "reviewed")
     migrator = _run(legacy_db)
 
-    assert migrator.stats["statements"] == {"total": 3, "migrated": 2, "skipped": 0, "errors": 1}
+    assert migrator.stats["statements"] == {"total": 3, "migrated": 3, "skipped": 0, "errors": 1}
     assert fake_db.review_statuses == {}
     assert [v for t, v, _ in _stored(fake_db) if t == "Aspirin prevents MI"] == ["yes", "maybe"]
+
+
+def test_invalid_status_is_ignored_once_set_in_postgres(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """An invalid legacy status is no error when PostgreSQL already holds a reviewed status."""
+    _set_legacy_status(legacy_db, 1, "reviewed")
+    _run(legacy_db)
+    pg_id = fake_db.statement_ids["Aspirin prevents MI"]
+    fake_db.review_statuses[pg_id] = "completed"
+    migrator = _run(legacy_db, skip_existing=True)
+
+    assert migrator.stats["statements"]["errors"] == 0
+    assert fake_db.review_statuses[pg_id] == "completed"
 
 
 def test_dry_run_reports_invalid_status(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
@@ -357,7 +369,7 @@ def test_dry_run_reports_invalid_status(legacy_db: Path, fake_db: FakeFactChecke
 
 @pytest.mark.parametrize("raw, expected", [
     (None, "pending"), ("", "pending"), ("  ", "pending"), (" Flagged ", "flagged"),
-    ("IN_REVIEW", "in_review"), (3, "3"), (1.5, "1.5"),
+    ("IN_REVIEW", "in_review"), (3, "3"), (1.5, "1.5"), (0, "0"), (0.0, "0.0"),
 ])
 def test_legacy_review_status_never_raises(raw: Any, expected: str) -> None:
     """Untyped legacy values are normalised, never raised on, so the statement is still mapped."""

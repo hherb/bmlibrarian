@@ -16,9 +16,11 @@ off new work. Longer-term structural items live in
   `migrate_statements` now calls `restore_review_status`: a legacy
   `in_review`/`completed`/`flagged` (normalised) is set with
   `update_statement_review_status` only while the PostgreSQL row is still
-  `pending` (a re-run never undoes a review done there); any other value
-  is a statement error (exit 1), the statement is still mapped so its
-  verdicts migrate; `--dry-run` reports it too. Docs:
+  `pending` (`pending` counts as unset); any other value is a statement
+  error (exit 1) unless PostgreSQL already holds a reviewed status; the
+  statement still counts as migrated and its verdicts migrate;
+  `--dry-run` reports it too. Broad per-row `except` in the migration
+  (lost connection doesn't stop it): #395. Docs:
   `scripts/MIGRATION_GUIDE.md`, `fact_checker_system.md`. Tests:
   `tests/test_migrate_factchecker_sqlite.py` (`test_*status*`).
 
@@ -273,7 +275,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
-  (#392 branch): **4796 passed, 55 skipped** in 7–17 min. Without
+  (#392 branch): **4799 passed, 55 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
