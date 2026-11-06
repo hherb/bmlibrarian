@@ -14,17 +14,24 @@ off new work. Longer-term structural items live in
   evidence** (2026-11-06, closes #376).
   `scripts/migrate_factchecker_sqlite_to_postgres.py` no longer migrates
   `ai_evaluations` and `evidence` as separate passes: `migrate_verdicts()`
-  stores each evaluation with its evidence through
-  `FactCheckerDB.store_verdict` (one transaction). If an evidence row fails
-  (e.g. its `document_id` is not in `public.document`), none of that
-  verdict is stored, it counts as an error, and the statement (migrated
-  before) stays unevaluated, so `--incremental` re-checks it. `error`
-  evaluations are skipped (not verdicts). `--skip-existing` used to do
+  stores all evaluations of a statement with their evidence through the new
+  `FactCheckerDB.store_verdicts` (one transaction per statement;
+  `store_verdict` now wraps it). If any insert fails (e.g. a `document_id`
+  not in `public.document`), none of the statement's evaluations is stored,
+  so an older version is never left as the latest; they count as errors,
+  the summary lists the statement, and a statement not evaluated before
+  stays unevaluated, so `--incremental` re-checks it. Only
+  `IntegrityError`/`DataError`/`ValueError` count per statement; anything
+  else aborts the run. The script now exits 1 when any record failed.
+  Evidence without a usable `document_id` is dropped (own "Dropped"
+  count, as in `import_json_results`); `error` evaluations are skipped;
+  verdicts are normalised (`'Yes '` → `yes`). `--skip-existing` used to do
   nothing (a re-run stored every verdict again as a new version); it now
-  skips evaluations of statements that already had one in PostgreSQL
-  before the run. The script imports `bmlibrarian.…` instead of
-  `src.bmlibrarian.…`. Docs: `scripts/MIGRATION_GUIDE.md`. Tests:
-  `tests/test_migrate_factchecker_sqlite.py` (fake `FactCheckerDB`).
+  skips statements that already had a verdict in PostgreSQL before the run.
+  The script imports `bmlibrarian.…` instead of `src.bmlibrarian.…`. Docs:
+  `scripts/MIGRATION_GUIDE.md`, `fact_checker_system.md`. Tests:
+  `tests/test_migrate_factchecker_sqlite.py` (fake `FactCheckerDB`),
+  `test_factcheck_audit_transactions_db.py` (real SQL, opt-in).
 
 - **Concurrent fact-check evaluations no longer collide** (2026-11-06,
   closes #230). `FactCheckerDB.insert_ai_evaluation` locks the statement
@@ -142,8 +149,10 @@ off new work. Longer-term structural items live in
 - **Failed auto-migration is fatal** (2026-11-04, closes #342, #378,
   #379): a pending migration that fails raises `MigrationError`
   (a `RuntimeError`), `get_db_manager()` remembers and re-raises it, and
-  every Qt entry point runs `gui/qt/core/schema_check.check_schema_current()`
-  (critical dialog, exit 1). Docs: `architecture.md` "Failed
+  Qt entry points run `gui/qt/core/schema_check.check_schema_current()`
+  (critical dialog, exit 1; skipped by `fact_checker_review_gui.py
+  --db-file`). Other manager construction errors are not remembered, and
+  failing to *check* for migrations is not fatal. Docs: `architecture.md` "Failed
   auto-migration is fatal", `SETUP_GUIDE.md`, `troubleshooting.md`. Tests:
   `tests/test_auto_migration_failure.py`.
 - **Early November / October 2026 slices** (details in git history and the
@@ -252,7 +261,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
-  (#376 branch): **4780 passed, 54 skipped** in 7–17 min. Without
+  (#376 branch): **4785 passed, 55 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -1,18 +1,19 @@
 """
 Tests for scripts/migrate_factchecker_sqlite_to_postgres.py (#376).
 
-Each AI evaluation must be stored together with its evidence through
-``FactCheckerDB.store_verdict`` (one transaction), so a failed evidence row
-never leaves a verdict without its evidence. PostgreSQL is replaced by a fake;
-the atomicity of ``store_verdict`` itself is tested in
-``test_factcheck_audit_transactions*.py``.
+All AI evaluations of a statement must be stored together with their evidence
+through ``FactCheckerDB.store_verdicts`` (one transaction), so a failed
+evidence row never leaves a verdict without its evidence, nor an older version
+as the latest verdict. PostgreSQL is replaced by a fake; the atomicity of
+``store_verdicts`` itself is tested in ``test_factcheck_audit_transactions_db.py``.
 """
 
 import sqlite3
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+import psycopg
 import pytest
 
 from bmlibrarian.factchecker.db.database import AIEvaluation, Evidence, Statement
@@ -42,30 +43,42 @@ CREATE TABLE processing_metadata (id INTEGER PRIMARY KEY, session_id TEXT, input
 
 # Document id the fake treats as missing from public.document (FK violation)
 MISSING_DOCUMENT_ID = 999
+# PostgreSQL ids differ from the SQLite ones, so mixing them up fails the tests
+PG_ID_OFFSET = 1000
+# An unrelated, already evaluated PostgreSQL statement whose id equals SQLite statement 1
+UNRELATED_EVALUATED_PG_ID = 1
 
 
 class FakeFactCheckerDB:
-    """Records writes; ``store_verdict`` fails like PostgreSQL on a missing document."""
+    """Records writes; ``store_verdicts`` fails like PostgreSQL on a missing document."""
 
     def __init__(self) -> None:
-        """Start with no statements and no verdicts."""
+        """Start with one unrelated evaluated statement and no migrated verdicts."""
         self.statement_ids: Dict[str, int] = {}
         self.verdicts: List[Tuple[Statement, AIEvaluation, List[Evidence]]] = []
-        self.evaluated: set = set()
+        self.evaluated: Set[int] = {UNRELATED_EVALUATED_PG_ID}
+        self.missing_documents: Set[int] = {MISSING_DOCUMENT_ID}
+        self.failing_statements: Set[str] = set()
 
     def insert_statement(self, statement: Statement, conn: Any = None) -> int:
         """Return the existing id for the text, or a new one."""
-        return self.statement_ids.setdefault(statement.statement_text, len(self.statement_ids) + 1)
+        if statement.statement_text in self.failing_statements:
+            raise RuntimeError("statement insert failed")
+        return self.statement_ids.setdefault(statement.statement_text, PG_ID_OFFSET + len(self.statement_ids) + 1)
 
-    def store_verdict(self, statement: Statement, evaluation: AIEvaluation,
-                      evidence: List[Evidence]) -> Tuple[int, int]:
+    def store_verdicts(self, statement: Statement,
+                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]]) -> Tuple[int, List[int]]:
         """Store all or nothing, like the real single-transaction method."""
-        if any(item.document_id == MISSING_DOCUMENT_ID for item in evidence):
-            raise RuntimeError("violates foreign key constraint evidence_document_id_fkey")
+        for _, evidence in verdicts:
+            if any(item.document_id in self.missing_documents for item in evidence):
+                raise psycopg.errors.ForeignKeyViolation("violates foreign key constraint evidence_document_id_fkey")
         statement_id = self.insert_statement(statement)
-        self.verdicts.append((statement, evaluation, evidence))
+        ids = []
+        for evaluation, evidence in verdicts:
+            self.verdicts.append((statement, evaluation, evidence))
+            ids.append(len(self.verdicts))
         self.evaluated.add(statement_id)
-        return statement_id, len(self.verdicts)
+        return statement_id, ids
 
     def get_latest_ai_evaluation(self, statement_id: int) -> Optional[str]:
         """Return a marker when the statement has a verdict."""
@@ -81,7 +94,13 @@ class FakeFactCheckerDB:
 
 
 def _make_legacy_db(path: Path) -> None:
-    """Create a legacy fact-checker SQLite file with three statements."""
+    """
+    Create a legacy fact-checker SQLite file.
+
+    Statement 1 has two good versions (one evidence row without a document id);
+    statement 2's second version cites a missing document; statement 3's only
+    evaluation is a failed check; evidence 400 belongs to no evaluation.
+    """
     conn = sqlite3.connect(path)
     conn.executescript(LEGACY_SCHEMA)
     conn.executemany(
@@ -93,15 +112,18 @@ def _make_legacy_db(path: Path) -> None:
     conn.executemany(
         "INSERT INTO ai_evaluations (id, statement_id, evaluation, reason, version) VALUES (?, ?, ?, ?, ?)",
         [(10, 1, "yes", "good evidence", 1),
-         (20, 2, "no", "bad evidence", 1),
+         (11, 1, "Maybe", "re-run", 2),
+         (20, 2, "no", "fine", 1),
+         (21, 2, "yes", "bad evidence", 2),
          (30, 3, "error", "LLM timeout", 1)],
     )
     conn.executemany(
         "INSERT INTO evidence (id, ai_evaluation_id, citation_text, document_id) VALUES (?, ?, ?, ?)",
         [(100, 10, "Aspirin reduced MI.", "42"),
          (101, 10, "No document.", None),
+         (110, 11, "Second look.", "46"),
          (200, 20, "Exists.", "43"),
-         (201, 20, "Not in public.document.", str(MISSING_DOCUMENT_ID)),
+         (201, 21, "Not in public.document.", str(MISSING_DOCUMENT_ID)),
          (300, 30, "From the failed check.", "44"),
          (400, 77, "Orphan evidence.", "45")],
     )
@@ -133,77 +155,135 @@ def _run(sqlite_path: Path, **kwargs: Any) -> Any:
     return migrator
 
 
-def test_verdict_stored_with_its_evidence(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """Evaluation 10 is stored once, with its valid evidence; bad document_id is dropped."""
+def _stored(fake: FakeFactCheckerDB) -> List[Tuple[str, str, List[int]]]:
+    """(statement text, verdict, evidence document ids) of every stored evaluation."""
+    return [(s.statement_text, e.evaluation, [i.document_id for i in ev]) for s, e, ev in fake.verdicts]
+
+
+def test_versions_stored_in_order_with_their_evidence(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """Statement 1's versions are stored with their evidence; evidence without a document id is dropped."""
     migrator = _run(legacy_db)
 
-    assert len(fake_db.verdicts) == 1
-    statement, evaluation, evidence = fake_db.verdicts[0]
-    assert statement.statement_text == "Aspirin prevents MI"
-    assert evaluation.evaluation == "yes"
-    assert [e.document_id for e in evidence] == [42]
-    assert migrator.stats["ai_evaluations"] == {"total": 3, "migrated": 1, "skipped": 1, "errors": 1}
-    # 100 migrated; 101 (no doc id), 300 (error verdict), 400 (orphan) skipped; 200+201 rolled back
-    assert migrator.stats["evidence"] == {"total": 6, "migrated": 1, "skipped": 3, "errors": 2}
+    assert _stored(fake_db) == [("Aspirin prevents MI", "yes", [42]), ("Aspirin prevents MI", "maybe", [46])]
+    assert migrator.stats["ai_evaluations"] == {"total": 5, "migrated": 2, "skipped": 1, "errors": 2}
+    # 100, 110 migrated; 101 dropped; 300 (error verdict), 400 (orphan) skipped; 200 + 201 rolled back
+    assert migrator.stats["evidence"] == {"total": 7, "migrated": 2, "dropped": 1, "skipped": 2, "errors": 2}
 
 
-def test_failed_evidence_leaves_statement_unevaluated(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """A verdict whose evidence fails is not stored, but its statement is, so it is retried."""
-    _run(legacy_db)
+def test_failed_newer_version_rolls_back_the_older_one(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """Version 2 fails, so version 1 is not left as the latest verdict: the statement stays unevaluated."""
+    migrator = _run(legacy_db)
 
-    stored = {s.statement_text for s, _, _ in fake_db.verdicts}
-    assert "Vitamin C cures colds" not in stored
+    assert all(text != "Vitamin C cures colds" for text, _, _ in _stored(fake_db))
     assert fake_db.statement_ids["Vitamin C cures colds"] not in fake_db.evaluated
+    assert migrator.failed_statements == [2]
 
 
 def test_error_evaluation_is_not_a_verdict(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
     """An 'error' evaluation is skipped; its statement stays unevaluated."""
     _run(legacy_db)
 
-    assert all(e.evaluation != "error" for _, e, _ in fake_db.verdicts)
+    assert all(verdict != "error" for _, verdict, _ in _stored(fake_db))
     assert fake_db.statement_ids["Failed check"] not in fake_db.evaluated
 
 
-def test_rerun_with_skip_existing_adds_no_versions(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """--skip-existing skips statements that already had a verdict before the run."""
-    _run(legacy_db)
-    migrator = _run(legacy_db, skip_existing=True)
-
-    assert len(fake_db.verdicts) == 1
-    assert migrator.stats["ai_evaluations"]["skipped"] == 2
-
-
-def test_skip_existing_keeps_all_versions_of_a_new_statement(
+def test_rerun_with_skip_existing_retries_only_the_failed_statement(
     legacy_db: Path, fake_db: FakeFactCheckerDB
 ) -> None:
-    """Version 2 of a statement first seen in this run is not skipped by its own version 1."""
-    conn = sqlite3.connect(legacy_db)
-    conn.execute(
-        "INSERT INTO ai_evaluations (id, statement_id, evaluation, reason, version) "
-        "VALUES (11, 1, 'maybe', 're-run', 2)"
-    )
-    conn.commit()
-    conn.close()
+    """Once the missing document exists, a --skip-existing re-run stores statement 2 and nothing twice."""
+    _run(legacy_db)
+    fake_db.missing_documents.clear()
+    migrator = _run(legacy_db, skip_existing=True)
 
+    assert _stored(fake_db)[2:] == [("Vitamin C cures colds", "no", [43]),
+                                    ("Vitamin C cures colds", "yes", [MISSING_DOCUMENT_ID])]
+    # 10 + 11 skipped by --skip-existing, 30 as an error evaluation
+    assert migrator.stats["ai_evaluations"] == {"total": 5, "migrated": 2, "skipped": 3, "errors": 0}
+    assert migrator.failed_statements == []
+
+
+def test_skip_existing_uses_the_postgres_statement_id(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """An evaluated PostgreSQL statement whose id equals SQLite id 1 does not make statement 1 skipped."""
     _run(legacy_db, skip_existing=True)
 
-    assert [e.evaluation for _, e, _ in fake_db.verdicts] == ["yes", "maybe"]
+    assert [v for t, v, _ in _stored(fake_db) if t == "Aspirin prevents MI"] == ["yes", "maybe"]
+
+
+def test_unmigrated_statement_skips_its_evaluations(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """If a statement fails to migrate, its evaluations and evidence are skipped, not stored."""
+    fake_db.failing_statements.add("Aspirin prevents MI")
+    migrator = _run(legacy_db)
+
+    assert _stored(fake_db) == []
+    assert migrator.stats["statements"]["errors"] == 1
+    assert migrator.stats["ai_evaluations"]["skipped"] == 3  # 10, 11 and the error evaluation 30
+    assert migrator.stats["evidence"]["skipped"] == 5  # 100, 101, 110, 300, 400
+
+
+def test_systemic_error_aborts_the_run(legacy_db: Path, fake_db: FakeFactCheckerDB,
+                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lost connection is not counted per statement: it stops the migration."""
+    def lost(*args: Any) -> None:
+        """Fail like a dropped database connection."""
+        raise psycopg.OperationalError("server closed the connection")
+    monkeypatch.setattr(fake_db, "store_verdicts", lost)
+
+    with pytest.raises(psycopg.OperationalError):
+        _run(legacy_db)
 
 
 def test_dry_run_writes_nothing(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """A dry run counts verdicts without storing any."""
+    """A dry run counts verdicts (an upper bound) without storing any."""
     migrator = _run(legacy_db, dry_run=True)
 
     assert fake_db.verdicts == []
-    assert migrator.stats["ai_evaluations"]["migrated"] == 2
+    assert migrator.stats["ai_evaluations"]["migrated"] == 4
+
+
+def test_migrate_all_and_exit_code_report_errors(legacy_db: Path, fake_db: FakeFactCheckerDB,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run with a failed statement returns False and the CLI exits 1; a clean run exits 0."""
+    monkeypatch.setattr("sys.argv", ["migrate", "--sqlite-db", str(legacy_db)])
+    with pytest.raises(SystemExit) as exited:
+        migrate.main()
+    assert exited.value.code == 1
+
+    fake_db.missing_documents.clear()
+    assert migrate.SQLiteToPostgresMigrator(str(legacy_db), skip_existing=True).migrate_all() is True
+
+
+def test_evaluation_and_evidence_fields_are_mapped() -> None:
+    """Every legacy column lands in the right field; the verdict is normalised."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT 'Yes ' AS evaluation, 'r' AS reason, 'high' AS confidence, 5 AS documents_reviewed, "
+        "3 AS supporting_citations, 1 AS contradicting_citations, NULL AS neutral_citations, "
+        "0 AS matches_expected, 'm' AS model_used, 'v1' AS model_version, '{}' AS agent_config, "
+        "'s' AS session_id, 4 AS version"
+    ).fetchone()
+    evaluation = migrate.evaluation_from_row(row)
+    assert (evaluation.evaluation, evaluation.reason, evaluation.confidence, evaluation.documents_reviewed,
+            evaluation.supporting_citations, evaluation.contradicting_citations, evaluation.neutral_citations,
+            evaluation.matches_expected, evaluation.model_used, evaluation.model_version,
+            evaluation.agent_config, evaluation.session_id) == (
+        "yes", "r", "high", 5, 3, 1, 0, False, "m", "v1", "{}", "s")
+
+    ev_row = conn.execute(
+        "SELECT 1 AS id, 'c' AS citation_text, '7' AS document_id, '123' AS pmid, '10.1/x' AS doi, "
+        "0.8 AS relevance_score, 'supports' AS supports_statement"
+    ).fetchone()
+    item = migrate.evidence_from_row(ev_row)
+    assert (item.citation_text, item.document_id, item.pmid, item.doi, item.relevance_score,
+            item.supports_statement) == ("c", 7, "123", "10.1/x", 0.8, "supports")
 
 
 @pytest.mark.parametrize("raw, expected", [
     ("42", 42), (42, 42), (" 7 ", 7), (None, None), ("", None), ("abc", None),
-    ("1.5", None), (1.5, None), (0, None), ("-3", None),
+    ("1.5", None), (1.5, None), (0, None), ("-3", None), ("²", None),
 ])
 def test_evidence_document_id_parsing(raw: Any, expected: Optional[int]) -> None:
-    """Only positive integers (or digit strings) become a document_id."""
+    """Only positive integers (or decimal digit strings) become a document_id."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT 1 AS id, 'x' AS citation_text, ? AS document_id, NULL AS pmid, "

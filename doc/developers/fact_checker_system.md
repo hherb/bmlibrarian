@@ -569,7 +569,11 @@ nothing is committed, the agent counts a storage failure, and
 incremental mode still finds it unevaluated. Imported evidence without a
 usable `document_id` is dropped before the verdict is stored, logged and
 counted in `dropped_evidence`; the import progress message reports both
-counts. Before (#340) each insert
+counts. `store_verdicts(statement, [(evaluation, evidence), ...])` does
+the same for several versions of one statement (they become consecutive
+versions, all or nothing); `scripts/migrate_factchecker_sqlite_to_postgres.py`
+uses it so a failing newer version never leaves an older one as the latest
+verdict (#376). Before (#340) each insert
 committed on its own, so a failed evidence insert left a verdict with
 partial evidence that incremental mode treated as done. The individual
 `insert_statement`/`insert_ai_evaluation`/`insert_evidence` take an optional
