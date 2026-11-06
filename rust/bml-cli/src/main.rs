@@ -1,7 +1,11 @@
 //! `bml`: the BMLibrarian command-line tool.
 
-use std::path::PathBuf;
+mod server;
 
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use bml_pgserver::state::{resolve_config_dir, CONFIG_DIR_ENV};
 use clap::{Parser, Subcommand};
 
 /// BMLibrarian command-line tool.
@@ -21,19 +25,22 @@ struct Cli {
 enum Command {
     /// Manage the private PostgreSQL server.
     #[command(subcommand)]
-    Server(ServerCommand),
+    Server(server::ServerCommand),
 }
 
-/// `bml server …` subcommands.
-#[derive(Subcommand)]
-enum ServerCommand {
-    /// Show whether the private server is set up and running.
-    Status,
-}
-
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.command {
-        Command::Server(ServerCommand::Status) => {}
-    }
+    let result = resolve_config_dir(
+        cli.config_dir,
+        std::env::var_os(CONFIG_DIR_ENV),
+        std::env::home_dir(),
+    )
+    .map_err(Into::into)
+    .and_then(|config_dir| match cli.command {
+        Command::Server(command) => server::run(command, &config_dir),
+    });
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(server::EXIT_FAILED)
+    })
 }
