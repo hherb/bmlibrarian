@@ -1,0 +1,18 @@
+[package]
+name = "bml-cli"
+description = "The bml command-line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bml"
+path = "src/main.rs"
+
+[dependencies]
+bml-pgserver.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true
