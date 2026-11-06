@@ -63,6 +63,16 @@ def legacy_verdict(row: sqlite3.Row) -> str:
     return (row['evaluation'] or '').strip().lower()
 
 
+def legacy_review_status(row: sqlite3.Row) -> str:
+    """
+    Return the row's review status normalised (' Flagged ' -> 'flagged'; NULL/blank -> 'pending').
+
+    Never raises: SQLite columns are untyped, so a non-text value is stringified and
+    then rejected by ``restore_review_status`` after the statement is mapped.
+    """
+    return str(row['review_status'] or '').strip().lower() or DEFAULT_REVIEW_STATUS
+
+
 def evaluation_from_row(row: sqlite3.Row) -> AIEvaluation:
     """
     Build an AIEvaluation from a legacy SQLite ``ai_evaluations`` row.
@@ -242,7 +252,7 @@ class SQLiteToPostgresMigrator:
                         input_statement_id=row['input_statement_id'],
                         expected_answer=row['expected_answer'],
                         source_file=row['source_file'],
-                        review_status=(row['review_status'] or DEFAULT_REVIEW_STATUS).strip().lower()
+                        review_status=legacy_review_status(row)
                     )
 
                     pg_id = None

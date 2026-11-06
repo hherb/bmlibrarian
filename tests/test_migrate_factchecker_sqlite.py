@@ -353,3 +353,15 @@ def test_dry_run_reports_invalid_status(legacy_db: Path, fake_db: FakeFactChecke
 
     assert migrator.stats["statements"]["errors"] == 1
     assert fake_db.review_statuses == {} and fake_db.statement_ids == {}
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, "pending"), ("", "pending"), ("  ", "pending"), (" Flagged ", "flagged"),
+    ("IN_REVIEW", "in_review"), (3, "3"), (1.5, "1.5"),
+])
+def test_legacy_review_status_never_raises(raw: Any, expected: str) -> None:
+    """Untyped legacy values are normalised, never raised on, so the statement is still mapped."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT ? AS review_status", (raw,)).fetchone()
+    assert migrate.legacy_review_status(row) == expected
