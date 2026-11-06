@@ -1,22 +1,29 @@
 //! Starting the private server once at user login, without admin rights.
 //!
-//! macOS: a per-user LaunchAgent. Linux: a `systemd --user` unit. Windows: the
-//! per-user `Run` registry key (a logon Scheduled Task needs admin rights).
-//! Nothing keeps the server alive: `bml-pgserver` is the only thing that
-//! stops or restarts it, so an import-profile restart never fights a
-//! supervisor.
+//! macOS: a per-user LaunchAgent (enabling it also starts the server right
+//! away). Linux: a `systemd --user` unit, which also stops the server when
+//! the user's session manager stops at logout. Windows: the per-user `Run`
+//! registry key (a logon Scheduled Task needs admin rights).
+//! Nothing keeps the server alive or restarts it, so an import-profile
+//! restart never fights a supervisor.
+//!
+//! There is one entry per user: enabling for another configuration folder
+//! replaces it. The entry records the running `bml` executable, so enable it
+//! from an installed `bml`, not a `cargo run` build that may move.
 
 use std::ffi::OsString;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::fs;
 use std::path::Path;
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::process::Command;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use crate::control::run;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::error::file_error;
 use crate::error::PgServerError;
 
 /// The LaunchAgent label (macOS).
@@ -27,6 +34,10 @@ pub const SYSTEMD_UNIT_NAME: &str = "bml-pgserver.service";
 
 /// The value name under the per-user `Run` key (Windows).
 pub const WINDOWS_RUN_VALUE: &str = "BMLibrarianPgServer";
+
+/// Where the macOS login start writes its output, in the configuration
+/// folder (launchd would otherwise discard it).
+pub const AUTOSTART_LOG_NAME: &str = "bml-autostart.log";
 
 /// The per-user `Run` registry key (Windows).
 pub const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -56,8 +67,10 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// The LaunchAgent plist: runs the start command once at login.
+/// The LaunchAgent plist: runs the start command once at login, logging to
+/// [`AUTOSTART_LOG_NAME`] in `config_dir`.
 pub fn render_launch_agent(exe: &Path, config_dir: &Path) -> String {
+    let log = xml_escape(&config_dir.join(AUTOSTART_LOG_NAME).to_string_lossy());
     let args: String = start_args(exe, config_dir)
         .iter()
         .map(|a| {
@@ -79,19 +92,25 @@ pub fn render_launch_agent(exe: &Path, config_dir: &Path) -> String {
 {args}    </array>
     <key>RunAtLoad</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>{log}</string>
+    <key>StandardErrorPath</key>
+    <string>{log}</string>
 </dict>
 </plist>
 "#
     )
 }
 
-/// One argument as a double-quoted systemd command-line word.
+/// One argument as a double-quoted systemd command-line word (systemd
+/// expands `%` specifiers and `$` variables even inside quotes).
 fn systemd_quote(arg: &OsString) -> String {
     let text = arg
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('%', "%%");
+        .replace('%', "%%")
+        .replace('$', "$$");
     format!("\"{text}\"")
 }
 
@@ -113,12 +132,20 @@ pub fn render_systemd_unit(exe: &Path, config_dir: &Path) -> String {
     )
 }
 
-/// The command stored under the Windows `Run` key, every argument quoted
-/// (Windows paths cannot contain `"`).
+/// `arg` double-quoted for a Windows command line. Windows paths cannot
+/// contain `"`, but trailing backslashes (`D:\`) must be doubled, or the
+/// closing quote would read as an escaped one.
+fn windows_quote(arg: &OsString) -> String {
+    let text = arg.to_string_lossy();
+    let trailing = text.len() - text.trim_end_matches('\\').len();
+    format!("\"{text}{}\"", "\\".repeat(trailing))
+}
+
+/// The command stored under the Windows `Run` key, every argument quoted.
 pub fn windows_run_command(exe: &Path, config_dir: &Path) -> String {
     start_args(exe, config_dir)
         .iter()
-        .map(|a| format!("\"{}\"", a.to_string_lossy()))
+        .map(windows_quote)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -126,7 +153,11 @@ pub fn windows_run_command(exe: &Path, config_dir: &Path) -> String {
 /// The user's home folder.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn home() -> Result<PathBuf, PgServerError> {
-    std::env::home_dir().ok_or(PgServerError::State(crate::state::StateError::NoHome))
+    std::env::home_dir().ok_or_else(|| {
+        PgServerError::Io(std::io::Error::other(
+            "cannot find the home directory, where the login start entry is kept",
+        ))
+    })
 }
 
 /// Where the LaunchAgent plist lives.
@@ -149,13 +180,14 @@ fn launchd_domain() -> Result<String, PgServerError> {
     ))
 }
 
-/// Start the server at every login of this user.
+/// Start the server at every login of this user (on macOS, also now).
 pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
     {
         let plist = launch_agent_path()?;
-        fs::create_dir_all(plist.parent().expect("plist path has a parent"))?;
-        fs::write(&plist, render_launch_agent(exe, config_dir))?;
+        let agents = plist.parent().expect("plist path has a parent");
+        fs::create_dir_all(agents).map_err(file_error(agents))?;
+        fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))?;
         let domain = launchd_domain()?;
         // Unload a previous registration first, so enable can be repeated;
         // failure just means it was not loaded.
@@ -170,11 +202,9 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "linux")]
     {
         let unit_dir = home()?.join(".config/systemd/user");
-        fs::create_dir_all(&unit_dir)?;
-        fs::write(
-            unit_dir.join(SYSTEMD_UNIT_NAME),
-            render_systemd_unit(exe, config_dir),
-        )?;
+        let unit = unit_dir.join(SYSTEMD_UNIT_NAME);
+        fs::create_dir_all(&unit_dir).map_err(file_error(&unit_dir))?;
+        fs::write(&unit, render_systemd_unit(exe, config_dir)).map_err(file_error(&unit))?;
         let mut reload = Command::new("systemctl");
         reload.args(["--user", "daemon-reload"]);
         run(reload)?;
@@ -201,7 +231,9 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (exe, config_dir);
-        Err(std::io::Error::other("autostart is not supported on this platform").into())
+        Err(PgServerError::Io(std::io::Error::other(
+            "autostart is not supported on this platform",
+        )))
     }
 }
 
@@ -214,19 +246,20 @@ pub fn disable() -> Result<(), PgServerError> {
             .arg("bootout")
             .arg(format!("{domain}/{LAUNCH_AGENT_LABEL}"))
             .output();
-        match fs::remove_file(launch_agent_path()?) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        let plist = launch_agent_path()?;
+        match fs::remove_file(&plist) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(file_error(&plist)(e)),
             _ => Ok(()),
         }
     }
     #[cfg(target_os = "linux")]
     {
         let unit = home()?.join(".config/systemd/user").join(SYSTEMD_UNIT_NAME);
-        if unit.exists() {
+        if unit.try_exists().map_err(file_error(&unit))? {
             let mut disable = Command::new("systemctl");
             disable.args(["--user", "disable", SYSTEMD_UNIT_NAME]);
             run(disable)?;
-            fs::remove_file(unit)?;
+            fs::remove_file(&unit).map_err(file_error(&unit))?;
         }
         Ok(())
     }
@@ -234,7 +267,11 @@ pub fn disable() -> Result<(), PgServerError> {
     {
         let present = Command::new("reg")
             .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
-            .output()?
+            .output()
+            .map_err(|source| PgServerError::Spawn {
+                program: "reg".into(),
+                source,
+            })?
             .status
             .success();
         if present {
@@ -246,7 +283,9 @@ pub fn disable() -> Result<(), PgServerError> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
-        Err(std::io::Error::other("autostart is not supported on this platform").into())
+        Err(PgServerError::Io(std::io::Error::other(
+            "autostart is not supported on this platform",
+        )))
     }
 }
 
@@ -265,6 +304,15 @@ mod tests {
         assert!(plist.contains("<string>/Users/a b/.bmlibrarian</string>"));
         assert!(plist.contains("<string>org.bmlibrarian.pgserver</string>"));
         assert!(!plist.contains("KeepAlive"));
+        let log = "<string>/Users/a b/.bmlibrarian/bml-autostart.log</string>";
+        assert!(compact_has(&plist, "<key>StandardErrorPath</key>", log));
+        assert!(compact_has(&plist, "<key>StandardOutPath</key>", log));
+    }
+
+    /// Whether `key` is directly followed by `value` in `plist`.
+    fn compact_has(plist: &str, key: &str, value: &str) -> bool {
+        let lines: Vec<&str> = plist.lines().map(str::trim).collect();
+        lines.windows(2).any(|w| w[0] == key && w[1] == value)
     }
 
     #[test]
@@ -290,6 +338,20 @@ mod tests {
     fn unit_escapes_percent() {
         let unit = render_systemd_unit(Path::new(EXE), Path::new("/data/100%"));
         assert!(unit.contains("\"/data/100%%\""));
+    }
+
+    #[test]
+    fn unit_escapes_dollar_quote_backslash() {
+        let unit = render_systemd_unit(Path::new(EXE), Path::new("/d/$HOME \"q\" a\\b"));
+        assert!(unit.contains(r#""/d/$$HOME \"q\" a\\b""#), "{unit}");
+    }
+
+    #[test]
+    fn windows_cmd_doubles_trailing_backslashes() {
+        assert_eq!(
+            windows_run_command(Path::new(r"C:\bml.exe"), Path::new(r"D:\")),
+            r#""C:\bml.exe" "--config-dir" "D:\\" "server" "start""#
+        );
     }
 
     #[test]

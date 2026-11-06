@@ -28,6 +28,7 @@ enum Command {
     Server(server::ServerCommand),
 }
 
+/// Parse the command line, run the command and map errors to exit code 1.
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = resolve_config_dir(

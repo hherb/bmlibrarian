@@ -77,20 +77,26 @@ pub fn save_state(config_dir: &Path, state: &ServerState) -> Result<(), StateErr
         source,
     })?;
     let path = config_dir.join(STATE_FILE_NAME);
-    let text = serde_json::to_string_pretty(state).expect("ServerState always serialises");
+    let text = serde_json::to_string_pretty(state).map_err(|e| StateError::Io {
+        path: path.clone(),
+        source: io::Error::other(e),
+    })?;
     write_private_file(&path, &text).map_err(|source| StateError::Io { path, source })
 }
 
 /// The configuration folder: `flag`, else `env` (if non-empty), else
-/// `home/.bmlibrarian`.
+/// `home/.bmlibrarian`; made absolute, because it is recorded in the login
+/// start entry, which runs from another working directory.
 pub fn resolve_config_dir(
     flag: Option<PathBuf>,
     env: Option<OsString>,
     home: Option<PathBuf>,
 ) -> Result<PathBuf, StateError> {
-    flag.or_else(|| env.filter(|v| !v.is_empty()).map(PathBuf::from))
+    let dir = flag
+        .or_else(|| env.filter(|v| !v.is_empty()).map(PathBuf::from))
         .or_else(|| home.map(|h| h.join(CONFIG_DIR_NAME)))
-        .ok_or(StateError::NoHome)
+        .ok_or(StateError::NoHome)?;
+    std::path::absolute(&dir).map_err(|source| StateError::Io { path: dir, source })
 }
 
 #[cfg(test)]
@@ -137,19 +143,22 @@ mod tests {
         let home = Some(PathBuf::from("/home/u"));
         assert_eq!(
             resolve_config_dir(flag, env.clone(), home.clone()).unwrap(),
-            PathBuf::from("/flag")
+            std::path::absolute("/flag").unwrap()
         );
         assert_eq!(
             resolve_config_dir(None, env, home.clone()).unwrap(),
-            PathBuf::from("/env")
+            std::path::absolute("/env").unwrap()
         );
         assert_eq!(
             resolve_config_dir(None, None, home).unwrap(),
-            PathBuf::from("/home/u/.bmlibrarian")
+            std::path::absolute("/home/u/.bmlibrarian").unwrap()
         );
         assert!(matches!(
             resolve_config_dir(None, None, None),
             Err(StateError::NoHome)
         ));
+        let relative = resolve_config_dir(Some("rel/cfg".into()), None, None).unwrap();
+        assert!(relative.is_absolute(), "{}", relative.display());
+        assert!(relative.ends_with("rel/cfg"));
     }
 }

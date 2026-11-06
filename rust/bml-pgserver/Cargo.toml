@@ -12,6 +12,7 @@ getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postgres.workspace = true
+postgres-protocol.workspace = true
 sysinfo.workspace = true
 
 [dev-dependencies]

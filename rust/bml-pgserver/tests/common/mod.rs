@@ -4,11 +4,17 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-/// PostgreSQL bin folder from `BML_TEST_PG_BINDIR`; tests skip without it.
+/// PostgreSQL bin folder from `BML_TEST_PG_BINDIR`; tests skip without it,
+/// except on CI, where a skipped integration test would pass unnoticed.
 pub fn test_bindir() -> Option<PathBuf> {
-    std::env::var_os("BML_TEST_PG_BINDIR")
+    let bindir = std::env::var_os("BML_TEST_PG_BINDIR")
         .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+        .map(PathBuf::from);
+    assert!(
+        bindir.is_some() || std::env::var_os("CI").is_none(),
+        "BML_TEST_PG_BINDIR must be set when integration tests run on CI"
+    );
+    bindir
 }
 
 /// Extension folders from `BML_TEST_PG_EXTENSION_DIRS` (OS path-list syntax).

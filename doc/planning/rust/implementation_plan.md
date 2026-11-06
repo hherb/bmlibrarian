@@ -70,13 +70,13 @@ change together.
 
 | Crate | Responsibility | Depends on |
 |---|---|---|
-| `bml-db` | Pool (`deadpool-postgres`/`tokio-postgres`), migrations runner (reads `migrations/`), binary COPY helpers, import-profile switcher | pgvector crate |
+| `bml-db` | Pool (`deadpool-postgres`/`tokio-postgres`), migrations runner (reads `migrations/` for existing databases, `rust/migrations/` for fresh installs, §2), binary COPY helpers, import-profile switcher | pgvector crate |
 | `bml-ingest` | Source adapters (PubMed baseline/updates, medRxiv, Europe PMC, PMC OA), parsers, ledger, revision-aware merge | `bml-db`, bmlib `publications`, `fulltext` |
 | `bml-index` | Chunking, in-process embedder (`llama-cpp-2`, F16 GGUF pinned by sha256; `metal` / `cuda` features) behind a trait, vector partition manager (open/seal/compact) | `bml-db`, `llama-cpp-2` |
 | `bml-search` | Hybrid retrieval: vector top-K ∪ pg_search BM25 top-K as candidates, ordered by weighted RRF (vector 2×); filters (date, type, source) | `bml-db` |
 | `bml-grade` | Relevance scoring, study-design/quality tiers, transparency/bias | bmlib `quality`, `transparency`, `agents` |
 | `bml-review` | Review workflow (planner → search → screen → grade → synthesise → report), audit trail, checkpoints | the above, bmlib `citations`, `context_processor` |
-| `bml-cli` | `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
+| `bml-cli` | `bml server …` (private PostgreSQL, built 2026-11-07), `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
 | `bml-mcp` | MCP server over the same services (`rmcp`) | `bml-search`, `bml-grade`, `bml-review` |
 | `bml-pgserver` | Private per-user PostgreSQL 18 for one-click installs: port choice, `initdb`, `bml.conf`, roles/database/extensions, autostart at login, start/stop/restart, RAM detection (built first, 2026-11) | `postgres` crate |
 | `bml-setup` | Requirement checks and resumable install steps (PostgreSQL, Ollama, models, GGUF); UI-free | `bml-pgserver`, bmlib `embed` |
@@ -184,8 +184,8 @@ flat to 30 M rows.
   ∪ BM25 top-K; display order is weighted RRF (vector 2×, measured +0.013
   nDCG@10 on PubMedQA-source and neutral on the graded set). BM25 also covers
   exact terms (gene and drug names, trial IDs).
-- `ts_rank_cd` / tsvector are retired. Their only advantage is that they need
-  no extension.
+- `ts_rank_cd` / tsvector are retired, except on Windows, where `pg_search`
+  does not run (§2). Their only advantage is that they need no extension.
 
 ### 3.5 Server (Postgres.app 18.1 on :5532)
 
@@ -338,7 +338,7 @@ modern records.
 ### Phase B — Rust ingest (workspace, `bml-db`, `bml-ingest`, `bml-cli`)
 
 1. Workspace, CI (fmt, clippy, tests), and the migrations runner reading
-   `migrations/`.
+   `migrations/` (existing databases) and `rust/migrations/` (fresh installs).
 2. PubMed baseline + daily updates: HTTPS download with NCBI MD5 checks (resumable, no FTP), the
    parser (from the spike, defects fixed), revision-aware merge, ledger,
    import profile.

@@ -35,10 +35,10 @@ const PRIMARY_EXTENSION: &str = "vector";
 pub enum ServerCommand {
     /// Set up the private server (safe to run again).
     Init {
-        /// Folder with the PostgreSQL 18 tools.
+        /// Folder with the PostgreSQL tools (version 18 or newer).
         #[arg(long, value_name = "DIR")]
         bindir: PathBuf,
-        /// Where the database lives (a new or empty folder).
+        /// Where the database lives (a new or empty folder, or the one set up before).
         #[arg(long, value_name = "DIR")]
         data_dir: PathBuf,
         /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
@@ -98,7 +98,12 @@ pub fn run(command: ServerCommand, config_dir: &Path) -> Result<ExitCode, PgServ
         ServerCommand::Restart => with_state(config_dir, restart),
         ServerCommand::Status => show_status(config_dir),
         ServerCommand::Autostart(AutostartCommand::Enable) => {
-            autostart::enable(&std::env::current_exe()?, config_dir)?;
+            if load_state(config_dir)?.is_none() {
+                say!("{}", not_set_up());
+                return Ok(ExitCode::from(EXIT_NOT_SET_UP));
+            }
+            let exe = std::env::current_exe().map_err(PgServerError::Io)?;
+            autostart::enable(&exe, config_dir)?;
             say!("The server will start at login.");
             Ok(ExitCode::from(EXIT_HEALTHY))
         }
@@ -138,11 +143,15 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
         say!("{}", not_set_up());
         return Ok(ExitCode::from(EXIT_NOT_SET_UP));
     };
-    let running = status(&state)? == ServerStatus::Running;
-    if running {
-        say!("Server: running on {HOST}:{}", state.port);
-    } else {
-        say!("Server: stopped");
+    let server_status = status(&state)?;
+    let running = server_status == ServerStatus::Running;
+    match server_status {
+        ServerStatus::Running => say!("Server: running on {HOST}:{}", state.port),
+        ServerStatus::Stopped => say!("Server: stopped"),
+        ServerStatus::NotInitialised => say!(
+            "Server: data folder missing, unreadable or not set up (is its disk mounted? \
+             if setup was interrupted, run \"bml server init\" again)"
+        ),
     }
     say!("Data: {}", state.data_dir.display());
     if !running {
@@ -154,7 +163,7 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
             Ok(ExitCode::from(EXIT_HEALTHY))
         }
         Err(e) => {
-            say!("Health: cannot connect: {e}");
+            say!("Health: check failed: {e}");
             Ok(ExitCode::from(EXIT_FAILED))
         }
     }
@@ -164,10 +173,10 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
 fn extensions(config_dir: &Path) -> Result<Vec<String>, PgServerError> {
     let env = config_dir.join(APP_ENV_FILE_NAME);
     let info = read_conn_info(&env)?.ok_or_else(|| {
-        std::io::Error::other(format!(
+        PgServerError::Io(std::io::Error::other(format!(
             "{} is missing; run \"bml server init\"",
             env.display()
-        ))
+        )))
     })?;
     let mut client = connect(&info)?;
     let mut names: Vec<String> = client

@@ -224,8 +224,9 @@ touch, because Linux users are generally more tech-savvy.
   upward. The chosen port is written to `~/.bmlibrarian/bml.env`.
 - **Rust stack configuration, separate from Python's:**
   - `~/.bmlibrarian/bml.env` holds the app role's connection
-    (`POSTGRES_HOST/PORT/DB/USER/PASSWORD`). `BML_ENV_FILE` selects another
-    file.
+    (`POSTGRES_HOST/PORT/DB/USER/PASSWORD`). As built, the whole
+    configuration folder is selected with `--config-dir` / `BML_CONFIG_DIR`
+    (there is no `BML_ENV_FILE`).
   - `~/.bmlibrarian/bml-admin.env` holds the superuser credentials, used only
     for migrations, `CREATE EXTENSION` and the import profile. Both files are
     owner-only.

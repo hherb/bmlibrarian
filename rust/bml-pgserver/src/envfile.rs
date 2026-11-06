@@ -26,8 +26,8 @@ const KEY_DB: &str = "POSTGRES_DB";
 const KEY_USER: &str = "POSTGRES_USER";
 const KEY_PASSWORD: &str = "POSTGRES_PASSWORD";
 
-/// One PostgreSQL connection's parameters.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One PostgreSQL connection's parameters (`Debug` hides the password).
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConnInfo {
     /// Host name or address.
     pub host: String,
@@ -39,6 +39,18 @@ pub struct ConnInfo {
     pub user: String,
     /// Role password.
     pub password: String,
+}
+
+impl std::fmt::Debug for ConnInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnInfo")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("dbname", &self.dbname)
+            .field("user", &self.user)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Why an env file could not be read.
@@ -64,6 +76,10 @@ pub enum EnvFileError {
         /// The value found.
         value: String,
     },
+    /// `POSTGRES_PASSWORD` is not the hex we generate. It is pasted into SQL
+    /// string literals, so nothing else is accepted (the value is not shown).
+    #[error("invalid POSTGRES_PASSWORD (expected hexadecimal digits only)")]
+    BadPassword,
     /// A file failed to parse.
     #[error("{path}: {source}")]
     Invalid {
@@ -110,13 +126,23 @@ pub fn parse_env(text: &str) -> Result<ConnInfo, EnvFileError> {
     let port = port_text
         .parse()
         .map_err(|_| EnvFileError::BadPort { value: port_text })?;
+    let password = get(KEY_PASSWORD)?;
+    if !is_valid_password(&password) {
+        return Err(EnvFileError::BadPassword);
+    }
     Ok(ConnInfo {
         host: get(KEY_HOST)?,
         port,
         dbname: get(KEY_DB)?,
         user: get(KEY_USER)?,
-        password: get(KEY_PASSWORD)?,
+        password,
     })
+}
+
+/// Whether `password` is non-empty hex, the only form safe inside a SQL
+/// string literal without quoting.
+pub fn is_valid_password(password: &str) -> bool {
+    !password.is_empty() && password.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Read the env file at `path`; `Ok(None)` only when it does not exist.
@@ -137,7 +163,7 @@ pub fn read_conn_info(path: &Path) -> Result<Option<ConnInfo>, EnvFileError> {
 }
 
 /// Write `contents` to `path` so only the owner can read it, atomically
-/// (a temporary file renamed over the target).
+/// (a temporary file, made owner-only before it is renamed over the target).
 pub fn write_private_file(path: &Path, contents: &str) -> io::Result<()> {
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".tmp");
@@ -159,17 +185,26 @@ pub fn write_private_file(path: &Path, contents: &str) -> io::Result<()> {
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    fs::rename(&tmp, path)?;
+    // Restricted before the rename, so the target never has loose access
+    // and a failure leaves it unchanged (and retried by the next write).
     #[cfg(windows)]
-    restrict_to_owner(path)?;
-    Ok(())
+    if let Err(e) = restrict_to_owner(&tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, path)
 }
 
 /// Remove inherited access and grant only the current user (Windows ACLs).
 #[cfg(windows)]
 fn restrict_to_owner(path: &Path) -> io::Result<()> {
-    let user = std::env::var("USERNAME")
+    let name = std::env::var("USERNAME")
         .map_err(|_| io::Error::other("USERNAME is not set; cannot restrict file access"))?;
+    // Qualified, so a local account with the same name is never picked.
+    let user = match std::env::var("USERDOMAIN") {
+        Ok(domain) if !domain.is_empty() => format!("{domain}\\{name}"),
+        _ => name,
+    };
     let status = std::process::Command::new("icacls")
         .arg(path)
         .args(["/inheritance:r", "/grant:r"])
@@ -225,6 +260,33 @@ mod tests {
     }
 
     #[test]
+    fn password_must_be_hex() {
+        let with = |password: &str| {
+            format!(
+                "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=5418\nPOSTGRES_DB=bmlibrarian\n\
+                 POSTGRES_USER=bml_app\nPOSTGRES_PASSWORD={password}\n"
+            )
+        };
+        assert!(matches!(
+            parse_env(&with("x' OR '1")),
+            Err(EnvFileError::BadPassword)
+        ));
+        assert!(matches!(
+            parse_env(&with("")),
+            Err(EnvFileError::BadPassword)
+        ));
+        assert_eq!(parse_env(&with("00ff")).unwrap().password, "00ff");
+    }
+
+    #[test]
+    fn debug_hides_password() {
+        let info = sample();
+        let shown = format!("{info:?}");
+        assert!(!shown.contains(&info.password), "{shown}");
+        assert!(shown.contains("<redacted>"));
+    }
+
+    #[test]
     fn read_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_conn_info(&dir.path().join("bml.env")).unwrap(), None);
@@ -259,5 +321,17 @@ mod tests {
             0o600
         );
         assert_eq!(std::fs::read_to_string(&loose).unwrap(), "new");
+
+        // A world-readable temp file left by an interrupted write.
+        let fresh = dir.path().join("fresh.env");
+        let stale_tmp = dir.path().join("fresh.env.tmp");
+        std::fs::write(&stale_tmp, "stale").unwrap();
+        std::fs::set_permissions(&stale_tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_file(&fresh, "secret").unwrap();
+        assert_eq!(
+            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!stale_tmp.exists());
     }
 }

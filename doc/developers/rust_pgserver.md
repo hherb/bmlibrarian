@@ -2,8 +2,9 @@
 
 The first crate of the Rust port (`rust/`), written for the one-click installer
 (spec: `docs/superpowers/specs/2026-11-07-one-click-installer-design.md`; plan:
-`docs/superpowers/plans/2026-11-07-rust-pgserver.md`). It is synchronous, with
-no async runtime. The logic lives in pure functions, and a thin I/O layer runs
+`docs/superpowers/plans/2026-11-07-rust-pgserver.md`). Its API is synchronous: it
+uses the `postgres` crate's blocking client (which runs tokio internally) and
+has no async code of its own. The logic lives in pure functions, and a thin I/O layer runs
 `initdb`/`pg_ctl` through `std::process::Command` (never a shell) and talks SQL
 through the `postgres` crate.
 
@@ -12,10 +13,10 @@ through the `postgres` crate.
 | Module | Responsibility |
 |---|---|
 | `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port` **and** a loopback connect must be refused: on macOS a loopback bind succeeds while another process listens on `0.0.0.0`) |
-| `conf` | `render_bml_conf`, `render_pg_hba`, `ensure_include`, `quote_conf_value`, `provides_pg_search` |
-| `envfile` | `ConnInfo`; `render_env` / `parse_env` / `read_conn_info`; `generate_password` (64 hex characters); `write_private_file` (atomic; mode 600 / `icacls`) |
-| `state` | `ServerState` ↔ `bml-pgserver.json`; `resolve_config_dir(flag, env, home)` |
-| `control` | `pg_major_version` (≥ 18), `status` / `start` / `stop` / `restart` (all idempotent), `total_memory_bytes` |
+| `conf` | `render_bml_conf`, `render_pg_hba`, `ensure_include`, `quote_conf_value`, `extension_control_dir`, `provides_pg_search` |
+| `envfile` | `ConnInfo`; `render_env` / `parse_env` / `read_conn_info`; `generate_password` (64 hex characters; `parse_env` accepts only hex passwords); `write_private_file` (atomic; mode 600, or `icacls` on the temp file before the rename); `Debug` hides the password |
+| `state` | `ServerState` ↔ `bml-pgserver.json`; `resolve_config_dir(flag, env, home)` (made absolute) |
+| `control` | `pg_major_version` (≥ 18), `status` / `start` / `stop` (idempotent) / `restart`, `total_memory_bytes`. `start` and `stop` refuse a missing or unreadable data folder (`DataDirUnavailable`); a failed start quotes the end of `bml-server.log` (`StartFailed`) |
 | `init` | `init(&InitRequest, config_dir)`, the resumable setup; `connect(&ConnInfo)` |
 | `autostart` | LaunchAgent / `systemd --user` / HKCU `Run` renderers, `enable` / `disable` |
 | `error` | `PgServerError` |
@@ -56,23 +57,40 @@ migration concern (Phase B/C).
 ## `init` steps
 
 Each step checks before it acts, so `init` can be repeated, and it resumes
-after a kill at any point:
+after an interruption between steps. A kill during `initdb` itself can leave a
+half-written data folder, which is refused (`IncompleteDataDir`) rather than
+resumed.
 
-0. **Path check (Unix).** The bin folder and data folder may not contain
-   `"`, `$`, a backtick or `\`: `pg_ctl` starts the server through
-   `/bin/sh -c "…"`, so a folder with them could be initialised but never
-   started. Such paths fail with `UnsafePath` before anything is created.
+0. **Path check**, before anything is created:
+   - Every path is made absolute (`std::path::absolute`), because it is saved
+     and used later from other working directories (and from autostart).
+   - Paths must be valid Unicode (`NonUnicodePath`): they are written into
+     `bml.conf` and the JSON state file.
+   - Unix: the bin folder and data folder may not contain `"`, `$`, a backtick
+     or `\`. `pg_ctl` starts the server through `/bin/sh -c "…"`, so a folder
+     with them could be initialised but never started (`UnsafePath`).
+   - Each extension folder must have `share/postgresql/extension` and must not
+     contain the path-list separator (`:`, or `;` on Windows):
+     `BadExtensionDir`.
 1. **Version check.** `postgres --version` must report ≥ 18.
 2. **Port.** Take it from the state file. If there is no state file, use
    `choose_port`. A state file naming a different data or bin folder is
-   `StateMismatch`.
-3. **Data folder.**
-   - `PG_VERSION` present: it's ours only if our state file names it or it
-     holds our `bml.conf`. Any other PostgreSQL data folder is
+   `StateMismatch`, which shows both paths.
+3. **Data folder.** "Finished" below means `bml.env` exists: it is written
+   last, so a setup once completed.
+   - `PG_VERSION` present: it's ours if it holds our `bml.conf`, or if our
+     state file names it and setup finished. Named by our state file but with
+     neither, our first run was killed during or right after `initdb`:
+     `IncompleteDataDir`. Any other PostgreSQL data folder is
      `ForeignDataDir`, and nothing in it is touched, even if a leftover
      `bml-admin.env` exists.
-   - Missing or empty: free to initialise.
-   - Anything else: `DataDirNotEmpty`, and nothing is touched.
+   - Missing or empty, named by our state file, setup finished:
+     `DataDirMissing`. This is almost always an unmounted disk, so `init`
+     never creates a new, empty server there. To start over on purpose,
+     delete `bml-pgserver.json`.
+   - Missing or empty otherwise: free to initialise.
+   - Anything else: `IncompleteDataDir` if our state file names it and setup
+     never finished, else `DataDirNotEmpty`. Nothing is touched.
 4. **Admin credentials.**
    - `bml-admin.env` is reused when it exists.
    - If it is missing and the data folder is initialised: `AdminCredentialsLost`,
@@ -82,35 +100,47 @@ after a kill at any point:
    repeated run recognise an initialised folder as ours.
 5. **`initdb`.** `-U bml_admin --pwfile=<private tmp> --auth=scram-sha-256
    --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8`. The
-   pwfile is removed even if `initdb` fails. The builtin C.UTF-8 locale
-   behaves the same on every OS.
+   pwfile is removed even if `initdb` fails (initdb's own error is reported
+   first). The builtin C.UTF-8 locale behaves the same on every OS.
 6. **Server config.** Write `bml.conf`, `pg_hba.conf` and the include line,
    each only if its content differs.
-7. **(State: already saved in step 4.)**
-8. **Start.** Start the server, or restart it if it was running and step 6
+7. **Start.** Start the server, or restart it if it was running and step 6
    changed something.
-9. **Role and database.**
+8. **Role and database.**
    - Create the `bml_app` role if it is missing.
    - If the role exists but `bml.env` is gone, give it a new password with
      `ALTER ROLE`.
    - Create the `bmlibrarian` database, owned by `bml_app`, if it is missing.
-10. **Extensions.** `CREATE EXTENSION IF NOT EXISTS vector`, failing with
-    `ExtensionUnavailable` if it isn't available, plus `pg_search` when
-    preloaded.
-11. **App credentials.** Write `bml.env`.
+9. **Extensions.** `CREATE EXTENSION IF NOT EXISTS vector`, failing with
+   `ExtensionUnavailable` if it isn't available, plus `pg_search` when
+   preloaded.
+10. **App credentials.** Write `bml.env`.
 
-Passwords are generated hex, so they are interpolated into `CREATE/ALTER ROLE`
-safely. Role and database names are constants.
+`CREATE/ALTER ROLE` is sent a SCRAM-SHA-256 verifier
+(`postgres_protocol::password::scram_sha_256`), never the password, so the
+password cannot reach the server log. The verifier is base64 plus `$` and
+`:`, so it is safe inside the SQL literal. Role and database names are
+constants.
 
 ## Server control and autostart
 
-- `restart` is stop + start, not `pg_ctl restart`. The latter replays
-  `postmaster.opts` through a shell (the same reason as
-  `db_import_profile.py`).
+- `restart` is stop + start, not `pg_ctl restart`, so a restart uses the
+  same `pg_ctl start` arguments (log file, wait timeout) as `start` rather
+  than whatever `postmaster.opts` recorded.
 - Autostart runs `bml --config-dir <dir> server start` once, with no
-  `KeepAlive`/`Restart=`. That way `bml-pgserver` is the only thing that stops
-  or restarts the server, and import-profile restarts never fight a
-  supervisor.
+  `KeepAlive`/`Restart=`, so nothing restarts the server and import-profile
+  restarts never fight a supervisor. Per platform:
+  - macOS: `enable` also starts the server at once (`RunAtLoad`). Output goes
+    to `bml-autostart.log` in the config folder.
+  - Linux: the unit's `ExecStop` stops the server when the user's systemd
+    manager stops at logout. Output goes to the journal. Arguments are quoted
+    with `%` → `%%` and `$` → `$$`.
+  - Windows: output is lost (issue #397). Trailing backslashes in
+    arguments are doubled before the closing quote.
+- There is one autostart entry per user; enabling for another config folder
+  replaces it. The entry records `current_exe()`, so enable it from an
+  installed `bml`, not a `cargo run` build in `target/debug`.
+- `bml server autostart enable` refuses (exit 2) when nothing is set up.
 - The server outlives the launchd job because `pg_ctl` puts the postmaster in
   its own session. This was verified on macOS: the job exits 0 and the server
   stays up.
@@ -128,15 +158,20 @@ BML_TEST_PG_EXTENSION_DIRS="$HOME/Library/Application Support/Postgres/Extension
 ```
 
 The integration tests (`#[ignore]`) use temporary folders only, never
-`~/.bmlibrarian`:
-- They hold a global lock, so two never race for a port.
-- They stop their server on drop.
-- Their data folder is named `data dir ü'q`, to cover awkward paths.
+`~/.bmlibrarian`. On CI (`CI` set) they fail rather than skip when
+`BML_TEST_PG_BINDIR` is missing. The `bml-pgserver/tests/init.rs` tests also:
+- hold a per-binary lock, so two never race for a port;
+- stop their server on drop, before the temp folder is deleted;
+- use a data folder named `data dir ü'q`, to cover awkward paths.
+
+`tests/control.rs` and the CLI's `init_status_stop` stop their server only at
+the end, so a failed run can leave one running until PostgreSQL notices its
+data folder is gone.
 
 `BML_TEST_PG_EXTENSION_DIRS` is an OS path list.
 
 CI (`.github/workflows/rust.yml`):
-- runs fmt, clippy and tests on macOS arm64 and Intel, Windows, and Linux
-  x86_64 and arm64
+- runs fmt, clippy (`-D warnings`) and tests on macOS arm64 (`macos-15`) and
+  Intel, Windows, and Linux x86_64 and arm64
 - runs the integration tests on Linux against PGDG PostgreSQL 18 + pgvector,
   without `pg_search`

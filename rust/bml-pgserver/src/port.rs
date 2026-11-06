@@ -2,7 +2,8 @@
 //!
 //! The port is fixed by default and moves upward only when taken, skipping the
 //! ports other PostgreSQL servers and poolers commonly use, so a PostgreSQL
-//! installed later on this machine never collides with ours.
+//! installed later on this machine on a standard port never collides with
+//! ours.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::ops::RangeInclusive;

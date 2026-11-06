@@ -28,11 +28,12 @@ impl Drop for StopOnDrop {
     }
 }
 
+/// Fields drop in order: the server is stopped before its folder is deleted.
 struct Fixture {
-    _tmp: tempfile::TempDir,
+    _stop: StopOnDrop,
     config_dir: PathBuf,
     req: InitRequest,
-    _stop: StopOnDrop,
+    _tmp: tempfile::TempDir,
 }
 
 fn fixture(bindir: PathBuf) -> Fixture {
@@ -45,10 +46,10 @@ fn fixture(bindir: PathBuf) -> Fixture {
     };
     let stop = StopOnDrop(config_dir.clone());
     Fixture {
-        _tmp: tmp,
+        _stop: stop,
         config_dir,
         req,
-        _stop: stop,
+        _tmp: tmp,
     }
 }
 
@@ -109,6 +110,7 @@ fn fresh_init() {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "{name}");
     }
+    assert!(!f.config_dir.join(".pwfile.tmp").exists());
 }
 
 #[test]
@@ -158,6 +160,79 @@ fn resumes_after_kill() {
     assert!(installed_extensions(&f.config_dir)
         .iter()
         .any(|e| e == "vector"));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn app_env_lost_resets_password() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir);
+
+    init(&f.req, &f.config_dir).unwrap();
+    let app_env = f.config_dir.join(APP_ENV_FILE_NAME);
+    let old = read_conn_info(&app_env).unwrap().unwrap();
+    std::fs::remove_file(&app_env).unwrap();
+
+    let outcome = init(&f.req, &f.config_dir).unwrap();
+    assert!(outcome.created);
+    let new = read_conn_info(&app_env).unwrap().unwrap();
+    assert_ne!(new.password, old.password);
+    connect(&new).expect("the role was given the new password");
+    assert!(connect(&old).is_err());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn missing_data_dir_refused() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir);
+
+    init(&f.req, &f.config_dir).unwrap();
+    stop(&state_of(&f.config_dir)).unwrap();
+    // As if its disk were not mounted.
+    let away = f.req.data_dir.with_file_name("moved away");
+    std::fs::rename(&f.req.data_dir, &away).unwrap();
+
+    let err = init(&f.req, &f.config_dir).unwrap_err();
+    assert!(matches!(err, PgServerError::DataDirMissing { .. }), "{err}");
+    assert!(!f.req.data_dir.exists(), "no new server was created");
+    let err = bml_pgserver::control::start(&state_of(&f.config_dir)).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::DataDirUnavailable { .. }),
+        "{err}"
+    );
+    std::fs::rename(&away, &f.req.data_dir).unwrap();
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn admin_password_reused_when_initdb_never_ran() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir);
+
+    init(&f.req, &f.config_dir).unwrap();
+    stop(&state_of(&f.config_dir)).unwrap();
+    // As if the first run was killed after saving its state and admin
+    // credentials, before initdb: no data folder, no bml.env.
+    std::fs::remove_dir_all(&f.req.data_dir).unwrap();
+    std::fs::remove_file(f.config_dir.join(APP_ENV_FILE_NAME)).unwrap();
+    let admin_env = f.config_dir.join(ADMIN_ENV_FILE_NAME);
+    let before = std::fs::read(&admin_env).unwrap();
+
+    init(&f.req, &f.config_dir).unwrap();
+    assert_eq!(std::fs::read(&admin_env).unwrap(), before);
+    let mut admin = read_conn_info(&admin_env).unwrap().unwrap();
+    admin.dbname = "postgres".into();
+    connect(&admin).expect("initdb used the saved admin password");
 }
 
 #[test]
@@ -229,6 +304,24 @@ fn unsafe_path_refused() {
     };
     let err = init(&req, &config_dir).unwrap_err();
     assert!(matches!(err, PgServerError::UnsafePath { .. }), "{err}");
+    assert!(!req.data_dir.exists());
+    assert!(!config_dir.exists());
+}
+
+#[test]
+fn bad_extension_dir_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let req = InitRequest {
+        bindir: tmp.path().join("bin"),
+        data_dir: tmp.path().join("data"),
+        extension_dirs: vec![tmp.path().join("no such extension folder")],
+    };
+    let err = init(&req, &config_dir).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::BadExtensionDir { .. }),
+        "{err}"
+    );
     assert!(!req.data_dir.exists());
     assert!(!config_dir.exists());
 }

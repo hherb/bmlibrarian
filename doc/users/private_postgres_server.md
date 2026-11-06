@@ -28,14 +28,24 @@ All commands take an optional `--config-dir <folder>`. It defaults to the
 | `bml server autostart enable` / `disable` | Starts the server once each time you log in, or stops doing so. Disabling leaves a running server alone. |
 
 `bml server status` exits with code **0** when the server is running and
-healthy, **1** when it is stopped or unhealthy, and **2** when no server has
-been set up yet.
+healthy, **1** when it is stopped, unhealthy, or something went wrong, and
+**2** when no server has been set up yet. `start`, `stop`, `restart` and
+`autostart enable` also exit with **2** when nothing is set up.
 
 ### Choosing the data folder
 
-The data folder must be new or empty. `init` refuses a folder that already
-holds other files, and leaves those files untouched. A full PubMed mirror needs
-a lot of space, so an external disk is fine.
+The first time, the data folder must be new or empty. `init` refuses a folder
+that already holds other files, or another PostgreSQL server's data, and
+leaves those files untouched. Later runs of `init` must name the same data
+folder and PostgreSQL bin folder.
+
+On macOS and Linux the bin and data folder names may not contain `"`, `$`, a
+backtick or `\` (PostgreSQL's own tools cannot handle them). Spaces, accents
+and `'` are fine.
+
+A full PubMed mirror needs a lot of space, so an external disk is fine. If the
+disk isn't mounted, `status` says the data folder is missing, and `init`
+refuses to create a new, empty server in its place.
 
 ## Where things are kept
 
@@ -44,24 +54,27 @@ In the configuration folder:
 | File | Contents |
 |---|---|
 | `bml.env` | How BMLibrarian connects to its database: the everyday, unprivileged account. |
-| `bml-admin.env` | The server's administrator password. **Keep it.** Without it the server can't be managed, and `init` stops rather than overwrite anything. |
+| `bml-admin.env` | The server's administrator password. **Keep it.** Without it `init` can no longer repair or finish the setup, and stops rather than overwrite anything (starting, stopping and status still work). |
 | `bml-pgserver.json` | Where the server's programs and data are, and its port. |
 
 Only your user account can read these files. The passwords are generated for
 you, and you never need to type them.
 
-The server's log is `bml-server.log` in the data folder.
+The server's log is `bml-server.log` in the data folder. When the server
+fails to start, the error message quotes its last lines.
 
 ## Autostart, per system
 
-| System | How it starts at login |
-|---|---|
-| macOS | a LaunchAgent, `~/Library/LaunchAgents/org.bmlibrarian.pgserver.plist` |
-| Linux | a user service, `~/.config/systemd/user/bml-pgserver.service` |
-| Windows | the `BMLibrarianPgServer` entry under your user's "Run at login" registry key |
+| System | How it starts at login | When it stops |
+|---|---|---|
+| macOS | a LaunchAgent, `~/Library/LaunchAgents/org.bmlibrarian.pgserver.plist`. Enabling it also starts the server now. Messages go to `bml-autostart.log` in the configuration folder. | only when you stop it |
+| Linux | a user service, `~/.config/systemd/user/bml-pgserver.service`. Messages go to the journal (`journalctl --user -u bml-pgserver`). | when you stop it, or at logout |
+| Windows | the `BMLibrarianPgServer` entry under your user's "Run at login" registry key | only when you stop it |
 
 In each case the server is started once at login. Nothing restarts it if you
-stop it.
+stop it. There is one login entry per user: enabling it for another
+configuration folder replaces the old one. Enable it from an installed `bml`,
+because the entry remembers where that program is.
 
 ## Problems
 
@@ -70,5 +83,26 @@ stop it.
   data.
 - **"… is not empty and is not a PostgreSQL data folder"**: choose a new or
   empty folder.
+- **"… is another PostgreSQL server's data folder"**: choose a new or empty
+  folder; the other server's data is left alone.
+- **"the server's data folder … is missing or empty (is its disk mounted?)"**:
+  connect the disk and run the command again. If you deleted the data on
+  purpose and want a new server, delete `bml-pgserver.json` as the message
+  says.
+- **"… was left half set up by an interrupted first init"**: setup was cut off
+  while the database was being created. If you haven't stored anything in
+  that folder, delete it and run `init` again.
+- **"this configuration folder already manages a server with data folder …"**:
+  use the folder named in the message, or a different `--config-dir`. A first
+  `init` that failed early also records its folder; delete `bml-pgserver.json`
+  to choose another.
+- **"… contains the character …"**: choose a folder whose name doesn't contain
+  it.
+- **"the PostgreSQL extension vector is not available"**: install pgvector for
+  this PostgreSQL, or pass its folder with `--extension-dir`.
+- **"extension folder …"**: the folder doesn't exist or isn't laid out as
+  `lib/postgresql` and `share/postgresql`.
+- **Starting fails after the port was taken by another program**: the server
+  keeps the port it was set up with. Free that port.
 - **"PostgreSQL 16 found; version 18 or newer is required"**: point
   `--bindir` at a PostgreSQL 18 installation.

@@ -1,5 +1,10 @@
 # Private PostgreSQL manager (`bml-pgserver`) Implementation Plan
 
+> **Historical (implemented in PR #396).** Where this plan and the code
+> differ, the code and `doc/developers/rust_pgserver.md` are current; in
+> particular the data-folder rules and step order of `init` changed (the
+> state file is saved before `initdb`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Create the `rust/` Cargo workspace and CI, and a `bml-pgserver`

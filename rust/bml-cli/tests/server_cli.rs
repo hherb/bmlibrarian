@@ -41,6 +41,44 @@ fn corrupt_state_errors() {
 }
 
 #[test]
+fn commands_without_setup_exit_2() {
+    let cfg = tempfile::tempdir().unwrap();
+    for args in [
+        &["server", "start"][..],
+        &["server", "stop"][..],
+        &["server", "restart"][..],
+        &["server", "autostart", "enable"][..],
+    ] {
+        let out = bml(cfg.path(), args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(text(&out.stdout).contains("not set up"), "{args:?}");
+    }
+}
+
+#[test]
+fn init_failure_exits_1_with_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("no pg here");
+    let out = bml(
+        &tmp.path().join("config"),
+        &[
+            "server",
+            "init",
+            "--bindir",
+            &missing.to_string_lossy(),
+            "--data-dir",
+            &tmp.path().join("data").to_string_lossy(),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("no pg here"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
 fn init_status_stop() {
     let Some(bindir) = std::env::var_os("BML_TEST_PG_BINDIR").filter(|v| !v.is_empty()) else {

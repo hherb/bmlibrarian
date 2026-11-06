@@ -16,10 +16,10 @@ pub const INCLUDE_LINE: &str = "include 'bml.conf'";
 pub const LISTEN_ADDRESS: &str = "127.0.0.1";
 
 /// Separator between entries of a PostgreSQL path-list setting.
-const PATH_LIST_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
+pub const PATH_LIST_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
 
 /// Library and control-file folders inside an extension folder (the layout
-/// Postgres.app and `make install DESTDIR=…` produce).
+/// Postgres.app uses for extensions).
 const EXT_LIB_SUBDIR: &str = "lib/postgresql";
 const EXT_SHARE_SUBDIR: &str = "share/postgresql";
 
@@ -98,18 +98,21 @@ pub fn ensure_include(postgresql_conf: &str) -> Option<String> {
     Some(text)
 }
 
+/// The folder of extension control files inside `extension_dir`.
+pub fn extension_control_dir(extension_dir: &Path) -> PathBuf {
+    extension_dir.join(EXT_SHARE_SUBDIR).join("extension")
+}
+
 /// Whether the extension folder `extension_dir` contains `pg_search`.
 pub fn provides_pg_search(extension_dir: &Path) -> bool {
-    extension_dir
-        .join(EXT_SHARE_SUBDIR)
-        .join("extension/pg_search.control")
+    extension_control_dir(extension_dir)
+        .join("pg_search.control")
         .is_file()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn quotes_single_quote() {

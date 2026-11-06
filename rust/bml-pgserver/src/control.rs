@@ -21,6 +21,9 @@ const PG_CTL_STATUS_RUNNING: i32 = 0;
 const PG_CTL_STATUS_STOPPED: i32 = 3;
 const PG_CTL_STATUS_NO_DATA_DIR: i32 = 4;
 
+/// Lines of the server log quoted when the server fails to start.
+const LOG_TAIL_LINES: usize = 15;
+
 /// The marker before the version number in `postgres --version` output.
 const VERSION_MARKER: &str = "(PostgreSQL) ";
 
@@ -31,7 +34,7 @@ pub enum ServerStatus {
     Running,
     /// The data directory exists, but no server is running on it.
     Stopped,
-    /// There is no initialised data directory.
+    /// The data directory is missing, unreadable, or not initialised.
     NotInitialised,
 }
 
@@ -72,11 +75,11 @@ pub fn pg_major_version(bindir: &Path) -> Result<u32, PgServerError> {
     command.arg("--version");
     let output = run(command)?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let found = parse_postgres_version(&text).ok_or_else(|| PgServerError::Command {
-        program: program.to_string_lossy().into_owned(),
-        status: Some(0),
-        stderr: format!("unrecognised version output: {}", text.trim()),
-    })?;
+    let found =
+        parse_postgres_version(&text).ok_or_else(|| PgServerError::UnrecognisedVersion {
+            program: program.clone(),
+            output: text.trim().to_owned(),
+        })?;
     if found < MIN_PG_MAJOR {
         return Err(PgServerError::UnsupportedVersion { found });
     }
@@ -108,27 +111,54 @@ pub fn status(state: &ServerState) -> Result<ServerStatus, PgServerError> {
     }
 }
 
-/// Start the server; does nothing if it is already running.
+/// The status of `state`'s server, refusing a data folder that is gone.
+fn status_of_existing(state: &ServerState) -> Result<ServerStatus, PgServerError> {
+    match status(state)? {
+        ServerStatus::NotInitialised => Err(PgServerError::DataDirUnavailable {
+            path: state.data_dir.clone(),
+        }),
+        other => Ok(other),
+    }
+}
+
+/// The last `n` lines of `text`.
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// Start the server; does nothing if it is already running. A failure
+/// quotes the end of the server log, where PostgreSQL says why.
 pub fn start(state: &ServerState) -> Result<(), PgServerError> {
-    if status(state)? == ServerStatus::Running {
+    if status_of_existing(state)? == ServerStatus::Running {
         return Ok(());
     }
+    let log = state.data_dir.join(SERVER_LOG_NAME);
     let mut command = pg_ctl(state);
     command
         .arg("start")
         .arg("-D")
         .arg(&state.data_dir)
         .arg("-l")
-        .arg(state.data_dir.join(SERVER_LOG_NAME))
+        .arg(&log)
         .arg("-w")
         .arg("-t")
         .arg(PG_CTL_WAIT_SECONDS.to_string());
-    run(command).map(drop)
+    run(command).map(drop).map_err(|source| {
+        let tail = std::fs::read_to_string(&log)
+            .map(|text| last_lines(&text, LOG_TAIL_LINES))
+            .unwrap_or_else(|e| format!("(cannot read it: {e})"));
+        PgServerError::StartFailed {
+            log,
+            tail,
+            source: Box::new(source),
+        }
+    })
 }
 
 /// Stop the server (fast shutdown); does nothing if it is not running.
 pub fn stop(state: &ServerState) -> Result<(), PgServerError> {
-    if status(state)? != ServerStatus::Running {
+    if status_of_existing(state)? != ServerStatus::Running {
         return Ok(());
     }
     let mut command = pg_ctl(state);
@@ -141,8 +171,9 @@ pub fn stop(state: &ServerState) -> Result<(), PgServerError> {
     run(command).map(drop)
 }
 
-/// Stop, then start. Not `pg_ctl restart`: that replays `postmaster.opts`
-/// through a shell, which mangles paths with special characters.
+/// Stop, then start. Not `pg_ctl restart`, so a restart uses the same
+/// `pg_ctl start` arguments (log file, wait timeout) as [`start`] rather
+/// than whatever `postmaster.opts` recorded.
 pub fn restart(state: &ServerState) -> Result<(), PgServerError> {
     stop(state)?;
     start(state)
@@ -192,6 +223,13 @@ mod tests {
     fn missing_bindir_names_path() {
         let err = pg_major_version(Path::new("/nonexistent/pg bin")).unwrap_err();
         assert!(err.to_string().contains("/nonexistent/pg bin"), "{err}");
+    }
+
+    #[test]
+    fn last_lines_keeps_the_end() {
+        assert_eq!(last_lines("a\nb\nc\n", 2), "b\nc");
+        assert_eq!(last_lines("a", 5), "a");
+        assert_eq!(last_lines("", 5), "");
     }
 
     #[test]

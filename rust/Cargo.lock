@@ -99,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "postgres",
+ "postgres-protocol",
  "serde",
  "serde_json",
  "sysinfo",
