@@ -578,6 +578,10 @@ committed on its own, so a failed evidence insert left a verdict with
 partial evidence that incremental mode treated as done. The individual
 `insert_statement`/`insert_ai_evaluation`/`insert_evidence` take an optional
 `conn` to join a caller's transaction.
+`insert_statement` (`factcheck.get_or_create_statement`) never writes
+`review_status`; the SQLite migration sets a legacy status afterwards with
+`update_statement_review_status`, only while the PostgreSQL row is still
+`pending` (#392).
 
 **The evaluation budget grows with the evidence.** The evaluation request's
 generation ceiling is `evaluation_token_budget(max_tokens, n)`: the agent's

@@ -59,12 +59,26 @@ class FakeFactCheckerDB:
         self.evaluated: Set[int] = {UNRELATED_EVALUATED_PG_ID}
         self.missing_documents: Set[int] = {MISSING_DOCUMENT_ID}
         self.failing_statements: Set[str] = set()
+        # review_status by PostgreSQL id; insert_statement never sets it, like the real one
+        self.review_statuses: Dict[int, str] = {}
 
     def insert_statement(self, statement: Statement, conn: Any = None) -> int:
         """Return the existing id for the text, or a new one."""
         if statement.statement_text in self.failing_statements:
             raise RuntimeError("statement insert failed")
         return self.statement_ids.setdefault(statement.statement_text, PG_ID_OFFSET + len(self.statement_ids) + 1)
+
+    def get_statement(self, statement_id: int) -> Optional[Statement]:
+        """Return the statement with its PostgreSQL review status ('pending' unless set)."""
+        text = next((t for t, i in self.statement_ids.items() if i == statement_id), None)
+        if text is None:
+            return None
+        return Statement(statement_text=text, statement_id=statement_id,
+                         review_status=self.review_statuses.get(statement_id, "pending"))
+
+    def update_statement_review_status(self, statement_id: int, status: str) -> None:
+        """Record the status."""
+        self.review_statuses[statement_id] = status
 
     def store_verdicts(self, statement: Statement,
                        verdicts: List[Tuple[AIEvaluation, List[Evidence]]]) -> Tuple[int, List[int]]:
@@ -290,3 +304,52 @@ def test_evidence_document_id_parsing(raw: Any, expected: Optional[int]) -> None
                        "NULL AS doi, NULL AS relevance_score, NULL AS supports_statement", (raw,)).fetchone()
     item = migrate.evidence_from_row(row)
     assert (item.document_id if item else None) == expected
+
+
+def _set_legacy_status(path: Path, sqlite_id: int, status: Optional[str]) -> None:
+    """Set a legacy statement's review_status."""
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE statements SET review_status = ? WHERE id = ?", (status, sqlite_id))
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_review_status_is_restored(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A non-default legacy status reaches PostgreSQL (normalised); NULL stays 'pending' (#392)."""
+    _set_legacy_status(legacy_db, 1, " Flagged ")
+    _set_legacy_status(legacy_db, 2, "pending")
+    migrator = _run(legacy_db)
+
+    assert fake_db.review_statuses == {fake_db.statement_ids["Aspirin prevents MI"]: "flagged"}
+    assert migrator.stats["statements"]["errors"] == 0
+
+
+def test_status_set_in_postgres_is_kept(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A re-run does not overwrite a review status set in PostgreSQL since the first run."""
+    _set_legacy_status(legacy_db, 1, "in_review")
+    _run(legacy_db)
+    pg_id = fake_db.statement_ids["Aspirin prevents MI"]
+    fake_db.review_statuses[pg_id] = "completed"
+    _run(legacy_db, skip_existing=True)
+
+    assert fake_db.review_statuses[pg_id] == "completed"
+
+
+def test_invalid_status_is_an_error_but_verdicts_migrate(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A status PostgreSQL rejects counts as an error; the statement's verdicts still migrate."""
+    _set_legacy_status(legacy_db, 1, "reviewed")
+    migrator = _run(legacy_db)
+
+    assert migrator.stats["statements"] == {"total": 3, "migrated": 2, "skipped": 0, "errors": 1}
+    assert fake_db.review_statuses == {}
+    assert [v for t, v, _ in _stored(fake_db) if t == "Aspirin prevents MI"] == ["yes", "maybe"]
+
+
+def test_dry_run_reports_invalid_status(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A dry run flags an invalid status without touching PostgreSQL."""
+    _set_legacy_status(legacy_db, 1, "reviewed")
+    _set_legacy_status(legacy_db, 2, "flagged")
+    migrator = _run(legacy_db, dry_run=True)
+
+    assert migrator.stats["statements"]["errors"] == 1
+    assert fake_db.review_statuses == {} and fake_db.statement_ids == {}
