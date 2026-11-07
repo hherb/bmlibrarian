@@ -294,6 +294,12 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
         let unit_dir = home()?.join(SYSTEMD_USER_DIR);
         let unit = unit_dir.join(SYSTEMD_UNIT_NAME);
         fs::create_dir_all(&unit_dir).map_err(file_error(&unit_dir))?;
+        // Kept so a failed re-enable restores a unit that worked before.
+        let previous = match fs::read(&unit) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(file_error(&unit)(e)),
+        };
         fs::write(&unit, render_systemd_unit(exe, config_dir)).map_err(file_error(&unit))?;
         let enabled = (|| {
             let mut reload = Command::new("systemctl");
@@ -304,9 +310,12 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
             run(enable).map(drop)
         })();
         if enabled.is_err() {
-            // Not enabled after all, so no unit file either (as on macOS);
-            // best effort, the systemctl error is the one to report.
-            let _ = fs::remove_file(&unit);
+            // Back to how it was: the old unit, or none (as on macOS); best
+            // effort, the systemctl error is the one to report.
+            let _ = match previous {
+                Some(bytes) => fs::write(&unit, bytes),
+                None => fs::remove_file(&unit),
+            };
         }
         enabled
     }

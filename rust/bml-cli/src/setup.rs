@@ -42,6 +42,7 @@ pub enum SkipStep {
 }
 
 impl SkipStep {
+    /// The setup step this option leaves out.
     fn id(self) -> StepId {
         match self {
             Self::Database => StepId::Database,
@@ -60,14 +61,10 @@ pub struct SetupArgs {
     #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     pg_bindir: Option<PathBuf>,
     /// Where the private database lives (default: <config folder>/pgdata).
-    #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
+    #[arg(long, value_name = "DIR", requires = "pg_bindir")]
     data_dir: Option<PathBuf>,
     /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
-    #[arg(
-        long = "extension-dir",
-        value_name = "DIR",
-        conflicts_with = "existing_server"
-    )]
+    #[arg(long = "extension-dir", value_name = "DIR", requires = "pg_bindir")]
     extension_dirs: Vec<PathBuf>,
     /// Use a PostgreSQL 18 already running on this computer, as HOST:PORT
     /// (IPv6 as [::1]:5432). The password is read from BML_PG_SUPERUSER_PASSWORD
@@ -205,7 +202,15 @@ fn make_reporter() -> impl FnMut(StepEvent) {
 
 /// Run setup and print the summary; exit 1 if any step failed.
 pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError> {
-    let host = std::env::var(OLLAMA_HOST_ENV).ok();
+    let host = match std::env::var(OLLAMA_HOST_ENV) {
+        Ok(h) => Some(h),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(fail(format!(
+                "{OLLAMA_HOST_ENV} is not valid text; fix or unset it"
+            )))
+        }
+    };
     let plan = SetupPlan {
         config_dir: config_dir.to_path_buf(),
         database: database_plan(&args, config_dir)?,
@@ -226,4 +231,20 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
         return Ok(ExitCode::from(EXIT_FAILED));
     }
     Ok(ExitCode::from(EXIT_HEALTHY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_port_forms() {
+        let ok = |raw: &str| parse_host_port(raw).unwrap();
+        assert_eq!(ok("127.0.0.1:5432"), ("127.0.0.1".into(), 5432));
+        assert_eq!(ok("[::1]:5432"), ("::1".into(), 5432));
+        assert_eq!(ok("localhost:5433"), ("localhost".into(), 5433));
+        for bad in ["host", ":5432", "host:0", "host:x", "[]:5432", "host:70000"] {
+            assert!(parse_host_port(bad).is_err(), "{bad}");
+        }
+    }
 }

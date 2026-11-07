@@ -75,7 +75,8 @@ pub fn should_run(
     Ok(())
 }
 
-/// Run one step (for "retry"); it ignores `skip` and dependencies.
+/// Run one step (for "retry"); it ignores `skip` and dependencies, and sends
+/// `Started` but no `Finished` (the caller reports the returned outcome).
 pub fn run_step(
     step: StepId,
     plan: &SetupPlan,

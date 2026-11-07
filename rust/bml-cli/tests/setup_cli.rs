@@ -80,6 +80,16 @@ fn pg_bindir_conflicts_with_existing_server() {
 }
 
 #[test]
+fn data_and_extension_dirs_need_pg_bindir() {
+    let cfg = tempfile::tempdir().unwrap();
+    for flag in ["--data-dir", "--extension-dir"] {
+        let out = bml(cfg.path(), &["setup", flag, "/x"], None);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(text(&out.stderr).contains("--pg-bindir"), "{flag}");
+    }
+}
+
+#[test]
 fn remote_existing_server_refused() {
     let cfg = tempfile::tempdir().unwrap();
     let args = vec![

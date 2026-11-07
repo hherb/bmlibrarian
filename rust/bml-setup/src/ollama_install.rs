@@ -7,13 +7,23 @@ use std::time::{Duration, Instant};
 
 use bmlib::publications::fetchers::registry::HttpClient;
 
-use crate::ollama::{ollama_version, OllamaHost};
+use crate::ollama::{ollama_answer, ollama_version, OllamaHost};
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
 
+/// The pinned Ollama release, as a literal so `concat!` can use it.
+macro_rules! pinned_ollama_version {
+    () => {
+        "0.40.10"
+    };
+}
 /// The Ollama release setup installs.
-pub const OLLAMA_VERSION: &str = "0.40.10";
+pub const OLLAMA_VERSION: &str = pinned_ollama_version!();
 /// Where the pinned release's files are downloaded from.
-const RELEASE_BASE_URL: &str = "https://github.com/ollama/ollama/releases/download/v0.40.10/";
+const RELEASE_BASE_URL: &str = concat!(
+    "https://github.com/ollama/ollama/releases/download/v",
+    pinned_ollama_version!(),
+    "/"
+);
 /// How often to ask a starting Ollama whether it answers.
 pub const OLLAMA_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// How long to wait for Ollama to answer after install or start.
@@ -22,6 +32,22 @@ pub const OLLAMA_START_TIMEOUT: Duration = Duration::from_secs(120);
 const STDERR_TAIL_LINES: usize = 4;
 /// Where setup keeps downloads, under the config folder.
 const DOWNLOADS_DIR: &str = "downloads";
+/// The per-user applications folder on macOS, under the home folder.
+#[cfg(target_os = "macos")]
+const USER_APPS_DIR: &str = "Applications";
+/// The machine-wide applications folder on macOS.
+#[cfg(target_os = "macos")]
+const SYSTEM_APPS_DIR: &str = "/Applications";
+/// Ollama's app bundle on macOS, inside an applications folder.
+#[cfg(target_os = "macos")]
+const OLLAMA_APP_BUNDLE: &str = "Ollama.app";
+/// Ollama's app on Windows, under `%LOCALAPPDATA%`.
+#[cfg(windows)]
+const WINDOWS_OLLAMA_APP: &str = "Programs/Ollama/ollama app.exe";
+/// Windows' per-user program data folder variable.
+const LOCAL_APP_DATA_ENV: &str = "LOCALAPPDATA";
+/// The program search path variable.
+const PATH_ENV: &str = "PATH";
 
 /// The pinned installer file for this platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +71,7 @@ pub struct ProgramCall {
     pub env: Vec<(OsString, OsString)>,
 }
 
+/// A call of `program` with `args` and no extra environment.
 fn call(program: impl Into<PathBuf>, args: &[&std::ffi::OsStr]) -> ProgramCall {
     ProgramCall {
         program: program.into(),
@@ -88,8 +115,8 @@ pub fn installer_url(asset: &InstallerAsset) -> String {
 pub fn install_calls(downloaded: &Path, home: &Path) -> Vec<ProgramCall> {
     #[cfg(target_os = "macos")]
     {
-        let apps = home.join("Applications");
-        let app = apps.join("Ollama.app");
+        let apps = home.join(USER_APPS_DIR);
+        let app = apps.join(OLLAMA_APP_BUNDLE);
         vec![
             call(
                 "ditto",
@@ -136,8 +163,8 @@ pub fn installed_app(
     {
         let _ = (local_app_data, path_var);
         [
-            home.join("Applications/Ollama.app"),
-            PathBuf::from("/Applications/Ollama.app"),
+            home.join(USER_APPS_DIR).join(OLLAMA_APP_BUNDLE),
+            Path::new(SYSTEM_APPS_DIR).join(OLLAMA_APP_BUNDLE),
         ]
         .into_iter()
         .find(|p| p.exists())
@@ -145,7 +172,7 @@ pub fn installed_app(
     #[cfg(windows)]
     {
         let _ = (home, path_var);
-        Some(local_app_data?.join("Programs/Ollama/ollama app.exe")).filter(|p| p.exists())
+        Some(local_app_data?.join(WINDOWS_OLLAMA_APP)).filter(|p| p.exists())
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -193,11 +220,14 @@ pub fn wait_until_running(
     }
 }
 
+/// The last [`STDERR_TAIL_LINES`] lines of `text`.
 fn last_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..].join("\n")
 }
 
+/// Run `c`. With `wait`, wait for it and fail with its stderr tail on a
+/// non-zero exit; without, only check that it started (output discarded).
 fn run_call(c: &ProgramCall, wait: bool) -> Result<(), SetupError> {
     let name = c.program.display().to_string();
     let fail = |message: String| SetupError::Install {
@@ -227,26 +257,34 @@ pub fn ensure_ollama(
     config_dir: &Path,
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
-    if ollama_version(http, host)?.is_some() {
-        return Ok(StepOutcome::AlreadyPresent);
-    }
+    let detail = match ollama_answer(http, host)? {
+        Ok(_) => return Ok(StepOutcome::AlreadyPresent),
+        Err(detail) => detail,
+    };
     if !host.loopback {
         return Err(SetupError::NotLoopback {
             host: host.base_url.clone(),
+            detail,
         });
     }
     let step = StepId::Ollama;
+    report(StepEvent::Notice {
+        step,
+        message: format!("Ollama at {} did not answer ({detail}).", host.base_url),
+    });
     let home = dirs_home()?;
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let path_var = std::env::var_os("PATH");
+    let local = std::env::var_os(LOCAL_APP_DATA_ENV).map(PathBuf::from);
+    let path_var = std::env::var_os(PATH_ENV);
     if let Some(app) = installed_app(&home, local.as_deref(), path_var.as_deref()) {
         let Some(calls) = start_calls(&app) else {
             return Err(SetupError::Ollama {
                 message: "Ollama is installed but not running. Start it with `sudo systemctl start ollama`, then run `bml setup` again.".into(),
             });
         };
+        // macOS `open` returns at once, so wait for it to see a damaged app's
+        // error; the Windows app keeps running, so only check that it started.
         for c in &calls {
-            run_call(c, false)?;
+            run_call(c, cfg!(target_os = "macos"))?;
         }
         wait_until_running(http, host, OLLAMA_START_TIMEOUT)?;
         return Ok(StepOutcome::Started);
@@ -281,7 +319,7 @@ pub fn ensure_ollama(
     )?;
     #[cfg(target_os = "macos")]
     {
-        let apps = home.join("Applications");
+        let apps = home.join(USER_APPS_DIR);
         std::fs::create_dir_all(&apps).map_err(|source| SetupError::Io { path: apps, source })?;
     }
     for c in install_calls(&file, &home) {
@@ -297,11 +335,12 @@ pub fn ensure_ollama(
     Ok(StepOutcome::Installed)
 }
 
+/// The home folder, from `USERPROFILE` on Windows and `HOME` elsewhere.
 fn dirs_home() -> Result<PathBuf, SetupError> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(var)
         .map(PathBuf::from)
-        .ok_or_else(|| SetupError::Ollama {
+        .ok_or_else(|| SetupError::Other {
             message: format!(
                 "The {var} environment variable is not set, so setup cannot find your home folder."
             ),
@@ -343,6 +382,11 @@ mod tests {
                 "25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f"
             )
         );
+    }
+
+    #[test]
+    fn installer_url_uses_the_pinned_version() {
+        assert!(RELEASE_BASE_URL.contains(&format!("/v{OLLAMA_VERSION}/")));
     }
 
     #[test]

@@ -26,7 +26,8 @@ Python program (`.env`, `config.json`).
 bml setup --pg-bindir /path/to/postgresql18/bin
 ```
 
-You see one line when each step starts and ends, a progress line about every
+You see one line when each step starts and ends (a skipped step only gets
+the end line), a progress line about every
 five seconds during downloads, and a summary table at the end. Warnings start
 with `Warning:`. Setup exits with 0 when no step failed, 1 otherwise.
 
@@ -47,8 +48,9 @@ installation (the folder with `initdb`). Setup creates a database for
 BMLibrarian only, in `<BMLibrarian folder>/pgdata` or the folder given with
 `--data-dir`, and listens on this computer only. If your PostgreSQL has the
 `pg_search` extension in its own folder, add `--extension-dir FOLDER`
-(repeat for more folders). On later runs you can leave `--pg-bindir` out: setup
-continues with the saved database.
+(repeat for more folders). `--data-dir` and `--extension-dir` only work
+together with `--pg-bindir`. On later runs you can leave all three out: setup
+continues with the saved database. Setup warns if `pg_search` is missing.
 
 **A PostgreSQL you already have.** Use it instead with:
 

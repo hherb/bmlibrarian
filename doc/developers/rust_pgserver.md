@@ -141,19 +141,22 @@ former exists and `adopt` when the latter does.
 
 Order of `adopt`, which is what makes a re-run resume:
 
-1. The host must be loopback (`is_loopback_host`); the superuser password must
-   be storable.
+1. The host must be loopback (`is_loopback_host`); the superuser password
+   and name must be storable (`PasswordNotStorable`, `SuperuserNotStorable`).
 2. Refuse if `bml-pgserver.json` exists.
-3. `probe` (through the `postgres` database) gathers `ServerFacts`; the pure
+3. A saved `bml-external.json` must name the requested host and port
+   (`StateMismatch` otherwise), and a saved `bml-admin.env` the requested
+   host, port **and** superuser (`AdminCredentialsInUse` otherwise): bml never
+   replaces another server's only saved superuser password. Both checks run
+   before connecting.
+4. `probe` (through the `postgres` database) gathers `ServerFacts`; the pure
    `verdict` lists every problem at once: older than 18, not a superuser,
    `pgvector` missing or older than `MIN_VECTOR_VERSION`, and, unless
    `needs_pg_search` is false (Windows), `pg_search` missing or not in
    `shared_preload_libraries` (`preload_list_has`). bml never edits the other
-   server's configuration or restarts it.
-4. With no `bml-external.json`, an existing `bml_app` role or `bmlibrarian`
-   database is `NameTaken`: bml never reuses or alters what it did not
-   create. With one, only its host and port must match the request
-   (`StateMismatch` otherwise).
+   server's configuration or restarts it. Then, with no `bml-external.json`,
+   an existing `bml_app` role or `bmlibrarian` database is `NameTaken`: bml
+   never reuses or alters what it did not create.
 5. `bml-admin.env` (database `bmlibrarian`, user = the superuser) and
    `bml-external.json` are written **before** anything is created, then the
    `ensure_*` functions of `init` run, and `bml.env` last.

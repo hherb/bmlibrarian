@@ -30,6 +30,7 @@ pub enum HardwareWarning {
     },
 }
 
+/// `bytes` in gigabytes.
 fn gb(bytes: u64) -> f64 {
     bytes as f64 / BYTES_PER_GB
 }
@@ -47,7 +48,8 @@ impl fmt::Display for HardwareWarning {
             Self::LowDisk { path, free, needed } => write!(
                 f,
                 "The disk holding {} has {:.1} GB free; setup needs about {:.1} GB there. \
-                 Free some space or choose another location.",
+                 Free some space, or move that folder (OLLAMA_MODELS for Ollama's models, \
+                 --config-dir or BML_CONFIG_DIR for the embedding model).",
                 path.display(),
                 gb(*free),
                 gb(*needed)

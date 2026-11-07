@@ -41,6 +41,8 @@ off new work. Longer-term structural items live in
   import profile and any server restart must refuse when `bml-external.json`
   exists (an existing server is never restarted by bml). Portable
   PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
+  Lower-priority review follow-ups (hardware summary, Ollama detection,
+  macOS autostart leftovers, setup lock) are in #403.
 - **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
   check and password reset on `28P01`, richer connect/DB errors, `bml server
   status` exits 3 when stopped, stricter launchctl error handling, fake-bin

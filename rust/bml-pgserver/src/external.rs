@@ -88,7 +88,8 @@ pub struct ServerFacts {
     pub server_version_num: i32,
     /// Whether the connecting role is a superuser.
     pub is_superuser: bool,
-    /// The installed `pgvector` version, if the extension is available.
+    /// The `pgvector` version this server offers (`default_version` in
+    /// `pg_available_extensions`), if it offers one.
     pub vector_version: Option<String>,
     /// Whether `pg_search` is available.
     pub pg_search_available: bool,

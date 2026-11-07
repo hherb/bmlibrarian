@@ -60,6 +60,7 @@ pub fn pull_http_client() -> UreqClient {
     }
 }
 
+/// An Ollama error with `message` as its text.
 fn ollama_err(message: String) -> SetupError {
     SetupError::Ollama { message }
 }
@@ -72,7 +73,7 @@ pub fn parse_ollama_host(raw: Option<&str>) -> Result<OllamaHost, SetupError> {
     };
     let bad = |why: &str| {
         ollama_err(format!(
-            "OLLAMA_HOST {raw:?} {why}. Use a form like http://127.0.0.1:11434."
+            "The Ollama address {raw:?} (from --ollama-host or OLLAMA_HOST) {why}. Use a form like http://127.0.0.1:11434."
         ))
     };
     let (scheme, rest) = match raw.split_once("://") {
@@ -115,6 +116,7 @@ pub fn parse_ollama_host(raw: Option<&str>) -> Result<OllamaHost, SetupError> {
     })
 }
 
+/// The error for an Ollama at `host` that answered wrongly (`detail` says how).
 fn not_answering(host: &OllamaHost, detail: &str) -> SetupError {
     ollama_err(format!(
         "Ollama at {} did not answer: {detail}. Check that Ollama is running, then run `bml setup` again.",
@@ -122,6 +124,7 @@ fn not_answering(host: &OllamaHost, detail: &str) -> SetupError {
     ))
 }
 
+/// The `error` text of an Ollama JSON reply, if it has one.
 fn body_error(body: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(body).ok()?;
     v.get("error")?.as_str().map(str::to_string)
@@ -132,9 +135,17 @@ pub fn ollama_version(
     http: &dyn HttpClient,
     host: &OllamaHost,
 ) -> Result<Option<String>, SetupError> {
+    Ok(ollama_answer(http, host)?.ok())
+}
+
+/// Ollama's version, or `Err` with the connection error when nothing answers.
+pub fn ollama_answer(
+    http: &dyn HttpClient,
+    host: &OllamaHost,
+) -> Result<Result<String, String>, SetupError> {
     let resp = match http.get(&format!("{}/api/version", host.base_url)) {
         Ok(r) => r,
-        Err(FetchError::Transport(_)) => return Ok(None),
+        Err(FetchError::Transport(m)) => return Ok(Err(m)),
         Err(e) => return Err(not_answering(host, &e.to_string())),
     };
     if resp.status != 200 {
@@ -143,7 +154,7 @@ pub fn ollama_version(
     serde_json::from_slice::<serde_json::Value>(&resp.body)
         .ok()
         .and_then(|v| v.get("version")?.as_str().map(str::to_string))
-        .map(Some)
+        .map(Ok)
         .ok_or_else(|| not_answering(host, "the reply was not a version"))
 }
 
@@ -383,6 +394,7 @@ mod tests {
     fn version_transport_error_is_not_running() {
         let f = Fake::new();
         assert_eq!(ollama_version(&f, &host()).unwrap(), None);
+        assert_eq!(ollama_answer(&f, &host()).unwrap(), Err("refused".into()));
         let mut f = Fake::new();
         f.get = Ok((200, r#"{"version":"0.40.10"}"#.into()));
         assert_eq!(

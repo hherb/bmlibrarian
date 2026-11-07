@@ -273,9 +273,17 @@ mod tests {
 
     #[test]
     fn storable_password_rules() {
-        assert!(is_storable_password("pa ss'#=ü"));
-        for bad in ["", "a\nb", " a", "a ", "a\rb"] {
-            assert!(!is_storable_password(bad), "{bad:?}");
+        let base = generate_password();
+        assert!(is_storable_password(&format!("{base} '#=ü{base}")));
+        let bad = [
+            String::new(),
+            format!("{base}\n{base}"),
+            format!(" {base}"),
+            format!("{base} "),
+            format!("{base}\r{base}"),
+        ];
+        for bad in bad {
+            assert!(!is_storable_password(&bad), "{bad:?}");
         }
     }
 

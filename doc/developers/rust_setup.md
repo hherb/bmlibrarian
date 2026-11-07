@@ -27,10 +27,17 @@ Order: Hardware, Database, Autostart, Ollama, Models, EmbeddingModel.
 `run_setup` carries on past failures; a step is skipped when it is in
 `SetupPlan::skip` or when a dependency failed or was skipped
 (Autostart needs Database; Models needs Ollama). Steps report through a
-`FnMut(StepEvent)` callback (`Started`, `Progress`, `Notice`, `Warning`) and
-end in a `StepOutcome` (`AlreadyPresent`, `Installed`, `Started`, `Skipped`,
-`Failed(message)`). Hardware never fails. The Database step with no plan
-resumes from saved state, and reports when nothing is saved.
+`FnMut(StepEvent)` callback (`Started`, `Progress`, `Notice`, `Warning`, and
+`Finished`, which `run_setup` sends for every step, skipped ones included;
+`run_step` sends no `Finished`) and end in a `StepOutcome` (`AlreadyPresent`,
+`Installed`, `Started`, `Skipped`, `Failed(message)`). Hardware only warns; it
+fails only when the system does not report its memory. The Database step with
+no plan resumes from saved state, and reports when nothing is saved; it warns
+when `pg_search` is missing or the app password had to be reset. The Ollama
+step reports why Ollama did not answer before starting or installing it, and
+on macOS waits for `open` so a damaged app's error shows.
+`SetupError::Other` is for errors that are neither Ollama's nor the database
+layer's (a saved existing server without `bml-admin.env`, no home folder).
 `DatabasePlan::Existing` goes through `bml_pgserver::external::adopt`
 (loopback only, role `bml_app` and database `bmlibrarian` only).
 

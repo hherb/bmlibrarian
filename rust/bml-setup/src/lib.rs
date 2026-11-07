@@ -1,5 +1,6 @@
-//! Guided first-run setup for BMLibrarian: hardware checks, Ollama and the
-//! approved models; the step runner and `bml setup` pieces come later.
+//! Guided first-run setup for BMLibrarian: the hardware check, database,
+//! start at login, Ollama, the approved models and the embedding model, run
+//! in order by [`runner::run_setup`] (the engine behind `bml setup`).
 
 pub mod hardware;
 pub mod models;
@@ -12,7 +13,10 @@ use std::path::{Path, PathBuf};
 
 /// Remove part files that an interrupted `download_verified` left in `dir`
 /// for `file` (`.{file}.<id>.part`); returns how many. A missing `dir` is
-/// fine. Setup runs once at a time per config folder, so none is in use.
+/// fine.
+// shortcut: no lock, so two setups at once in one config folder can delete each
+// other's in-progress download (that download fails; a rerun recovers). Add a lock
+// file when the Tauri screen can run beside the CLI.
 pub(crate) fn sweep_stale_parts(dir: &Path, file: &str) -> Result<usize, SetupError> {
     let io = |source| SetupError::Io {
         path: dir.to_path_buf(),
@@ -130,6 +134,12 @@ pub enum SetupError {
         /// What happened and what to do next.
         message: String,
     },
+    /// Setup itself could not go on (not an Ollama or database-layer error).
+    #[error("{message}")]
+    Other {
+        /// What happened and what to do next.
+        message: String,
+    },
     /// A model pull failed.
     #[error("Pulling the model {model} failed: {message}. Check your network and free disk space, then run `bml setup` again; the download resumes.")]
     Pull {
@@ -163,10 +173,12 @@ pub enum SetupError {
         message: String,
     },
     /// Setup refuses to install or start Ollama on another machine.
-    #[error("Ollama at {host} is not on this computer, so setup will not install or start it. Start it there, or unset OLLAMA_HOST to use a local one.")]
+    #[error("Ollama at {host} did not answer ({detail}), and it is not on this computer, so setup will not install or start it. Start it there, or drop --ollama-host and unset OLLAMA_HOST to use a local one.")]
     NotLoopback {
         /// The configured host.
         host: String,
+        /// The connection error.
+        detail: String,
     },
 }
 

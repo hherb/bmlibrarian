@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use bml_pgserver::control::stop;
 use bml_pgserver::envfile::{
-    read_conn_info, render_env, write_private_file, ConnInfo, ADMIN_ENV_FILE_NAME,
-    APP_ENV_FILE_NAME,
+    generate_password, read_conn_info, render_env, write_private_file, ConnInfo,
+    ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
 };
 use bml_pgserver::error::PgServerError;
 #[cfg(unix)]
@@ -216,7 +216,7 @@ fn adopt_refuses_to_overwrite_a_private_servers_admin_credentials() {
         port: 5418,
         dbname: DATABASE.into(),
         user: "bml_admin".into(),
-        password: "secret".into(),
+        password: generate_password(),
     };
     let admin_env = tmp.path().join(ADMIN_ENV_FILE_NAME);
     write_private_file(&admin_env, &render_env(&private)).unwrap();
@@ -225,7 +225,7 @@ fn adopt_refuses_to_overwrite_a_private_servers_admin_credentials() {
         host: HOST.into(),
         port: 5432,
         superuser: "postgres".into(),
-        password: "other".into(),
+        password: generate_password(),
         needs_pg_search: false,
     };
 
@@ -245,11 +245,77 @@ fn adopt_refuses_unstorable_superuser_name() {
         host: HOST.into(),
         port: 5432,
         superuser: "bad\nname".into(),
-        password: "pw".into(),
+        password: generate_password(),
         needs_pg_search: false,
     };
     let err = adopt(&req, tmp.path()).unwrap_err();
     assert!(matches!(err, PgServerError::SuperuserNotStorable), "{err}");
+}
+
+#[test]
+fn adopt_refuses_unstorable_password() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A newline would add a key to bml-admin.env.
+    let req = ExternalRequest {
+        host: HOST.into(),
+        port: 5432,
+        superuser: "postgres".into(),
+        password: format!("{}\nPOSTGRES_HOST=elsewhere", generate_password()),
+        needs_pg_search: false,
+    };
+    let err = adopt(&req, tmp.path()).unwrap_err();
+    assert!(matches!(err, PgServerError::PasswordNotStorable), "{err}");
+    assert!(files_in(tmp.path()).is_empty());
+}
+
+#[test]
+fn request_debug_hides_the_password() {
+    let password = generate_password();
+    let req = ExternalRequest {
+        host: HOST.into(),
+        port: 5432,
+        superuser: "postgres".into(),
+        password: password.clone(),
+        needs_pg_search: false,
+    };
+    assert!(!format!("{req:?}").contains(&password));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn init_refuses_to_overwrite_an_existing_servers_admin_credentials() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    // Left by an adopt killed before it saved bml-external.json.
+    let tmp = tempfile::tempdir().unwrap();
+    let superuser = ConnInfo {
+        host: HOST.into(),
+        port: 5432,
+        dbname: "postgres".into(),
+        user: "postgres".into(),
+        password: generate_password(),
+    };
+    let admin_env = tmp.path().join(ADMIN_ENV_FILE_NAME);
+    write_private_file(&admin_env, &render_env(&superuser)).unwrap();
+    let before = std::fs::read(&admin_env).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    let err = init(
+        &InitRequest {
+            bindir,
+            data_dir: data_dir.clone(),
+            extension_dirs: vec![],
+        },
+        tmp.path(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, PgServerError::AdminCredentialsInUse { .. }),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&admin_env).unwrap(), before);
+    assert!(!data_dir.exists());
 }
 
 #[test]
@@ -325,7 +391,7 @@ fn adopt_refuses_wrong_password() {
     let f = fixture(bindir);
 
     let wrong = ExternalRequest {
-        password: "not the password".into(),
+        password: generate_password(),
         ..f.req.clone()
     };
     let err = adopt(&wrong, &f.dir_b).unwrap_err();

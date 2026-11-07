@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bml_pgserver::envfile::{read_conn_info, ADMIN_ENV_FILE_NAME};
+use bml_pgserver::envfile::{read_conn_info, ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME};
 use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{adopt, load_external_state, ExternalRequest};
 use bml_pgserver::init::{init, InitRequest};
@@ -36,7 +36,7 @@ pub(crate) fn run(
 ) -> Result<StepOutcome, SetupError> {
     match step {
         StepId::Hardware => hardware(plan, http, report),
-        StepId::Database => database(plan),
+        StepId::Database => database(plan, report),
         StepId::Autostart => autostart(plan),
         StepId::Ollama => ensure_ollama(http, &plan.ollama_host, &plan.config_dir, report),
         StepId::Models => models(plan, http, report),
@@ -44,6 +44,7 @@ pub(crate) fn run(
     }
 }
 
+/// `Installed` if this run changed something, else `AlreadyPresent`.
 fn created(created: bool) -> StepOutcome {
     if created {
         StepOutcome::Installed
@@ -52,12 +53,14 @@ fn created(created: bool) -> StepOutcome {
     }
 }
 
+/// Where the embedding model's GGUF file lives in `config_dir`.
 fn gguf_path(config_dir: &Path) -> PathBuf {
     config_dir
         .join(MODELS_DIR_NAME)
         .join(ARCTIC_EMBED_L_V2_F16.file)
 }
 
+/// Warn about too little memory or disk; only a missing memory reading fails.
 fn hardware(
     plan: &SetupPlan,
     http: &dyn HttpClient,
@@ -105,7 +108,7 @@ fn saved_external_request(config_dir: &Path) -> Result<Option<ExternalRequest>, 
     };
     let admin = read_conn_info(&config_dir.join(ADMIN_ENV_FILE_NAME))
         .map_err(PgServerError::from)?
-        .ok_or_else(|| SetupError::Ollama {
+        .ok_or_else(|| SetupError::Other {
             message: format!(
                 "The existing server is saved but {ADMIN_ENV_FILE_NAME} is missing from {}; run `bml setup --existing-server` again.",
                 config_dir.display()
@@ -120,23 +123,69 @@ fn saved_external_request(config_dir: &Path) -> Result<Option<ExternalRequest>, 
     }))
 }
 
-fn database(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
+/// Warnings for a database that works but lacks something; returns the outcome.
+fn database_outcome(
+    created_now: bool,
+    pg_search: bool,
+    app_password_reset: bool,
+    report: &mut dyn FnMut(StepEvent),
+) -> StepOutcome {
+    let step = StepId::Database;
+    if !pg_search {
+        report(StepEvent::Warning {
+            step,
+            message: "pg_search is not installed, so the database has no BM25 search index. For a private server, run setup again with --extension-dir pointing at a pg_search build.".into(),
+        });
+    }
+    if app_password_reset {
+        report(StepEvent::Warning {
+            step,
+            message: format!("the server refused the password in {APP_ENV_FILE_NAME}, so it was reset; other copies of the old password no longer work."),
+        });
+    }
+    created(created_now)
+}
+
+/// Set up the chosen database, or resume the saved one.
+fn database(
+    plan: &SetupPlan,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
-    let private = |req: &InitRequest| Ok(created(init(req, dir)?.created));
-    let existing = |req: &ExternalRequest| Ok(created(adopt(req, dir)?.created));
+    let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
+        let o = init(req, dir)?;
+        Ok(database_outcome(
+            o.created,
+            o.pg_search,
+            o.app_password_reset,
+            report,
+        ))
+    };
+    let existing = |req: &ExternalRequest, report: &mut dyn FnMut(StepEvent)| {
+        let o = adopt(req, dir)?;
+        Ok(database_outcome(
+            o.created,
+            o.pg_search,
+            o.app_password_reset,
+            report,
+        ))
+    };
     match &plan.database {
-        Some(DatabasePlan::Private(req)) => private(req),
-        Some(DatabasePlan::Existing(req)) => existing(req),
+        Some(DatabasePlan::Private(req)) => private(req, report),
+        Some(DatabasePlan::Existing(req)) => existing(req, report),
         None => {
             if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-                return private(&InitRequest {
-                    bindir: s.bindir,
-                    data_dir: s.data_dir,
-                    extension_dirs: s.extension_dirs,
-                });
+                return private(
+                    &InitRequest {
+                        bindir: s.bindir,
+                        data_dir: s.data_dir,
+                        extension_dirs: s.extension_dirs,
+                    },
+                    report,
+                );
             }
             match saved_external_request(dir)? {
-                Some(req) => existing(&req),
+                Some(req) => existing(&req, report),
                 None => Ok(StepOutcome::Failed(
                     "no database chosen; pass --pg-bindir or --existing-server".into(),
                 )),
@@ -145,6 +194,7 @@ fn database(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     }
 }
 
+/// Register the private server to start at login (skipped for an existing server).
 fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
     let existing_server = matches!(plan.database, Some(DatabasePlan::Existing(_)))
@@ -174,6 +224,7 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     Ok(StepOutcome::Installed)
 }
 
+/// Pull each approved model that is missing and copy it to its approved name.
 fn models(
     plan: &SetupPlan,
     http: &dyn HttpClient,
@@ -216,6 +267,7 @@ fn models(
     Ok(created(changed))
 }
 
+/// Download and verify the embedding model's GGUF file, unless it is already good.
 fn embedding_model(
     plan: &SetupPlan,
     report: &mut dyn FnMut(StepEvent),
@@ -274,6 +326,42 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn saved_existing_server_without_admin_credentials_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path()
+                .join(bml_pgserver::external::EXTERNAL_STATE_FILE_NAME),
+            r#"{"host":"127.0.0.1","port":5432,"superuser":"postgres"}"#,
+        )
+        .unwrap();
+        let e = database(&plan(dir.path()), &mut |_| {}).unwrap_err();
+        assert!(
+            matches!(&e, SetupError::Other { message } if message.contains("missing")),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn database_outcome_warns_about_missing_pg_search_and_password_reset() {
+        let mut warnings = Vec::new();
+        let outcome = database_outcome(false, false, true, &mut |e| {
+            if let StepEvent::Warning { message, .. } = e {
+                warnings.push(message);
+            }
+        });
+        assert_eq!(outcome, StepOutcome::AlreadyPresent);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("pg_search"));
+        assert!(warnings[1].contains("reset"));
+        let mut quiet = true;
+        assert_eq!(
+            database_outcome(true, true, false, &mut |_| quiet = false),
+            StepOutcome::Installed
+        );
+        assert!(quiet);
     }
 
     #[test]
