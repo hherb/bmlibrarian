@@ -178,10 +178,42 @@ fn app_env_lost_resets_password() {
 
     let outcome = init(&f.req, &f.config_dir).unwrap();
     assert!(outcome.created);
+    assert!(outcome.app_password_reset);
     let new = read_conn_info(&app_env).unwrap().unwrap();
     assert_ne!(new.password, old.password);
     connect(&new).expect("the role was given the new password");
     assert!(connect(&old).is_err());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn app_password_mismatch_is_repaired() {
+    let Some(bindir) = common::test_bindir() else {
+        return;
+    };
+    let _guard = common::serial();
+    let f = fixture(bindir);
+
+    init(&f.req, &f.config_dir).unwrap();
+    // As if the data folder came from another machine: the role's password
+    // no longer matches the bml.env kept here.
+    let mut admin = read_conn_info(&f.config_dir.join(ADMIN_ENV_FILE_NAME))
+        .unwrap()
+        .unwrap();
+    admin.dbname = "postgres".into();
+    connect(&admin)
+        .unwrap()
+        .batch_execute(&format!("ALTER ROLE {APP_ROLE} PASSWORD 'elsewhere'"))
+        .unwrap();
+    let app_env = f.config_dir.join(APP_ENV_FILE_NAME);
+    let app = read_conn_info(&app_env).unwrap().unwrap();
+    assert!(connect(&app).is_err());
+
+    let outcome = init(&f.req, &f.config_dir).unwrap();
+    assert!(outcome.created, "the password reset is reported");
+    assert!(outcome.app_password_reset);
+    assert_eq!(read_conn_info(&app_env).unwrap().unwrap(), app);
+    connect(&app).expect("bml.env's password works again");
 }
 
 #[test]
@@ -384,8 +416,14 @@ fn db_error_is_descriptive() {
         Ok(_) => panic!("connected with a wrong password"),
         Err(e) => e,
     };
-    assert!(
-        err.to_string().contains("password authentication failed"),
-        "{err}"
-    );
+    let text = err.to_string();
+    assert!(text.contains("password authentication failed"), "{text}");
+    for part in [
+        APP_ROLE,
+        DATABASE,
+        &format!(":{}", app.port),
+        "SQLSTATE 28P01",
+    ] {
+        assert!(text.contains(part), "{part} missing from: {text}");
+    }
 }

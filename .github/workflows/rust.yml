@@ -40,3 +40,15 @@ jobs:
       - run: cargo test -- --include-ignored
         env:
           BML_TEST_PG_BINDIR: /usr/lib/postgresql/18/bin
+
+  integration-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL 18 and pgvector (Homebrew)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install postgresql@18 pgvector
+          echo "BML_TEST_PG_BINDIR=$(brew --prefix postgresql@18)/bin" >> "$GITHUB_ENV"
+      - run: cargo test -- --include-ignored

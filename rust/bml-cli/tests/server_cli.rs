@@ -15,6 +15,16 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Runs `bml server stop` for a configuration folder when the test ends,
+/// pass or fail; declared after the temp folder so it drops first.
+struct StopOnDrop(std::path::PathBuf);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = bml(&self.0, &["server", "stop"]);
+    }
+}
+
 #[test]
 fn status_not_set_up() {
     let cfg = tempfile::tempdir().unwrap();
@@ -87,6 +97,7 @@ fn init_status_stop() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config");
     let data = tmp.path().join("data dir");
+    let _stop = StopOnDrop(cfg.clone());
     let mut init = vec![
         "server".to_owned(),
         "init".to_owned(),
@@ -121,7 +132,8 @@ fn init_status_stop() {
     let out = bml(&cfg, &["server", "stop"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let out = bml(&cfg, &["server", "status"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(3), "stopped");
+    assert!(text(&out.stdout).contains("Server: stopped"));
 }
 
 #[cfg(unix)]

@@ -22,10 +22,14 @@ macro_rules! say {
 
 /// Exit code: the server is running and healthy.
 pub const EXIT_HEALTHY: u8 = 0;
-/// Exit code: the server is stopped, unhealthy, or a command failed.
+/// Exit code: a command failed, the server is running but unhealthy, or its
+/// data folder is missing or unreadable.
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: no server has been set up in this configuration folder.
 pub const EXIT_NOT_SET_UP: u8 = 2;
+/// Exit code of `status`: the server is set up but stopped (as `pg_ctl
+/// status` reports it).
+pub const EXIT_STOPPED: u8 = 3;
 
 /// Extension listed first in status output.
 const PRIMARY_EXTENSION: &str = "vector";
@@ -81,6 +85,12 @@ pub fn run(command: ServerCommand, config_dir: &Path) -> Result<ExitCode, PgServ
                 extension_dirs,
             };
             let outcome = init(&req, config_dir)?;
+            if outcome.app_password_reset {
+                say!(
+                    "Note: the server refused the password in {APP_ENV_FILE_NAME}, so it was \
+                     reset; other copies of the old password no longer work."
+                );
+            }
             say!(
                 "Server ready on {HOST}:{} (data: {}){}",
                 outcome.state.port,
@@ -143,19 +153,26 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
         say!("{}", not_set_up());
         return Ok(ExitCode::from(EXIT_NOT_SET_UP));
     };
-    let server_status = status(&state)?;
-    let running = server_status == ServerStatus::Running;
-    match server_status {
-        ServerStatus::Running => say!("Server: running on {HOST}:{}", state.port),
-        ServerStatus::Stopped => say!("Server: stopped"),
-        ServerStatus::NotInitialised => say!(
-            "Server: data folder missing, unreadable or not set up (is its disk mounted? \
-             if setup was interrupted, run \"bml server init\" again)"
-        ),
-    }
+    let not_running_code = match status(&state)? {
+        ServerStatus::Running => {
+            say!("Server: running on {HOST}:{}", state.port);
+            None
+        }
+        ServerStatus::Stopped => {
+            say!("Server: stopped");
+            Some(EXIT_STOPPED)
+        }
+        ServerStatus::NotInitialised => {
+            say!(
+                "Server: data folder missing, unreadable or not set up (is its disk mounted? \
+                 if setup was interrupted, run \"bml server init\" again)"
+            );
+            Some(EXIT_FAILED)
+        }
+    };
     say!("Data: {}", state.data_dir.display());
-    if !running {
-        return Ok(ExitCode::from(EXIT_FAILED));
+    if let Some(code) = not_running_code {
+        return Ok(ExitCode::from(code));
     }
     match extensions(config_dir) {
         Ok(names) => {

@@ -28,8 +28,9 @@ All commands take an optional `--config-dir <folder>`. It defaults to the
 | `bml server autostart enable` / `disable` | Starts the server once each time you log in, or stops doing so. Disabling leaves a running server alone. |
 
 `bml server status` exits with code **0** when the server is running and
-healthy, **1** when it is stopped, unhealthy, or something went wrong, and
-**2** when no server has been set up yet. `start`, `stop`, `restart` and
+healthy, **3** when it is stopped, **2** when no server has been set up yet,
+and **1** when it is unhealthy, its data folder is missing, or something went
+wrong. `start`, `stop`, `restart` and
 `autostart enable` also exit with **2** when nothing is set up.
 
 ### Choosing the data folder
@@ -53,7 +54,7 @@ In the configuration folder:
 
 | File | Contents |
 |---|---|
-| `bml.env` | How BMLibrarian connects to its database: the everyday, unprivileged account. |
+| `bml.env` | How BMLibrarian connects to its database: the everyday, unprivileged account. If it is lost, or no longer matches the database (for example a data folder moved from another computer together with its `bml-admin.env`), running `init` again repairs it, and says so: other copies of the old password then stop working. |
 | `bml-admin.env` | The server's administrator password. **Keep it.** Without it `init` can no longer repair or finish the setup, and stops rather than overwrite anything (starting, stopping and status still work). |
 | `bml-pgserver.json` | Where the server's programs and data are, and its port. |
 

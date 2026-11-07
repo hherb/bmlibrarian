@@ -9,6 +9,16 @@ use bml_pgserver::control::{restart, start, status, stop, tool, ServerStatus};
 use bml_pgserver::port::{choose_port, port_is_free, DEFAULT_PORT};
 use bml_pgserver::state::ServerState;
 
+/// Stops the server when the test ends, pass or fail; declared after the
+/// temp folder so it drops first.
+struct StopOnDrop(ServerState);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = stop(&self.0);
+    }
+}
+
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
 fn start_stop_idempotent() {
@@ -42,12 +52,12 @@ fn start_stop_idempotent() {
     std::fs::write(&conf, text).unwrap();
 
     let state = ServerState {
-        pg_major: 18,
         bindir,
         data_dir,
         port,
         extension_dirs: vec![],
     };
+    let _stop = StopOnDrop(state.clone());
     assert_eq!(status(&state).unwrap(), ServerStatus::Stopped);
     start(&state).unwrap();
     start(&state).unwrap();
