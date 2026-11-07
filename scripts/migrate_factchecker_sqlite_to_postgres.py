@@ -53,10 +53,25 @@ PROGRESS_INTERVAL = 100
 # ValueError covers malformed agent_config JSON.
 ROW_ERRORS = (psycopg.IntegrityError, psycopg.DataError, ValueError)
 
+# Statuses factcheck.statements accepts (CHECK constraint, migration 008)
+REVIEW_STATUSES = ('pending', 'in_review', 'completed', 'flagged')
+DEFAULT_REVIEW_STATUS = 'pending'
+
 
 def legacy_verdict(row: sqlite3.Row) -> str:
     """Return the row's evaluation normalised like the PostgreSQL verdicts ('Yes ' -> 'yes')."""
     return (row['evaluation'] or '').strip().lower()
+
+
+def legacy_review_status(row: sqlite3.Row) -> str:
+    """
+    Return the row's review status normalised (' Flagged ' -> 'flagged'; NULL/blank -> 'pending').
+
+    Never raises: SQLite columns are untyped, so a non-text value (even 0) is
+    stringified and then rejected by ``restore_review_status`` after the statement is mapped.
+    """
+    raw = row['review_status']
+    return ('' if raw is None else str(raw)).strip().lower() or DEFAULT_REVIEW_STATUS
 
 
 def evaluation_from_row(row: sqlite3.Row) -> AIEvaluation:
@@ -238,17 +253,22 @@ class SQLiteToPostgresMigrator:
                         input_statement_id=row['input_statement_id'],
                         expected_answer=row['expected_answer'],
                         source_file=row['source_file'],
-                        review_status=row['review_status'] or 'pending'
+                        review_status=legacy_review_status(row)
                     )
 
+                    pg_id = None
                     if not self.dry_run:
                         # This will return existing ID if statement already exists
                         pg_id = self.pg_db.insert_statement(statement)
+                        # Mapped before the status, so its verdicts migrate even if the status fails
                         self.statement_id_map[sqlite_id] = pg_id
                         self.statements[sqlite_id] = statement
-                        self.stats['statements']['migrated'] += 1
-                    else:
-                        self.stats['statements']['migrated'] += 1
+                    self.stats['statements']['migrated'] += 1
+                    try:
+                        self.restore_review_status(pg_id, statement.review_status)
+                    except ROW_ERRORS as e:
+                        logger.error(f"Statement {sqlite_id} migrated, but its review_status was not restored: {e}")
+                        self.stats['statements']['errors'] += 1
 
                     if self.stats['statements']['migrated'] % PROGRESS_INTERVAL == 0:
                         logger.info(f"  Migrated {self.stats['statements']['migrated']} statements...")
@@ -258,6 +278,38 @@ class SQLiteToPostgresMigrator:
                     self.stats['statements']['errors'] += 1
 
         logger.info(f"✓ Statements: {self.stats['statements']['migrated']}/{self.stats['statements']['total']}")
+
+    def restore_review_status(self, pg_id: Optional[int], status: str) -> None:
+        """
+        Give the PostgreSQL statement its legacy review status (#392).
+
+        ``insert_statement`` never writes ``review_status``, so a new statement
+        starts as 'pending'. A non-pending status already set in PostgreSQL is
+        kept (and the legacy value then not checked), so a re-run does not undo
+        a review done there since; 'pending' counts as unset, so a statement
+        reset to 'pending' in PostgreSQL gets the legacy status again.
+
+        Args:
+            pg_id: PostgreSQL statement id (None in a dry run: only validate)
+            status: Normalised legacy review status
+
+        Raises:
+            ValueError: ``status`` is not one factcheck.statements accepts and
+                the PostgreSQL statement is still 'pending'
+        """
+        if status == DEFAULT_REVIEW_STATUS:
+            return
+        if pg_id is not None:
+            current = self.pg_db.get_statement(pg_id)
+            if current is not None and current.review_status != DEFAULT_REVIEW_STATUS:
+                if current.review_status != status:
+                    logger.info(f"Statement {pg_id}: kept PostgreSQL review_status "
+                                f"{current.review_status!r} (legacy: {status!r})")
+                return
+        if status not in REVIEW_STATUSES:
+            raise ValueError(f"invalid review_status {status!r} (allowed: {', '.join(REVIEW_STATUSES)})")
+        if pg_id is not None:
+            self.pg_db.update_statement_review_status(pg_id, status)
 
     def migrate_annotators(self):
         """Migrate annotators table."""
