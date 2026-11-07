@@ -32,6 +32,15 @@ pub const LAUNCH_AGENT_LABEL: &str = "org.bmlibrarian.pgserver";
 /// The `systemd --user` unit name (Linux).
 pub const SYSTEMD_UNIT_NAME: &str = "bml-pgserver.service";
 
+/// The user's systemd unit folder, relative to the home folder (Linux).
+#[cfg(target_os = "linux")]
+const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
+
+/// The folder `systemctl --user enable` links the unit into (the unit has
+/// `WantedBy=default.target`), relative to [`SYSTEMD_USER_DIR`].
+#[cfg(any(target_os = "linux", test))]
+const SYSTEMD_WANTS_DIR: &str = "default.target.wants";
+
 /// The value name under the per-user `Run` key (Windows).
 pub const WINDOWS_RUN_VALUE: &str = "BMLibrarianPgServer";
 
@@ -282,16 +291,24 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let unit_dir = home()?.join(".config/systemd/user");
+        let unit_dir = home()?.join(SYSTEMD_USER_DIR);
         let unit = unit_dir.join(SYSTEMD_UNIT_NAME);
         fs::create_dir_all(&unit_dir).map_err(file_error(&unit_dir))?;
         fs::write(&unit, render_systemd_unit(exe, config_dir)).map_err(file_error(&unit))?;
-        let mut reload = Command::new("systemctl");
-        reload.args(["--user", "daemon-reload"]);
-        run(reload)?;
-        let mut enable = Command::new("systemctl");
-        enable.args(["--user", "enable", SYSTEMD_UNIT_NAME]);
-        run(enable).map(drop)
+        let enabled = (|| {
+            let mut reload = Command::new("systemctl");
+            reload.args(["--user", "daemon-reload"]);
+            run(reload)?;
+            let mut enable = Command::new("systemctl");
+            enable.args(["--user", "enable", SYSTEMD_UNIT_NAME]);
+            run(enable).map(drop)
+        })();
+        if enabled.is_err() {
+            // Not enabled after all, so no unit file either (as on macOS);
+            // best effort, the systemctl error is the one to report.
+            let _ = fs::remove_file(&unit);
+        }
+        enabled
     }
     #[cfg(windows)]
     {
@@ -331,6 +348,15 @@ fn file_has_text(path: &Path, expected: &str) -> Result<bool, PgServerError> {
     }
 }
 
+/// Whether the unit in `unit_dir` matches `expected` and `systemctl enable`
+/// linked it into the wants folder (a unit file alone is a failed enable).
+#[cfg(any(target_os = "linux", test))]
+fn systemd_enabled(unit_dir: &Path, expected: &str) -> Result<bool, PgServerError> {
+    let link = unit_dir.join(SYSTEMD_WANTS_DIR).join(SYSTEMD_UNIT_NAME);
+    Ok(file_has_text(&unit_dir.join(SYSTEMD_UNIT_NAME), expected)?
+        && link.symlink_metadata().is_ok())
+}
+
 /// Whether `reg query` output (`    NAME    REG_SZ    VALUE`) holds `command`.
 #[cfg(any(windows, test))]
 fn reg_output_has(stdout: &str, command: &str) -> bool {
@@ -349,8 +375,10 @@ pub fn is_enabled(exe: &Path, config_dir: &Path) -> Result<bool, PgServerError> 
     }
     #[cfg(target_os = "linux")]
     {
-        let unit = home()?.join(".config/systemd/user").join(SYSTEMD_UNIT_NAME);
-        file_has_text(&unit, &render_systemd_unit(exe, config_dir))
+        systemd_enabled(
+            &home()?.join(SYSTEMD_USER_DIR),
+            &render_systemd_unit(exe, config_dir),
+        )
     }
     #[cfg(windows)]
     {
@@ -391,7 +419,7 @@ pub fn disable() -> Result<(), PgServerError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let unit = home()?.join(".config/systemd/user").join(SYSTEMD_UNIT_NAME);
+        let unit = home()?.join(SYSTEMD_USER_DIR).join(SYSTEMD_UNIT_NAME);
         if unit.try_exists().map_err(file_error(&unit))? {
             let mut disable = Command::new("systemctl");
             disable.args(["--user", "disable", SYSTEMD_UNIT_NAME]);
@@ -578,6 +606,20 @@ mod tests {
         std::fs::write(&f, "a").unwrap();
         assert!(file_has_text(&f, "a").unwrap());
         assert!(!file_has_text(&f, "b").unwrap());
+    }
+
+    #[test]
+    fn systemd_needs_unit_and_wants_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join(SYSTEMD_UNIT_NAME);
+        assert!(!systemd_enabled(dir.path(), "u").unwrap());
+        std::fs::write(&unit, "u").unwrap();
+        assert!(!systemd_enabled(dir.path(), "u").unwrap());
+        let wants = dir.path().join(SYSTEMD_WANTS_DIR);
+        std::fs::create_dir(&wants).unwrap();
+        std::fs::write(wants.join(SYSTEMD_UNIT_NAME), "").unwrap();
+        assert!(systemd_enabled(dir.path(), "u").unwrap());
+        assert!(!systemd_enabled(dir.path(), "other").unwrap());
     }
 
     #[test]
