@@ -4,6 +4,7 @@
 pub mod hardware;
 pub mod models;
 pub mod ollama;
+pub mod ollama_install;
 
 use std::path::PathBuf;
 
@@ -136,4 +137,69 @@ pub enum SetupError {
         /// The configured host.
         host: String,
     },
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use bmlib::publications::fetchers::registry::{
+        FetchError, HttpClient, HttpResponse, HttpStream,
+    };
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// Scripted client: one canned answer for every call, recording URLs.
+    pub struct Fake {
+        pub get: Result<(u16, String), String>,
+        pub post: Option<(u16, String)>,
+        pub stream: Option<(u16, String)>,
+        pub urls: RefCell<Vec<String>>,
+    }
+    impl Fake {
+        pub fn new() -> Self {
+            Fake {
+                get: Err("refused".into()),
+                post: None,
+                stream: None,
+                urls: RefCell::new(vec![]),
+            }
+        }
+    }
+    impl HttpClient for Fake {
+        fn get(&self, url: &str) -> Result<HttpResponse, FetchError> {
+            self.urls.borrow_mut().push(url.to_string());
+            match &self.get {
+                Ok((status, body)) => Ok(HttpResponse {
+                    status: *status,
+                    body: body.clone().into_bytes(),
+                }),
+                Err(m) => Err(FetchError::Transport(m.clone())),
+            }
+        }
+        fn post_json(
+            &self,
+            url: &str,
+            _b: &serde_json::Value,
+            _h: &BTreeMap<String, String>,
+        ) -> Result<HttpResponse, FetchError> {
+            self.urls.borrow_mut().push(url.to_string());
+            let (status, body) = self.post.clone().unwrap();
+            Ok(HttpResponse {
+                status,
+                body: body.into_bytes(),
+            })
+        }
+        fn post_json_stream(
+            &self,
+            url: &str,
+            _b: &serde_json::Value,
+            _h: &BTreeMap<String, String>,
+        ) -> Result<HttpStream, FetchError> {
+            self.urls.borrow_mut().push(url.to_string());
+            let (status, body) = self.stream.clone().unwrap();
+            Ok(HttpStream {
+                status,
+                body: Box::new(std::io::Cursor::new(body.into_bytes())),
+            })
+        }
+    }
 }
