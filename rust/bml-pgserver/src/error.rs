@@ -180,6 +180,50 @@ pub enum PgServerError {
         /// The major version found.
         found: u32,
     },
+    /// Adopting an existing server is only allowed on this computer.
+    #[error("{host} is not this computer; bml only uses a PostgreSQL running on this computer (127.0.0.1, ::1 or localhost)")]
+    NotLoopback {
+        /// The refused host.
+        host: String,
+    },
+    /// The existing server lacks something bml needs.
+    #[error("This PostgreSQL can't be used: {}", join_problems(.problems))]
+    Unusable {
+        /// Everything that is wrong, in one list.
+        problems: Vec<crate::external::Unusable>,
+    },
+    /// The role or database bml would create is already there.
+    #[error("the {kind} {name} already exists on that server and was not created by bml; bml never reuses or changes it")]
+    NameTaken {
+        /// `"role"` or `"database"`.
+        kind: &'static str,
+        /// Its name.
+        name: &'static str,
+    },
+    /// This configuration folder already manages a private server.
+    #[error("this configuration folder already manages a private server ({state_file}); use a different --config-dir, or remove that file to switch")]
+    PrivateServerConfigured {
+        /// The private server's state file.
+        state_file: PathBuf,
+    },
+    /// This configuration folder already uses an existing server.
+    #[error("this configuration folder already uses an existing PostgreSQL ({state_file}); use a different --config-dir, or remove that file to switch")]
+    ExternalServerConfigured {
+        /// The existing-server state file.
+        state_file: PathBuf,
+    },
+    /// The password cannot be kept in the credentials files.
+    #[error("that password cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    PasswordNotStorable,
+}
+
+/// Joins the problems of an unusable server for [`PgServerError::Unusable`].
+fn join_problems(problems: &[crate::external::Unusable]) -> String {
+    problems
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A process exit for messages: the code, or that a signal killed it.
