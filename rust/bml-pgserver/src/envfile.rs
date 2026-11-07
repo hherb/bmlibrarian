@@ -282,8 +282,9 @@ mod tests {
             format!("{base} "),
             format!("{base}\r{base}"),
         ];
-        for bad in bad {
-            assert!(!is_storable_password(&bad), "{bad:?}");
+        // The case number, not the password, goes in the failure message.
+        for (case, bad) in bad.iter().enumerate() {
+            assert!(!is_storable_password(bad), "case {case}");
         }
     }
 
