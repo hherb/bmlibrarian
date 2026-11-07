@@ -20,6 +20,7 @@ macro_rules! say {
         let _ = writeln!(std::io::stdout(), $($arg)*);
     }};
 }
+pub(crate) use say;
 
 /// Exit code: the server is running and healthy.
 pub const EXIT_HEALTHY: u8 = 0;

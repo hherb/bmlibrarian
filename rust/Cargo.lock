@@ -149,6 +149,7 @@ name = "bml-cli"
 version = "0.1.0"
 dependencies = [
  "bml-pgserver",
+ "bml-setup",
  "clap",
  "tempfile",
 ]

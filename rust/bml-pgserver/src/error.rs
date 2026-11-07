@@ -181,7 +181,7 @@ pub enum PgServerError {
         found: u32,
     },
     /// Adopting an existing server is only allowed on this computer.
-    #[error("{host} is not this computer; bml only uses a PostgreSQL running on this computer (127.0.0.1, ::1 or localhost)")]
+    #[error("The PostgreSQL server at {host} is not on this computer. The database must run on this computer (127.0.0.1, ::1 or localhost); install or start PostgreSQL here, or use --pg-bindir instead")]
     NotLoopback {
         /// The refused host.
         host: String,
