@@ -76,10 +76,10 @@ change together.
 | `bml-search` | Hybrid retrieval: vector top-K ∪ pg_search BM25 top-K as candidates, ordered by weighted RRF (vector 2×); filters (date, type, source) | `bml-db` |
 | `bml-grade` | Relevance scoring, study-design/quality tiers, transparency/bias | bmlib `quality`, `transparency`, `agents` |
 | `bml-review` | Review workflow (planner → search → screen → grade → synthesise → report), audit trail, checkpoints | the above, bmlib `citations`, `context_processor` |
-| `bml-cli` | `bml server …` (private PostgreSQL, built 2026-11-07), `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
+| `bml-cli` | `bml server …` (private PostgreSQL), `bml setup …` (guided first-run setup; both built 2026-11-07), `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
 | `bml-mcp` | MCP server over the same services (`rmcp`) | `bml-search`, `bml-grade`, `bml-review` |
-| `bml-pgserver` | Private per-user PostgreSQL 18 for one-click installs: port choice, `initdb`, `bml.conf`, roles/database/extensions, autostart at login, start/stop/restart, RAM detection (built first, 2026-11) | `postgres` crate |
-| `bml-setup` | Requirement checks and resumable install steps (PostgreSQL, Ollama, models, GGUF); UI-free | `bml-pgserver`, bmlib `embed` |
+| `bml-pgserver` | Private per-user PostgreSQL 18 for one-click installs: port choice, `initdb`, `bml.conf`, roles/database/extensions, autostart at login, start/stop/restart, RAM detection, and adopting an existing loopback PG18 (built first, 2026-11) | `postgres` crate |
+| `bml-setup` | Requirement checks and resumable install steps (PostgreSQL, Ollama, models, GGUF); UI-free; built 2026-11-07 | `bml-pgserver`, bmlib `model-download` + `http-ureq` |
 | `bml-app` | Tauri desktop app; its first screen is the installer/first-run setup (Tauri pulled forward from Phase F) | `bml-setup` |
 
 **One-click installer (added 2026-11-07,

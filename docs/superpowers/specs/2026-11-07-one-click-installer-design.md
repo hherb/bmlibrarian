@@ -306,7 +306,9 @@ touch, because Linux users are generally more tech-savvy.
    - restart and RAM-detection primitives for the later Rust import profile
 3. **`bml-setup` plus `bml setup` CLI.** Requirement checks, Ollama install,
    model pulls, GGUF download and verification, hardware warnings, resumable
-   steps.
+   steps. **Done** (plan: `docs/superpowers/plans/2026-11-07-bml-setup.md`).
+   Obtaining portable PG binaries (the rest of piece 2) got its own, future
+   plan; `bml setup --pg-bindir` meanwhile.
 4. **`bml-app` (Tauri) first-run screen.** The plain-language setup flow:
    - choose where the data lives
    - see progress
