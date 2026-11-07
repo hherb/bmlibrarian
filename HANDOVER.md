@@ -37,7 +37,9 @@ off new work. Longer-term structural items live in
   feature, a git dependency pinned at rev 9670f4e (bmlib PR hherb/bmlib#703;
   switch to crates.io 0.3.1 once published). Verified by hand on macOS
   only (private server + Ollama present + GGUF twice); the Windows/Linux
-  Ollama installs and Windows Inno flags are unverified (#397). Portable
+  Ollama installs and Windows Inno flags are unverified (#397). The Phase B
+  import profile and any server restart must refuse when `bml-external.json`
+  exists (an existing server is never restarted by bml). Portable
   PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
 - **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
   check and password reset on `28P01`, richer connect/DB errors, `bml server

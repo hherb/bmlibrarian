@@ -15,6 +15,7 @@ use crate::models::{model_action, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
 use crate::runner::{DatabasePlan, SetupPlan};
+use crate::sweep_stale_parts;
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
 
 /// The folder in the configuration folder that holds downloaded GGUF models.
@@ -157,6 +158,11 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
             reason: "existing server is not managed by bml".into(),
         });
     }
+    if load_state(dir).map_err(PgServerError::from)?.is_none() {
+        return Ok(StepOutcome::Failed(
+            "the private database is not set up; run the Database step first (`bml setup`)".into(),
+        ));
+    }
     let exe = std::env::current_exe().map_err(|source| SetupError::Io {
         path: PathBuf::from("the bml program"),
         source,
@@ -218,18 +224,102 @@ fn embedding_model(
     if verify_model(&gguf_path(&plan.config_dir), model).is_ok() {
         return Ok(StepOutcome::AlreadyPresent);
     }
-    download_model(
-        model,
-        &plan.config_dir.join(MODELS_DIR_NAME),
-        &mut |done, total| {
-            report(StepEvent::Progress {
-                step: StepId::EmbeddingModel,
-                detail: "Downloading the embedding model".into(),
-                done,
-                total,
-            });
-            true
-        },
-    )?;
+    let models_dir = plan.config_dir.join(MODELS_DIR_NAME);
+    sweep_stale_parts(&models_dir, model.file)?;
+    download_model(model, &models_dir, &mut |done, total| {
+        report(StepEvent::Progress {
+            step: StepId::EmbeddingModel,
+            detail: "Downloading the embedding model".into(),
+            done,
+            total,
+        });
+        true
+    })?;
     Ok(StepOutcome::Installed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ollama::parse_ollama_host;
+    use crate::test_support::Fake;
+    use std::collections::BTreeSet;
+
+    const PULLED_AS: &str = "medgemma1.5:4b-it-q8_0";
+    const APPROVED_AS: &str = "medgemma4B_it_q8:latest";
+
+    fn plan(dir: &Path) -> SetupPlan {
+        SetupPlan {
+            config_dir: dir.to_path_buf(),
+            database: None,
+            ollama_host: parse_ollama_host(Some("http://127.0.0.1:11434")).unwrap(),
+            skip: BTreeSet::new(),
+        }
+    }
+
+    fn tags(names: &[&str]) -> (u16, String) {
+        let models: Vec<_> = names
+            .iter()
+            .map(|n| serde_json::json!({"model": n}))
+            .collect();
+        (200, serde_json::json!({"models": models}).to_string())
+    }
+
+    #[test]
+    fn autostart_without_private_database_fails_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = autostart(&plan(dir.path())).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("Database step")),
+            "{outcome:?}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn models_copies_the_pulled_name_to_the_approved_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new();
+        fake.get = Ok(tags(&["gpt-oss:20b", PULLED_AS]));
+        fake.post = Some((200, String::new()));
+        let outcome = models(&plan(dir.path()), &fake, &mut |_| {}).unwrap();
+        assert_eq!(outcome, StepOutcome::Installed);
+        let urls = fake.urls.borrow();
+        assert!(urls.last().unwrap().ends_with("/api/copy"), "{urls:?}");
+        assert!(!urls.iter().any(|u| u.ends_with("/api/pull")), "{urls:?}");
+        assert_eq!(
+            fake.bodies.borrow().last().unwrap(),
+            &serde_json::json!({"source": PULLED_AS, "destination": APPROVED_AS})
+        );
+    }
+
+    #[test]
+    fn models_pulls_then_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new();
+        // Listings: gpt-oss present, then (for the other model) tags before
+        // and after the pull.
+        fake.get_script.borrow_mut().extend([
+            tags(&["gpt-oss:20b"]),
+            tags(&["gpt-oss:20b"]),
+            tags(&["gpt-oss:20b", PULLED_AS]),
+        ]);
+        fake.get = Ok(tags(&["gpt-oss:20b", PULLED_AS]));
+        fake.stream = Some((200, "{\"status\":\"success\"}\n".into()));
+        fake.post = Some((200, String::new()));
+        let outcome = models(&plan(dir.path()), &fake, &mut |_| {}).unwrap();
+        assert_eq!(outcome, StepOutcome::Installed);
+        let urls = fake.urls.borrow();
+        let tail: Vec<&str> = urls
+            .iter()
+            .rev()
+            .take(3)
+            .map(|u| u.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(tail, ["copy", "tags", "pull"], "{urls:?}");
+        assert_eq!(
+            fake.bodies.borrow().last().unwrap()["source"],
+            serde_json::json!(PULLED_AS)
+        );
+    }
 }

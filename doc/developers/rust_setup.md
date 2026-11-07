@@ -70,3 +70,9 @@ resolve them). `needs_pg_search` is `!cfg!(windows)`.
 skip-everything run) runs under plain `cargo test`. The library has unit tests
 with a scripted `HttpClient` fake. Database steps run in the `--include-ignored`
 integration job against a real PG18.
+
+## Autostart and the executable
+
+`bml setup` enables autostart by default and the login entry records the
+running executable's path. Run it from an installed `bml`, not `cargo run`
+(whose binary lives in `target/`); with `cargo run` pass `--skip autostart`.

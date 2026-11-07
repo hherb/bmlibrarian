@@ -154,7 +154,8 @@ fn with_state(
 fn refuse_external() -> ExitCode {
     say!(
         "This configuration uses an existing PostgreSQL server, which bml does not start, \
-         stop or autostart"
+         stop or autostart. Manage that server with its own tools; run `bml setup` to \
+         repair bml's connection to it."
     );
     ExitCode::from(EXIT_FAILED)
 }
@@ -224,9 +225,14 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
 /// Extensions installed in the app database, `vector` first.
 fn extensions(config_dir: &Path) -> Result<Vec<String>, PgServerError> {
     let env = config_dir.join(APP_ENV_FILE_NAME);
+    let fix = if load_external_state(config_dir)?.is_some() {
+        "bml setup"
+    } else {
+        "bml server init"
+    };
     let info = read_conn_info(&env)?.ok_or_else(|| {
         PgServerError::Io(std::io::Error::other(format!(
-            "{} is missing; run \"bml server init\"",
+            "{} is missing; run \"{fix}\"",
             env.display()
         )))
     })?;

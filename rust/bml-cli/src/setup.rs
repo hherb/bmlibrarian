@@ -124,7 +124,7 @@ fn read_password(from_stdin: bool) -> Result<String, PgServerError> {
     match std::env::var(PASSWORD_ENV) {
         Ok(p) if !p.is_empty() => Ok(p),
         _ => Err(fail(format!(
-            "the existing server's password is needed: set {PASSWORD_ENV}, or pass --password-stdin and type it on standard input"
+            "the existing server's password is needed: set {PASSWORD_ENV}, or pass --password-stdin and pipe it in from a password manager"
         ))),
     }
 }
@@ -158,11 +158,23 @@ fn database_plan(
     }))
 }
 
+/// How a step ended, in words.
+fn outcome_text(outcome: &StepOutcome) -> String {
+    match outcome {
+        StepOutcome::AlreadyPresent => "already in place".to_string(),
+        StepOutcome::Installed => "installed".to_string(),
+        StepOutcome::Started => "started".to_string(),
+        StepOutcome::Skipped { reason } => format!("skipped ({reason})"),
+        StepOutcome::Failed(m) => format!("FAILED: {m}"),
+    }
+}
+
 /// Print step events, throttling progress to one line per interval per step.
 fn make_reporter() -> impl FnMut(StepEvent) {
     let mut last: BTreeMap<StepId, Instant> = BTreeMap::new();
     move |event| match event {
         StepEvent::Started(s) => say!("{}...", s.label()),
+        StepEvent::Finished(s, outcome) => say!("{}: {}", s.label(), outcome_text(&outcome)),
         StepEvent::Notice { step, message } => say!("{}: {message}", step.label()),
         StepEvent::Warning { step, message } => say!("Warning: {}: {message}", step.label()),
         StepEvent::Progress {
@@ -205,16 +217,8 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
     say!("\nSummary");
     let mut failed = false;
     for (step, outcome) in &results {
-        let text = match outcome {
-            StepOutcome::AlreadyPresent => "already in place".to_string(),
-            StepOutcome::Installed => "installed".to_string(),
-            StepOutcome::Started => "started".to_string(),
-            StepOutcome::Skipped { reason } => format!("skipped ({reason})"),
-            StepOutcome::Failed(m) => {
-                failed = true;
-                format!("FAILED: {m}")
-            }
-        };
+        failed |= matches!(outcome, StepOutcome::Failed(_));
+        let text = outcome_text(outcome);
         say!("  {:<18} {text}", step.label());
     }
     if failed {

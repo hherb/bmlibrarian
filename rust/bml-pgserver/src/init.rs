@@ -168,6 +168,15 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
 
     let admin_env = config_dir.join(ADMIN_ENV_FILE_NAME);
     let admin_password = match (read_conn_info(&admin_env)?, &data_dir_kind) {
+        (Some(info), _) if info.user != ADMIN_ROLE || info.host != HOST => {
+            // An existing server's superuser: never overwrite it with ours.
+            return Err(PgServerError::AdminCredentialsInUse {
+                admin_env,
+                host: info.host,
+                port: info.port,
+                user: info.user,
+            });
+        }
         (Some(info), _) => info.password,
         (None, DataDir::Initialised) => {
             return Err(PgServerError::AdminCredentialsLost {

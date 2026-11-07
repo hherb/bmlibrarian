@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::MIN_PG_MAJOR;
 use crate::envfile::{
-    generate_password, is_storable_password, read_conn_info, render_env, ConnInfo,
-    ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
+    generate_password, is_storable_password, is_storable_value, read_conn_info, render_env,
+    ConnInfo, ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
 };
 use crate::error::{file_error, PgServerError};
 use crate::init::{
@@ -286,11 +286,43 @@ pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, P
     if !is_storable_password(&req.password) {
         return Err(PgServerError::PasswordNotStorable);
     }
+    if !is_storable_value(&req.superuser) {
+        return Err(PgServerError::SuperuserNotStorable);
+    }
     let private_state = config_dir.join(STATE_FILE_NAME);
     if exists(&private_state)? {
         return Err(PgServerError::PrivateServerConfigured {
             state_file: private_state,
         });
+    }
+
+    let state = ExternalState {
+        host: req.host.clone(),
+        port: req.port,
+        superuser: req.superuser.clone(),
+    };
+    let saved = load_external_state(config_dir)?;
+    if let Some(saved) = &saved {
+        if (&saved.host, saved.port) != (&state.host, state.port) {
+            return Err(PgServerError::StateMismatch {
+                field: "existing server address",
+                saved: PathBuf::from(format!("{}:{}", saved.host, saved.port)),
+                requested: PathBuf::from(format!("{}:{}", state.host, state.port)),
+            });
+        }
+    }
+    // Before connecting: never replace another server's only superuser
+    // password. An interrupted adopt wrote the same host, port and user.
+    let admin_env = config_dir.join(ADMIN_ENV_FILE_NAME);
+    if let Some(saved) = read_conn_info(&admin_env)? {
+        if (&saved.host, saved.port, &saved.user) != (&req.host, req.port, &req.superuser) {
+            return Err(PgServerError::AdminCredentialsInUse {
+                admin_env,
+                host: saved.host,
+                port: saved.port,
+                user: saved.user,
+            });
+        }
     }
 
     let admin = ConnInfo {
@@ -305,27 +337,12 @@ pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, P
         return Err(PgServerError::Unusable { problems });
     }
 
-    let state = ExternalState {
-        host: req.host.clone(),
-        port: req.port,
-        superuser: req.superuser.clone(),
-    };
-    match load_external_state(config_dir)? {
-        Some(saved) => {
-            if (&saved.host, saved.port) != (&state.host, state.port) {
-                return Err(PgServerError::StateMismatch {
-                    field: "existing server address",
-                    saved: PathBuf::from(format!("{}:{}", saved.host, saved.port)),
-                    requested: PathBuf::from(format!("{}:{}", state.host, state.port)),
-                });
-            }
-        }
-        None => refuse_foreign_names(&admin)?,
+    if saved.is_none() {
+        refuse_foreign_names(&admin)?;
     }
 
     // Before creating anything, so an interrupted run can be repeated.
     std::fs::create_dir_all(config_dir).map_err(file_error(config_dir))?;
-    let admin_env = config_dir.join(ADMIN_ENV_FILE_NAME);
     write_if_changed(&admin_env, &render_env(&admin))?;
     save_external_state(config_dir, &state)?;
 

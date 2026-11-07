@@ -201,13 +201,13 @@ pub enum PgServerError {
         name: &'static str,
     },
     /// This configuration folder already manages a private server.
-    #[error("this configuration folder already manages a private server ({state_file}); use a different --config-dir, or remove that file to switch")]
+    #[error("this configuration folder already manages a private server ({state_file}); use a different --config-dir for the other server")]
     PrivateServerConfigured {
         /// The private server's state file.
         state_file: PathBuf,
     },
     /// This configuration folder already uses an existing server.
-    #[error("this configuration folder already uses an existing PostgreSQL ({state_file}); use a different --config-dir, or remove that file to switch")]
+    #[error("this configuration folder already uses an existing PostgreSQL ({state_file}); use a different --config-dir for the other server")]
     ExternalServerConfigured {
         /// The existing-server state file.
         state_file: PathBuf,
@@ -215,6 +215,21 @@ pub enum PgServerError {
     /// The password cannot be kept in the credentials files.
     #[error("that password cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
     PasswordNotStorable,
+    /// The superuser name cannot be kept in the credentials files.
+    #[error("that superuser name cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    SuperuserNotStorable,
+    /// The credentials file already holds another server's superuser.
+    #[error("{admin_env} holds the credentials of another PostgreSQL server ({host}:{port}, user {user}); bml will not overwrite them. Use a different --config-dir for the existing server")]
+    AdminCredentialsInUse {
+        /// The credentials file.
+        admin_env: PathBuf,
+        /// The host it names.
+        host: String,
+        /// The port it names.
+        port: u16,
+        /// The user it names.
+        user: String,
+    },
 }
 
 /// Joins the problems of an unusable server for [`PgServerError::Unusable`].

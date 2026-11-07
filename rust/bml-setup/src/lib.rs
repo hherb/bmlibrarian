@@ -8,7 +8,34 @@ pub mod ollama_install;
 pub mod runner;
 mod steps;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Remove part files that an interrupted `download_verified` left in `dir`
+/// for `file` (`.{file}.<id>.part`); returns how many. A missing `dir` is
+/// fine. Setup runs once at a time per config folder, so none is in use.
+pub(crate) fn sweep_stale_parts(dir: &Path, file: &str) -> Result<usize, SetupError> {
+    let io = |source| SetupError::Io {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(io(e)),
+    };
+    let prefix = format!(".{file}.");
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.map_err(io)?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".part") {
+            std::fs::remove_file(entry.path()).map_err(io)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
 
 /// One stage of setup, in the order they run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,6 +74,8 @@ impl StepId {
 pub enum StepEvent {
     /// The step began.
     Started(StepId),
+    /// The step ended (also reported for steps that were skipped).
+    Finished(StepId, StepOutcome),
     /// Work is under way; `total` is 0 when unknown.
     Progress {
         /// The step reporting.
@@ -142,6 +171,37 @@ pub enum SetupError {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_removes_only_stale_parts_of_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "x.bin",
+            ".x.bin.123-456-0.part",
+            ".other.part",
+            ".x.bin.1.tmp",
+        ] {
+            std::fs::write(dir.path().join(name), b"1").unwrap();
+        }
+        assert_eq!(sweep_stale_parts(dir.path(), "x.bin").unwrap(), 1);
+        let mut left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".other.part", ".x.bin.1.tmp", "x.bin"]);
+    }
+
+    #[test]
+    fn sweep_missing_dir_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(sweep_stale_parts(&dir.path().join("none"), "x").unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod test_support {
     use bmlib::publications::fetchers::registry::{
         FetchError, HttpClient, HttpResponse, HttpStream,
@@ -155,6 +215,10 @@ pub(crate) mod test_support {
         pub post: Option<(u16, String)>,
         pub stream: Option<(u16, String)>,
         pub urls: RefCell<Vec<String>>,
+        /// Bodies of the POSTs, in order.
+        pub bodies: RefCell<Vec<serde_json::Value>>,
+        /// Answers for the first GETs, in order; `get` answers after that.
+        pub get_script: RefCell<std::collections::VecDeque<(u16, String)>>,
     }
     impl Fake {
         pub fn new() -> Self {
@@ -163,12 +227,20 @@ pub(crate) mod test_support {
                 post: None,
                 stream: None,
                 urls: RefCell::new(vec![]),
+                bodies: RefCell::new(vec![]),
+                get_script: RefCell::new(Default::default()),
             }
         }
     }
     impl HttpClient for Fake {
         fn get(&self, url: &str) -> Result<HttpResponse, FetchError> {
             self.urls.borrow_mut().push(url.to_string());
+            if let Some((status, body)) = self.get_script.borrow_mut().pop_front() {
+                return Ok(HttpResponse {
+                    status,
+                    body: body.into_bytes(),
+                });
+            }
             match &self.get {
                 Ok((status, body)) => Ok(HttpResponse {
                     status: *status,
@@ -180,10 +252,11 @@ pub(crate) mod test_support {
         fn post_json(
             &self,
             url: &str,
-            _b: &serde_json::Value,
+            b: &serde_json::Value,
             _h: &BTreeMap<String, String>,
         ) -> Result<HttpResponse, FetchError> {
             self.urls.borrow_mut().push(url.to_string());
+            self.bodies.borrow_mut().push(b.clone());
             let (status, body) = self.post.clone().unwrap();
             Ok(HttpResponse {
                 status,

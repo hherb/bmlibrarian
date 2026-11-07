@@ -63,8 +63,10 @@ BML_PG_SUPERUSER_PASSWORD=... bml setup --existing-server 127.0.0.1:5432 --pg-su
   (0.8.1 or newer) and, on macOS and Linux, `pg_search` listed in
   `shared_preload_libraries`.
 - The password is never taken from the command line. Set
-  `BML_PG_SUPERUSER_PASSWORD`, or add `--password-stdin` and type it as one
-  line on standard input.
+  `BML_PG_SUPERUSER_PASSWORD` without echoing it
+  (`read -s BML_PG_SUPERUSER_PASSWORD && export BML_PG_SUPERUSER_PASSWORD`),
+  or add `--password-stdin` and pipe the password in from a password manager.
+  Do not type it at a prompt that shows it.
 - Setup only adds a role `bml_app` and a database `bmlibrarian`. It
   refuses if those names already exist and are not BMLibrarian's, and never
   touches your other data. `bml server start/stop/autostart` do not manage an
@@ -73,7 +75,9 @@ BML_PG_SUPERUSER_PASSWORD=... bml setup --existing-server 127.0.0.1:5432 --pg-su
 ## If a step fails
 
 The summary says which step failed and what to do. Fix the cause (network,
-disk space, a missing program) and run `bml setup` again. Downloads resume.
+disk space, a missing program) and run `bml setup` again. An interrupted language-model pull resumes where it
+stopped (Ollama keeps the partial data); an interrupted embedding-model or
+Ollama-installer download starts again from the beginning on the next run.
 Later steps still run when an earlier one failed, except those that depend on
 it (start at login needs the database; the models need Ollama).
 

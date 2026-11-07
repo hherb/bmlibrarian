@@ -100,6 +100,7 @@ pub fn run_setup(
             Ok(()) => run_step(step, plan, http, report),
             Err(reason) => StepOutcome::Skipped { reason },
         };
+        report(StepEvent::Finished(step, outcome.clone()));
         if matches!(outcome, StepOutcome::Failed(_)) {
             failed.insert(step);
         }
@@ -163,5 +164,10 @@ mod tests {
         assert!(matches!(out[4].1, StepOutcome::Skipped { .. }));
         assert!(matches!(out[5].1, StepOutcome::Skipped { .. }));
         assert!(events.contains(&StepEvent::Started(StepId::Hardware)));
+        let finished = events
+            .iter()
+            .filter(|e| matches!(e, StepEvent::Finished(..)))
+            .count();
+        assert_eq!(finished, ALL_STEPS.len());
     }
 }

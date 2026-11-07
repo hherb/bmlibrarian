@@ -148,7 +148,13 @@ pub fn parse_env(text: &str) -> Result<ConnInfo, EnvParseError> {
 /// characters (line breaks), no leading or trailing space. Passwords reach
 /// SQL only as SCRAM verifiers, so any other character is safe.
 pub fn is_storable_password(password: &str) -> bool {
-    !password.is_empty() && password == password.trim() && !password.chars().any(char::is_control)
+    is_storable_value(password)
+}
+
+/// The rule of [`is_storable_password`] for any value kept in an env file
+/// (such as a user name).
+pub fn is_storable_value(value: &str) -> bool {
+    !value.is_empty() && value == value.trim() && !value.chars().any(char::is_control)
 }
 
 /// Read the env file at `path`; `Ok(None)` only when it does not exist.

@@ -11,9 +11,9 @@ use bml_pgserver::envfile::{
     APP_ENV_FILE_NAME,
 };
 use bml_pgserver::error::PgServerError;
-use bml_pgserver::external::{
-    adopt, save_external_state, ExternalRequest, ExternalState, EXTERNAL_STATE_FILE_NAME,
-};
+#[cfg(unix)]
+use bml_pgserver::external::EXTERNAL_STATE_FILE_NAME;
+use bml_pgserver::external::{adopt, save_external_state, ExternalRequest, ExternalState};
 use bml_pgserver::init::{connect, init, InitRequest, APP_ROLE, DATABASE, HOST};
 use bml_pgserver::state::{load_state, STATE_FILE_NAME};
 
@@ -172,7 +172,20 @@ fn adopt_resumes_after_state_saved_before_objects() {
     };
     let _guard = common::serial();
     let f = fixture(bindir);
-    drop_app_objects(&f.admin);
+    // Killed after CREATE ROLE: the role exists, the database does not.
+    let mut maintenance = f.admin.clone();
+    maintenance.dbname = "postgres".into();
+    connect(&maintenance)
+        .unwrap()
+        .batch_execute(&format!("DROP DATABASE {DATABASE}"))
+        .unwrap();
+
+    // Without the saved state the leftover role is a foreign name.
+    let err = adopt(&f.req, &f.dir_b).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::NameTaken { kind: "role", .. }),
+        "{err}"
+    );
 
     std::fs::create_dir_all(&f.dir_b).unwrap();
     save_external_state(
@@ -191,7 +204,52 @@ fn adopt_resumes_after_state_saved_before_objects() {
     let app = read_conn_info(&f.dir_b.join(APP_ENV_FILE_NAME))
         .unwrap()
         .unwrap();
-    connect(&app).unwrap();
+    connect(&app).expect("bml.env connects after the password reset");
+}
+
+/// No server needed: the check precedes any connection.
+#[test]
+fn adopt_refuses_to_overwrite_a_private_servers_admin_credentials() {
+    let tmp = tempfile::tempdir().unwrap();
+    let private = ConnInfo {
+        host: HOST.into(),
+        port: 5418,
+        dbname: DATABASE.into(),
+        user: "bml_admin".into(),
+        password: "secret".into(),
+    };
+    let admin_env = tmp.path().join(ADMIN_ENV_FILE_NAME);
+    write_private_file(&admin_env, &render_env(&private)).unwrap();
+    let before = std::fs::read(&admin_env).unwrap();
+    let req = ExternalRequest {
+        host: HOST.into(),
+        port: 5432,
+        superuser: "postgres".into(),
+        password: "other".into(),
+        needs_pg_search: false,
+    };
+
+    let err = adopt(&req, tmp.path()).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::AdminCredentialsInUse { .. }),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&admin_env).unwrap(), before);
+    assert_eq!(files_in(tmp.path()), vec![ADMIN_ENV_FILE_NAME.to_string()]);
+}
+
+#[test]
+fn adopt_refuses_unstorable_superuser_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let req = ExternalRequest {
+        host: HOST.into(),
+        port: 5432,
+        superuser: "bad\nname".into(),
+        password: "pw".into(),
+        needs_pg_search: false,
+    };
+    let err = adopt(&req, tmp.path()).unwrap_err();
+    assert!(matches!(err, PgServerError::SuperuserNotStorable), "{err}");
 }
 
 #[test]

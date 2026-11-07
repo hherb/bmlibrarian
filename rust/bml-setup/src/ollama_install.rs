@@ -262,6 +262,7 @@ pub fn ensure_ollama(
         path: dir.clone(),
         source,
     })?;
+    crate::sweep_stale_parts(&dir, asset.file)?;
     let file = bmlib::embed::download_verified(
         &installer_url(&asset),
         asset.file,
@@ -285,6 +286,12 @@ pub fn ensure_ollama(
     }
     for c in install_calls(&file, &home) {
         run_call(&c, true)?;
+    }
+    // Up to 1.6 GB that is no longer needed.
+    match std::fs::remove_file(&file) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(SetupError::Io { path: file, source }),
     }
     wait_until_running(http, host, OLLAMA_START_TIMEOUT)?;
     Ok(StepOutcome::Installed)
