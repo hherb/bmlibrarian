@@ -49,3 +49,6 @@ LONG_bmlibrarian_results_20251126_220515.json
 .claude/settings.local.json
 .env_pg16
 .env_pg18
+
+# Rust workspace build output
+rust/target/
