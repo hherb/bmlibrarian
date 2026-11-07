@@ -26,6 +26,20 @@ pub enum PgServerError {
     /// A database operation failed.
     #[error("database error: {}", describe_postgres_error(.0))]
     Postgres(#[from] postgres::Error),
+    /// Connecting to the server failed.
+    #[error("cannot connect to database {dbname} as {user} on {host}:{port}: {}", describe_postgres_error(.source))]
+    Connect {
+        /// The role.
+        user: String,
+        /// The database.
+        dbname: String,
+        /// The server address.
+        host: String,
+        /// The server port.
+        port: u16,
+        /// Why it failed.
+        source: postgres::Error,
+    },
     /// A program could not be run at all (usually a wrong `--bindir`).
     #[error("cannot run {program}: {source}")]
     Spawn {
@@ -195,13 +209,19 @@ pub(crate) fn file_error(path: &std::path::Path) -> impl FnOnce(io::Error) -> Pg
 }
 
 /// The server's own message for a database error (`postgres::Error`'s
-/// `Display` is only "db error"), else the whole cause chain.
+/// `Display` is only "db error") with its detail, SQLSTATE and hint, else
+/// the whole cause chain.
 fn describe_postgres_error(error: &postgres::Error) -> String {
     if let Some(db) = error.as_db_error() {
-        return match db.detail() {
-            Some(detail) => format!("{} ({detail})", db.message()),
-            None => db.message().to_owned(),
-        };
+        let mut text = db.message().to_owned();
+        if let Some(detail) = db.detail() {
+            text.push_str(&format!(" ({detail})"));
+        }
+        text.push_str(&format!(" [SQLSTATE {}]", db.code().code()));
+        if let Some(hint) = db.hint() {
+            text.push_str(&format!("; hint: {hint}"));
+        }
+        return text;
     }
     let mut text = error.to_string();
     let mut source = std::error::Error::source(error);

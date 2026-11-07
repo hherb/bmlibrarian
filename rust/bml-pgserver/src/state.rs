@@ -22,8 +22,6 @@ pub const CONFIG_DIR_NAME: &str = ".bmlibrarian";
 /// Where the private server's binaries, data and port are.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerState {
-    /// PostgreSQL major version of `bindir`.
-    pub pg_major: u32,
     /// Folder with `postgres`, `pg_ctl`, `initdb`.
     pub bindir: PathBuf,
     /// The server's data directory.
@@ -105,7 +103,6 @@ mod tests {
 
     fn sample() -> ServerState {
         ServerState {
-            pg_major: 18,
             bindir: "/Applications/Postgres 2.app/Contents/Versions/18/bin".into(),
             data_dir: "/Volumes/Big Disk/bml data".into(),
             port: 5418,
@@ -119,6 +116,17 @@ mod tests {
         let cfg = dir.path().join("cfg");
         save_state(&cfg, &sample()).unwrap();
         assert_eq!(load_state(&cfg).unwrap(), Some(sample()));
+    }
+
+    #[test]
+    fn state_with_retired_pg_major_field_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(STATE_FILE_NAME),
+            r#"{"pg_major":18,"bindir":"/b","data_dir":"/d","port":5418,"extension_dirs":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(load_state(dir.path()).unwrap().unwrap().port, 5418);
     }
 
     #[test]

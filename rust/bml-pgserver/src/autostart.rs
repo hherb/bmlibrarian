@@ -39,6 +39,22 @@ pub const WINDOWS_RUN_VALUE: &str = "BMLibrarianPgServer";
 /// folder (launchd would otherwise discard it).
 pub const AUTOSTART_LOG_NAME: &str = "bml-autostart.log";
 
+/// `launchctl bootout` exit codes that mean the job was not loaded (ESRCH,
+/// "could not find service") or is already unloading (EINPROGRESS).
+#[cfg(any(target_os = "macos", test))]
+const BOOTOUT_NOT_LOADED_CODES: [i32; 3] = [3, 113, 36];
+
+/// `launchctl bootstrap` exit code for "Input/output error", which it
+/// returns while a job just booted out is still being unloaded.
+#[cfg(target_os = "macos")]
+const BOOTSTRAP_BUSY_CODE: i32 = 5;
+
+/// How often, and how long apart, a busy `bootstrap` is retried.
+#[cfg(target_os = "macos")]
+const BOOTSTRAP_RETRIES: u32 = 10;
+#[cfg(target_os = "macos")]
+const BOOTSTRAP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The per-user `Run` registry key (Windows).
 pub const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -180,6 +196,55 @@ fn launchd_domain() -> Result<String, PgServerError> {
     ))
 }
 
+/// Whether a `launchctl bootout` exit code means the job is (being) gone.
+#[cfg(any(target_os = "macos", test))]
+fn bootout_succeeded(code: Option<i32>) -> bool {
+    code.is_some_and(|c| c == 0 || BOOTOUT_NOT_LOADED_CODES.contains(&c))
+}
+
+/// Unload our LaunchAgent from `domain`; not being loaded is fine.
+#[cfg(target_os = "macos")]
+fn bootout(domain: &str) -> Result<(), PgServerError> {
+    let output = Command::new("launchctl")
+        .arg("bootout")
+        .arg(format!("{domain}/{LAUNCH_AGENT_LABEL}"))
+        .output()
+        .map_err(|source| PgServerError::Spawn {
+            program: "launchctl".into(),
+            source,
+        })?;
+    if bootout_succeeded(output.status.code()) {
+        Ok(())
+    } else {
+        Err(PgServerError::Command {
+            program: "launchctl bootout".to_owned(),
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+}
+
+/// Load `plist` into `domain`, retrying while a previous load of the job is
+/// still being unloaded (`bootout` returns before it finishes).
+#[cfg(target_os = "macos")]
+fn bootstrap(domain: &str, plist: &Path) -> Result<(), PgServerError> {
+    let mut retries = 0;
+    loop {
+        let mut command = Command::new("launchctl");
+        command.arg("bootstrap").arg(domain).arg(plist);
+        match run(command) {
+            Err(PgServerError::Command {
+                status: Some(BOOTSTRAP_BUSY_CODE),
+                ..
+            }) if retries < BOOTSTRAP_RETRIES => {
+                retries += 1;
+                std::thread::sleep(BOOTSTRAP_RETRY_DELAY);
+            }
+            other => return other.map(drop),
+        }
+    }
+}
+
 /// Start the server at every login of this user (on macOS, also now).
 pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
@@ -189,15 +254,9 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
         fs::create_dir_all(agents).map_err(file_error(agents))?;
         fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))?;
         let domain = launchd_domain()?;
-        // Unload a previous registration first, so enable can be repeated;
-        // failure just means it was not loaded.
-        let _ = Command::new("launchctl")
-            .arg("bootout")
-            .arg(format!("{domain}/{LAUNCH_AGENT_LABEL}"))
-            .output();
-        let mut bootstrap = Command::new("launchctl");
-        bootstrap.arg("bootstrap").arg(&domain).arg(&plist);
-        run(bootstrap).map(drop)
+        // Unload a previous registration first, so enable can be repeated.
+        bootout(&domain)?;
+        bootstrap(&domain, &plist)
     }
     #[cfg(target_os = "linux")]
     {
@@ -241,11 +300,7 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
 pub fn disable() -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
     {
-        let domain = launchd_domain()?;
-        let _ = Command::new("launchctl")
-            .arg("bootout")
-            .arg(format!("{domain}/{LAUNCH_AGENT_LABEL}"))
-            .output();
+        bootout(&launchd_domain()?)?;
         let plist = launch_agent_path()?;
         match fs::remove_file(&plist) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(file_error(&plist)(e)),
@@ -316,6 +371,38 @@ mod tests {
     fn compact_has(plist: &str, key: &str, value: &str) -> bool {
         let lines: Vec<&str> = plist.lines().map(str::trim).collect();
         lines.windows(2).any(|w| w[0] == key && w[1] == value)
+    }
+
+    #[test]
+    fn bootout_accepts_only_not_loaded() {
+        for code in [0, 3, 36, 113] {
+            assert!(bootout_succeeded(Some(code)), "{code}");
+        }
+        for code in [Some(1), Some(5), Some(37), None] {
+            assert!(!bootout_succeeded(code), "{code:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_passes_plutil_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.plist");
+        std::fs::write(
+            &path,
+            render_launch_agent(Path::new(EXE), Path::new("/Users/R&D/<cfg> 'q\"")),
+        )
+        .unwrap();
+        let out = Command::new("plutil")
+            .arg("-lint")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
 
     #[test]

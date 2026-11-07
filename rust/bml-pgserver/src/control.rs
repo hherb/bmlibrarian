@@ -179,11 +179,17 @@ pub fn restart(state: &ServerState) -> Result<(), PgServerError> {
     start(state)
 }
 
-/// Total physical memory of this machine, in bytes.
-pub fn total_memory_bytes() -> u64 {
+/// Total physical memory of this machine, in bytes; an error when the
+/// system does not report it (sysinfo then says 0).
+pub fn total_memory_bytes() -> Result<u64, PgServerError> {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
-    system.total_memory()
+    match system.total_memory() {
+        0 => Err(PgServerError::Io(std::io::Error::other(
+            "cannot read this machine's total memory",
+        ))),
+        bytes => Ok(bytes),
+    }
 }
 
 #[cfg(test)]
@@ -234,7 +240,7 @@ mod tests {
 
     #[test]
     fn memory_positive() {
-        assert!(total_memory_bytes() > 0);
+        assert!(total_memory_bytes().unwrap() > 0);
     }
 
     #[cfg(windows)]

@@ -53,17 +53,9 @@ impl std::fmt::Debug for ConnInfo {
     }
 }
 
-/// Why an env file could not be read.
+/// Why env-file text could not be parsed.
 #[derive(Debug, thiserror::Error)]
-pub enum EnvFileError {
-    /// The file exists but could not be read.
-    #[error("cannot read {path}: {source}")]
-    Io {
-        /// The file.
-        path: PathBuf,
-        /// The underlying error.
-        source: io::Error,
-    },
+pub enum EnvParseError {
     /// A required key is missing.
     #[error("missing {key}")]
     MissingKey {
@@ -80,13 +72,26 @@ pub enum EnvFileError {
     /// string literals, so nothing else is accepted (the value is not shown).
     #[error("invalid POSTGRES_PASSWORD (expected hexadecimal digits only)")]
     BadPassword,
-    /// A file failed to parse.
+}
+
+/// Why an env file could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum EnvFileError {
+    /// The file exists but could not be read.
+    #[error("cannot read {path}: {source}")]
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// The underlying error.
+        source: io::Error,
+    },
+    /// The file failed to parse.
     #[error("{path}: {source}")]
     Invalid {
         /// The file.
         path: PathBuf,
         /// What was wrong.
-        source: Box<EnvFileError>,
+        source: EnvParseError,
     },
 }
 
@@ -107,7 +112,7 @@ pub fn render_env(info: &ConnInfo) -> String {
 }
 
 /// Parse env-file text written by [`render_env`].
-pub fn parse_env(text: &str) -> Result<ConnInfo, EnvFileError> {
+pub fn parse_env(text: &str) -> Result<ConnInfo, EnvParseError> {
     let pairs: Vec<(&str, &str)> = text
         .lines()
         .map(str::trim)
@@ -120,15 +125,15 @@ pub fn parse_env(text: &str) -> Result<ConnInfo, EnvFileError> {
             .rev()
             .find(|(k, _)| k.trim() == key)
             .map(|(_, v)| v.trim().to_owned())
-            .ok_or(EnvFileError::MissingKey { key })
+            .ok_or(EnvParseError::MissingKey { key })
     };
     let port_text = get(KEY_PORT)?;
     let port = port_text
         .parse()
-        .map_err(|_| EnvFileError::BadPort { value: port_text })?;
+        .map_err(|_| EnvParseError::BadPort { value: port_text })?;
     let password = get(KEY_PASSWORD)?;
     if !is_valid_password(&password) {
-        return Err(EnvFileError::BadPassword);
+        return Err(EnvParseError::BadPassword);
     }
     Ok(ConnInfo {
         host: get(KEY_HOST)?,
@@ -150,9 +155,9 @@ pub fn read_conn_info(path: &Path) -> Result<Option<ConnInfo>, EnvFileError> {
     match fs::read_to_string(path) {
         Ok(text) => parse_env(&text)
             .map(Some)
-            .map_err(|e| EnvFileError::Invalid {
+            .map_err(|source| EnvFileError::Invalid {
                 path: path.to_owned(),
-                source: Box::new(e),
+                source,
             }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(EnvFileError::Io {
@@ -269,11 +274,11 @@ mod tests {
         };
         assert!(matches!(
             parse_env(&with("x' OR '1")),
-            Err(EnvFileError::BadPassword)
+            Err(EnvParseError::BadPassword)
         ));
         assert!(matches!(
             parse_env(&with("")),
-            Err(EnvFileError::BadPassword)
+            Err(EnvParseError::BadPassword)
         ));
         assert_eq!(parse_env(&with("00ff")).unwrap().password, "00ff");
     }

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use postgres::error::SqlState;
 use postgres::{Client, NoTls};
 
 use crate::conf::{
@@ -91,23 +92,31 @@ enum DataDir {
     Free,
 }
 
-/// Connect to PostgreSQL with `info` (loopback, no TLS).
+/// Connect to PostgreSQL with `info` (loopback, no TLS); an error names the
+/// role, database and address.
 pub fn connect(info: &ConnInfo) -> Result<Client, PgServerError> {
-    Ok(postgres::Config::new()
+    postgres::Config::new()
         .host(&info.host)
         .port(info.port)
         .dbname(&info.dbname)
         .user(&info.user)
         .password(&info.password)
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
-        .connect(NoTls)?)
+        .connect(NoTls)
+        .map_err(|source| PgServerError::Connect {
+            user: info.user.clone(),
+            dbname: info.dbname.clone(),
+            host: info.host.clone(),
+            port: info.port,
+            source,
+        })
 }
 
 /// Set up and start the private server described by `req`, and create its
 /// role, database and extensions, keeping its files in `config_dir`.
 pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServerError> {
     let req = &validated_request(req)?;
-    let pg_major = pg_major_version(&req.bindir)?;
+    pg_major_version(&req.bindir)?;
     let saved = load_state(config_dir)?;
     let managed_by_us = saved.is_some();
     let port = match saved {
@@ -159,7 +168,6 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
 
     let preload_pg_search = req.extension_dirs.iter().any(|d| provides_pg_search(d));
     let state = ServerState {
-        pg_major,
         bindir: req.bindir.clone(),
         data_dir: req.data_dir.clone(),
         port,
@@ -193,12 +201,11 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
         .as_ref()
         .map(|info| info.password.clone())
         .unwrap_or_else(generate_password);
-    created |= ensure_role_and_database(&admin, &app_password, existing_app.is_none())?;
+    created |= ensure_role_and_database(&admin, &app_password)?;
     let pg_search = ensure_extensions(&admin, preload_pg_search)?;
-    created |= write_if_changed(
-        &app_env,
-        &render_env(&conn_info(port, APP_ROLE, &app_password)),
-    )?;
+    let app = conn_info(port, APP_ROLE, &app_password);
+    created |= ensure_app_login(&admin, &app)?;
+    created |= write_if_changed(&app_env, &render_env(&app))?;
 
     Ok(InitOutcome {
         state,
@@ -416,33 +423,33 @@ fn write_server_config(data_dir: &Path, config: &ServerConfig) -> Result<bool, P
     Ok(changed)
 }
 
-/// Create the app role and database if missing; give the role
-/// `app_password` when it is new or its credentials file was lost.
-/// Returns whether anything changed.
-///
-/// Only a SCRAM-SHA-256 verifier of `app_password` is sent (base64, `$`
-/// and `:`, so safe inside a SQL string literal), never the password, so it
-/// cannot reach the server log; role and database names are constants.
-fn ensure_role_and_database(
-    admin: &ConnInfo,
-    app_password: &str,
-    app_env_missing: bool,
-) -> Result<bool, PgServerError> {
-    let verifier = postgres_protocol::password::scram_sha_256(app_password.as_bytes());
+/// The SCRAM-SHA-256 verifier of `password`: base64, `$` and `:`, so safe
+/// inside a SQL string literal. Only the verifier is ever sent, never the
+/// password, so it cannot reach the server log.
+fn scram_verifier(password: &str) -> String {
+    postgres_protocol::password::scram_sha_256(password.as_bytes())
+}
+
+/// `admin` on the maintenance database.
+fn connect_maintenance(admin: &ConnInfo) -> Result<Client, PgServerError> {
     let mut maintenance = admin.clone();
     maintenance.dbname = MAINTENANCE_DATABASE.to_owned();
-    let mut client = connect(&maintenance)?;
+    connect(&maintenance)
+}
+
+/// Create the app role (with `app_password`) and database if missing.
+/// Returns whether anything changed. Role and database names are constants.
+fn ensure_role_and_database(admin: &ConnInfo, app_password: &str) -> Result<bool, PgServerError> {
+    let mut client = connect_maintenance(admin)?;
     let mut changed = false;
     let role_exists = !client
         .query("SELECT 1 FROM pg_roles WHERE rolname = $1", &[&APP_ROLE])?
         .is_empty();
     if !role_exists {
         client.batch_execute(&format!(
-            "CREATE ROLE {APP_ROLE} LOGIN PASSWORD '{verifier}'"
+            "CREATE ROLE {APP_ROLE} LOGIN PASSWORD '{}'",
+            scram_verifier(app_password)
         ))?;
-        changed = true;
-    } else if app_env_missing {
-        client.batch_execute(&format!("ALTER ROLE {APP_ROLE} PASSWORD '{verifier}'"))?;
         changed = true;
     }
     let database_exists = !client
@@ -453,6 +460,26 @@ fn ensure_role_and_database(
         changed = true;
     }
     Ok(changed)
+}
+
+/// Check that the app role can log in with `app`'s password; if the
+/// password is refused (its `bml.env` was lost, or the data folder came from
+/// another machine), set it and check again. Returns whether it was reset.
+fn ensure_app_login(admin: &ConnInfo, app: &ConnInfo) -> Result<bool, PgServerError> {
+    match connect(app) {
+        Ok(_) => Ok(false),
+        Err(PgServerError::Connect { source, .. })
+            if source.code() == Some(&SqlState::INVALID_PASSWORD) =>
+        {
+            connect_maintenance(admin)?.batch_execute(&format!(
+                "ALTER ROLE {APP_ROLE} PASSWORD '{}'",
+                scram_verifier(&app.password)
+            ))?;
+            connect(app)?;
+            Ok(true)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Create the required extensions, and `pg_search` when it is preloaded.

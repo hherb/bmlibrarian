@@ -10,6 +10,32 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
+  PR #396). First Rust code: `rust/` Cargo workspace + CI
+  (`.github/workflows/rust.yml`), `bml-pgserver` library (private per-user
+  PG18 on 127.0.0.1, default port 5418, scram, resumable `init`, owner-only
+  `bml.env`/`bml-admin.env`/`bml-pgserver.json`, autostart at login) and
+  `bml server init|start|stop|restart|status|autostart` CLI. Design:
+  `docs/superpowers/specs/2026-11-07-one-click-installer-design.md`
+  ("Pieces of work, in order": 1–2 done). Docs:
+  `doc/users/private_postgres_server.md`, `doc/developers/rust_pgserver.md`.
+  Portable PG18/pgvector/pg_search binaries are not yet sourced (`--bindir`
+  points at an existing install).
+- **`bml-pgserver` follow-ups** (2026-11-07, closes #398): `init` ends with
+  an app-role login check and resets the password on `28P01` (replaces the
+  "reset when `bml.env` is missing" branch); `port_is_free` →
+  `io::Result<bool>`, only AddrInUse (+ Windows access-denied) is "taken",
+  other errors are `PortError::Probe`; connect errors are `Connect` (role,
+  db, address) and DB errors show SQLSTATE + hint; `bml server status` exits
+  **3** when stopped (1 = unhealthy/error); macOS `launchctl bootout` only
+  tolerates "not loaded" codes, `bootstrap` retries on `5`;
+  `total_memory_bytes` → `Result`; `ServerState.pg_major` dropped (old state
+  files still load); `EnvParseError` split out. Tests: fake-bin
+  `tests/refusals.rs` (plain `cargo test`), `plutil -lint`, stop-on-drop
+  guards, `app_password_mismatch_is_repaired`; CI gains `integration-macos`
+  (Homebrew `postgresql@18` + `pgvector`). Open: #397 (Windows), #399
+  (port-moved decision, Linux disable test, `pg_search` in CI).
+
 - **SQLite → PostgreSQL migration keeps statements' `review_status`**
   (2026-11-06, closes #392). `insert_statement` never writes the status,
   so every migrated statement used to become `pending`.
@@ -224,6 +250,11 @@ off new work. Longer-term structural items live in
 The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
+
+- Rust installer piece 3: `bml-setup` + `bml setup` (requirement checks,
+  Ollama install, model pulls, GGUF download/verify, resumable steps).
+  Needs its own plan in `docs/superpowers/plans/`. `bml-pgserver` leftovers:
+  #397 (needs Windows), #399 (owner decision on a port taken after init).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single

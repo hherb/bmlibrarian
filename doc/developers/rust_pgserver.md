@@ -12,14 +12,14 @@ through the `postgres` crate.
 
 | Module | Responsibility |
 |---|---|
-| `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port` **and** a loopback connect must be refused: on macOS a loopback bind succeeds while another process listens on `0.0.0.0`) |
+| `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port` **and** a loopback connect must be refused: on macOS a loopback bind succeeds while another process listens on `0.0.0.0`). Only "address in use" (and, on Windows, an excluded port range's access-denied) counts as taken; any other bind error stops the scan with `PortError::Probe`, naming the port, instead of ending in "no free port" |
 | `conf` | `render_bml_conf`, `render_pg_hba`, `ensure_include`, `quote_conf_value`, `extension_control_dir`, `provides_pg_search` |
-| `envfile` | `ConnInfo`; `render_env` / `parse_env` / `read_conn_info`; `generate_password` (64 hex characters; `parse_env` accepts only hex passwords); `write_private_file` (atomic; mode 600, or `icacls` on the temp file before the rename); `Debug` hides the password |
-| `state` | `ServerState` ↔ `bml-pgserver.json`; `resolve_config_dir(flag, env, home)` (made absolute) |
-| `control` | `pg_major_version` (≥ 18), `status` / `start` / `stop` (idempotent) / `restart`, `total_memory_bytes`. `start` and `stop` refuse a missing or unreadable data folder (`DataDirUnavailable`); a failed start quotes the end of `bml-server.log` (`StartFailed`) |
-| `init` | `init(&InitRequest, config_dir)`, the resumable setup; `connect(&ConnInfo)` |
+| `envfile` | `ConnInfo`; `render_env` / `parse_env` (`EnvParseError`) / `read_conn_info` (`EnvFileError`: unreadable, or `Invalid` with the path and the parse error); `generate_password` (64 hex characters; `parse_env` accepts only hex passwords); `write_private_file` (atomic; mode 600, or `icacls` on the temp file before the rename); `Debug` hides the password |
+| `state` | `ServerState` ↔ `bml-pgserver.json` (state files with the retired `pg_major` field still load); `resolve_config_dir(flag, env, home)` (made absolute) |
+| `control` | `pg_major_version` (≥ 18), `status` / `start` / `stop` (idempotent) / `restart`, `total_memory_bytes` (an error rather than 0 when the system does not report it). `start` and `stop` refuse a missing or unreadable data folder (`DataDirUnavailable`); a failed start quotes the end of `bml-server.log` (`StartFailed`) |
+| `init` | `init(&InitRequest, config_dir)`, the resumable setup; `connect(&ConnInfo)` (errors are `Connect`, naming role, database and address) |
 | `autostart` | LaunchAgent / `systemd --user` / HKCU `Run` renderers, `enable` / `disable` |
-| `error` | `PgServerError` |
+| `error` | `PgServerError`; database errors show the server's message, detail, `SQLSTATE` and hint |
 
 `bml-cli` (the `bml` binary) maps `bml server …` onto these functions.
 
@@ -106,15 +106,18 @@ resumed.
    each only if its content differs.
 7. **Start.** Start the server, or restart it if it was running and step 6
    changed something.
-8. **Role and database.**
-   - Create the `bml_app` role if it is missing.
-   - If the role exists but `bml.env` is gone, give it a new password with
-     `ALTER ROLE`.
-   - Create the `bmlibrarian` database, owned by `bml_app`, if it is missing.
+8. **Role and database.** Create the `bml_app` role (with `bml.env`'s
+   password, or a new one if `bml.env` is missing) and the `bmlibrarian`
+   database, owned by `bml_app`, if they are missing.
 9. **Extensions.** `CREATE EXTENSION IF NOT EXISTS vector`, failing with
    `ExtensionUnavailable` if it isn't available, plus `pg_search` when
    preloaded.
-10. **App credentials.** Write `bml.env`.
+10. **App login check.** Connect as `bml_app`. If the password is refused
+    (`SQLSTATE 28P01`: `bml.env` was lost, or the data folder came from
+    another machine), set it with `ALTER ROLE` and connect again. A refused
+    attempt leaves one "password authentication failed" line in the server
+    log.
+11. **App credentials.** Write `bml.env`.
 
 `CREATE/ALTER ROLE` is sent a SCRAM-SHA-256 verifier
 (`postgres_protocol::password::scram_sha_256`), never the password, so the
@@ -131,7 +134,11 @@ constants.
   `KeepAlive`/`Restart=`, so nothing restarts the server and import-profile
   restarts never fight a supervisor. Per platform:
   - macOS: `enable` also starts the server at once (`RunAtLoad`). Output goes
-    to `bml-autostart.log` in the config folder.
+    to `bml-autostart.log` in the config folder. `launchctl bootout` (before
+    `bootstrap`, and in `disable`) may only fail with "not loaded" (exit 3 or
+    113) or "unloading" (36); anything else is an error. `bootout` returns
+    before the job is unloaded, so `bootstrap` is retried for up to 2 s while
+    it fails with `5: Input/output error`.
   - Linux: the unit's `ExecStop` stops the server when the user's systemd
     manager stops at logout. Output goes to the journal. Arguments are quoted
     with `%` → `%%` and `$` → `$$`.
@@ -164,9 +171,18 @@ The integration tests (`#[ignore]`) use temporary folders only, never
 - stop their server on drop, before the temp folder is deleted;
 - use a data folder named `data dir ü'q`, to cover awkward paths.
 
-`tests/control.rs` and the CLI's `init_status_stop` stop their server only at
-the end, so a failed run can leave one running until PostgreSQL notices its
-data folder is gone.
+`tests/control.rs` and the CLI's `init_status_stop` stop their server on drop
+too.
+
+`bml-pgserver/tests/refusals.rs` (Unix, no server needed, runs in plain
+`cargo test`) uses a fake bin folder whose `postgres` prints a version and
+whose `initdb` fails. It covers `UnsupportedVersion`, `ForeignDataDir`,
+`StateMismatch`, `AdminCredentialsLost`, `IncompleteDataDir`, and the removal
+of `.pwfile.tmp` after a failed `initdb`. It is a single test on purpose:
+writing a script while another test thread forks can make Linux refuse to run
+it ("text file busy").
+
+On macOS, a unit test runs `plutil -lint` on the rendered LaunchAgent.
 
 `BML_TEST_PG_EXTENSION_DIRS` is an OS path list.
 
@@ -174,4 +190,5 @@ CI (`.github/workflows/rust.yml`):
 - runs fmt, clippy (`-D warnings`) and tests on macOS arm64 (`macos-15`) and
   Intel, Windows, and Linux x86_64 and arm64
 - runs the integration tests on Linux against PGDG PostgreSQL 18 + pgvector,
-  without `pg_search`
+  and on macOS (`macos-15`) against Homebrew `postgresql@18` + `pgvector`;
+  neither has `pg_search`, so its preload is only tested locally
