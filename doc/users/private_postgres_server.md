@@ -57,12 +57,36 @@ In the configuration folder:
 | `bml.env` | How BMLibrarian connects to its database: the everyday, unprivileged account. If it is lost, or no longer matches the database (for example a data folder moved from another computer together with its `bml-admin.env`), running `init` again repairs it, and says so: other copies of the old password then stop working. |
 | `bml-admin.env` | The server's administrator password. **Keep it.** Without it `init` can no longer repair or finish the setup, and stops rather than overwrite anything (starting, stopping and status still work). |
 | `bml-pgserver.json` | Where the server's programs and data are, and its port. |
+| `bml-external.json` | Instead of the file above, when you use a PostgreSQL you already have: its address and the administrator account's name. |
 
 Only your user account can read these files. The passwords are generated for
 you, and you never need to type them.
 
 The server's log is `bml-server.log` in the data folder. When the server
 fails to start, the error message quotes its last lines.
+
+## Using a PostgreSQL you already have
+
+If PostgreSQL 18 is already running on this computer, BMLibrarian can use it
+instead of a private one. It adds one account (`bml_app`) and one database
+(`bmlibrarian`) and changes nothing else. To do that you give it an
+administrator account of that PostgreSQL (usually `postgres`) and its
+password. BMLibrarian keeps that password in `bml-admin.env`, readable only by
+you.
+
+BMLibrarian checks first, and tells you everything that is missing in one go:
+
+- it must be PostgreSQL 18 or newer, on this computer;
+- the account you give must be an administrator;
+- the pgvector extension (0.8.1 or newer) must be installed;
+- except on Windows, the pg_search extension must be installed and listed in
+  that PostgreSQL's `shared_preload_libraries` setting. BMLibrarian never
+  changes that setting or restarts your PostgreSQL; you do it.
+
+If an account named `bml_app` or a database named `bmlibrarian` is already
+there and BMLibrarian did not make it, it stops and leaves them alone. A
+configuration folder uses either a private server or an existing one, not
+both.
 
 ## Autostart, per system
 

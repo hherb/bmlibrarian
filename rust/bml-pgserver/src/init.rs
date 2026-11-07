@@ -25,6 +25,7 @@ use crate::envfile::{
     ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
 };
 use crate::error::{file_error, PgServerError};
+use crate::external::EXTERNAL_STATE_FILE_NAME;
 use crate::port::{choose_port, port_is_free, DEFAULT_PORT};
 use crate::state::{load_state, save_state, ServerState, STATE_FILE_NAME};
 
@@ -38,7 +39,7 @@ pub const APP_ROLE: &str = "bml_app";
 pub const DATABASE: &str = "bmlibrarian";
 
 /// The maintenance database every server has.
-const MAINTENANCE_DATABASE: &str = "postgres";
+pub(crate) const MAINTENANCE_DATABASE: &str = "postgres";
 
 /// The server's address.
 pub const HOST: &str = "127.0.0.1";
@@ -119,6 +120,15 @@ pub fn connect(info: &ConnInfo) -> Result<Client, PgServerError> {
 /// role, database and extensions, keeping its files in `config_dir`.
 pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServerError> {
     let req = &validated_request(req)?;
+    let external_state = config_dir.join(EXTERNAL_STATE_FILE_NAME);
+    if external_state
+        .try_exists()
+        .map_err(file_error(&external_state))?
+    {
+        return Err(PgServerError::ExternalServerConfigured {
+            state_file: external_state,
+        });
+    }
     // A password file left by an earlier run killed during initdb.
     remove_if_present(&config_dir.join(PWFILE_NAME))?;
     pg_major_version(&req.bindir)?;
@@ -158,6 +168,15 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
 
     let admin_env = config_dir.join(ADMIN_ENV_FILE_NAME);
     let admin_password = match (read_conn_info(&admin_env)?, &data_dir_kind) {
+        (Some(info), _) if info.user != ADMIN_ROLE || info.host != HOST => {
+            // An existing server's superuser: never overwrite it with ours.
+            return Err(PgServerError::AdminCredentialsInUse {
+                admin_env,
+                host: info.host,
+                port: info.port,
+                user: info.user,
+            });
+        }
         (Some(info), _) => info.password,
         (None, DataDir::Initialised) => {
             return Err(PgServerError::AdminCredentialsLost {
@@ -368,7 +387,7 @@ fn check_shell_safe(path: &Path) -> Result<(), PgServerError> {
 
 /// Write `contents` to `path` (owner-only) unless it already holds them.
 /// Returns whether the file was written.
-fn write_if_changed(path: &Path, contents: &str) -> Result<bool, PgServerError> {
+pub(crate) fn write_if_changed(path: &Path, contents: &str) -> Result<bool, PgServerError> {
     if fs::read_to_string(path).is_ok_and(|current| current == contents) {
         return Ok(false);
     }
@@ -446,7 +465,7 @@ fn scram_verifier(password: &str) -> String {
 }
 
 /// `admin` on the maintenance database.
-fn connect_maintenance(admin: &ConnInfo) -> Result<Client, PgServerError> {
+pub(crate) fn connect_maintenance(admin: &ConnInfo) -> Result<Client, PgServerError> {
     let mut maintenance = admin.clone();
     maintenance.dbname = MAINTENANCE_DATABASE.to_owned();
     connect(&maintenance)
@@ -454,7 +473,10 @@ fn connect_maintenance(admin: &ConnInfo) -> Result<Client, PgServerError> {
 
 /// Create the app role (with `app_password`) and database if missing.
 /// Returns whether anything changed. Role and database names are constants.
-fn ensure_role_and_database(admin: &ConnInfo, app_password: &str) -> Result<bool, PgServerError> {
+pub(crate) fn ensure_role_and_database(
+    admin: &ConnInfo,
+    app_password: &str,
+) -> Result<bool, PgServerError> {
     let mut client = connect_maintenance(admin)?;
     let mut changed = false;
     let role_exists = !client
@@ -481,7 +503,7 @@ fn ensure_role_and_database(admin: &ConnInfo, app_password: &str) -> Result<bool
 /// password is refused (its `bml.env` was lost, or the data folder came from
 /// another machine together with its `bml-admin.env`), set it and check
 /// again. Returns whether it was reset.
-fn ensure_app_login(admin: &ConnInfo, app: &ConnInfo) -> Result<bool, PgServerError> {
+pub(crate) fn ensure_app_login(admin: &ConnInfo, app: &ConnInfo) -> Result<bool, PgServerError> {
     match connect(app) {
         Ok(_) => Ok(false),
         Err(PgServerError::Connect { source, .. })
@@ -500,7 +522,10 @@ fn ensure_app_login(admin: &ConnInfo, app: &ConnInfo) -> Result<bool, PgServerEr
 
 /// Create the required extensions, and `pg_search` when it is preloaded.
 /// Returns whether `pg_search` was ensured.
-fn ensure_extensions(admin: &ConnInfo, preload_pg_search: bool) -> Result<bool, PgServerError> {
+pub(crate) fn ensure_extensions(
+    admin: &ConnInfo,
+    preload_pg_search: bool,
+) -> Result<bool, PgServerError> {
     let mut client = connect(admin)?;
     let mut available = |name: &str| -> Result<bool, PgServerError> {
         Ok(!client

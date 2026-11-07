@@ -180,6 +180,65 @@ pub enum PgServerError {
         /// The major version found.
         found: u32,
     },
+    /// Adopting an existing server is only allowed on this computer.
+    #[error("The PostgreSQL server at {host} is not on this computer. The database must run on this computer (127.0.0.1, ::1 or localhost); install or start PostgreSQL here, or use --pg-bindir instead")]
+    NotLoopback {
+        /// The refused host.
+        host: String,
+    },
+    /// The existing server lacks something bml needs.
+    #[error("This PostgreSQL can't be used: {}", join_problems(.problems))]
+    Unusable {
+        /// Everything that is wrong, in one list.
+        problems: Vec<crate::external::Unusable>,
+    },
+    /// The role or database bml would create is already there.
+    #[error("the {kind} {name} already exists on that server and was not created by bml; bml never reuses or changes it")]
+    NameTaken {
+        /// `"role"` or `"database"`.
+        kind: &'static str,
+        /// Its name.
+        name: &'static str,
+    },
+    /// This configuration folder already manages a private server.
+    #[error("this configuration folder already manages a private server ({state_file}); use a different --config-dir for the other server")]
+    PrivateServerConfigured {
+        /// The private server's state file.
+        state_file: PathBuf,
+    },
+    /// This configuration folder already uses an existing server.
+    #[error("this configuration folder already uses an existing PostgreSQL ({state_file}); use a different --config-dir for the other server")]
+    ExternalServerConfigured {
+        /// The existing-server state file.
+        state_file: PathBuf,
+    },
+    /// The password cannot be kept in the credentials files.
+    #[error("that password cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    PasswordNotStorable,
+    /// The superuser name cannot be kept in the credentials files.
+    #[error("that superuser name cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    SuperuserNotStorable,
+    /// The credentials file already holds another server's superuser.
+    #[error("{admin_env} holds the credentials of another PostgreSQL server ({host}:{port}, user {user}); bml will not overwrite them. Use a different --config-dir for the existing server")]
+    AdminCredentialsInUse {
+        /// The credentials file.
+        admin_env: PathBuf,
+        /// The host it names.
+        host: String,
+        /// The port it names.
+        port: u16,
+        /// The user it names.
+        user: String,
+    },
+}
+
+/// Joins the problems of an unusable server for [`PgServerError::Unusable`].
+fn join_problems(problems: &[crate::external::Unusable]) -> String {
+    problems
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A process exit for messages: the code, or that a signal killed it.

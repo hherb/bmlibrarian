@@ -14,10 +14,11 @@ through the `postgres` crate.
 |---|---|
 | `port` | `DEFAULT_PORT` (5418), `is_avoided` (5432–5439, 5532, 6432, 6543, ≥ 49152), `choose_port(start, is_free)`, `port_is_free` (binds `127.0.0.1:port` **and** a loopback connect must be refused: on macOS a loopback bind succeeds while another process listens on `0.0.0.0`). Only "address in use" (and, on Windows, an excluded port range's access-denied) counts as taken; any other bind error stops the scan with `PortError::Probe`, naming the port, instead of ending in "no free port" |
 | `conf` | `render_bml_conf`, `render_pg_hba`, `ensure_include`, `quote_conf_value`, `extension_control_dir`, `provides_pg_search` |
-| `envfile` | `ConnInfo`; `render_env` / `parse_env` (`EnvParseError`) / `read_conn_info` (`EnvFileError`: unreadable, or `Invalid` with the path and the parse error); `generate_password` (64 hex characters; `parse_env` accepts only hex passwords); `write_private_file` (atomic; mode 600, or `icacls` on the temp file before the rename); `Debug` hides the password |
+| `envfile` | `ConnInfo`; `render_env` / `parse_env` (`EnvParseError`) / `read_conn_info` (`EnvFileError`: unreadable, or `Invalid` with the path and the parse error); `generate_password` (64 hex characters); `is_storable_password` (any non-empty password without control characters or edge spaces; passwords reach SQL only as SCRAM verifiers, so quoting is never an issue); `write_private_file` (atomic; mode 600, or `icacls` on the temp file before the rename); `Debug` hides the password |
 | `state` | `ServerState` ↔ `bml-pgserver.json` (state files with the retired `pg_major` field still load); `resolve_config_dir(flag, env, home)` (made absolute) |
 | `control` | `pg_major_version` (≥ 18), `status` / `start` / `stop` (idempotent) / `restart`, `total_memory_bytes` (an error rather than 0 when the system does not report it). `start` and `stop` refuse a missing or unreadable data folder (`DataDirUnavailable`); a failed start quotes the end of `bml-server.log` (`StartFailed`) |
 | `init` | `init(&InitRequest, config_dir)`, the resumable setup; `connect(&ConnInfo)` (errors are `Connect`, naming role, database and address) |
+| `external` | Adopting an existing PG 18 (see "Existing servers") |
 | `autostart` | LaunchAgent / `systemd --user` / HKCU `Run` renderers, `enable` / `disable` |
 | `error` | `PgServerError`; database errors show the server's message, detail, `SQLSTATE` and hint |
 
@@ -127,6 +128,38 @@ resumed.
 password cannot reach the server log. The verifier is base64 plus `$` and
 `:`, so it is safe inside the SQL literal. Role and database names are
 constants.
+
+## Existing servers
+
+`external::adopt(&ExternalRequest, config_dir)` uses a PostgreSQL 18 that is
+already running on this computer, instead of a private one. It creates the
+same `bml_app` role, `bmlibrarian` database and extensions, and nothing else.
+The configuration folder then holds `bml-external.json` (host, port,
+superuser; owner-only, written through the same helper as
+`bml-pgserver.json`) instead of `bml-pgserver.json`; `init` refuses when the
+former exists and `adopt` when the latter does.
+
+Order of `adopt`, which is what makes a re-run resume:
+
+1. The host must be loopback (`is_loopback_host`); the superuser password
+   and name must be storable (`PasswordNotStorable`, `SuperuserNotStorable`).
+2. Refuse if `bml-pgserver.json` exists.
+3. A saved `bml-external.json` must name the requested host and port
+   (`StateMismatch` otherwise), and a saved `bml-admin.env` the requested
+   host, port **and** superuser (`AdminCredentialsInUse` otherwise): bml never
+   replaces another server's only saved superuser password. Both checks run
+   before connecting.
+4. `probe` (through the `postgres` database) gathers `ServerFacts`; the pure
+   `verdict` lists every problem at once: older than 18, not a superuser,
+   `pgvector` missing or older than `MIN_VECTOR_VERSION`, and, unless
+   `needs_pg_search` is false (Windows), `pg_search` missing or not in
+   `shared_preload_libraries` (`preload_list_has`). bml never edits the other
+   server's configuration or restarts it. Then, with no `bml-external.json`,
+   an existing `bml_app` role or `bmlibrarian` database is `NameTaken`: bml
+   never reuses or alters what it did not create.
+5. `bml-admin.env` (database `bmlibrarian`, user = the superuser) and
+   `bml-external.json` are written **before** anything is created, then the
+   `ensure_*` functions of `init` run, and `bml.env` last.
 
 ## Server control and autostart
 
