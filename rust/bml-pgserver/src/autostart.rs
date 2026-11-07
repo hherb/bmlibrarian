@@ -318,6 +318,62 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     }
 }
 
+/// Whether the file at `path` exists with exactly the text `expected`.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn file_has_text(path: &Path, expected: &str) -> Result<bool, PgServerError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text == expected),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(PgServerError::File {
+            path: path.to_owned(),
+            source: e,
+        }),
+    }
+}
+
+/// Whether `reg query` output (`    NAME    REG_SZ    VALUE`) holds `command`.
+#[cfg(any(windows, test))]
+fn reg_output_has(stdout: &str, command: &str) -> bool {
+    stdout
+        .lines()
+        .filter_map(|l| l.split_once("REG_SZ"))
+        .any(|(_, value)| value.trim() == command)
+}
+
+/// Whether the login entry exists and is exactly what [`enable`] would write
+/// for `exe` and `config_dir`.
+pub fn is_enabled(exe: &Path, config_dir: &Path) -> Result<bool, PgServerError> {
+    #[cfg(target_os = "macos")]
+    {
+        file_has_text(&launch_agent_path()?, &render_launch_agent(exe, config_dir))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let unit = home()?.join(".config/systemd/user").join(SYSTEMD_UNIT_NAME);
+        file_has_text(&unit, &render_systemd_unit(exe, config_dir))
+    }
+    #[cfg(windows)]
+    {
+        let out = Command::new("reg")
+            .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
+            .output()
+            .map_err(|source| PgServerError::Spawn {
+                program: "reg".into(),
+                source,
+            })?;
+        Ok(out.status.success()
+            && reg_output_has(
+                &String::from_utf8_lossy(&out.stdout),
+                &windows_run_command(exe, config_dir),
+            ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (exe, config_dir);
+        Ok(false)
+    }
+}
+
 /// Stop starting the server at login (the running server is left alone).
 pub fn disable() -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
@@ -512,6 +568,24 @@ mod tests {
             windows_run_command(Path::new(r"C:\bml.exe"), Path::new(r"D:\")),
             r#""C:\bml.exe" "--config-dir" "D:\\" "server" "start""#
         );
+    }
+
+    #[test]
+    fn file_has_text_compares_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x");
+        assert!(!file_has_text(&f, "a").unwrap());
+        std::fs::write(&f, "a").unwrap();
+        assert!(file_has_text(&f, "a").unwrap());
+        assert!(!file_has_text(&f, "b").unwrap());
+    }
+
+    #[test]
+    fn reg_output_matches_value_exactly() {
+        let out =
+            "\r\nHKEY\\Run\r\n    BMLibrarianPgServer    REG_SZ    \"C:\\bml.exe\" \"server\"\r\n";
+        assert!(reg_output_has(out, "\"C:\\bml.exe\" \"server\""));
+        assert!(!reg_output_has(out, "\"C:\\other.exe\""));
     }
 
     #[test]
