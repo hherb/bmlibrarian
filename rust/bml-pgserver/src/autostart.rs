@@ -40,18 +40,20 @@ pub const WINDOWS_RUN_VALUE: &str = "BMLibrarianPgServer";
 pub const AUTOSTART_LOG_NAME: &str = "bml-autostart.log";
 
 /// `launchctl bootout` exit codes that mean the job was not loaded (ESRCH,
-/// "could not find service") or is already unloading (EINPROGRESS).
+/// "could not find service", or 112 "could not find domain", as over SSH
+/// without a GUI login) or is already unloading (EINPROGRESS).
 #[cfg(any(target_os = "macos", test))]
-const BOOTOUT_NOT_LOADED_CODES: [i32; 3] = [3, 113, 36];
+const BOOTOUT_NOT_LOADED_CODES: [i32; 4] = [3, 113, 112, 36];
 
 /// `launchctl bootstrap` exit code for "Input/output error", which it
 /// returns while a job just booted out is still being unloaded.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const BOOTSTRAP_BUSY_CODE: i32 = 5;
 
-/// How often, and how long apart, a busy `bootstrap` is retried.
-#[cfg(target_os = "macos")]
+/// How many times a busy `bootstrap` is retried (10 × 200 ms = 2 s).
+#[cfg(any(target_os = "macos", test))]
 const BOOTSTRAP_RETRIES: u32 = 10;
+/// The wait between `bootstrap` retries.
 #[cfg(target_os = "macos")]
 const BOOTSTRAP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -228,19 +230,32 @@ fn bootout(domain: &str) -> Result<(), PgServerError> {
 /// still being unloaded (`bootout` returns before it finishes).
 #[cfg(target_os = "macos")]
 fn bootstrap(domain: &str, plist: &Path) -> Result<(), PgServerError> {
-    let mut retries = 0;
-    loop {
+    retry_while_busy(BOOTSTRAP_RETRY_DELAY, || {
         let mut command = Command::new("launchctl");
         command.arg("bootstrap").arg(domain).arg(plist);
-        match run(command) {
+        run(command).map(drop)
+    })
+}
+
+/// Run `attempt`, repeating it after `delay` while it fails with
+/// [`BOOTSTRAP_BUSY_CODE`], at most [`BOOTSTRAP_RETRIES`] times; the last
+/// result is returned unchanged.
+#[cfg(any(target_os = "macos", test))]
+fn retry_while_busy(
+    delay: std::time::Duration,
+    mut attempt: impl FnMut() -> Result<(), PgServerError>,
+) -> Result<(), PgServerError> {
+    let mut retries = 0;
+    loop {
+        match attempt() {
             Err(PgServerError::Command {
                 status: Some(BOOTSTRAP_BUSY_CODE),
                 ..
             }) if retries < BOOTSTRAP_RETRIES => {
                 retries += 1;
-                std::thread::sleep(BOOTSTRAP_RETRY_DELAY);
+                std::thread::sleep(delay);
             }
-            other => return other.map(drop),
+            other => return other,
         }
     }
 }
@@ -250,13 +265,20 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
     {
         let plist = launch_agent_path()?;
+        let domain = launchd_domain()?;
+        // Unload a previous registration first, so enable can be repeated;
+        // before writing, so a failure leaves no new login entry behind.
+        bootout(&domain)?;
         let agents = plist.parent().expect("plist path has a parent");
         fs::create_dir_all(agents).map_err(file_error(agents))?;
         fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))?;
-        let domain = launchd_domain()?;
-        // Unload a previous registration first, so enable can be repeated.
-        bootout(&domain)?;
-        bootstrap(&domain, &plist)
+        let loaded = bootstrap(&domain, &plist);
+        if loaded.is_err() {
+            // Not enabled after all, so no login entry either; best effort,
+            // as the bootstrap error is the one to report.
+            let _ = fs::remove_file(&plist);
+        }
+        loaded
     }
     #[cfg(target_os = "linux")]
     {
@@ -300,12 +322,16 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
 pub fn disable() -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
     {
-        bootout(&launchd_domain()?)?;
+        // The plist goes first: it is what starts the server at login, so a
+        // failure to unload the current job must not keep it.
         let plist = launch_agent_path()?;
         match fs::remove_file(&plist) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(file_error(&plist)(e)),
-            _ => Ok(()),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(file_error(&plist)(e))
+            }
+            _ => {}
         }
+        bootout(&launchd_domain()?)
     }
     #[cfg(target_os = "linux")]
     {
@@ -375,12 +401,56 @@ mod tests {
 
     #[test]
     fn bootout_accepts_only_not_loaded() {
-        for code in [0, 3, 36, 113] {
+        for code in [0, 3, 36, 112, 113] {
             assert!(bootout_succeeded(Some(code)), "{code}");
         }
         for code in [Some(1), Some(5), Some(37), None] {
             assert!(!bootout_succeeded(code), "{code:?}");
         }
+    }
+
+    /// A failed `launchctl` with exit code `status`.
+    fn launchctl_failed(status: i32) -> PgServerError {
+        PgServerError::Command {
+            program: "launchctl".to_owned(),
+            status: Some(status),
+            stderr: format!("attempt failed with {status}"),
+        }
+    }
+
+    /// Run [`retry_while_busy`] over `results`; returns its result and the
+    /// number of attempts.
+    fn retry(results: Vec<Result<(), PgServerError>>) -> (Result<(), PgServerError>, usize) {
+        let mut results = results.into_iter();
+        let mut calls = 0;
+        let result = retry_while_busy(std::time::Duration::ZERO, || {
+            calls += 1;
+            results.next().expect("no more attempts expected")
+        });
+        (result, calls)
+    }
+
+    #[test]
+    fn bootstrap_retries_while_busy() {
+        let busy = || Err(launchctl_failed(BOOTSTRAP_BUSY_CODE));
+        let (result, calls) = retry(vec![busy(), busy(), busy(), Ok(())]);
+        assert!(result.is_ok());
+        assert_eq!(calls, 4);
+
+        let always_busy = (0..=BOOTSTRAP_RETRIES).map(|_| busy()).collect();
+        let (result, calls) = retry(always_busy);
+        assert_eq!(calls, BOOTSTRAP_RETRIES as usize + 1);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("attempt failed with 5"));
+
+        let (result, calls) = retry(vec![Err(launchctl_failed(1))]);
+        assert_eq!(calls, 1);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("attempt failed with 1"));
     }
 
     #[cfg(target_os = "macos")]

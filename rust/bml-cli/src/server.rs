@@ -22,8 +22,8 @@ macro_rules! say {
 
 /// Exit code: the server is running and healthy.
 pub const EXIT_HEALTHY: u8 = 0;
-/// Exit code: a command failed, or the server is running but unhealthy or
-/// its data folder is unavailable.
+/// Exit code: a command failed, the server is running but unhealthy, or its
+/// data folder is missing or unreadable.
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: no server has been set up in this configuration folder.
 pub const EXIT_NOT_SET_UP: u8 = 2;
@@ -85,6 +85,12 @@ pub fn run(command: ServerCommand, config_dir: &Path) -> Result<ExitCode, PgServ
                 extension_dirs,
             };
             let outcome = init(&req, config_dir)?;
+            if outcome.app_password_reset {
+                say!(
+                    "Note: the server refused the password in {APP_ENV_FILE_NAME}, so it was \
+                     reset; other copies of the old password no longer work."
+                );
+            }
             say!(
                 "Server ready on {HOST}:{} (data: {}){}",
                 outcome.state.port,

@@ -81,6 +81,9 @@ pub struct InitOutcome {
     /// Whether this run created the data folder, the app role or database,
     /// reset the app role's password, or wrote `bml.env`.
     pub created: bool,
+    /// Whether the app role's password was refused and reset to the one in
+    /// `bml.env`: other copies of the old password no longer work.
+    pub app_password_reset: bool,
 }
 
 /// What the data folder holds.
@@ -116,6 +119,8 @@ pub fn connect(info: &ConnInfo) -> Result<Client, PgServerError> {
 /// role, database and extensions, keeping its files in `config_dir`.
 pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServerError> {
     let req = &validated_request(req)?;
+    // A password file left by an earlier run killed during initdb.
+    remove_if_present(&config_dir.join(PWFILE_NAME))?;
     pg_major_version(&req.bindir)?;
     let saved = load_state(config_dir)?;
     let managed_by_us = saved.is_some();
@@ -204,13 +209,15 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
     created |= ensure_role_and_database(&admin, &app_password)?;
     let pg_search = ensure_extensions(&admin, preload_pg_search)?;
     let app = conn_info(port, APP_ROLE, &app_password);
-    created |= ensure_app_login(&admin, &app)?;
+    let app_password_reset = ensure_app_login(&admin, &app)?;
+    created |= app_password_reset;
     created |= write_if_changed(&app_env, &render_env(&app))?;
 
     Ok(InitOutcome {
         state,
         pg_search,
         created,
+        app_password_reset,
     })
 }
 
@@ -393,8 +400,8 @@ fn run_initdb(
         ])
         .output();
     let removed = fs::remove_file(&pwfile).map_err(file_error(&pwfile));
-    // initdb's own failure is the one to report; a failed removal after it
-    // still names the password file left behind.
+    // initdb's own failure is the one to report; a password file still left
+    // after it is removed by the next run.
     let output = result.map_err(|source| PgServerError::Spawn {
         program: program.clone(),
         source,
@@ -407,6 +414,14 @@ fn run_initdb(
         });
     }
     removed
+}
+
+/// Remove `path`; it not existing is fine.
+fn remove_if_present(path: &Path) -> Result<(), PgServerError> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(file_error(path)(e)),
+        _ => Ok(()),
+    }
 }
 
 /// Write `bml.conf`, `pg_hba.conf` and the include line. Returns whether
@@ -464,7 +479,8 @@ fn ensure_role_and_database(admin: &ConnInfo, app_password: &str) -> Result<bool
 
 /// Check that the app role can log in with `app`'s password; if the
 /// password is refused (its `bml.env` was lost, or the data folder came from
-/// another machine), set it and check again. Returns whether it was reset.
+/// another machine together with its `bml-admin.env`), set it and check
+/// again. Returns whether it was reset.
 fn ensure_app_login(admin: &ConnInfo, app: &ConnInfo) -> Result<bool, PgServerError> {
     match connect(app) {
         Ok(_) => Ok(false),

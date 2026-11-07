@@ -178,6 +178,7 @@ fn app_env_lost_resets_password() {
 
     let outcome = init(&f.req, &f.config_dir).unwrap();
     assert!(outcome.created);
+    assert!(outcome.app_password_reset);
     let new = read_conn_info(&app_env).unwrap().unwrap();
     assert_ne!(new.password, old.password);
     connect(&new).expect("the role was given the new password");
@@ -210,6 +211,7 @@ fn app_password_mismatch_is_repaired() {
 
     let outcome = init(&f.req, &f.config_dir).unwrap();
     assert!(outcome.created, "the password reset is reported");
+    assert!(outcome.app_password_reset);
     assert_eq!(read_conn_info(&app_env).unwrap().unwrap(), app);
     connect(&app).expect("bml.env's password works again");
 }

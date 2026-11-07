@@ -101,7 +101,8 @@ resumed.
 5. **`initdb`.** `-U bml_admin --pwfile=<private tmp> --auth=scram-sha-256
    --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8`. The
    pwfile is removed even if `initdb` fails (initdb's own error is reported
-   first). The builtin C.UTF-8 locale behaves the same on every OS.
+   first); one left by a run killed during `initdb` is removed at the start
+   of the next `init`. The builtin C.UTF-8 locale behaves the same on every OS.
 6. **Server config.** Write `bml.conf`, `pg_hba.conf` and the include line,
    each only if its content differs.
 7. **Start.** Start the server, or restart it if it was running and step 6
@@ -114,9 +115,11 @@ resumed.
    preloaded.
 10. **App login check.** Connect as `bml_app`. If the password is refused
     (`SQLSTATE 28P01`: `bml.env` was lost, or the data folder came from
-    another machine), set it with `ALTER ROLE` and connect again. A refused
-    attempt leaves one "password authentication failed" line in the server
-    log.
+    another machine together with its `bml-admin.env`), set it with
+    `ALTER ROLE` and connect again. `InitOutcome.app_password_reset` reports
+    it, and the CLI prints a note (other copies of the old password stop
+    working). A refused attempt leaves one "password authentication failed"
+    entry (`FATAL` plus `DETAIL`) in the server log.
 11. **App credentials.** Write `bml.env`.
 
 `CREATE/ALTER ROLE` is sent a SCRAM-SHA-256 verifier
@@ -136,9 +139,13 @@ constants.
   - macOS: `enable` also starts the server at once (`RunAtLoad`). Output goes
     to `bml-autostart.log` in the config folder. `launchctl bootout` (before
     `bootstrap`, and in `disable`) may only fail with "not loaded" (exit 3 or
-    113) or "unloading" (36); anything else is an error. `bootout` returns
-    before the job is unloaded, so `bootstrap` is retried for up to 2 s while
-    it fails with `5: Input/output error`.
+    113), "no such domain" (112, e.g. over SSH without a GUI login) or
+    "unloading" (36); anything else is an error. `bootout` returns before the
+    job is unloaded, so `bootstrap` is retried for up to 2 s while it fails
+    with `5: Input/output error`. `enable` writes the plist only after
+    `bootout`, and removes it again if `bootstrap` fails; `disable` removes
+    the plist before `bootout`, so a failed unload never keeps the login
+    entry.
   - Linux: the unit's `ExecStop` stops the server when the user's systemd
     manager stops at logout. Output goes to the journal. Arguments are quoted
     with `%` → `%%` and `$` → `$$`.
@@ -168,17 +175,18 @@ The integration tests (`#[ignore]`) use temporary folders only, never
 `~/.bmlibrarian`. On CI (`CI` set) they fail rather than skip when
 `BML_TEST_PG_BINDIR` is missing. The `bml-pgserver/tests/init.rs` tests also:
 - hold a per-binary lock, so two never race for a port;
-- stop their server on drop, before the temp folder is deleted;
+- stop their server on drop, before the temp folder is deleted (as do
+  `tests/control.rs` and the CLI's `init_status_stop`);
 - use a data folder named `data dir ü'q`, to cover awkward paths.
-
-`tests/control.rs` and the CLI's `init_status_stop` stop their server on drop
-too.
 
 `bml-pgserver/tests/refusals.rs` (Unix, no server needed, runs in plain
 `cargo test`) uses a fake bin folder whose `postgres` prints a version and
 whose `initdb` fails. It covers `UnsupportedVersion`, `ForeignDataDir`,
 `StateMismatch`, `AdminCredentialsLost`, `IncompleteDataDir`, and the removal
-of `.pwfile.tmp` after a failed `initdb`. It is a single test on purpose:
+of `.pwfile.tmp` after a failed `initdb` and of one left by an interrupted run.
+`bml-cli/tests/status_exit_codes.rs` does the same with a fake `pg_ctl` for
+`bml server status` (exit 3 stopped, 1 data folder missing or unexpected
+`pg_ctl` code). Each is a single test on purpose:
 writing a script while another test thread forks can make Linux refuse to run
 it ("text file busy").
 

@@ -27,13 +27,14 @@ pub const EPHEMERAL_START: u16 = 49152;
 #[derive(Debug, thiserror::Error)]
 pub enum PortError {
     /// Every candidate from `start` up to the ephemeral range was taken.
-    #[error("no free port from {start} up to {EPHEMERAL_START}")]
+    #[error("no free port from {start} up to {EPHEMERAL_START}{NO_FREE_PORT_HINT}")]
     NoFreePort {
         /// The port the scan started from.
         start: u16,
     },
     /// A port could not be checked for another reason than being taken
-    /// (e.g. a sandbox or firewall refusing the bind).
+    /// (e.g. a sandbox refusing the bind, or the loopback address being
+    /// unavailable).
     #[error("cannot check whether port {port} on 127.0.0.1 is free: {source}")]
     Probe {
         /// The port being checked.
@@ -42,6 +43,17 @@ pub enum PortError {
         source: io::Error,
     },
 }
+
+/// Added to [`PortError::NoFreePort`]: on Windows, ports refused with "access
+/// denied" count as taken (see [`port_is_free`]), which can also mean a
+/// security program blocks every local server.
+const NO_FREE_PORT_HINT: &str = if cfg!(windows) {
+    " (ports refused with access denied count as taken: check \
+     `netsh interface ipv4 show excludedportrange protocol=tcp`, or whether \
+     security software blocks local servers)"
+} else {
+    ""
+};
 
 /// Whether `port` must never be used for the private server.
 pub fn is_avoided(port: u16) -> bool {
@@ -72,8 +84,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 /// mapping), so a connection attempt must also be refused. (Binding the
 /// wildcard address instead would raise a Windows firewall prompt.)
 ///
-/// Only "address in use" means taken; any other bind error is returned, so
-/// the real cause is reported instead of a scan that finds no free port.
+/// Only "address in use" (and, on Windows, access denied for an excluded
+/// port range) means taken; any other bind error is returned, so the real
+/// cause is reported instead of a scan that finds no free port.
 pub fn port_is_free(port: u16) -> io::Result<bool> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     match TcpListener::bind(addr) {

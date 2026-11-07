@@ -28,10 +28,14 @@ off new work. Longer-term structural items live in
   other errors are `PortError::Probe`; connect errors are `Connect` (role,
   db, address) and DB errors show SQLSTATE + hint; `bml server status` exits
   **3** when stopped (1 = unhealthy/error); macOS `launchctl bootout` only
-  tolerates "not loaded" codes, `bootstrap` retries on `5`;
+  tolerates "not loaded"/"no domain"/"unloading" codes (3, 113, 112, 36),
+  `bootstrap` retries on `5`; `disable` removes the plist before `bootout`
+  and `enable` leaves none behind on failure; the CLI notes an app password
+  reset; a leftover `.pwfile.tmp` is removed at the start of `init`;
   `total_memory_bytes` → `Result`; `ServerState.pg_major` dropped (old state
   files still load); `EnvParseError` split out. Tests: fake-bin
-  `tests/refusals.rs` (plain `cargo test`), `plutil -lint`, stop-on-drop
+  `tests/refusals.rs` and `bml-cli/tests/status_exit_codes.rs` (plain
+  `cargo test`), `plutil -lint`, stop-on-drop
   guards, `app_password_mismatch_is_repaired`; CI gains `integration-macos`
   (Homebrew `postgresql@18` + `pgvector`). Open: #397 (Windows), #399
   (port-moved decision, Linux disable test, `pg_search` in CI).

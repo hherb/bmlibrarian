@@ -116,15 +116,17 @@ fn refusals_need_no_server() {
         "{err}"
     );
 
-    // Our first run was killed during initdb.
+    // Our first run was killed during initdb, leaving its password file.
     let config = root.join("cfg-incomplete");
     let data = data_dir_with(root, "d-incomplete", &["PG_VERSION"]);
     save(&config, &bin18, &data);
+    std::fs::write(config.join(".pwfile.tmp"), "secret").unwrap();
     let err = init(&request(&bin18, &data), &config).unwrap_err();
     assert!(
         matches!(err, PgServerError::IncompleteDataDir { .. }),
         "{err}"
     );
+    assert!(!config.join(".pwfile.tmp").exists(), "leftover removed");
 
     // initdb fails: its error is reported and the password file is removed,
     // while the admin credentials stay for the next run.
