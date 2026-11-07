@@ -7,6 +7,7 @@ use bml_pgserver::autostart;
 use bml_pgserver::control::{restart, start, status, stop, ServerStatus};
 use bml_pgserver::envfile::{read_conn_info, APP_ENV_FILE_NAME};
 use bml_pgserver::error::PgServerError;
+use bml_pgserver::external::{load_external_state, ExternalState};
 use bml_pgserver::init::{connect, init, InitRequest, HOST};
 use bml_pgserver::state::{load_state, ServerState};
 use clap::Subcommand;
@@ -19,6 +20,7 @@ macro_rules! say {
         let _ = writeln!(std::io::stdout(), $($arg)*);
     }};
 }
+pub(crate) use say;
 
 /// Exit code: the server is running and healthy.
 pub const EXIT_HEALTHY: u8 = 0;
@@ -108,6 +110,9 @@ pub fn run(command: ServerCommand, config_dir: &Path) -> Result<ExitCode, PgServ
         ServerCommand::Restart => with_state(config_dir, restart),
         ServerCommand::Status => show_status(config_dir),
         ServerCommand::Autostart(AutostartCommand::Enable) => {
+            if load_external_state(config_dir)?.is_some() {
+                return Ok(refuse_external());
+            }
             if load_state(config_dir)?.is_none() {
                 say!("{}", not_set_up());
                 return Ok(ExitCode::from(EXIT_NOT_SET_UP));
@@ -130,6 +135,9 @@ fn with_state(
     config_dir: &Path,
     action: fn(&ServerState) -> Result<(), PgServerError>,
 ) -> Result<ExitCode, PgServerError> {
+    if load_external_state(config_dir)?.is_some() {
+        return Ok(refuse_external());
+    }
     match load_state(config_dir)? {
         Some(state) => {
             action(&state)?;
@@ -142,6 +150,40 @@ fn with_state(
     }
 }
 
+/// Explain that bml does not control an existing server.
+fn refuse_external() -> ExitCode {
+    say!(
+        "This configuration uses an existing PostgreSQL server, which bml does not start, \
+         stop or autostart. Manage that server with its own tools; run `bml setup` to \
+         repair bml's connection to it."
+    );
+    ExitCode::from(EXIT_FAILED)
+}
+
+/// Print the health of an existing server and return the matching exit code.
+fn show_external_status(config_dir: &Path, external: &ExternalState) -> ExitCode {
+    say!(
+        "Server: existing PostgreSQL at {}:{} (not managed by bml)",
+        external.host,
+        external.port
+    );
+    report_extensions(config_dir)
+}
+
+/// Print the extension health check and return its exit code.
+fn report_extensions(config_dir: &Path) -> ExitCode {
+    match extensions(config_dir) {
+        Ok(names) => {
+            say!("Extensions: {}", names.join(", "));
+            ExitCode::from(EXIT_HEALTHY)
+        }
+        Err(e) => {
+            say!("Health: check failed: {e}");
+            ExitCode::from(EXIT_FAILED)
+        }
+    }
+}
+
 /// The message for a configuration folder with no server.
 fn not_set_up() -> &'static str {
     "Server: not set up (run \"bml server init\")"
@@ -149,6 +191,9 @@ fn not_set_up() -> &'static str {
 
 /// Print the server's status and return the matching exit code.
 fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
+    if let Some(external) = load_external_state(config_dir)? {
+        return Ok(show_external_status(config_dir, &external));
+    }
     let Some(state) = load_state(config_dir)? else {
         say!("{}", not_set_up());
         return Ok(ExitCode::from(EXIT_NOT_SET_UP));
@@ -174,24 +219,20 @@ fn show_status(config_dir: &Path) -> Result<ExitCode, PgServerError> {
     if let Some(code) = not_running_code {
         return Ok(ExitCode::from(code));
     }
-    match extensions(config_dir) {
-        Ok(names) => {
-            say!("Extensions: {}", names.join(", "));
-            Ok(ExitCode::from(EXIT_HEALTHY))
-        }
-        Err(e) => {
-            say!("Health: check failed: {e}");
-            Ok(ExitCode::from(EXIT_FAILED))
-        }
-    }
+    Ok(report_extensions(config_dir))
 }
 
 /// Extensions installed in the app database, `vector` first.
 fn extensions(config_dir: &Path) -> Result<Vec<String>, PgServerError> {
     let env = config_dir.join(APP_ENV_FILE_NAME);
+    let fix = if load_external_state(config_dir)?.is_some() {
+        "bml setup"
+    } else {
+        "bml server init"
+    };
     let info = read_conn_info(&env)?.ok_or_else(|| {
         PgServerError::Io(std::io::Error::other(format!(
-            "{} is missing; run \"bml server init\"",
+            "{} is missing; run \"{fix}\"",
             env.display()
         )))
     })?;

@@ -156,3 +156,52 @@ fn closed_stdout_does_not_panic() {
     );
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// A configuration folder that points at an existing server on a closed port.
+fn external_config() -> tempfile::TempDir {
+    let cfg = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cfg.path().join("bml-external.json"),
+        r#"{"host":"127.0.0.1","port":1,"superuser":"postgres"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cfg.path().join("bml.env"),
+        "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=1\nPOSTGRES_DB=bmlibrarian\n\
+         POSTGRES_USER=bmlibrarian\nPOSTGRES_PASSWORD=x\n",
+    )
+    .unwrap();
+    cfg
+}
+
+#[test]
+fn external_server_refuses_start_stop() {
+    let cfg = external_config();
+    for args in [
+        &["server", "start"][..],
+        &["server", "stop"][..],
+        &["server", "restart"][..],
+        &["server", "autostart", "enable"][..],
+    ] {
+        let out = bml(cfg.path(), args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            text(&out.stdout).contains("existing PostgreSQL server"),
+            "{args:?}: {}",
+            text(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn external_status_unreachable_exits_1() {
+    let cfg = external_config();
+    let out = bml(cfg.path(), &["server", "status"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains("existing PostgreSQL at 127.0.0.1:1 (not managed by bml)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Health: check failed"), "{stdout}");
+}

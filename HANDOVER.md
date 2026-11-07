@@ -21,24 +21,33 @@ off new work. Longer-term structural items live in
   `doc/users/private_postgres_server.md`, `doc/developers/rust_pgserver.md`.
   Portable PG18/pgvector/pg_search binaries are not yet sourced (`--bindir`
   points at an existing install).
-- **`bml-pgserver` follow-ups** (2026-11-07, closes #398): `init` ends with
-  an app-role login check and resets the password on `28P01` (replaces the
-  "reset when `bml.env` is missing" branch); `port_is_free` →
-  `io::Result<bool>`, only AddrInUse (+ Windows access-denied) is "taken",
-  other errors are `PortError::Probe`; connect errors are `Connect` (role,
-  db, address) and DB errors show SQLSTATE + hint; `bml server status` exits
-  **3** when stopped (1 = unhealthy/error); macOS `launchctl bootout` only
-  tolerates "not loaded"/"no domain"/"unloading" codes (3, 113, 112, 36),
-  `bootstrap` retries on `5`; `disable` removes the plist before `bootout`
-  and `enable` leaves none behind on failure; the CLI notes an app password
-  reset; a leftover `.pwfile.tmp` is removed at the start of `init`;
-  `total_memory_bytes` → `Result`; `ServerState.pg_major` dropped (old state
-  files still load); `EnvParseError` split out. Tests: fake-bin
-  `tests/refusals.rs` and `bml-cli/tests/status_exit_codes.rs` (plain
-  `cargo test`), `plutil -lint`, stop-on-drop
-  guards, `app_password_mismatch_is_repaired`; CI gains `integration-macos`
-  (Homebrew `postgresql@18` + `pgvector`). Open: #397 (Windows), #399
-  (port-moved decision, Linux disable test, `pg_search` in CI).
+- **Rust one-click installer, part 3: `bml-setup` + `bml setup`**
+  (2026-11-07, branch `feat/bml-setup`). New `rust/bml-setup` crate (hardware
+  check, database, autostart, Ollama, models, embedding GGUF; resumable,
+  failures don't stop independent steps) and `bml setup` front end; plan
+  `docs/superpowers/plans/2026-11-07-bml-setup.md`, docs
+  `doc/users/bml_setup_guide.md`, `doc/developers/rust_setup.md`. Owner
+  decisions: Ollama pinned to v0.40.10 with checksum-verified installers
+  (Linux `install.sh` pulls its tarball unchecked, documented);
+  `medgemma4B_it_q8:latest` is not in Ollama's registry, so setup pulls
+  `medgemma1.5:4b-it-q8_0` and `/api/copy`s it; `bml-pgserver` can adopt an
+  existing loopback PG18 (`--existing-server`, password via
+  `BML_PG_SUPERUSER_PASSWORD`/`--password-stdin`, only role `bml_app` + db
+  `bmlibrarian`); the GGUF download uses bmlib's llama-free `model-download`
+  feature, a git dependency pinned at rev 9670f4e (bmlib PR hherb/bmlib#703;
+  switch to crates.io 0.3.1 once published). Verified by hand on macOS
+  only (private server + Ollama present + GGUF twice); the Windows/Linux
+  Ollama installs and Windows Inno flags are unverified (#397). The Phase B
+  import profile and any server restart must refuse when `bml-external.json`
+  exists (an existing server is never restarted by bml). Portable
+  PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
+  Lower-priority review follow-ups (hardware summary, Ollama detection,
+  macOS autostart leftovers, setup lock) are in #403.
+- **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
+  check and password reset on `28P01`, richer connect/DB errors, `bml server
+  status` exits 3 when stopped, stricter launchctl error handling, fake-bin
+  tests, CI `integration-macos`. Open: #397 (Windows), #399 (port-moved
+  decision, Linux disable test, `pg_search` in CI).
 
 - **SQLite → PostgreSQL migration keeps statements' `review_status`**
   (2026-11-06, closes #392). `insert_statement` never writes the status,
@@ -255,10 +264,10 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- Rust installer piece 3: `bml-setup` + `bml setup` (requirement checks,
-  Ollama install, model pulls, GGUF download/verify, resumable steps).
-  Needs its own plan in `docs/superpowers/plans/`. `bml-pgserver` leftovers:
-  #397 (needs Windows), #399 (owner decision on a port taken after init).
+- Rust installer: a plan for obtaining portable PG18 + pgvector + pg_search
+  binaries (ROADMAP); then piece 4, the Tauri first-run screen driving
+  `bml-setup`. `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner
+  decision on a port taken after init).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single

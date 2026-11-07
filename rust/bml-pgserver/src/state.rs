@@ -56,9 +56,12 @@ pub enum StateError {
     NoHome,
 }
 
-/// The state saved in `config_dir`; `Ok(None)` only when there is none.
-pub fn load_state(config_dir: &Path) -> Result<Option<ServerState>, StateError> {
-    let path = config_dir.join(STATE_FILE_NAME);
+/// The JSON file `file_name` in `config_dir`; `Ok(None)` only when absent.
+pub(crate) fn load_json<T: serde::de::DeserializeOwned>(
+    config_dir: &Path,
+    file_name: &str,
+) -> Result<Option<T>, StateError> {
+    let path = config_dir.join(file_name);
     match fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text)
             .map(Some)
@@ -68,18 +71,33 @@ pub fn load_state(config_dir: &Path) -> Result<Option<ServerState>, StateError> 
     }
 }
 
-/// Save `state` in `config_dir`, creating the folder if needed.
-pub fn save_state(config_dir: &Path, state: &ServerState) -> Result<(), StateError> {
+/// Save `value` as the owner-only JSON file `file_name` in `config_dir`,
+/// creating the folder if needed.
+pub(crate) fn save_json<T: Serialize>(
+    config_dir: &Path,
+    file_name: &str,
+    value: &T,
+) -> Result<(), StateError> {
     fs::create_dir_all(config_dir).map_err(|source| StateError::Io {
         path: config_dir.to_owned(),
         source,
     })?;
-    let path = config_dir.join(STATE_FILE_NAME);
-    let text = serde_json::to_string_pretty(state).map_err(|e| StateError::Io {
+    let path = config_dir.join(file_name);
+    let text = serde_json::to_string_pretty(value).map_err(|e| StateError::Io {
         path: path.clone(),
         source: io::Error::other(e),
     })?;
     write_private_file(&path, &text).map_err(|source| StateError::Io { path, source })
+}
+
+/// The state saved in `config_dir`; `Ok(None)` only when there is none.
+pub fn load_state(config_dir: &Path) -> Result<Option<ServerState>, StateError> {
+    load_json(config_dir, STATE_FILE_NAME)
+}
+
+/// Save `state` in `config_dir`, creating the folder if needed.
+pub fn save_state(config_dir: &Path, state: &ServerState) -> Result<(), StateError> {
+    save_json(config_dir, STATE_FILE_NAME, state)
 }
 
 /// The configuration folder: `flag`, else `env` (if non-empty), else

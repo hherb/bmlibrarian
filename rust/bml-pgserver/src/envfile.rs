@@ -68,9 +68,9 @@ pub enum EnvParseError {
         /// The value found.
         value: String,
     },
-    /// `POSTGRES_PASSWORD` is not the hex we generate. It is pasted into SQL
-    /// string literals, so nothing else is accepted (the value is not shown).
-    #[error("invalid POSTGRES_PASSWORD (expected hexadecimal digits only)")]
+    /// `POSTGRES_PASSWORD` is empty or cannot survive a round trip through
+    /// an env file (the value is not shown).
+    #[error("invalid POSTGRES_PASSWORD (empty, or has a line break or edge spaces)")]
     BadPassword,
 }
 
@@ -132,7 +132,7 @@ pub fn parse_env(text: &str) -> Result<ConnInfo, EnvParseError> {
         .parse()
         .map_err(|_| EnvParseError::BadPort { value: port_text })?;
     let password = get(KEY_PASSWORD)?;
-    if !is_valid_password(&password) {
+    if !is_storable_password(&password) {
         return Err(EnvParseError::BadPassword);
     }
     Ok(ConnInfo {
@@ -144,10 +144,17 @@ pub fn parse_env(text: &str) -> Result<ConnInfo, EnvParseError> {
     })
 }
 
-/// Whether `password` is non-empty hex, the only form safe inside a SQL
-/// string literal without quoting.
-pub fn is_valid_password(password: &str) -> bool {
-    !password.is_empty() && password.bytes().all(|b| b.is_ascii_hexdigit())
+/// Whether `password` survives an env file unchanged: non-empty, no control
+/// characters (line breaks), no leading or trailing space. Passwords reach
+/// SQL only as SCRAM verifiers, so any other character is safe.
+pub fn is_storable_password(password: &str) -> bool {
+    is_storable_value(password)
+}
+
+/// The rule of [`is_storable_password`] for any value kept in an env file
+/// (such as a user name).
+pub fn is_storable_value(value: &str) -> bool {
+    !value.is_empty() && value == value.trim() && !value.chars().any(char::is_control)
 }
 
 /// Read the env file at `path`; `Ok(None)` only when it does not exist.
@@ -265,22 +272,33 @@ mod tests {
     }
 
     #[test]
-    fn password_must_be_hex() {
-        let with = |password: &str| {
-            format!(
-                "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PORT=5418\nPOSTGRES_DB=bmlibrarian\n\
-                 POSTGRES_USER=bml_app\nPOSTGRES_PASSWORD={password}\n"
-            )
-        };
-        assert!(matches!(
-            parse_env(&with("x' OR '1")),
-            Err(EnvParseError::BadPassword)
-        ));
-        assert!(matches!(
-            parse_env(&with("")),
-            Err(EnvParseError::BadPassword)
-        ));
-        assert_eq!(parse_env(&with("00ff")).unwrap().password, "00ff");
+    fn storable_password_rules() {
+        let base = generate_password();
+        assert!(is_storable_password(&format!("{base} '#=ü{base}")));
+        let bad = [
+            String::new(),
+            format!("{base}\n{base}"),
+            format!(" {base}"),
+            format!("{base} "),
+            format!("{base}\r{base}"),
+        ];
+        // The case number, not the password, goes in the failure message.
+        for (case, bad) in bad.iter().enumerate() {
+            assert!(!is_storable_password(bad), "case {case}");
+        }
+    }
+
+    #[test]
+    fn env_roundtrips_awkward_password() {
+        let mut info = sample();
+        info.password = "x' OR '1 #=ü".into();
+        assert_eq!(parse_env(&render_env(&info)).unwrap(), info);
+    }
+
+    #[test]
+    fn empty_password_in_file_is_refused() {
+        let text = "POSTGRES_HOST=h\nPOSTGRES_PORT=1\nPOSTGRES_DB=d\nPOSTGRES_USER=u\nPOSTGRES_PASSWORD=\n";
+        assert!(matches!(parse_env(text), Err(EnvParseError::BadPassword)));
     }
 
     #[test]

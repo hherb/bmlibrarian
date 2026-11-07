@@ -1,6 +1,7 @@
 //! `bml`: the BMLibrarian command-line tool.
 
 mod server;
+mod setup;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -26,6 +27,8 @@ enum Command {
     /// Manage the private PostgreSQL server.
     #[command(subcommand)]
     Server(server::ServerCommand),
+    /// Check this computer and install what BMLibrarian needs (safe to run again).
+    Setup(setup::SetupArgs),
 }
 
 /// Parse the command line, run the command and map errors to exit code 1.
@@ -39,6 +42,7 @@ fn main() -> ExitCode {
     .map_err(Into::into)
     .and_then(|config_dir| match cli.command {
         Command::Server(command) => server::run(command, &config_dir),
+        Command::Setup(args) => setup::run(args, &config_dir),
     });
     result.unwrap_or_else(|e| {
         eprintln!("error: {e}");

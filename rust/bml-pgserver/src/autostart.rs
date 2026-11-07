@@ -32,6 +32,15 @@ pub const LAUNCH_AGENT_LABEL: &str = "org.bmlibrarian.pgserver";
 /// The `systemd --user` unit name (Linux).
 pub const SYSTEMD_UNIT_NAME: &str = "bml-pgserver.service";
 
+/// The user's systemd unit folder, relative to the home folder (Linux).
+#[cfg(target_os = "linux")]
+const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
+
+/// The folder `systemctl --user enable` links the unit into (the unit has
+/// `WantedBy=default.target`), relative to [`SYSTEMD_USER_DIR`].
+#[cfg(any(target_os = "linux", test))]
+const SYSTEMD_WANTS_DIR: &str = "default.target.wants";
+
 /// The value name under the per-user `Run` key (Windows).
 pub const WINDOWS_RUN_VALUE: &str = "BMLibrarianPgServer";
 
@@ -282,16 +291,33 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let unit_dir = home()?.join(".config/systemd/user");
+        let unit_dir = home()?.join(SYSTEMD_USER_DIR);
         let unit = unit_dir.join(SYSTEMD_UNIT_NAME);
         fs::create_dir_all(&unit_dir).map_err(file_error(&unit_dir))?;
+        // Kept so a failed re-enable restores a unit that worked before.
+        let previous = match fs::read(&unit) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(file_error(&unit)(e)),
+        };
         fs::write(&unit, render_systemd_unit(exe, config_dir)).map_err(file_error(&unit))?;
-        let mut reload = Command::new("systemctl");
-        reload.args(["--user", "daemon-reload"]);
-        run(reload)?;
-        let mut enable = Command::new("systemctl");
-        enable.args(["--user", "enable", SYSTEMD_UNIT_NAME]);
-        run(enable).map(drop)
+        let enabled = (|| {
+            let mut reload = Command::new("systemctl");
+            reload.args(["--user", "daemon-reload"]);
+            run(reload)?;
+            let mut enable = Command::new("systemctl");
+            enable.args(["--user", "enable", SYSTEMD_UNIT_NAME]);
+            run(enable).map(drop)
+        })();
+        if enabled.is_err() {
+            // Back to how it was: the old unit, or none (as on macOS); best
+            // effort, the systemctl error is the one to report.
+            let _ = match previous {
+                Some(bytes) => fs::write(&unit, bytes),
+                None => fs::remove_file(&unit),
+            };
+        }
+        enabled
     }
     #[cfg(windows)]
     {
@@ -318,6 +344,73 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     }
 }
 
+/// Whether the file at `path` exists with exactly the text `expected`.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn file_has_text(path: &Path, expected: &str) -> Result<bool, PgServerError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text == expected),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(PgServerError::File {
+            path: path.to_owned(),
+            source: e,
+        }),
+    }
+}
+
+/// Whether the unit in `unit_dir` matches `expected` and `systemctl enable`
+/// linked it into the wants folder (a unit file alone is a failed enable).
+#[cfg(any(target_os = "linux", test))]
+fn systemd_enabled(unit_dir: &Path, expected: &str) -> Result<bool, PgServerError> {
+    let link = unit_dir.join(SYSTEMD_WANTS_DIR).join(SYSTEMD_UNIT_NAME);
+    Ok(file_has_text(&unit_dir.join(SYSTEMD_UNIT_NAME), expected)?
+        && link.symlink_metadata().is_ok())
+}
+
+/// Whether `reg query` output (`    NAME    REG_SZ    VALUE`) holds `command`.
+#[cfg(any(windows, test))]
+fn reg_output_has(stdout: &str, command: &str) -> bool {
+    stdout
+        .lines()
+        .filter_map(|l| l.split_once("REG_SZ"))
+        .any(|(_, value)| value.trim() == command)
+}
+
+/// Whether the login entry exists and is exactly what [`enable`] would write
+/// for `exe` and `config_dir`.
+pub fn is_enabled(exe: &Path, config_dir: &Path) -> Result<bool, PgServerError> {
+    #[cfg(target_os = "macos")]
+    {
+        file_has_text(&launch_agent_path()?, &render_launch_agent(exe, config_dir))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        systemd_enabled(
+            &home()?.join(SYSTEMD_USER_DIR),
+            &render_systemd_unit(exe, config_dir),
+        )
+    }
+    #[cfg(windows)]
+    {
+        let out = Command::new("reg")
+            .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
+            .output()
+            .map_err(|source| PgServerError::Spawn {
+                program: "reg".into(),
+                source,
+            })?;
+        Ok(out.status.success()
+            && reg_output_has(
+                &String::from_utf8_lossy(&out.stdout),
+                &windows_run_command(exe, config_dir),
+            ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (exe, config_dir);
+        Ok(false)
+    }
+}
+
 /// Stop starting the server at login (the running server is left alone).
 pub fn disable() -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
@@ -335,7 +428,7 @@ pub fn disable() -> Result<(), PgServerError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let unit = home()?.join(".config/systemd/user").join(SYSTEMD_UNIT_NAME);
+        let unit = home()?.join(SYSTEMD_USER_DIR).join(SYSTEMD_UNIT_NAME);
         if unit.try_exists().map_err(file_error(&unit))? {
             let mut disable = Command::new("systemctl");
             disable.args(["--user", "disable", SYSTEMD_UNIT_NAME]);
@@ -512,6 +605,38 @@ mod tests {
             windows_run_command(Path::new(r"C:\bml.exe"), Path::new(r"D:\")),
             r#""C:\bml.exe" "--config-dir" "D:\\" "server" "start""#
         );
+    }
+
+    #[test]
+    fn file_has_text_compares_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x");
+        assert!(!file_has_text(&f, "a").unwrap());
+        std::fs::write(&f, "a").unwrap();
+        assert!(file_has_text(&f, "a").unwrap());
+        assert!(!file_has_text(&f, "b").unwrap());
+    }
+
+    #[test]
+    fn systemd_needs_unit_and_wants_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join(SYSTEMD_UNIT_NAME);
+        assert!(!systemd_enabled(dir.path(), "u").unwrap());
+        std::fs::write(&unit, "u").unwrap();
+        assert!(!systemd_enabled(dir.path(), "u").unwrap());
+        let wants = dir.path().join(SYSTEMD_WANTS_DIR);
+        std::fs::create_dir(&wants).unwrap();
+        std::fs::write(wants.join(SYSTEMD_UNIT_NAME), "").unwrap();
+        assert!(systemd_enabled(dir.path(), "u").unwrap());
+        assert!(!systemd_enabled(dir.path(), "other").unwrap());
+    }
+
+    #[test]
+    fn reg_output_matches_value_exactly() {
+        let out =
+            "\r\nHKEY\\Run\r\n    BMLibrarianPgServer    REG_SZ    \"C:\\bml.exe\" \"server\"\r\n";
+        assert!(reg_output_has(out, "\"C:\\bml.exe\" \"server\""));
+        assert!(!reg_output_has(out, "\"C:\\other.exe\""));
     }
 
     #[test]
