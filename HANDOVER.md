@@ -10,6 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Migration row errors; queue reused-PID check** (2026-11-08, closes
+  #395, #388). `scripts/migrate_factchecker_sqlite_to_postgres.py` catches
+  only `ROW_ERRORS` (`IntegrityError`/`DataError`/`ValueError`) per row in
+  every step (statements, annotators, human annotations, processing
+  metadata, export history), so a lost connection stops the run as
+  `MIGRATION_GUIDE.md` says; `FactCheckerDB.update_statement_review_status`
+  raises `ValueError` when no row matched. Queue: `_process_alive(pid,
+  process_started)` also compares the process's start marker with the one
+  the claiming worker stored in the new `queue_tasks.process_started` column
+  (`_process_start_marker`: ticks since boot on Linux, so clock steps do not
+  make a live worker read as dead; added to old queue files on open), so a PID reused after a crash
+  or reboot no longer blocks `recover`/`cleanup-dead`; access denied or a
+  NULL `process_started` (claimed before the column) fall back to the PID check. `cleanup_dead_process_tasks`
+  and the `orphaned_tasks` count check per task (cleanup re-checks the claim
+  in its UPDATE). Tests:
+  `test_queue_ownership.py::TestReusedPid`, `test_migrate_factchecker_sqlite.py`
+  (`*another_step*`), opt-in `test_factcheck_audit_transactions_db.py`.
 - **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
   PR #396). First Rust code: `rust/` Cargo workspace + CI
   (`.github/workflows/rust.yml`), `bml-pgserver` library (private per-user
@@ -183,8 +200,8 @@ off new work. Longer-term structural items live in
   `queue_cli recover` prints each count and has `--force`; its hints print
   runnable `python -m bmlibrarian.queue_cli …` commands. `_process_alive` is
   `psutil.pid_exists` (Windows-safe; EPERM = alive) and is used by recover,
-  `cleanup_dead_process_tasks` and `get_queue_health`. A reused PID still
-  reads as alive: #388. `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
+  `cleanup_dead_process_tasks` and `get_queue_health`; it also compares the
+  process start time with `started_at` (#388, PR #407). `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
   `queue_system_architecture.md`, `queue_management_guide.md`,
   `queue_system_guide.md`. Tests: `tests/test_queue_ownership.py`.
 - **Queue worker robustness** (2026-11-05, closes #294). The orchestrator
@@ -350,8 +367,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
-  (#392 branch): **4799 passed, 55 skipped** in 7–17 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-08
+  (#395/#388 branch, PR #407): **4809 passed, 57 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

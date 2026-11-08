@@ -65,7 +65,7 @@ class FakeFactCheckerDB:
     def insert_statement(self, statement: Statement, conn: Any = None) -> int:
         """Return the existing id for the text, or a new one."""
         if statement.statement_text in self.failing_statements:
-            raise RuntimeError("statement insert failed")
+            raise psycopg.errors.CheckViolation("statement insert failed")
         return self.statement_ids.setdefault(statement.statement_text, PG_ID_OFFSET + len(self.statement_ids) + 1)
 
     def get_statement(self, statement_id: int) -> Optional[Statement]:
@@ -377,3 +377,45 @@ def test_legacy_review_status_never_raises(raw: Any, expected: str) -> None:
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT ? AS review_status", (raw,)).fetchone()
     assert migrate.legacy_review_status(row) == expected
+
+
+def _add_annotators(path: Path, *usernames: str) -> None:
+    """Add legacy annotator rows (the default legacy file has none)."""
+    with sqlite3.connect(path) as conn:
+        conn.executemany("INSERT INTO annotators (username) VALUES (?)", [(u,) for u in usernames])
+
+
+def test_row_error_in_another_step_is_counted_and_the_run_continues(
+        legacy_db: Path, fake_db: FakeFactCheckerDB, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A row the database refuses (e.g. a CHECK violation) is one error; later rows still migrate (#395)."""
+    _add_annotators(legacy_db, "bad", "good")
+
+    def insert(annotator: Any) -> int:
+        """Refuse the 'bad' annotator like a CHECK constraint."""
+        if annotator.username == "bad":
+            raise psycopg.errors.CheckViolation("violates check constraint")
+        return 1
+    monkeypatch.setattr(fake_db, "insert_or_get_annotator", insert)
+
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db))
+    migrator.migrate_annotators()
+
+    assert migrator.stats["annotators"] == {"total": 2, "migrated": 1, "skipped": 0, "errors": 1}
+
+
+def test_lost_connection_in_another_step_aborts_the_run(
+        legacy_db: Path, fake_db: FakeFactCheckerDB, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dropped connection is not counted per row in the non-verdict steps either: it stops the migration (#395)."""
+    _add_annotators(legacy_db, "first", "second")
+    calls: List[str] = []
+
+    def lost(annotator: Any) -> int:
+        """Fail like a dropped database connection."""
+        calls.append(annotator.username)
+        raise psycopg.OperationalError("server closed the connection")
+    monkeypatch.setattr(fake_db, "insert_or_get_annotator", lost)
+
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db))
+    with pytest.raises(psycopg.OperationalError):
+        migrator.migrate_annotators()
+    assert calls == ["first"]

@@ -7,6 +7,7 @@ that callers can catch; an uncaught one still fails in-flight tasks at exit.
 task; recovery skips tasks whose process is alive unless forced.
 #386: recovery reports reset/failed/skipped separately; ``task_failed`` says
 whether the task will be retried.
+#388: a reused pid (another process's start marker) counts as dead.
 """
 
 import logging
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 from unittest.mock import Mock
 
+import psutil  # type: ignore[import-untyped]
 import pytest
 
 import bmlibrarian.agents.queue_manager as qm
@@ -212,7 +214,7 @@ class TestRecoveryCounts:
         task = claim(queue)
         make_stuck(queue, task.id)
 
-        def finish_then_report_alive(pid: int) -> bool:
+        def finish_then_report_alive(pid: int, process_started: Any = None) -> bool:
             """Another process completes the task while recovery inspects it."""
             other = QueueManager(queue.db_path)
             assert other.complete_task(task.id, {"done": 1}, worker_id=task.worker_id)
@@ -286,6 +288,122 @@ class TestRecoveryCounts:
         queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=1,
                                    mark_failed=False, force=False))
         assert "No stuck tasks found" in capsys.readouterr().out
+
+
+def reuse_pid(queue: QueueManager, task_id: str) -> None:
+    """Record a claim by an earlier process that had this test process's pid."""
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute("UPDATE queue_tasks SET process_started = process_started - 3600 WHERE id = ?",
+                     (task_id,))
+
+
+def fake_process(create_time: Any) -> Any:
+    """A psutil.Process stand-in whose create_time is ``create_time``."""
+    return lambda pid: Mock(create_time=create_time)
+
+
+class TestReusedPid:
+    """#388: the claim stores the worker's start marker; another process with its pid is dead."""
+
+    def test_claim_records_the_start_marker(self, queue: QueueManager) -> None:
+        """The marker of the claiming process is stored with the claim."""
+        task = claim(queue)
+        with sqlite3.connect(queue.db_path) as conn:
+            [(stored,)] = conn.execute("SELECT process_started FROM queue_tasks WHERE id = ?",
+                                       (task.id,)).fetchall()
+        assert stored == queue.process_started == qm._process_start_marker(os.getpid())
+
+    def test_process_alive_compares_start_markers(self) -> None:
+        """Alive only with the claiming process's marker; no marker checks the pid only."""
+        pid, marker = os.getpid(), qm._process_start_marker(os.getpid())
+        assert qm._process_alive(pid, marker) is True
+        assert qm._process_alive(pid, marker + qm.PROCESS_START_MATCH_SECONDS / 2) is True
+        assert qm._process_alive(pid, marker - 3600) is False
+        assert qm._process_alive(pid, None) is True
+        assert qm._process_alive(DEAD_PID, marker) is False
+
+    def test_linux_marker_ignores_clock_steps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A clock step moves Linux create_time and boot_time alike; the marker stays."""
+        boot, ticks, step = 1_000_000.0, 123.45, 3600.0
+        monkeypatch.setattr(qm.psutil, "LINUX", True)
+        markers = []
+        for shift in (0.0, step):
+            monkeypatch.setattr(qm.psutil, "Process", fake_process(lambda: boot + shift + ticks))
+            monkeypatch.setattr(qm.psutil, "boot_time", lambda: boot + shift)
+            markers.append(qm._process_start_marker(os.getpid()))
+        assert markers == pytest.approx([ticks, ticks], abs=qm.PROCESS_START_MATCH_SECONDS)
+
+    def test_unreadable_start_time_checks_the_pid_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Access denied → alive (as before); exited meanwhile → dead."""
+        def failing(error: type) -> Any:
+            """A create_time that fails like psutil."""
+            def create_time() -> float:
+                """Raise ``error``."""
+                raise error(os.getpid())
+            return create_time
+
+        monkeypatch.setattr(qm.psutil, "Process", fake_process(failing(psutil.AccessDenied)))
+        assert qm._process_alive(os.getpid(), 1.0) is True
+        monkeypatch.setattr(qm.psutil, "Process", fake_process(failing(psutil.NoSuchProcess)))
+        assert qm._process_alive(os.getpid(), 1.0) is False
+
+    def test_queue_file_without_the_column_gains_it(self, tmp_path: Path) -> None:
+        """An older queue file is migrated; its unmarked claims fall back to the pid check."""
+        path = tmp_path / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE queue_tasks (
+                id TEXT PRIMARY KEY, source_agent TEXT, target_agent TEXT NOT NULL,
+                method_name TEXT NOT NULL, data TEXT NOT NULL, status TEXT NOT NULL,
+                priority INTEGER NOT NULL, result TEXT, error_message TEXT,
+                retry_count INTEGER DEFAULT 0, max_retries INTEGER DEFAULT 3,
+                created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+                process_id INTEGER, worker_id TEXT)""")
+            conn.execute("""INSERT INTO queue_tasks (id, target_agent, method_name, data, status,
+                            priority, created_at, started_at, process_id, worker_id)
+                            VALUES ('old', ?, 'run', '{}', ?, 2, ?, ?, ?, 'w')""",
+                         (AGENT, TaskStatus.PROCESSING.value, "2000-01-01T00:00:00+00:00",
+                          "2000-01-01T00:00:00+00:00", os.getpid()))
+
+        queue = QueueManager(str(path))
+
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1) == \
+            qm.RecoveryCounts(skipped_running=1)
+
+    def test_recover_fails_a_task_whose_pid_was_reused(self, queue: QueueManager) -> None:
+        """Not skipped as running: the task is failed like any dead worker's."""
+        task = claim(queue)
+        make_stuck(queue, task.id)
+        reuse_pid(queue, task.id)
+
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1) == qm.RecoveryCounts(failed=1)
+        assert "PID was reused" in queue.get_task_status(task.id).error_message
+
+    def test_cleanup_dead_checks_each_task_of_a_pid(self, queue: QueueManager) -> None:
+        """Same pid: the earlier process's task is failed, this process's kept."""
+        reused, live = claim(queue), claim(queue)
+        reuse_pid(queue, reused.id)
+
+        assert queue.get_queue_health()["orphaned_tasks"] == 1
+        assert queue.cleanup_dead_process_tasks() == 1
+        assert queue.get_task_status(reused.id).status == TaskStatus.FAILED
+        assert queue.get_task_status(live.id).status == TaskStatus.PROCESSING
+
+    def test_cleanup_dead_leaves_a_task_reclaimed_meanwhile(
+            self, queue: QueueManager, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A task re-claimed between the SELECT and the UPDATE is not failed."""
+        task = claim(queue)
+
+        def reclaim_then_report_dead(pid: int, process_started: Any = None) -> bool:
+            """A live worker re-claims the task while cleanup inspects the old claim."""
+            with sqlite3.connect(queue.db_path) as conn:
+                conn.execute("UPDATE queue_tasks SET worker_id = ?, started_at = ? WHERE id = ?",
+                             ("other-worker", datetime.now(timezone.utc).isoformat(), task.id))
+            return False
+
+        monkeypatch.setattr(qm, "_process_alive", reclaim_then_report_dead)
+
+        assert queue.cleanup_dead_process_tasks() == 0
+        assert queue.get_task_status(task.id).status == TaskStatus.PROCESSING
 
 
 class TestTaskFailedEvent:

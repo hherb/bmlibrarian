@@ -85,9 +85,20 @@ counts.reset, counts.failed, counts.skipped_running  # RecoveryCounts
   to `mark_as_failed=True` too. `force=True` recovers it as well
   (`queue_cli recover --force`) and records "Task forcibly recovered while
   process N was still running"
-- Liveness is checked with `psutil.pid_exists` (never `os.kill(pid, 0)`, which
-  on Windows sends Ctrl-C). A process ID that has since been reused by another
-  process reads as running, so such a task needs `force=True`.
+- Liveness is checked per task with `psutil` (never `os.kill(pid, 0)`, which
+  on Windows sends Ctrl-C): the recorded process must exist **and** have the
+  start marker the claiming worker stored in `process_started` (#388). The
+  marker is `_process_start_marker`: on Linux the seconds from boot to the
+  process start (psutil's `create_time()` minus `boot_time()`), elsewhere the
+  creation time the kernel recorded. Clock changes (NTP steps, a resumed VM)
+  do not move it, so a live worker never reads as dead, and a process ID
+  reused by another process after a crash or reboot counts as dead. Markers
+  match within `PROCESS_START_MATCH_SECONDS` (psutil's precision). When the
+  start time cannot be read (access denied), or the task was claimed before
+  queue files had the column (`process_started` is NULL), only the process
+  ID is checked, and such a task may still need `force=True`.
+  `cleanup_dead_process_tasks` and the `orphaned_tasks` health count use the
+  same per-task check.
 
 Recovery writes a task only if it is still the claim it inspected (status
 PROCESSING, same `worker_id` and `started_at`). A worker in another process
@@ -231,6 +242,7 @@ The recovery system extends the base queue schema with process tracking:
 ```sql
 ALTER TABLE queue_tasks ADD COLUMN process_id INTEGER;
 ALTER TABLE queue_tasks ADD COLUMN worker_id TEXT;
+ALTER TABLE queue_tasks ADD COLUMN process_started REAL;  -- claiming worker's start marker (#388)
 
 CREATE INDEX IF NOT EXISTS idx_process_status 
 ON queue_tasks(process_id, status);
