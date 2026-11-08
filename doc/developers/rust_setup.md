@@ -30,22 +30,56 @@ Order: Hardware, Database, Autostart, Ollama, Models, EmbeddingModel.
 `FnMut(StepEvent)` callback (`Started`, `Progress`, `Notice`, `Warning`, and
 `Finished`, which `run_setup` sends for every step, skipped ones included;
 `run_step` sends no `Finished`) and end in a `StepOutcome` (`AlreadyPresent`,
-`Installed`, `Started`, `Skipped`, `Failed(message)`). Hardware only warns; it
-fails only when the system does not report its memory. The Database step with
+`Installed`, `Started`, `Warnings(texts)`, `Skipped`, `Failed(message)`).
+Hardware only warns and ends in `Warnings` (the same texts as its `Warning`
+events, so the summary repeats them) or `AlreadyPresent`; it fails only when
+the system does not report its memory. A disk it cannot find in the mount list
+(or a relative path) gets an "unknown free space" warning. The Ollama models
+disk is checked only for a loopback `OLLAMA_HOST`; the folder is
+`OLLAMA_MODELS` (an empty value counts as unset), else on Linux
+`/usr/share/ollama/.ollama/models` (the `install.sh` service user) when
+`/usr/share/ollama` exists or `~/.ollama/models` does not, else
+`~/.ollama/models`. The Models step tries every approved model and fails with
+all their errors joined. The Database step with
 no plan resumes from saved state, and reports when nothing is saved; it warns
-when `pg_search` is missing or the app password had to be reset. The Ollama
+when `pg_search` is missing or the app password had to be reset, and then
+ends in `Warnings` with those texts (`report_warnings`, shared by Hardware,
+Database and Ollama). The Ollama
 step reports why Ollama did not answer before starting or installing it, and
-on macOS waits for `open` so a damaged app's error shows.
+on macOS waits for `open` so a damaged app's error shows. It looks for an
+installed Ollama in `app_candidates` (macOS `~/Applications`, then
+`/Applications`; Windows `%LOCALAPPDATA%\Programs\Ollama`, then
+`%ProgramFiles%\Ollama`), then an `ollama` command on `PATH` (Homebrew,
+Linux). An app is started; a command is not (setup tells the person how to
+start it). On macOS the zip is unpacked into
+`~/Applications/.bml-ollama-extract` and only then renamed to `Ollama.app`, so
+a failed unpack never leaves a partial app that later runs would find. The
+installer is deleted only after the app is in place; failing to delete it, or
+the staging folder, is a warning (the step then ends in `Warnings`).
+
+Downloads (the Ollama installer, the GGUF) and the stale part-file sweep run
+under `lock_downloads`: an OS file lock (`File::try_lock`, hence MSRV 1.89)
+on `.bml-setup-download.lock` in the config folder. A second setup in the same
+folder fails that step at once ("Another BMLibrarian setup is
+downloading…"); the lock is released when the process exits, even by a
+crash. Once the lock is held, the Ollama and Embedding steps check again
+whether the other setup already finished, so nothing is downloaded twice. A
+disk without file locks fails with a message saying so.
 `SetupError::Other` is for errors that are neither Ollama's nor the database
-layer's (a saved existing server without `bml-admin.env`, no home folder).
+layer's (e.g. a saved existing server without `bml-admin.env`, no home
+folder, the download lock held or unsupported, `current_exe` failing).
 `DatabasePlan::Existing` goes through `bml_pgserver::external::adopt`
 (loopback only, role `bml_app` and database `bmlibrarian` only).
 
 The CLI prints progress at most once per `PROGRESS_PRINT_INTERVAL` (5 s) per
-step. The superuser password comes from `BML_PG_SUPERUSER_PASSWORD` or
+step. Failed steps and warnings go to stderr, everything else to stdout; the
+summary (stdout) lists every step and each step's warnings. Before any step
+runs it calls `bml_pgserver::external::check_request`, so a remote
+`--existing-server` or an unusable password (an empty `--password-stdin` line)
+exits 1 at once; the Tauri screen should call it too. The superuser password comes from `BML_PG_SUPERUSER_PASSWORD` or
 `--password-stdin`, never argv. `--existing-server [::1]:5432` has its
-brackets stripped before reaching `ExternalRequest` (the postgres crate cannot
-resolve them). `needs_pg_search` is `!cfg!(windows)`.
+brackets stripped before reaching `ExternalRequest`, and `adopt` strips them
+too, for library callers (the postgres crate cannot resolve them). `needs_pg_search` is `!cfg!(windows)`.
 
 ## Pins and how to bump them
 

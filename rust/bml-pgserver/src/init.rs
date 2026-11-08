@@ -673,6 +673,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn init_refuses_admin_credentials_of_another_server() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bindir = tmp.path().join("bin");
+        fs::create_dir_all(&bindir).unwrap();
+        let postgres = bindir.join("postgres");
+        fs::write(&postgres, "#!/bin/sh\necho 'postgres (PostgreSQL) 18.0'\n").unwrap();
+        fs::set_permissions(&postgres, fs::Permissions::from_mode(0o755)).unwrap();
+        let req = InitRequest {
+            bindir,
+            data_dir: tmp.path().join("data"),
+            extension_dirs: vec![],
+        };
+        for (user, host) in [("postgres", HOST), (ADMIN_ROLE, "::1")] {
+            let cfg = tmp.path().join(format!("cfg-{user}-{host}"));
+            fs::create_dir_all(&cfg).unwrap();
+            let info = ConnInfo {
+                host: host.into(),
+                port: 5432,
+                dbname: DATABASE.into(),
+                user: user.into(),
+                password: "theirs".into(),
+            };
+            let admin_env = cfg.join(ADMIN_ENV_FILE_NAME);
+            fs::write(&admin_env, render_env(&info)).unwrap();
+            let err = init(&req, &cfg).unwrap_err();
+            assert!(
+                matches!(err, PgServerError::AdminCredentialsInUse { .. }),
+                "{user}@{host}: {err}"
+            );
+            // Nothing written: the other server's password is kept.
+            assert_eq!(fs::read_to_string(&admin_env).unwrap(), render_env(&info));
+            assert!(!cfg.join(STATE_FILE_NAME).exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn non_unicode_path_is_refused() {
         use std::os::unix::ffi::OsStrExt;
         let req = InitRequest {

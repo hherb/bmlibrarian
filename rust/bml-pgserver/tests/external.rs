@@ -378,7 +378,10 @@ fn adopt_refuses_other_address_than_saved() {
         ..f.req.clone()
     };
     let err = adopt(&other, &f.dir_b).unwrap_err();
-    assert!(matches!(err, PgServerError::StateMismatch { .. }), "{err}");
+    assert!(
+        matches!(err, PgServerError::ExistingServerMismatch { .. }),
+        "{err}"
+    );
 }
 
 #[test]

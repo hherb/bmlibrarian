@@ -269,6 +269,41 @@ fn retry_while_busy(
     }
 }
 
+/// Put `path` back as it was before enable wrote it: `previous` bytes, or
+/// no file (a missing file is fine).
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn restore_file(path: &Path, previous: Option<Vec<u8>>) -> std::io::Result<()> {
+    match previous {
+        Some(bytes) => std::fs::write(path, bytes),
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// `result`; when it failed, also run `undo` for `path`. A failed undo is
+/// reported with the original error, as the leftover file would make the
+/// next run believe start at login is set up.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn undo_on_failure(
+    result: Result<(), PgServerError>,
+    path: &Path,
+    undo: impl FnOnce() -> std::io::Result<()>,
+) -> Result<(), PgServerError> {
+    let Err(error) = result else {
+        return Ok(());
+    };
+    match undo() {
+        Ok(()) => Err(error),
+        Err(source) => Err(PgServerError::AutostartLeftover {
+            error: Box::new(error),
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
 /// Start the server at every login of this user (on macOS, also now).
 pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
@@ -281,13 +316,10 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
         let agents = plist.parent().expect("plist path has a parent");
         fs::create_dir_all(agents).map_err(file_error(agents))?;
         fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))?;
-        let loaded = bootstrap(&domain, &plist);
-        if loaded.is_err() {
-            // Not enabled after all, so no login entry either; best effort,
-            // as the bootstrap error is the one to report.
-            let _ = fs::remove_file(&plist);
-        }
-        loaded
+        // Not enabled after all, so no login entry either.
+        undo_on_failure(bootstrap(&domain, &plist), &plist, || {
+            restore_file(&plist, None)
+        })
     }
     #[cfg(target_os = "linux")]
     {
@@ -309,15 +341,8 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
             enable.args(["--user", "enable", SYSTEMD_UNIT_NAME]);
             run(enable).map(drop)
         })();
-        if enabled.is_err() {
-            // Back to how it was: the old unit, or none (as on macOS); best
-            // effort, the systemctl error is the one to report.
-            let _ = match previous {
-                Some(bytes) => fs::write(&unit, bytes),
-                None => fs::remove_file(&unit),
-            };
-        }
-        enabled
+        // Back to how it was: the old unit, or none (as on macOS).
+        undo_on_failure(enabled, &unit, || restore_file(&unit, previous))
     }
     #[cfg(windows)]
     {
@@ -521,6 +546,49 @@ mod tests {
             results.next().expect("no more attempts expected")
         });
         (result, calls)
+    }
+
+    #[test]
+    fn failed_enable_puts_the_file_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entry");
+        let failed = || Err(launchctl_failed(1));
+
+        std::fs::write(&path, "new").unwrap();
+        let e = undo_on_failure(failed(), &path, || restore_file(&path, None)).unwrap_err();
+        assert!(matches!(e, PgServerError::Command { .. }), "{e}");
+        assert!(!path.exists());
+
+        std::fs::write(&path, "new").unwrap();
+        undo_on_failure(failed(), &path, || {
+            restore_file(&path, Some(b"old".to_vec()))
+        })
+        .unwrap_err();
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+
+        undo_on_failure(Ok(()), &path, || panic!("no undo after success")).unwrap();
+        // Removing a file that is already gone is fine.
+        restore_file(&dir.path().join("none"), None).unwrap();
+    }
+
+    #[test]
+    fn failed_undo_is_reported_with_the_error() {
+        let path = Path::new("/x/entry");
+        let e = undo_on_failure(Err(launchctl_failed(1)), path, || {
+            Err(std::io::Error::other("read-only"))
+        })
+        .unwrap_err();
+        let text = e.to_string();
+        assert!(
+            matches!(e, PgServerError::AutostartLeftover { .. }),
+            "{text}"
+        );
+        assert!(
+            text.contains("attempt failed with 1")
+                && text.contains("/x/entry")
+                && text.contains("read-only"),
+            "{text}"
+        );
     }
 
     #[test]

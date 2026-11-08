@@ -19,6 +19,13 @@ pub enum HardwareWarning {
         /// Memory the models need.
         recommended: u64,
     },
+    /// The free space on the disk holding `path` could not be read.
+    UnknownDisk {
+        /// A folder whose disk is unknown.
+        path: PathBuf,
+        /// Bytes setup will put there.
+        needed: u64,
+    },
     /// Less free disk space than the downloads need.
     LowDisk {
         /// A folder on the short disk.
@@ -45,6 +52,13 @@ impl fmt::Display for HardwareWarning {
                 gb(*total),
                 gb(*recommended)
             ),
+            Self::UnknownDisk { path, needed } => write!(
+                f,
+                "Setup could not tell how much space is free on the disk holding {}; \
+                 make sure about {:.1} GB is free there.",
+                path.display(),
+                gb(*needed)
+            ),
             Self::LowDisk { path, free, needed } => write!(
                 f,
                 "The disk holding {} has {:.1} GB free; setup needs about {:.1} GB there. \
@@ -61,11 +75,16 @@ impl fmt::Display for HardwareWarning {
 /// Free bytes on the disk holding `path`: the mount point that is the longest
 /// prefix of it, matched by path components. `None` if no mount contains it.
 pub fn free_space_at(path: &Path, mounts: &[(PathBuf, u64)]) -> Option<u64> {
+    find_mount(path, mounts).map(|(_, free)| *free)
+}
+
+/// The mount holding `path`: the longest prefix of it, by path components.
+/// A relative `path` matches no mount.
+fn find_mount<'a>(path: &Path, mounts: &'a [(PathBuf, u64)]) -> Option<&'a (PathBuf, u64)> {
     mounts
         .iter()
         .filter(|(mount, _)| path.starts_with(mount))
         .max_by_key(|(mount, _)| mount.components().count())
-        .map(|(_, free)| *free)
 }
 
 /// `path` itself or its nearest parent that exists.
@@ -82,17 +101,19 @@ pub fn ram_warning(total: u64) -> Option<HardwareWarning> {
 }
 
 /// One warning per disk whose free space is below the sum of the `needs`
-/// (folder, bytes) placed on it. Needs on unknown disks are skipped.
+/// (folder, bytes) placed on it, and one per need whose disk is not among
+/// `mounts` (an empty list, or a relative path), as its space is unknown.
 pub fn disk_warnings(needs: &[(PathBuf, u64)], mounts: &[(PathBuf, u64)]) -> Vec<HardwareWarning> {
     // (mount, free, needed, first path)
     let mut per_mount: Vec<(&Path, u64, u64, &Path)> = Vec::new();
+    let mut unknown = Vec::new();
     for (path, need) in needs {
         let probe = nearest_existing_ancestor(path).unwrap_or_else(|| path.clone());
-        let Some((mount, free)) = mounts
-            .iter()
-            .filter(|(m, _)| probe.starts_with(m))
-            .max_by_key(|(m, _)| m.components().count())
-        else {
+        let Some((mount, free)) = find_mount(&probe, mounts) else {
+            unknown.push(HardwareWarning::UnknownDisk {
+                path: path.clone(),
+                needed: *need,
+            });
             continue;
         };
         match per_mount.iter_mut().find(|e| e.0 == mount.as_path()) {
@@ -108,6 +129,7 @@ pub fn disk_warnings(needs: &[(PathBuf, u64)], mounts: &[(PathBuf, u64)]) -> Vec
             free,
             needed,
         })
+        .chain(unknown)
         .collect()
 }
 
@@ -164,6 +186,21 @@ mod tests {
             }
         ));
         assert!(disk_warnings(&[(PathBuf::from("/a"), 6)], &mounts).is_empty());
+    }
+
+    #[test]
+    fn disk_warnings_name_needs_on_unknown_disks() {
+        let needs = [(PathBuf::from("/a"), 6), (PathBuf::from("rel"), 1)];
+        let w = disk_warnings(&needs, &[m("/", 10)]);
+        assert_eq!(
+            w,
+            [HardwareWarning::UnknownDisk {
+                path: PathBuf::from("rel"),
+                needed: 1
+            }]
+        );
+        assert_eq!(disk_warnings(&needs, &[]).len(), 2);
+        assert!(w[0].to_string().contains("could not tell"), "{}", w[0]);
     }
 
     #[test]

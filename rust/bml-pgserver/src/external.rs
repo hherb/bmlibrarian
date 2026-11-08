@@ -4,7 +4,7 @@
 //! anything it did not create. Like [`crate::init::init`] it is resumable:
 //! the credentials and state files are written before anything is created.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use postgres::Client;
 use serde::{Deserialize, Serialize};
@@ -276,9 +276,17 @@ fn exists(path: &Path) -> Result<bool, PgServerError> {
     path.try_exists().map_err(file_error(path))
 }
 
-/// Create bml's role and database on the existing server `req` names, and
-/// keep its files in `config_dir`. Safe to run again after an interruption.
-pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, PgServerError> {
+/// `host` without the brackets of an IPv6 literal (`[::1]` → `::1`).
+fn unbracket(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// Refuse a request [`adopt`] would refuse before touching anything: a host
+/// that is not this computer, or a password or superuser name that cannot be
+/// stored. Front ends call it before running other setup steps.
+pub fn check_request(req: &ExternalRequest) -> Result<(), PgServerError> {
     if !is_loopback_host(&req.host) {
         return Err(PgServerError::NotLoopback {
             host: req.host.clone(),
@@ -290,6 +298,18 @@ pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, P
     if !is_storable_value(&req.superuser) {
         return Err(PgServerError::SuperuserNotStorable);
     }
+    Ok(())
+}
+
+/// Create bml's role and database on the existing server `req` names, and
+/// keep its files in `config_dir`. Safe to run again after an interruption.
+pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, PgServerError> {
+    check_request(req)?;
+    // libpq and bml.env take an IPv6 host without brackets.
+    let req = &ExternalRequest {
+        host: unbracket(&req.host).to_owned(),
+        ..req.clone()
+    };
     let private_state = config_dir.join(STATE_FILE_NAME);
     if exists(&private_state)? {
         return Err(PgServerError::PrivateServerConfigured {
@@ -305,10 +325,9 @@ pub fn adopt(req: &ExternalRequest, config_dir: &Path) -> Result<AdoptOutcome, P
     let saved = load_external_state(config_dir)?;
     if let Some(saved) = &saved {
         if (&saved.host, saved.port) != (&state.host, state.port) {
-            return Err(PgServerError::StateMismatch {
-                field: "existing server address",
-                saved: PathBuf::from(format!("{}:{}", saved.host, saved.port)),
-                requested: PathBuf::from(format!("{}:{}", state.host, state.port)),
+            return Err(PgServerError::ExistingServerMismatch {
+                saved: format!("{}:{}", saved.host, saved.port),
+                requested: format!("{}:{}", state.host, state.port),
             });
         }
     }
@@ -528,5 +547,110 @@ mod tests {
         };
         save_external_state(&cfg, &state).unwrap();
         assert_eq!(load_external_state(&cfg).unwrap(), Some(state));
+    }
+
+    fn request(host: &str) -> ExternalRequest {
+        ExternalRequest {
+            host: host.into(),
+            port: 5432,
+            superuser: "postgres".into(),
+            password: generate_password(),
+            needs_pg_search: false,
+        }
+    }
+
+    #[test]
+    fn bad_requests_are_refused_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let e = adopt(&request("db.example"), &cfg).unwrap_err();
+        assert!(matches!(e, PgServerError::NotLoopback { .. }), "{e}");
+        let base = generate_password();
+        let bad = [String::new(), format!(" {base}"), format!("{base}\t{base}")];
+        for (case, pw) in bad.into_iter().enumerate() {
+            let req = ExternalRequest {
+                password: pw,
+                ..request("127.0.0.1")
+            };
+            let e = adopt(&req, &cfg).unwrap_err();
+            assert!(
+                matches!(e, PgServerError::PasswordNotStorable),
+                "case {case}: {e}"
+            );
+        }
+        assert!(!cfg.exists());
+        check_request(&request("[::1]")).unwrap();
+    }
+
+    #[test]
+    fn ipv6_brackets_are_dropped() {
+        assert_eq!(unbracket("[::1]"), "::1");
+        assert_eq!(unbracket("::1"), "::1");
+        assert_eq!(unbracket("localhost"), "localhost");
+    }
+
+    #[test]
+    fn another_saved_address_is_refused_by_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ExternalState {
+            host: "::1".into(),
+            port: 5433,
+            superuser: "postgres".into(),
+        };
+        save_external_state(dir.path(), &state).unwrap();
+        // `[::1]` is compared unbracketed, so only the port differs here.
+        let e = adopt(&request("[::1]"), dir.path()).unwrap_err();
+        let text = e.to_string();
+        assert!(
+            matches!(e, PgServerError::ExistingServerMismatch { .. }),
+            "{text}"
+        );
+        assert!(
+            text.contains("::1:5433") && text.contains("::1:5432"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn bracketed_ipv6_rerun_matches_the_saved_server() {
+        let dir = tempfile::tempdir().unwrap();
+        // A port nothing listens on, so the rerun stops at connecting.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        save_external_state(
+            dir.path(),
+            &ExternalState {
+                host: "::1".into(),
+                port,
+                superuser: "postgres".into(),
+            },
+        )
+        .unwrap();
+        let req = ExternalRequest {
+            port,
+            ..request("[::1]")
+        };
+        let admin_env = dir.path().join(ADMIN_ENV_FILE_NAME);
+        let saved = render_env(&ConnInfo {
+            host: "::1".into(),
+            port,
+            dbname: DATABASE.into(),
+            user: "postgres".into(),
+            password: req.password.clone(),
+        });
+        std::fs::write(&admin_env, &saved).unwrap();
+        let e = adopt(&req, dir.path()).unwrap_err();
+        assert!(
+            !matches!(
+                e,
+                PgServerError::ExistingServerMismatch { .. }
+                    | PgServerError::AdminCredentialsInUse { .. }
+            ),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_to_string(&admin_env).unwrap(), saved);
     }
 }

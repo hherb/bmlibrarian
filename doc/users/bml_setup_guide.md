@@ -9,10 +9,10 @@ where it stopped.
 
 | Step | What it does |
 |---|---|
-| Hardware check | Warns if the computer has less than 16 GB of memory or too little free disk space for the downloads. It never stops setup. |
+| Hardware check | Warns if the computer has less than 16 GB of memory, too little free disk space for the downloads, or a disk whose free space it cannot read. It never stops setup, and the summary repeats its warnings. When Ollama runs on another computer, its disk is not checked. |
 | Database | Sets up the PostgreSQL database BMLibrarian stores its literature in (see "Choosing a database" below). |
 | Start at login | Starts the private database automatically when you log in. |
-| Ollama | Installs or starts Ollama, the program that runs the AI models on your computer. |
+| Ollama | Installs or starts Ollama, the program that runs the AI models on your computer. An Ollama you installed yourself (also with Homebrew) is used rather than installed again; if it is a command rather than an app, setup tells you how to start it. |
 | Language models | Downloads the two approved models: `gpt-oss:20b` (about 14 GB) and `medgemma4B_it_q8:latest` (about 5 GB). Other models are never substituted. |
 | Embedding model | Downloads the search model (about 1.2 GB) into `models/` inside the BMLibrarian folder and checks it is intact. |
 
@@ -29,7 +29,11 @@ bml setup --pg-bindir /path/to/postgresql18/bin
 You see one line when each step starts and ends (a skipped step only gets
 the end line), a progress line about every
 five seconds during downloads, and a summary table at the end. Warnings start
-with `Warning:`. Setup exits with 0 when no step failed, 1 otherwise.
+with `Warning:`. Warnings and failed steps are written to standard error,
+everything else to standard output; the summary at the end (standard output)
+repeats every failure and warning. Setup exits with 0 when no step failed, 1
+otherwise. Only one setup at a time can download into a BMLibrarian folder; a
+second one stops its download steps with a message saying so.
 
 Useful options:
 
@@ -81,7 +85,14 @@ disk space, a missing program) and run `bml setup` again. An interrupted languag
 stopped (Ollama keeps the partial data); an interrupted embedding-model or
 Ollama-installer download starts again from the beginning on the next run.
 Later steps still run when an earlier one failed, except those that depend on
-it (start at login needs the database; the models need Ollama).
+it (start at login needs the database; the models need Ollama). If one
+language model fails, setup still tries the other one.
+
+An `--existing-server` on another computer, or a password or superuser name
+that cannot be used (empty, or starting or ending with a space), stops setup
+before any step runs, so nothing is downloaded first; a remote server is
+refused before the password is even read. A wrong port or password is only
+found by the Database step.
 
 ## Linux notes
 

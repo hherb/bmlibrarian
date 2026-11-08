@@ -22,7 +22,7 @@ off new work. Longer-term structural items live in
   Portable PG18/pgvector/pg_search binaries are not yet sourced (`--bindir`
   points at an existing install).
 - **Rust one-click installer, part 3: `bml-setup` + `bml setup`**
-  (2026-11-07, branch `feat/bml-setup`). New `rust/bml-setup` crate (hardware
+  (2026-11-07, PR #402). New `rust/bml-setup` crate (hardware
   check, database, autostart, Ollama, models, embedding GGUF; resumable,
   failures don't stop independent steps) and `bml setup` front end; plan
   `docs/superpowers/plans/2026-11-07-bml-setup.md`, docs
@@ -41,8 +41,32 @@ off new work. Longer-term structural items live in
   import profile and any server restart must refuse when `bml-external.json`
   exists (an existing server is never restarted by bml). Portable
   PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
-  Lower-priority review follow-ups (hardware summary, Ollama detection,
-  macOS autostart leftovers, setup lock) are in #403.
+- **`bml setup` review follow-ups** (2026-11-08, closes #403, most of #401;
+  branch `fix/bml-setup-followups`). Library API changes ahead of piece 4:
+  `bml_pgserver::external::check_request` (loopback host, storable
+  password/superuser; the CLI calls it before any step, so a remote
+  `--existing-server` or empty `--password-stdin` line exits 1 at once);
+  `adopt` drops `[::1]` brackets itself; new errors `ExistingServerMismatch`
+  and `AutostartLeftover` (a login entry that could not be removed or put
+  back after a failed enable is reported, not left silently); new
+  `StepOutcome::Warnings(Vec<String>)` (Hardware, Database, Ollama via
+  `report_warnings`; the CLI summary repeats them). The Models step tries both models and joins their
+  errors. Hardware: "unknown free space" warning for a disk not in the mount
+  list, no Ollama-disk check for a remote `OLLAMA_HOST`, Linux checks
+  `/usr/share/ollama/.ollama/models`. Ollama detection: `app_candidates`
+  (macOS user/system `Applications`; Windows `%LOCALAPPDATA%` then
+  `%ProgramFiles%`, unverified, #397) then `ollama` on `PATH` (Homebrew); a
+  found command is not started, setup says how. macOS unpacks into
+  `~/Applications/.bml-ollama-extract` and renames, so no partial app.
+  Downloads run under an OS file lock (`.bml-setup-download.lock`,
+  `File::try_lock`; workspace MSRV now 1.89); after taking it the Ollama and
+  Embedding steps re-check, so a second setup never downloads twice. macOS
+  deletes the installer only after the app is moved into place. `parse_ollama_host` refuses
+  userinfo, port 0, text after `]`, `?`/`#`. CLI failures and warnings go to
+  stderr; a remote `--existing-server` is refused before the password is read. Still open on #401: bmlib-side items (README count, tests, CI
+  guard, crates.io 0.3.1 — only 0.3.0 is published), an existing-server
+  `bml server status` exit-0 test and `pg_search` adopt in CI (#399),
+  Windows drive-letter case (#397), installed-Ollama version never checked.
 - **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
   check and password reset on `28P01`, richer connect/DB errors, `bml server
   status` exits 3 when stopped, stricter launchctl error handling, fake-bin
@@ -266,7 +290,8 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - Rust installer: a plan for obtaining portable PG18 + pgvector + pg_search
   binaries (ROADMAP); then piece 4, the Tauri first-run screen driving
-  `bml-setup`. `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner
+  `bml-setup` (the "before piece 4" API items of #401 are done; call
+  `check_request` before `run_setup`). `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner
   decision on a port taken after init).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
