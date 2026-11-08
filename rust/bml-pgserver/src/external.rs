@@ -549,12 +549,12 @@ mod tests {
         assert_eq!(load_external_state(&cfg).unwrap(), Some(state));
     }
 
-    fn request(host: &str, password: &str) -> ExternalRequest {
+    fn request(host: &str) -> ExternalRequest {
         ExternalRequest {
             host: host.into(),
             port: 5432,
             superuser: "postgres".into(),
-            password: password.into(),
+            password: generate_password(),
             needs_pg_search: false,
         }
     }
@@ -563,17 +563,23 @@ mod tests {
     fn bad_requests_are_refused_before_anything_is_written() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("cfg");
-        let e = adopt(&request("db.example", "pw"), &cfg).unwrap_err();
+        let e = adopt(&request("db.example"), &cfg).unwrap_err();
         assert!(matches!(e, PgServerError::NotLoopback { .. }), "{e}");
-        for pw in ["", " pw", "p\tw"] {
-            let e = adopt(&request("127.0.0.1", pw), &cfg).unwrap_err();
+        let base = generate_password();
+        let bad = [String::new(), format!(" {base}"), format!("{base}\t{base}")];
+        for (case, pw) in bad.into_iter().enumerate() {
+            let req = ExternalRequest {
+                password: pw,
+                ..request("127.0.0.1")
+            };
+            let e = adopt(&req, &cfg).unwrap_err();
             assert!(
                 matches!(e, PgServerError::PasswordNotStorable),
-                "{pw:?}: {e}"
+                "case {case}: {e}"
             );
         }
         assert!(!cfg.exists());
-        check_request(&request("[::1]", "pw")).unwrap();
+        check_request(&request("[::1]")).unwrap();
     }
 
     #[test]
@@ -593,7 +599,7 @@ mod tests {
         };
         save_external_state(dir.path(), &state).unwrap();
         // `[::1]` is compared unbracketed, so only the port differs here.
-        let e = adopt(&request("[::1]", "pw"), dir.path()).unwrap_err();
+        let e = adopt(&request("[::1]"), dir.path()).unwrap_err();
         let text = e.to_string();
         assert!(
             matches!(e, PgServerError::ExistingServerMismatch { .. }),
@@ -623,19 +629,19 @@ mod tests {
             },
         )
         .unwrap();
+        let req = ExternalRequest {
+            port,
+            ..request("[::1]")
+        };
         let admin_env = dir.path().join(ADMIN_ENV_FILE_NAME);
         let saved = render_env(&ConnInfo {
             host: "::1".into(),
             port,
             dbname: DATABASE.into(),
             user: "postgres".into(),
-            password: "pw".into(),
+            password: req.password.clone(),
         });
         std::fs::write(&admin_env, &saved).unwrap();
-        let req = ExternalRequest {
-            port,
-            ..request("[::1]", "pw")
-        };
         let e = adopt(&req, dir.path()).unwrap_err();
         assert!(
             !matches!(
