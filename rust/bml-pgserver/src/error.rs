@@ -128,6 +128,17 @@ pub enum PgServerError {
         /// Why it could not be removed or restored.
         source: io::Error,
     },
+    /// Start at login failed; the previous login entry was put back on disk
+    /// but could not be loaded again now.
+    #[error("{error}. The previous start-at-login entry {} was put back but could not be loaded again now ({source}); it will start the server at the next login, or run `bml server autostart enable` again", path.display())]
+    AutostartNotReloaded {
+        /// Why start at login failed.
+        error: Box<PgServerError>,
+        /// The restored login entry file.
+        path: PathBuf,
+        /// Why loading it again failed.
+        source: Box<PgServerError>,
+    },
     /// The configuration folder already uses another existing server.
     #[error("this configuration folder already uses the existing PostgreSQL at {saved}, not {requested}; pass --existing-server {saved}, or use a different --config-dir for the other server")]
     ExistingServerMismatch {

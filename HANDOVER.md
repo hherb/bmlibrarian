@@ -69,9 +69,10 @@ off new work. Longer-term structural items live in
   Windows drive-letter case (#397), installed-Ollama version never checked.
 - **macOS autostart re-enable keeps the old login entry** (2026-11-08,
   closes #405). `autostart::enable` reads the old plist before `bootout`;
-  a failed `bootstrap` writes it back and `bootstrap`s it again
+  a failed write or `bootstrap` writes it back and `bootstrap`s it again
   (`restore_launch_agent`, unit-tested with a fake reload), or removes the
-  new plist when there was none; a failed reload is `AutostartLeftover`.
+  new plist when there was none; a failed reload is `AutostartNotReloaded`
+  (entry intact, loads at next login), a failed restore `AutostartLeftover`.
   Not exercised against a real failing `launchctl`.
 - **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
   check and password reset on `28P01`, richer connect/DB errors, `bml server
