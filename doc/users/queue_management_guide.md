@@ -36,7 +36,8 @@ This shows you:
 # Reset stuck tasks to retry them (tasks out of retries, or from processes
 # that have died, are marked failed). Tasks whose process is still running are
 # skipped, since they may just be slow; the output says how many were reset,
-# failed and skipped
+# failed and skipped. A process that started after the task was claimed (its
+# process ID was reused, e.g. after a reboot) does not count as running
 python -m bmlibrarian.queue_cli recover --timeout 30
 
 # Also recover tasks of a process that is still running (e.g. a hung worker).

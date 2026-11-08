@@ -85,9 +85,15 @@ counts.reset, counts.failed, counts.skipped_running  # RecoveryCounts
   to `mark_as_failed=True` too. `force=True` recovers it as well
   (`queue_cli recover --force`) and records "Task forcibly recovered while
   process N was still running"
-- Liveness is checked with `psutil.pid_exists` (never `os.kill(pid, 0)`, which
-  on Windows sends Ctrl-C). A process ID that has since been reused by another
-  process reads as running, so such a task needs `force=True`.
+- Liveness is checked per task with `psutil` (never `os.kill(pid, 0)`, which
+  on Windows sends Ctrl-C): the recorded process must exist **and** have
+  started no later than the task's `started_at` (plus
+  `PROCESS_START_TOLERANCE_SECONDS`). A process ID reused by another process
+  after a crash or reboot therefore counts as dead (#388). When the start time
+  cannot be read (access denied) or `started_at` has no time zone, only the
+  process ID is checked, and such a task may still need `force=True`.
+  `cleanup_dead_process_tasks` and the `orphaned_tasks` health count use the
+  same per-task check.
 
 Recovery writes a task only if it is still the claim it inspected (status
 PROCESSING, same `worker_id` and `started_at`). A worker in another process

@@ -10,6 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Migration row errors; queue reused-PID check** (2026-11-08, closes
+  #395, #388). `scripts/migrate_factchecker_sqlite_to_postgres.py` catches
+  only `ROW_ERRORS` (`IntegrityError`/`DataError`/`ValueError`) per row in
+  every step (statements, annotators, human annotations, processing
+  metadata, export history), so a lost connection stops the run as
+  `MIGRATION_GUIDE.md` says; `FactCheckerDB.update_statement_review_status`
+  raises `ValueError` when no row matched. Queue: `_process_alive(pid,
+  started_at)` also counts a process created after the claim (plus
+  `PROCESS_START_TOLERANCE_SECONDS`) as dead, so a PID reused after a crash
+  or reboot no longer blocks `recover`/`cleanup-dead`; access denied or a
+  naive `started_at` fall back to the PID check. `cleanup_dead_process_tasks`
+  and the `orphaned_tasks` count check per task (cleanup re-checks the claim
+  in its UPDATE). Queue tests now backdate stuck tasks to this process's
+  start time and recover with timeout 0 (`stuck_since()`). Tests:
+  `test_queue_ownership.py::TestReusedPid`, `test_migrate_factchecker_sqlite.py`
+  (`*another_step*`), opt-in `test_factcheck_audit_transactions_db.py`.
 - **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
   PR #396). First Rust code: `rust/` Cargo workspace + CI
   (`.github/workflows/rust.yml`), `bml-pgserver` library (private per-user
@@ -351,7 +367,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-06
-  (#392 branch): **4799 passed, 55 skipped** in 7–17 min. Without
+  (#395/#388 branch): **4805 passed, 56 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

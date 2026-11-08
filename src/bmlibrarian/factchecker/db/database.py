@@ -237,8 +237,13 @@ class FactCheckerDB:
                     )
                 return None
 
-    def update_statement_review_status(self, statement_id: int, status: str):
-        """Update the review status of a statement."""
+    def update_statement_review_status(self, statement_id: int, status: str) -> None:
+        """
+        Update the review status of a statement.
+
+        Raises:
+            ValueError: No statement has ``statement_id``
+        """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -246,6 +251,8 @@ class FactCheckerDB:
                     SET review_status = %s
                     WHERE statement_id = %s
                 """, (status, statement_id))
+                if cur.rowcount == 0:
+                    raise ValueError(f"no factcheck statement with id {statement_id}")
 
     # ========== Annotator Operations ==========
 

@@ -48,9 +48,10 @@ logger = logging.getLogger(__name__)
 # Log a progress line every this many migrated rows
 PROGRESS_INTERVAL = 100
 
-# Errors caused by one statement's data; anything else (connection lost, schema
-# mismatch, bugs) aborts the run instead of failing every row the same way.
-# ValueError covers malformed agent_config JSON.
+# Errors caused by one row's data, caught per row in every step (#395);
+# anything else (connection lost, schema mismatch, bugs) aborts the run instead
+# of failing every remaining row the same way. ValueError covers malformed
+# agent_config/config_snapshot JSON and a statement row that has disappeared.
 ROW_ERRORS = (psycopg.IntegrityError, psycopg.DataError, ValueError)
 
 # Statuses factcheck.statements accepts (CHECK constraint, migration 008)
@@ -273,7 +274,7 @@ class SQLiteToPostgresMigrator:
                     if self.stats['statements']['migrated'] % PROGRESS_INTERVAL == 0:
                         logger.info(f"  Migrated {self.stats['statements']['migrated']} statements...")
 
-                except Exception as e:
+                except ROW_ERRORS as e:
                     logger.error(f"Error migrating statement {row['id']}: {e}")
                     self.stats['statements']['errors'] += 1
 
@@ -341,7 +342,7 @@ class SQLiteToPostgresMigrator:
                     else:
                         self.stats['annotators']['migrated'] += 1
 
-                except Exception as e:
+                except ROW_ERRORS as e:
                     logger.error(f"Error migrating annotator {row['id']}: {e}")
                     self.stats['annotators']['errors'] += 1
 
@@ -504,7 +505,7 @@ class SQLiteToPostgresMigrator:
                     else:
                         self.stats['human_annotations']['migrated'] += 1
 
-                except Exception as e:
+                except ROW_ERRORS as e:
                     logger.error(f"Error migrating human annotation {row['id']}: {e}")
                     self.stats['human_annotations']['errors'] += 1
 
@@ -553,7 +554,7 @@ class SQLiteToPostgresMigrator:
                     else:
                         self.stats['processing_metadata']['migrated'] += 1
 
-                except Exception as e:
+                except ROW_ERRORS as e:
                     logger.error(f"Error migrating processing metadata {row['id']}: {e}")
                     self.stats['processing_metadata']['errors'] += 1
 
@@ -603,7 +604,7 @@ class SQLiteToPostgresMigrator:
                     else:
                         self.stats['export_history']['migrated'] += 1
 
-                except Exception as e:
+                except ROW_ERRORS as e:
                     logger.error(f"Error migrating export history {row['id']}: {e}")
                     self.stats['export_history']['errors'] += 1
 

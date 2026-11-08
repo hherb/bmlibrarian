@@ -38,6 +38,11 @@ MIN_SQLITE_VERSION: tuple = (3, 35, 0)
 # instead of briefly blocking and retrying.
 QUEUE_BUSY_TIMEOUT_MS: int = 30_000
 
+# Seconds a process's reported start time may lie after the task's claim time
+# and still count as the claiming worker: psutil derives the start time from
+# boot time plus clock ticks, which can be off by a fraction of a second.
+PROCESS_START_TOLERANCE_SECONDS: float = 1.0
+
 # Busy timeout for the SIGTERM-handler cleanup. The interrupted code may hold
 # the write lock itself (e.g. between executemany and commit), so waiting the
 # full QUEUE_BUSY_TIMEOUT_MS would stall termination; the atexit pass retries
@@ -105,16 +110,44 @@ def _register_manager(manager: "QueueManager") -> None:
             _signal_handlers_installed = True
 
 
-def _process_alive(pid: int) -> bool:
-    """Whether a process with this id exists (owned by any user).
+def _process_alive(pid: int, started_at: Optional[str] = None) -> bool:
+    """Whether the process that claimed a task at ``started_at`` may still run.
 
     psutil, not ``os.kill(pid, 0)``: on Windows signal 0 is CTRL_C_EVENT and
     would interrupt the process instead of probing it. (On POSIX psutil does
     use signal 0, treating EPERM as "exists".)
+
+    The queue file outlives crashes and reboots, so ``pid`` may now belong to
+    an unrelated process (#388). With ``started_at`` (the task's ISO claim
+    time), a process created after the claim cannot be the claiming worker and
+    counts as dead. Without it, or when the claim time has no time zone or the
+    start time cannot be read (access denied), only the pid is checked.
+
+    Args:
+        pid: The task's recorded ``process_id``
+        started_at: The task's ``started_at`` as stored (ISO 8601)
+
+    Returns:
+        False if no such process exists or it started after the claim.
     """
-    # shortcut: a reused pid reads as alive, so a dead worker's task then needs
-    # ``force`` (issue #388: compare the process start time with started_at).
-    return psutil.pid_exists(pid)
+    if not psutil.pid_exists(pid):
+        return False
+    if not started_at:
+        return True
+    try:
+        claimed = datetime.fromisoformat(started_at)
+    except ValueError:
+        logger.warning(f"Unreadable started_at {started_at!r}; checking pid {pid} only")
+        return True
+    if claimed.tzinfo is None:
+        return True  # naive time: its zone is unknown, so the comparison could be hours off
+    try:
+        created = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:  # exited meanwhile (zombies included)
+        return False
+    except psutil.AccessDenied:
+        return True
+    return created <= claimed.timestamp() + PROCESS_START_TOLERANCE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -406,7 +439,7 @@ class QueueManager:
                 for (task_id, process_id, worker_id, started_at,
                      retry_count, max_retries) in cursor.fetchall():
                     # A task without a process id has an unknown owner: recoverable.
-                    process_alive = bool(process_id) and _process_alive(process_id)
+                    process_alive = bool(process_id) and _process_alive(process_id, started_at)
                     process_dead = bool(process_id) and not process_alive
                     if process_alive and not force:
                         skipped_running += 1
@@ -475,28 +508,28 @@ class QueueManager:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
-                # Find all processing tasks with process IDs
+                # Per task, not per pid: a reused pid is alive for a task
+                # claimed after the new process started, dead for older ones.
                 cursor = conn.execute("""
-                    SELECT DISTINCT process_id FROM queue_tasks 
+                    SELECT id, process_id, worker_id, started_at FROM queue_tasks
                     WHERE status = ? AND process_id IS NOT NULL
                 """, (TaskStatus.PROCESSING.value,))
-                
-                process_ids = [row[0] for row in cursor.fetchall()]
-                dead_processes = [pid for pid in process_ids if not _process_alive(pid)]
-                
-                # Clean up tasks from dead processes
+
                 cleaned_count = 0
-                for dead_pid in dead_processes:
+                for task_id, pid, worker_id, started_at in cursor.fetchall():
+                    if _process_alive(pid, started_at):
+                        continue
+                    # Only while it is still the claim inspected (see recover_stuck_tasks)
                     cursor = conn.execute("""
-                        UPDATE queue_tasks 
-                        SET status = ?, error_message = ?, completed_at = ?, 
+                        UPDATE queue_tasks
+                        SET status = ?, error_message = ?, completed_at = ?,
                             process_id = NULL, worker_id = NULL
-                        WHERE process_id = ? AND status = ?
-                    """, (TaskStatus.FAILED.value, 
-                          f"Process {dead_pid} no longer running",
+                        WHERE id = ? AND status = ? AND worker_id IS ? AND started_at IS ?
+                    """, (TaskStatus.FAILED.value,
+                          f"Process {pid} no longer running",
                           datetime.now(timezone.utc).isoformat(),
-                          dead_pid, TaskStatus.PROCESSING.value))
-                    
+                          task_id, TaskStatus.PROCESSING.value, worker_id, started_at))
+
                     cleaned_count += cursor.rowcount
                 
                 conn.commit()
@@ -532,18 +565,11 @@ class QueueManager:
             
             # Orphaned tasks (processing with dead process)
             cursor = conn.execute("""
-                SELECT DISTINCT process_id FROM queue_tasks 
+                SELECT process_id, started_at FROM queue_tasks
                 WHERE status = ? AND process_id IS NOT NULL
             """, (TaskStatus.PROCESSING.value,))
-            
-            orphaned_tasks = 0
-            for (pid,) in cursor.fetchall():
-                if not _process_alive(pid):
-                    cursor2 = conn.execute("""
-                        SELECT COUNT(*) FROM queue_tasks 
-                        WHERE process_id = ? AND status = ?
-                    """, (pid, TaskStatus.PROCESSING.value))
-                    orphaned_tasks += cursor2.fetchone()[0]
+            orphaned_tasks = sum(1 for pid, started_at in cursor.fetchall()
+                                 if not _process_alive(pid, started_at))
             
             # Queue age stats
             cursor = conn.execute("""

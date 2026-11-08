@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 from unittest.mock import Mock
 
+import psutil  # type: ignore[import-untyped]
 import pytest
 
 import bmlibrarian.agents.queue_manager as qm
@@ -28,6 +29,16 @@ from bmlibrarian.agents import AgentOrchestrator, QueueManager, TaskStatus
 AGENT = "worker"
 SUBPROCESS_TIMEOUT_SECONDS = 120
 DEAD_PID = 2 ** 22 + 12345  # above the default Linux/macOS pid ranges
+
+# Recover every processing task: a stuck task "started" when this test process
+# did, so the process still counts as its live claiming worker (#388), and
+# backdating further would make it read as a reused pid.
+STUCK_TIMEOUT_MINUTES = 0
+
+
+def stuck_since() -> str:
+    """ISO time this process started, as a stuck task's started_at."""
+    return datetime.fromtimestamp(psutil.Process().create_time(), timezone.utc).isoformat()
 
 
 @pytest.fixture
@@ -48,7 +59,7 @@ def make_stuck(queue: QueueManager, task_id: str, process_id: Any = None) -> Non
     """Backdate a processing task; optionally change its owning process."""
     with sqlite3.connect(queue.db_path) as conn:
         conn.execute("UPDATE queue_tasks SET started_at = ? WHERE id = ?",
-                     (datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat(), task_id))
+                     (stuck_since(), task_id))
         if process_id is not None:
             conn.execute("UPDATE queue_tasks SET process_id = ? WHERE id = ?",
                          (process_id, task_id))
@@ -111,7 +122,7 @@ class TestOwnership:
         """Forced recovery resets the task; the old worker's result is not stored."""
         task = claim(queue)
         make_stuck(queue, task.id)
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True).reset == 1
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True).reset == 1
 
         with caplog.at_level(logging.WARNING, logger=qm.__name__):
             assert queue.complete_task(task.id, {"late": True}, worker_id=task.worker_id) is False
@@ -125,7 +136,7 @@ class TestOwnership:
         """A second claim (another worker id) keeps PROCESSING after the first fails."""
         task = claim(queue)
         make_stuck(queue, task.id)
-        queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True)
+        queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True)
         with sqlite3.connect(queue.db_path) as conn:
             conn.execute("UPDATE queue_tasks SET status = ?, worker_id = ? WHERE id = ?",
                          (TaskStatus.PROCESSING.value, "other-worker", task.id))
@@ -139,7 +150,7 @@ class TestOwnership:
         """Recovery fails a task out of retries; the worker's later result does not flip it."""
         task = claim(queue, max_retries=0)
         make_stuck(queue, task.id)
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True).failed == 1
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True).failed == 1
 
         assert queue.complete_task(task.id, {"x": 1}, worker_id=task.worker_id) is False
         assert queue.get_task_status(task.id).status == TaskStatus.FAILED
@@ -183,7 +194,7 @@ class TestRecoveryCounts:
         task = claim(queue)
         make_stuck(queue, task.id)
 
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1) == qm.RecoveryCounts(
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES) == qm.RecoveryCounts(
             skipped_running=1)
         assert queue.get_task_status(task.id).status == TaskStatus.PROCESSING
 
@@ -194,7 +205,7 @@ class TestRecoveryCounts:
         make_stuck(queue, unowned.id, process_id=0)  # falsy: no recorded owner
         make_stuck(queue, live.id)
 
-        counts = queue.recover_stuck_tasks(stuck_timeout_minutes=1)
+        counts = queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES)
 
         assert counts == qm.RecoveryCounts(reset=1, failed=1, skipped_running=1)
         assert counts.recovered == 2
@@ -212,14 +223,14 @@ class TestRecoveryCounts:
         task = claim(queue)
         make_stuck(queue, task.id)
 
-        def finish_then_report_alive(pid: int) -> bool:
+        def finish_then_report_alive(pid: int, started_at: Any = None) -> bool:
             """Another process completes the task while recovery inspects it."""
             other = QueueManager(queue.db_path)
             assert other.complete_task(task.id, {"done": 1}, worker_id=task.worker_id)
             return True
 
         monkeypatch.setattr(qm, "_process_alive", finish_then_report_alive)
-        counts = queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True)
+        counts = queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True)
 
         assert counts == qm.RecoveryCounts()
         stored = queue.get_task_status(task.id)
@@ -230,9 +241,9 @@ class TestRecoveryCounts:
         task = claim(queue)
         make_stuck(queue, task.id)
 
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=True) == \
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, mark_as_failed=True) == \
             qm.RecoveryCounts(skipped_running=1)
-        assert queue.recover_stuck_tasks(stuck_timeout_minutes=1, mark_as_failed=True,
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, mark_as_failed=True,
                                          force=True) == qm.RecoveryCounts(failed=1)
         assert "forcibly recovered" in queue.get_task_status(task.id).error_message
 
@@ -255,7 +266,7 @@ class TestRecoveryCounts:
         make_stuck(queue, dead.id, process_id=DEAD_PID)
         make_stuck(queue, live.id)
 
-        queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=1,
+        queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=STUCK_TIMEOUT_MINUTES,
                                    mark_failed=False, force=False))
 
         out = capsys.readouterr().out
@@ -272,7 +283,7 @@ class TestRecoveryCounts:
         task = claim(queue)
         make_stuck(queue, task.id)
         monkeypatch.setattr(sys, "argv", ["queue_cli", "--database", queue.db_path,
-                                          "recover", "--timeout", "1", "--force"])
+                                          "recover", "--timeout", str(STUCK_TIMEOUT_MINUTES), "--force"])
         queue_cli.main()
 
         assert "1 reset to PENDING" in capsys.readouterr().out
@@ -283,9 +294,66 @@ class TestRecoveryCounts:
         """An empty queue says so instead of printing nothing."""
         from bmlibrarian import queue_cli
 
-        queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=1,
+        queue_cli.cmd_recover(Mock(database=queue.db_path, timeout=STUCK_TIMEOUT_MINUTES,
                                    mark_failed=False, force=False))
         assert "No stuck tasks found" in capsys.readouterr().out
+
+
+def claimed_before_this_process() -> str:
+    """A claim time this process cannot have made: an hour before it started."""
+    return datetime.fromtimestamp(psutil.Process().create_time() - 3600, timezone.utc).isoformat()
+
+
+class TestReusedPid:
+    """#388: a process created after the claim is not the claiming worker."""
+
+    def test_process_alive_compares_start_and_claim_time(self) -> None:
+        """Alive only if the process existed at the claim; unknown claim times check the pid only."""
+        pid = os.getpid()
+        assert qm._process_alive(pid, stuck_since()) is True
+        assert qm._process_alive(pid, datetime.now(timezone.utc).isoformat()) is True
+        assert qm._process_alive(pid, claimed_before_this_process()) is False
+        assert qm._process_alive(pid, "2000-01-01T00:00:00") is True  # naive: zone unknown
+        assert qm._process_alive(pid, "not a time") is True
+        assert qm._process_alive(DEAD_PID, stuck_since()) is False
+
+    def test_unreadable_start_time_checks_the_pid_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Access denied → alive (as before); exited meanwhile → dead."""
+        def process(error: type) -> Any:
+            """A psutil.Process stand-in whose create_time raises ``error``."""
+            def create_time() -> float:
+                """Fail like psutil."""
+                raise error(os.getpid())
+            return lambda pid: Mock(create_time=create_time)
+
+        claimed = claimed_before_this_process()  # before psutil.Process is replaced
+        monkeypatch.setattr(qm.psutil, "Process", process(psutil.AccessDenied))
+        assert qm._process_alive(os.getpid(), claimed) is True
+        monkeypatch.setattr(qm.psutil, "Process", process(psutil.NoSuchProcess))
+        assert qm._process_alive(os.getpid(), claimed) is False
+
+    def test_recover_fails_a_task_whose_pid_was_reused(self, queue: QueueManager) -> None:
+        """Not skipped as running: the task is failed like any dead worker's."""
+        task = claim(queue)
+        with sqlite3.connect(queue.db_path) as conn:
+            conn.execute("UPDATE queue_tasks SET started_at = ? WHERE id = ?",
+                         (claimed_before_this_process(), task.id))
+
+        assert queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES) == \
+            qm.RecoveryCounts(failed=1)
+        assert "no longer running" in queue.get_task_status(task.id).error_message
+
+    def test_cleanup_dead_checks_each_task_of_a_pid(self, queue: QueueManager) -> None:
+        """Same pid: the task claimed before the process started is failed, the other kept."""
+        reused, live = claim(queue), claim(queue)
+        with sqlite3.connect(queue.db_path) as conn:
+            conn.execute("UPDATE queue_tasks SET started_at = ? WHERE id = ?",
+                         (claimed_before_this_process(), reused.id))
+
+        assert queue.get_queue_health()["orphaned_tasks"] == 1
+        assert queue.cleanup_dead_process_tasks() == 1
+        assert queue.get_task_status(reused.id).status == TaskStatus.FAILED
+        assert queue.get_task_status(live.id).status == TaskStatus.PROCESSING
 
 
 class TestTaskFailedEvent:
@@ -335,7 +403,7 @@ class TestTaskFailedEvent:
         def taken_away_while_running() -> dict:
             """Recovery resets the task while the agent is still working."""
             make_stuck(queue, task.id)
-            queue.recover_stuck_tasks(stuck_timeout_minutes=1, force=True)
+            queue.recover_stuck_tasks(stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True)
             return {"late": True}
 
         agent = Mock()
