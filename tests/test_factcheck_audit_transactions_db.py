@@ -25,6 +25,7 @@ TEST_STATEMENT = "bmlibrarian test #340: verdict stored without its evidence"
 CONNECTION_DEFAULTS = {"POSTGRES_HOST": "localhost", "POSTGRES_PORT": "5432"}
 # public.document ids and audit ids are positive serials, so no row has this id
 NONEXISTENT_ID = -340
+TEST_SESSION_ID = "bmlibrarian-test-408"
 
 
 @pytest.fixture
@@ -219,3 +220,55 @@ def test_review_status_update_of_an_existing_statement_is_stored(db_manager) -> 
             "SELECT review_status FROM factcheck.statements WHERE statement_id = %s", (statement_id,)
         ).fetchone()
     assert status == ("completed",)
+
+
+def _session(**fields: object) -> dict:
+    """A test processing session; ``fields`` override the defaults."""
+    return {"session_id": TEST_SESSION_ID, "input_file": "in.json", "total_statements": 2,
+            "start_time": "2026-01-01T00:00:00+00:00", "status": "completed", "config_snapshot": None,
+            **fields}
+
+
+@pytest.fixture
+def session_db(db_manager) -> Iterator["FactCheckerDB"]:  # noqa: F821
+    """FactCheckerDB on the dev database; the test session is deleted before and after."""
+    from bmlibrarian.factchecker.db.database import FactCheckerDB
+
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = db_manager
+
+    def cleanup() -> None:
+        with db_manager.get_connection() as conn:
+            conn.execute("DELETE FROM factcheck.processing_metadata WHERE session_id = %s", (TEST_SESSION_ID,))
+
+    cleanup()
+    yield db
+    cleanup()
+
+
+def _stored_session(db_manager) -> list:
+    """(end_time is set, output_file, processed_statements, error_message) of the test session rows."""
+    with db_manager.get_connection() as conn:
+        return conn.execute(
+            "SELECT end_time IS NOT NULL, output_file, processed_statements, error_message "
+            "FROM factcheck.processing_metadata WHERE session_id = %s", (TEST_SESSION_ID,)).fetchall()
+
+
+def test_session_with_a_bad_end_time_leaves_no_row(session_db, db_manager) -> None:
+    """The end fields are in the session's own INSERT, so a bad one stores nothing (#408)."""
+    with pytest.raises(psycopg.errors.InvalidDatetimeFormat):
+        session_db.insert_processing_session(_session(end_time="not a time"), overwrite=True)
+    assert _stored_session(db_manager) == []
+
+
+def test_overwrite_completes_a_half_migrated_session(session_db, db_manager) -> None:
+    """A re-run upserts over a row an older migration left without its end fields (#408)."""
+    session_db.insert_processing_session(_session())
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        session_db.insert_processing_session(_session())
+
+    session_db.insert_processing_session(
+        _session(end_time="2026-01-02T00:00:00+00:00", output_file="out.json",
+                 processed_statements=2, error_message="boom"), overwrite=True)
+
+    assert _stored_session(db_manager) == [(True, "out.json", 2, "boom")]

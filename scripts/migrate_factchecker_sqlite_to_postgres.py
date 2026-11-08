@@ -534,26 +534,17 @@ class SQLiteToPostgresMigrator:
                         'total_statements': row['total_statements'] or 0,
                         'start_time': row['start_time'],
                         'status': row['status'] or 'completed',
-                        'config_snapshot': row['config_snapshot']
+                        'config_snapshot': row['config_snapshot'],
+                        'end_time': row['end_time'],
+                        'output_file': row['output_file'],
+                        'processed_statements': row['processed_statements'],
+                        'error_message': row['error_message'],
                     }
 
                     if not self.dry_run:
-                        self.pg_db.insert_processing_session(session_data)
-
-                        # Update end_time and other fields if present
-                        updates = {}
-                        if row['end_time']:
-                            updates['end_time'] = row['end_time']
-                        if row['output_file']:
-                            updates['output_file'] = row['output_file']
-                        if row['processed_statements']:
-                            updates['processed_statements'] = row['processed_statements']
-                        if row['error_message']:
-                            updates['error_message'] = row['error_message']
-
-                        if updates:
-                            self.pg_db.update_processing_session(row['session_id'], updates)
-
+                        # One upsert: a failed row leaves nothing behind, and a
+                        # re-run completes sessions an older run left half-written (#408)
+                        self.pg_db.insert_processing_session(session_data, overwrite=True)
                         self.stats['processing_metadata']['migrated'] += 1
                     else:
                         self.stats['processing_metadata']['migrated'] += 1

@@ -419,3 +419,32 @@ def test_lost_connection_in_another_step_aborts_the_run(
     with pytest.raises(psycopg.OperationalError):
         migrator.migrate_annotators()
     assert calls == ["first"]
+
+
+def test_processing_session_is_written_whole_in_one_upsert(
+        legacy_db: Path, fake_db: FakeFactCheckerDB, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End fields go in the same write as the session, never a separate update (#408)."""
+    with sqlite3.connect(legacy_db) as conn:
+        conn.executemany(
+            "INSERT INTO processing_metadata (session_id, input_file, total_statements, start_time, status, "
+            "end_time, output_file, processed_statements, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [("bad", "in.json", 2, "2026-01-01", "completed", "not a time", None, 2, None),
+             ("good", "in.json", 3, "2026-01-01", "failed", "2026-01-02", "out.json", 1, "boom")])
+    calls: List[Tuple[Dict[str, Any], bool]] = []
+
+    def insert(session_data: Dict[str, Any], overwrite: bool = False) -> int:
+        """Refuse the malformed end time like PostgreSQL's TIMESTAMPTZ cast."""
+        calls.append((session_data, overwrite))
+        if session_data["end_time"] == "not a time":
+            raise psycopg.errors.InvalidDatetimeFormat("invalid input syntax for type timestamp")
+        return 1
+    monkeypatch.setattr(fake_db, "insert_processing_session", insert, raising=False)
+
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db))
+    migrator.migrate_processing_metadata()
+
+    assert migrator.stats["processing_metadata"] == {"total": 2, "migrated": 1, "skipped": 0, "errors": 1}
+    good, overwrite = calls[1]
+    assert overwrite is True
+    assert (good["end_time"], good["output_file"], good["processed_statements"], good["error_message"]) == (
+        "2026-01-02", "out.json", 1, "boom")
