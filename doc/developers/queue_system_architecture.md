@@ -48,7 +48,10 @@ CREATE TABLE queue_tasks (
     max_retries INTEGER DEFAULT 3,     -- Maximum retry attempts
     created_at TEXT NOT NULL,           -- Task creation timestamp
     started_at TEXT,                    -- Processing start timestamp  
-    completed_at TEXT                   -- Completion timestamp
+    completed_at TEXT,                  -- Completion timestamp
+    process_id INTEGER,                 -- Claiming worker's pid
+    worker_id TEXT,                     -- Claiming worker ("<pid>-<thread id>")
+    process_started REAL                -- Claiming worker's start marker (pid reuse, #388)
 );
 
 -- Indexes for efficient querying
@@ -83,7 +86,8 @@ connection from `_get_connection()` with `busy_timeout` applied:
 
 ```sql
 UPDATE queue_tasks
-SET status = 'processing', started_at = :now_utc, process_id = :pid, worker_id = :worker
+SET status = 'processing', started_at = :now_utc, process_id = :pid, worker_id = :worker,
+    process_started = :start_marker
 WHERE id = (SELECT id FROM queue_tasks
             WHERE target_agent = :agent AND status = 'pending'
             ORDER BY priority DESC, created_at ASC LIMIT 1)

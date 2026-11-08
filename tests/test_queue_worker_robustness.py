@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
-import psutil  # type: ignore[import-untyped]
 import pytest
 
 import bmlibrarian.agents.queue_manager as qm
@@ -32,16 +31,6 @@ from bmlibrarian.agents import AgentOrchestrator, QueueManager, TaskStatus
 AGENT = "worker"
 WAIT_SECONDS = 10.0
 POLL_SECONDS = 0.01
-
-# Recover every processing task: a stuck task "started" when this test process
-# did, so the process still counts as its live claiming worker (#388), and
-# backdating further would make it read as a reused pid.
-STUCK_TIMEOUT_MINUTES = 0
-
-
-def stuck_since() -> str:
-    """ISO time this process started, as a stuck task's started_at."""
-    return datetime.fromtimestamp(psutil.Process().create_time(), timezone.utc).isoformat()
 
 
 @pytest.fixture
@@ -65,10 +54,10 @@ def claim(queue: QueueManager, method: str = "run", **task: Any) -> Any:
 
 
 def backdate_started_at(queue: QueueManager, task_id: str) -> None:
-    """Make a processing task look stuck (see ``stuck_since``)."""
+    """Make a processing task look stuck since 2000-01-01."""
     with sqlite3.connect(queue.db_path) as conn:
         conn.execute("UPDATE queue_tasks SET started_at = ? WHERE id = ?",
-                     (stuck_since(), task_id))
+                     (datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat(), task_id))
 
 
 class TestResultStorageFailure:
@@ -239,14 +228,14 @@ class TestRecoverStuckTasks:
         backdate_started_at(queue, task.id)
 
         assert queue.recover_stuck_tasks(
-            stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True) == qm.RecoveryCounts(reset=1)
+            stuck_timeout_minutes=1, force=True) == qm.RecoveryCounts(reset=1)
         reset = queue.get_task_status(task.id)
         assert (reset.status, reset.retry_count) == (TaskStatus.PENDING, 1)
 
         assert queue.get_next_task(AGENT).id == task.id
         backdate_started_at(queue, task.id)
         assert queue.recover_stuck_tasks(
-            stuck_timeout_minutes=STUCK_TIMEOUT_MINUTES, force=True) == qm.RecoveryCounts(failed=1)
+            stuck_timeout_minutes=1, force=True) == qm.RecoveryCounts(failed=1)
         failed = queue.get_task_status(task.id)
         assert failed.status == TaskStatus.FAILED
         assert failed.retry_count == 2

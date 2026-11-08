@@ -17,14 +17,14 @@ off new work. Longer-term structural items live in
   metadata, export history), so a lost connection stops the run as
   `MIGRATION_GUIDE.md` says; `FactCheckerDB.update_statement_review_status`
   raises `ValueError` when no row matched. Queue: `_process_alive(pid,
-  started_at)` also counts a process created after the claim (plus
-  `PROCESS_START_TOLERANCE_SECONDS`, 300 s: on Linux psutil start times
-  follow forward clock steps, so a live worker must not read as dead) as dead, so a PID reused after a crash
+  process_started)` also compares the process's start marker with the one
+  the claiming worker stored in the new `queue_tasks.process_started` column
+  (`_process_start_marker`: ticks since boot on Linux, so clock steps do not
+  make a live worker read as dead; added to old queue files on open), so a PID reused after a crash
   or reboot no longer blocks `recover`/`cleanup-dead`; access denied or a
-  naive `started_at` fall back to the PID check. `cleanup_dead_process_tasks`
+  NULL `process_started` (claimed before the column) fall back to the PID check. `cleanup_dead_process_tasks`
   and the `orphaned_tasks` count check per task (cleanup re-checks the claim
-  in its UPDATE). Queue tests now backdate stuck tasks to this process's
-  start time and recover with timeout 0 (`stuck_since()`). Tests:
+  in its UPDATE). Tests:
   `test_queue_ownership.py::TestReusedPid`, `test_migrate_factchecker_sqlite.py`
   (`*another_step*`), opt-in `test_factcheck_audit_transactions_db.py`.
 - **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
@@ -368,7 +368,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-08
-  (#395/#388 branch, PR #407): **4807 passed, 57 skipped** in 7–17 min. Without
+  (#395/#388 branch, PR #407): **4809 passed, 57 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

@@ -38,16 +38,9 @@ MIN_SQLITE_VERSION: tuple = (3, 35, 0)
 # instead of briefly blocking and retrying.
 QUEUE_BUSY_TIMEOUT_MS: int = 30_000
 
-# Seconds a process's reported start time may lie after the task's claim time
-# and still count as the claiming worker. On Linux psutil derives the start
-# time from the *current* boot time, so a forward clock step (NTP on a machine
-# without a hardware clock, a VM resumed from a snapshot) moves a live
-# worker's start time past its claim; a false "dead" fails a running task,
-# while a false "alive" only needs ``--force``. A pid reused after a reboot or
-# crash is normally far newer than the claim.
-# shortcut: clock steps larger than this still read as dead; store the worker's
-# own create_time with the claim if that ever happens in practice.
-PROCESS_START_TOLERANCE_SECONDS: float = 300.0
+# Seconds two readings of one process's start marker may differ: psutil's
+# create-time precision (clock ticks on Linux).
+PROCESS_START_MATCH_SECONDS: float = 0.01
 
 # Busy timeout for the SIGTERM-handler cleanup. The interrupted code may hold
 # the write lock itself (e.g. between executemany and commit), so waiting the
@@ -116,44 +109,63 @@ def _register_manager(manager: "QueueManager") -> None:
             _signal_handlers_installed = True
 
 
-def _process_alive(pid: int, started_at: Optional[str] = None) -> bool:
-    """Whether the process that claimed a task at ``started_at`` may still run.
+def _process_start_marker(pid: int) -> float:
+    """A start time of process ``pid`` that system clock changes do not move.
+
+    Together with the pid it identifies the process, as psutil itself does to
+    detect pid reuse. On Linux ``create_time()`` is boot time plus ticks since
+    boot, and a clock step moves the boot time, so the ticks part is used. On
+    macOS and Windows ``create_time()`` is the creation time the kernel
+    recorded, which a clock step does not change.
+
+    Args:
+        pid: Process id
+
+    Returns:
+        Seconds (since boot on Linux, since the epoch elsewhere).
+
+    Raises:
+        psutil.NoSuchProcess: No such process (zombies included)
+        psutil.AccessDenied: Its start time cannot be read
+    """
+    created = psutil.Process(pid).create_time()
+    if psutil.LINUX:
+        return created - psutil.boot_time()
+    return created
+
+
+def _process_alive(pid: int, process_started: Optional[float] = None) -> bool:
+    """Whether the process that claimed a task may still be running.
 
     psutil, not ``os.kill(pid, 0)``: on Windows signal 0 is CTRL_C_EVENT and
     would interrupt the process instead of probing it. (On POSIX psutil does
     use signal 0, treating EPERM as "exists".)
 
     The queue file outlives crashes and reboots, so ``pid`` may now belong to
-    an unrelated process (#388). With ``started_at`` (the task's ISO claim
-    time), a process created after the claim cannot be the claiming worker and
-    counts as dead. Without it, or when the claim time has no time zone or the
-    start time cannot be read (access denied), only the pid is checked.
+    an unrelated process (#388). With ``process_started`` (the claiming
+    worker's :func:`_process_start_marker`, stored with the claim), a process
+    with another start marker is not the claiming worker and counts as dead.
+    Without it (tasks claimed before the marker was stored) or when the start
+    time cannot be read (access denied), only the pid is checked.
 
     Args:
         pid: The task's recorded ``process_id``
-        started_at: The task's ``started_at`` as stored (ISO 8601)
+        process_started: The task's recorded ``process_started``
 
     Returns:
-        False if no such process exists or it started after the claim.
+        False if no such process exists or it is not the claiming worker.
     """
     if not psutil.pid_exists(pid):
         return False
-    if not started_at:
+    if process_started is None:
         return True
     try:
-        claimed = datetime.fromisoformat(started_at)
-    except ValueError:
-        logger.warning(f"Unreadable started_at {started_at!r}; checking pid {pid} only")
-        return True
-    if claimed.tzinfo is None:
-        return True  # naive time: its zone is unknown, so the comparison could be hours off
-    try:
-        created = psutil.Process(pid).create_time()
+        marker = _process_start_marker(pid)
     except psutil.NoSuchProcess:  # exited meanwhile (zombies included)
         return False
     except psutil.AccessDenied:
         return True
-    return created <= claimed.timestamp() + PROCESS_START_TOLERANCE_SECONDS
+    return abs(marker - process_started) <= PROCESS_START_MATCH_SECONDS
 
 
 @dataclass(frozen=True)
@@ -256,6 +268,8 @@ class QueueManager:
         
         # Track this process for cleanup
         self.process_id = os.getpid()
+        # Stored with each claim so recovery can tell a reused pid (#388)
+        self.process_started = _process_start_marker(self.process_id)
         
         self._init_database()
         
@@ -305,7 +319,8 @@ class QueueManager:
                     started_at TEXT,
                     completed_at TEXT,
                     process_id INTEGER,
-                    worker_id TEXT
+                    worker_id TEXT,
+                    process_started REAL
                 )
             """)
             
@@ -317,6 +332,11 @@ class QueueManager:
             
             try:
                 conn.execute("ALTER TABLE queue_tasks ADD COLUMN worker_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:  # the claiming worker's _process_start_marker (#388)
+                conn.execute("ALTER TABLE queue_tasks ADD COLUMN process_started REAL")
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
@@ -437,15 +457,16 @@ class QueueManager:
             needs_close = not self._persistent_conn
             try:
                 cursor = conn.execute("""
-                    SELECT id, process_id, worker_id, started_at, retry_count, max_retries
+                    SELECT id, process_id, process_started, worker_id, started_at,
+                           retry_count, max_retries
                     FROM queue_tasks
                     WHERE status = ? AND started_at < ?
                 """, (TaskStatus.PROCESSING.value, cutoff_time.isoformat()))
 
-                for (task_id, process_id, worker_id, started_at,
+                for (task_id, process_id, process_started, worker_id, started_at,
                      retry_count, max_retries) in cursor.fetchall():
                     # A task without a process id has an unknown owner: recoverable.
-                    process_alive = bool(process_id) and _process_alive(process_id, started_at)
+                    process_alive = bool(process_id) and _process_alive(process_id, process_started)
                     process_dead = bool(process_id) and not process_alive
                     if process_alive and not force:
                         skipped_running += 1
@@ -515,16 +536,16 @@ class QueueManager:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
-                # Per task, not per pid: a reused pid is alive for a task
-                # claimed after the new process started, dead for older ones.
+                # Per task, not per pid: a reused pid is alive for the new
+                # process's own tasks and dead for the old process's.
                 cursor = conn.execute("""
-                    SELECT id, process_id, worker_id, started_at FROM queue_tasks
-                    WHERE status = ? AND process_id IS NOT NULL
+                    SELECT id, process_id, process_started, worker_id, started_at
+                    FROM queue_tasks WHERE status = ? AND process_id IS NOT NULL
                 """, (TaskStatus.PROCESSING.value,))
 
                 cleaned_count = 0
-                for task_id, pid, worker_id, started_at in cursor.fetchall():
-                    if _process_alive(pid, started_at):
+                for task_id, pid, process_started, worker_id, started_at in cursor.fetchall():
+                    if _process_alive(pid, process_started):
                         continue
                     # Only while it is still the claim inspected (see recover_stuck_tasks)
                     cursor = conn.execute("""
@@ -572,11 +593,11 @@ class QueueManager:
             
             # Orphaned tasks (processing with dead process)
             cursor = conn.execute("""
-                SELECT process_id, started_at FROM queue_tasks
+                SELECT process_id, process_started FROM queue_tasks
                 WHERE status = ? AND process_id IS NOT NULL
             """, (TaskStatus.PROCESSING.value,))
-            orphaned_tasks = sum(1 for pid, started_at in cursor.fetchall()
-                                 if not _process_alive(pid, started_at))
+            orphaned_tasks = sum(1 for pid, process_started in cursor.fetchall()
+                                 if not _process_alive(pid, process_started))
             
             # Queue age stats
             cursor = conn.execute("""
@@ -728,7 +749,8 @@ class QueueManager:
                 # one write transaction, so at most one worker claims each task.
                 cursor = conn.execute("""
                     UPDATE queue_tasks
-                    SET status = ?, started_at = ?, process_id = ?, worker_id = ?
+                    SET status = ?, started_at = ?, process_id = ?, worker_id = ?,
+                        process_started = ?
                     WHERE id = (
                         SELECT id FROM queue_tasks
                         WHERE target_agent = ? AND status = ?
@@ -738,7 +760,7 @@ class QueueManager:
                     RETURNING *
                 """, (
                     TaskStatus.PROCESSING.value, started_at, self.process_id, worker_id,
-                    target_agent, TaskStatus.PENDING.value
+                    self.process_started, target_agent, TaskStatus.PENDING.value
                 ))
 
                 row = cursor.fetchone()
