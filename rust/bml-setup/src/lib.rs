@@ -11,12 +11,41 @@ mod steps;
 
 use std::path::{Path, PathBuf};
 
+/// The lock file setup holds in the configuration folder while it downloads.
+pub const DOWNLOAD_LOCK_FILE_NAME: &str = ".bml-setup-download.lock";
+
+/// Lock downloads into `config_dir` for as long as the returned file is open,
+/// so two setups (the CLI and the first-run screen) never sweep or overwrite
+/// each other's downloads. Fails at once if another setup holds it; the
+/// operating system releases it when a setup exits, even by a crash.
+pub(crate) fn lock_downloads(config_dir: &Path) -> Result<std::fs::File, SetupError> {
+    let path = config_dir.join(DOWNLOAD_LOCK_FILE_NAME);
+    let io = |source| SetupError::Io {
+        path: path.clone(),
+        source,
+    };
+    std::fs::create_dir_all(config_dir).map_err(io)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(io)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(SetupError::Other {
+            message: format!(
+                "Another `bml setup` is downloading into {}; wait for it to finish, then run `bml setup` again.",
+                config_dir.display()
+            ),
+        }),
+        Err(std::fs::TryLockError::Error(e)) => Err(io(e)),
+    }
+}
+
 /// Remove part files that an interrupted `download_verified` left in `dir`
 /// for `file` (`.{file}.<id>.part`); returns how many. A missing `dir` is
-/// fine.
-// shortcut: no lock, so two setups at once in one config folder can delete each
-// other's in-progress download (that download fails; a rerun recovers). Add a lock
-// file when the Tauri screen can run beside the CLI.
+/// fine. Call it only while holding [`lock_downloads`].
 pub(crate) fn sweep_stale_parts(dir: &Path, file: &str) -> Result<usize, SetupError> {
     let io = |source| SetupError::Io {
         path: dir.to_path_buf(),
@@ -116,6 +145,9 @@ pub enum StepOutcome {
     Installed,
     /// The step started something that was installed but not running.
     Started,
+    /// The step finished but found problems worth reading (repeated here
+    /// from its `Warning` events, for the summary).
+    Warnings(Vec<String>),
     /// The step was left out on purpose.
     Skipped {
         /// Why.
@@ -204,6 +236,17 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, [".other.part", ".x.bin.1.tmp", "x.bin"]);
+    }
+
+    #[test]
+    fn download_lock_is_exclusive_until_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let held = lock_downloads(&cfg).unwrap();
+        let e = lock_downloads(&cfg).unwrap_err();
+        assert!(e.to_string().contains("Another `bml setup`"), "{e}");
+        drop(held);
+        lock_downloads(&cfg).unwrap();
     }
 
     #[test]

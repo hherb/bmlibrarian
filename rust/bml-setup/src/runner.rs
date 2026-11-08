@@ -150,7 +150,15 @@ mod tests {
         let out = run_setup(&plan, &Fake::new(), &mut |e| events.push(e));
         let ids: Vec<StepId> = out.iter().map(|(s, _)| *s).collect();
         assert_eq!(ids, ALL_STEPS);
-        assert_eq!(out[0].1, StepOutcome::AlreadyPresent);
+        // Warnings on small machines (CI runners), never a failure.
+        assert!(
+            matches!(
+                out[0].1,
+                StepOutcome::AlreadyPresent | StepOutcome::Warnings(_)
+            ),
+            "{:?}",
+            out[0]
+        );
         assert!(
             matches!(&out[1].1, StepOutcome::Failed(m) if m.contains("no database chosen")),
             "{:?}",

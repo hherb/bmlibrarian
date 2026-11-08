@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use bml_pgserver::error::PgServerError;
-use bml_pgserver::external::ExternalRequest;
+use bml_pgserver::external::{check_request, ExternalRequest};
 use bml_pgserver::init::InitRequest;
 use bml_setup::ollama::{parse_ollama_host, pull_http_client, OLLAMA_HOST_ENV};
 use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan};
@@ -135,13 +135,16 @@ fn database_plan(
         let (host, port) = parse_host_port(raw)?;
         let superuser = args.pg_superuser.clone().unwrap_or_default();
         let password = read_password(args.password_stdin)?;
-        return Ok(Some(DatabasePlan::Existing(ExternalRequest {
+        let req = ExternalRequest {
             host,
             port,
             superuser,
             password,
             needs_pg_search: !cfg!(windows),
-        })));
+        };
+        // Refuse a remote host or an unusable password before any step runs.
+        check_request(&req)?;
+        return Ok(Some(DatabasePlan::Existing(req)));
     }
     Ok(args.pg_bindir.as_ref().map(|bindir| {
         DatabasePlan::Private(InitRequest {
@@ -161,6 +164,8 @@ fn outcome_text(outcome: &StepOutcome) -> String {
         StepOutcome::AlreadyPresent => "already in place".to_string(),
         StepOutcome::Installed => "installed".to_string(),
         StepOutcome::Started => "started".to_string(),
+        StepOutcome::Warnings(w) if w.len() == 1 => "done, with 1 warning".to_string(),
+        StepOutcome::Warnings(w) => format!("done, with {} warnings", w.len()),
         StepOutcome::Skipped { reason } => format!("skipped ({reason})"),
         StepOutcome::Failed(m) => format!("FAILED: {m}"),
     }
@@ -171,9 +176,13 @@ fn make_reporter() -> impl FnMut(StepEvent) {
     let mut last: BTreeMap<StepId, Instant> = BTreeMap::new();
     move |event| match event {
         StepEvent::Started(s) => say!("{}...", s.label()),
+        // Failures and warnings go to stderr, so scripts reading it see them.
+        StepEvent::Finished(s, outcome @ StepOutcome::Failed(_)) => {
+            eprintln!("{}: {}", s.label(), outcome_text(&outcome));
+        }
         StepEvent::Finished(s, outcome) => say!("{}: {}", s.label(), outcome_text(&outcome)),
         StepEvent::Notice { step, message } => say!("{}: {message}", step.label()),
-        StepEvent::Warning { step, message } => say!("Warning: {}: {message}", step.label()),
+        StepEvent::Warning { step, message } => eprintln!("Warning: {}: {message}", step.label()),
         StepEvent::Progress {
             step,
             detail,
@@ -225,6 +234,11 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
         failed |= matches!(outcome, StepOutcome::Failed(_));
         let text = outcome_text(outcome);
         say!("  {:<18} {text}", step.label());
+        if let StepOutcome::Warnings(warnings) = outcome {
+            for w in warnings {
+                say!("    - {w}");
+            }
+        }
     }
     if failed {
         say!("\nRun `bml setup` again to retry; finished steps are not repeated.");

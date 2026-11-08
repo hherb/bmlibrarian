@@ -11,7 +11,7 @@ use bmlib::embed::{download_model, verify_model, ARCTIC_EMBED_L_V2_F16};
 use bmlib::publications::fetchers::registry::HttpClient;
 
 use crate::hardware::{disk_warnings, mounts, ram_warning};
-use crate::models::{model_action, ModelAction, APPROVED_MODELS};
+use crate::models::{model_action, ApprovedModel, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
 use crate::runner::{DatabasePlan, SetupPlan};
@@ -26,6 +26,10 @@ const OLLAMA_MODELS_ENV: &str = "OLLAMA_MODELS";
 
 /// Ollama's model folder, relative to the home folder.
 const OLLAMA_MODELS_HOME_DIR: &str = ".ollama/models";
+
+/// Home folder of the `ollama` system user that Ollama's Linux install
+/// script creates; its service keeps the models there.
+const LINUX_OLLAMA_SERVICE_HOME: &str = "/usr/share/ollama";
 
 /// Run `step`.
 pub(crate) fn run(
@@ -78,9 +82,13 @@ fn hardware(
         .map(|m| m.approx_bytes)
         .sum();
     let mut needs = Vec::new();
-    let ollama_dir = std::env::var_os(OLLAMA_MODELS_ENV)
-        .map(PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|h| h.join(OLLAMA_MODELS_HOME_DIR)));
+    // A remote Ollama keeps its models on its own disks.
+    let ollama_dir = ollama_models_dir(
+        std::env::var_os(OLLAMA_MODELS_ENV).map(PathBuf::from),
+        std::env::home_dir(),
+        cfg!(target_os = "linux").then_some(Path::new(LINUX_OLLAMA_SERVICE_HOME)),
+    )
+    .filter(|_| plan.ollama_host.loopback);
     if let (Some(dir), true) = (ollama_dir, model_bytes > 0) {
         needs.push((dir, model_bytes));
     }
@@ -91,13 +99,40 @@ fn hardware(
         ));
     }
     warnings.extend(disk_warnings(&needs, &mounts()));
-    for w in warnings {
+    let warnings: Vec<String> = warnings.iter().map(ToString::to_string).collect();
+    for message in &warnings {
         report(StepEvent::Warning {
             step,
-            message: w.to_string(),
+            message: message.clone(),
         });
     }
-    Ok(StepOutcome::AlreadyPresent)
+    // Repeated in the outcome, so the summary shows what scrolled away.
+    Ok(if warnings.is_empty() {
+        StepOutcome::AlreadyPresent
+    } else {
+        StepOutcome::Warnings(warnings)
+    })
+}
+
+/// Where a local Ollama keeps its models: `OLLAMA_MODELS` if set; else, when
+/// `service_home` is given (Linux), the service user's folder unless only the
+/// user's own `~/.ollama/models` exists (a fresh install uses the service);
+/// else the user's own.
+fn ollama_models_dir(
+    env: Option<PathBuf>,
+    home: Option<PathBuf>,
+    service_home: Option<&Path>,
+) -> Option<PathBuf> {
+    if env.is_some() {
+        return env;
+    }
+    let own = home.map(|h| h.join(OLLAMA_MODELS_HOME_DIR));
+    match service_home {
+        Some(service) if service.exists() || !own.as_ref().is_some_and(|o| o.exists()) => {
+            Some(service.join(OLLAMA_MODELS_HOME_DIR))
+        }
+        _ => own,
+    }
 }
 
 /// The superuser request for the saved existing server, with its password
@@ -213,9 +248,10 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
             "the private database is not set up; run the Database step first (`bml setup`)".into(),
         ));
     }
-    let exe = std::env::current_exe().map_err(|source| SetupError::Io {
-        path: PathBuf::from("the bml program"),
-        source,
+    let exe = std::env::current_exe().map_err(|e| SetupError::Other {
+        message: format!(
+            "Could not find where the bml program itself is ({e}), which start at login needs. Run setup from an installed bml, or pass --skip autostart."
+        ),
     })?;
     if bml_pgserver::autostart::is_enabled(&exe, dir)? {
         return Ok(StepOutcome::AlreadyPresent);
@@ -225,46 +261,66 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
 }
 
 /// Pull each approved model that is missing and copy it to its approved name.
+/// A failure for one model does not stop the others; the step then fails
+/// with every model's error.
 fn models(
     plan: &SetupPlan,
     http: &dyn HttpClient,
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
-    let step = StepId::Models;
-    let host: &OllamaHost = &plan.ollama_host;
     let mut changed = false;
+    let mut errors = Vec::new();
     for model in &APPROVED_MODELS {
-        let installed = installed_models(http, host)?;
-        let action = model_action(model, &installed);
-        if matches!(action, ModelAction::Pull | ModelAction::PullThenCopy) {
-            let detail = format!("Downloading {}", model.pull_as);
-            pull_model(http, host, model.pull_as, &mut |e| {
-                if let PullEvent::Progress {
-                    completed, total, ..
-                } = e
-                {
-                    report(StepEvent::Progress {
-                        step,
-                        detail: detail.clone(),
-                        done: *completed,
-                        total: *total,
-                    });
-                }
-            })?;
-            changed = true;
-        }
-        if matches!(action, ModelAction::Copy | ModelAction::PullThenCopy) {
-            // Re-list: the copy needs the name Ollama actually stored.
-            let installed = installed_models(http, host)?;
-            let source = installed
-                .iter()
-                .find(|i| crate::ollama::same_model(i, model.pull_as))
-                .map_or(model.pull_as, String::as_str);
-            copy_model(http, host, source, model.name)?;
-            changed = true;
+        match ensure_model(model, plan, http, report) {
+            Ok(c) => changed |= c,
+            Err(e) => errors.push(e.to_string()),
         }
     }
-    Ok(created(changed))
+    // An unreachable Ollama gives every model the same error.
+    errors.dedup();
+    if errors.is_empty() {
+        Ok(created(changed))
+    } else {
+        Ok(StepOutcome::Failed(errors.join(" ")))
+    }
+}
+
+/// Pull and copy `model` as needed; `true` if anything changed.
+fn ensure_model(
+    model: &ApprovedModel,
+    plan: &SetupPlan,
+    http: &dyn HttpClient,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<bool, SetupError> {
+    let step = StepId::Models;
+    let host: &OllamaHost = &plan.ollama_host;
+    let action = model_action(model, &installed_models(http, host)?);
+    if matches!(action, ModelAction::Pull | ModelAction::PullThenCopy) {
+        let detail = format!("Downloading {}", model.pull_as);
+        pull_model(http, host, model.pull_as, &mut |e| {
+            if let PullEvent::Progress {
+                completed, total, ..
+            } = e
+            {
+                report(StepEvent::Progress {
+                    step,
+                    detail: detail.clone(),
+                    done: *completed,
+                    total: *total,
+                });
+            }
+        })?;
+    }
+    if matches!(action, ModelAction::Copy | ModelAction::PullThenCopy) {
+        // Re-list: the copy needs the name Ollama actually stored.
+        let installed = installed_models(http, host)?;
+        let source = installed
+            .iter()
+            .find(|i| crate::ollama::same_model(i, model.pull_as))
+            .map_or(model.pull_as, String::as_str);
+        copy_model(http, host, source, model.name)?;
+    }
+    Ok(action != ModelAction::Present)
 }
 
 /// Download and verify the embedding model's GGUF file, unless it is already good.
@@ -277,6 +333,7 @@ fn embedding_model(
         return Ok(StepOutcome::AlreadyPresent);
     }
     let models_dir = plan.config_dir.join(MODELS_DIR_NAME);
+    let _lock = crate::lock_downloads(&plan.config_dir)?;
     sweep_stale_parts(&models_dir, model.file)?;
     download_model(model, &models_dir, &mut |done, total| {
         report(StepEvent::Progress {
@@ -362,6 +419,137 @@ mod tests {
             StepOutcome::Installed
         );
         assert!(quiet);
+    }
+
+    #[test]
+    fn models_present_is_already_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new();
+        fake.get = Ok(tags(&["gpt-oss:20b", APPROVED_AS]));
+        let outcome = models(&plan(dir.path()), &fake, &mut |_| {}).unwrap();
+        assert_eq!(outcome, StepOutcome::AlreadyPresent);
+        assert!(fake.urls.borrow().iter().all(|u| u.ends_with("/api/tags")));
+    }
+
+    #[test]
+    fn models_pulls_gpt_oss_without_copying() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new();
+        fake.get = Ok(tags(&[APPROVED_AS]));
+        fake.stream = Some((200, "{\"status\":\"success\"}\n".into()));
+        let outcome = models(&plan(dir.path()), &fake, &mut |_| {}).unwrap();
+        assert_eq!(outcome, StepOutcome::Installed);
+        let urls = fake.urls.borrow();
+        let ends: Vec<&str> = urls.iter().map(|u| u.rsplit('/').next().unwrap()).collect();
+        assert_eq!(ends, ["tags", "pull", "tags"], "{urls:?}");
+    }
+
+    #[test]
+    fn models_tries_every_model_and_reports_each_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new();
+        fake.get = Ok(tags(&[]));
+        fake.stream = Some((200, "{\"error\":\"disk full\"}\n".into()));
+        let outcome = models(&plan(dir.path()), &fake, &mut |_| {}).unwrap();
+        let StepOutcome::Failed(message) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(
+            message.contains("gpt-oss:20b") && message.contains(PULLED_AS),
+            "{message}"
+        );
+        let pulls = fake
+            .urls
+            .borrow()
+            .iter()
+            .filter(|u| u.ends_with("/api/pull"))
+            .count();
+        assert_eq!(pulls, 2);
+    }
+
+    #[test]
+    fn ollama_models_dir_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let service = tmp.path().join("service");
+        let own = home.join(OLLAMA_MODELS_HOME_DIR);
+        let env = Some(PathBuf::from("/env"));
+        assert_eq!(
+            ollama_models_dir(env.clone(), Some(home.clone()), Some(&service)),
+            env
+        );
+        assert_eq!(
+            ollama_models_dir(None, Some(home.clone()), None),
+            Some(own.clone())
+        );
+        // Neither exists yet: Linux installs the service.
+        let service_models = Some(service.join(OLLAMA_MODELS_HOME_DIR));
+        assert_eq!(
+            ollama_models_dir(None, Some(home.clone()), Some(&service)),
+            service_models
+        );
+        std::fs::create_dir_all(&own).unwrap();
+        assert_eq!(
+            ollama_models_dir(None, Some(home.clone()), Some(&service)),
+            Some(own)
+        );
+        std::fs::create_dir_all(&service).unwrap();
+        assert_eq!(
+            ollama_models_dir(None, Some(home), Some(&service)),
+            service_models
+        );
+    }
+
+    #[test]
+    fn saved_external_request_reads_state_and_admin_password() {
+        use bml_pgserver::envfile::{render_env, ConnInfo};
+        use bml_pgserver::external::{save_external_state, ExternalState};
+        let dir = tempfile::tempdir().unwrap();
+        assert!(saved_external_request(dir.path()).unwrap().is_none());
+        save_external_state(
+            dir.path(),
+            &ExternalState {
+                host: "::1".into(),
+                port: 5433,
+                superuser: "postgres".into(),
+            },
+        )
+        .unwrap();
+        let admin = ConnInfo {
+            host: "::1".into(),
+            port: 5433,
+            dbname: "bmlibrarian".into(),
+            user: "postgres".into(),
+            password: "s3cret".into(),
+        };
+        std::fs::write(dir.path().join(ADMIN_ENV_FILE_NAME), render_env(&admin)).unwrap();
+        let req = saved_external_request(dir.path()).unwrap().unwrap();
+        assert_eq!(
+            (req.host.as_str(), req.port, req.superuser.as_str()),
+            ("::1", 5433, "postgres")
+        );
+        assert_eq!(req.password, "s3cret");
+        assert_eq!(req.needs_pg_search, !cfg!(windows));
+    }
+
+    #[test]
+    fn hardware_ignores_local_ollama_disk_for_a_remote_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan(dir.path());
+        p.ollama_host = parse_ollama_host(Some("http://gpu-box:11434")).unwrap();
+        // Remote and unreachable: models count as missing, but no Ollama
+        // disk need, so the only disk warning possible is the GGUF's.
+        let mut messages = Vec::new();
+        hardware(&p, &Fake::new(), &mut |e| {
+            if let StepEvent::Warning { message, .. } = e {
+                messages.push(message);
+            }
+        })
+        .unwrap();
+        assert!(
+            !messages.iter().any(|m| m.contains(".ollama")),
+            "{messages:?}"
+        );
     }
 
     #[test]

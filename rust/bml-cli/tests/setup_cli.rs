@@ -39,7 +39,9 @@ fn existing_server_needs_superuser() {
         &["setup", "--existing-server", "127.0.0.1:5432"],
         None,
     );
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("--pg-superuser"), "{err}");
 }
 
 #[test]
@@ -76,7 +78,12 @@ fn pg_bindir_conflicts_with_existing_server() {
         ],
         Some("pw"),
     );
-    assert_eq!(out.status.code(), Some(2));
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("--pg-bindir") && err.contains("--existing-server"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -109,9 +116,40 @@ fn remote_existing_server_refused() {
     ];
     let out = bml(cfg.path(), &args, Some("pw"));
     assert_eq!(out.status.code(), Some(1));
-    let all = text(&out.stdout) + &text(&out.stderr);
-    assert!(all.contains("must run on this computer"), "{all}");
-    assert!(all.contains("bml setup"), "{all}");
+    let err = text(&out.stderr);
+    assert!(err.contains("must run on this computer"), "{err}");
+    // Refused before any step ran.
+    let so = text(&out.stdout);
+    assert!(!so.contains("Hardware check"), "{so}");
+    assert_eq!(std::fs::read_dir(cfg.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn empty_stdin_password_refused_before_any_step() {
+    use std::io::Write as _;
+    let cfg = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("--config-dir")
+        .arg(cfg.path())
+        .args([
+            "setup",
+            "--existing-server",
+            "127.0.0.1:5432",
+            "--pg-superuser",
+            "postgres",
+            "--password-stdin",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = text(&out.stderr);
+    assert!(err.contains("password cannot be stored"), "{err}");
+    assert!(!text(&out.stdout).contains("Hardware check"));
 }
 
 #[test]

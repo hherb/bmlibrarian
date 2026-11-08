@@ -83,12 +83,26 @@ pub fn parse_ollama_host(raw: Option<&str>) -> Result<OllamaHost, SetupError> {
     if scheme != "http" && scheme != "https" {
         return Err(bad("must start with http:// or https://"));
     }
+    if rest.contains(['?', '#']) {
+        return Err(bad("has a query or fragment (? or #)"));
+    }
     let authority = rest.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(bad("has a user name or password in it"));
+    }
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         let (h, after) = inner
             .split_once(']')
             .ok_or_else(|| bad("has an unclosed ["))?;
-        (format!("[{h}]"), after.strip_prefix(':'))
+        let port = match after {
+            "" => None,
+            _ => Some(
+                after
+                    .strip_prefix(':')
+                    .ok_or_else(|| bad("has text after the ]"))?,
+            ),
+        };
+        (format!("[{h}]"), port)
     } else if authority.matches(':').count() > 1 {
         (format!("[{authority}]"), None) // bare IPv6, no port
     } else {
@@ -101,7 +115,11 @@ pub fn parse_ollama_host(raw: Option<&str>) -> Result<OllamaHost, SetupError> {
         return Err(bad("has no host name"));
     }
     let port = match port {
-        Some(p) => p.parse::<u16>().map_err(|_| bad("has an invalid port"))?,
+        Some(p) => p
+            .parse::<u16>()
+            .ok()
+            .filter(|&p| p != 0)
+            .ok_or_else(|| bad("has an invalid port"))?,
         None if scheme == "https" => DEFAULT_HTTPS_PORT,
         None => DEFAULT_HTTP_PORT,
     };
@@ -322,8 +340,27 @@ mod tests {
                 "{raw:?}"
             );
         }
-        assert!(parse_ollama_host(Some("ftp://x")).is_err());
-        assert!(parse_ollama_host(Some("host:notaport")).is_err());
+        let bare = parse_ollama_host(Some("::1")).unwrap();
+        assert_eq!(
+            (bare.base_url.as_str(), bare.loopback),
+            ("http://[::1]:11434", true)
+        );
+        for bad in [
+            "ftp://x",
+            "host:notaport",
+            "host:0",
+            "host:",
+            "host:70000",
+            "[::1]x",
+            "[::1]:0",
+            "[::1",
+            "user:pw@127.0.0.1:11434",
+            "http://me@localhost",
+            "localhost?x=1",
+            "http://localhost:11434/#top",
+        ] {
+            assert!(parse_ollama_host(Some(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

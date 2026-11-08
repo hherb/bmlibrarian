@@ -141,11 +141,15 @@ former exists and `adopt` when the latter does.
 
 Order of `adopt`, which is what makes a re-run resume:
 
-1. The host must be loopback (`is_loopback_host`); the superuser password
-   and name must be storable (`PasswordNotStorable`, `SuperuserNotStorable`).
+1. `check_request` (public, so front ends can call it before their other
+   steps): the host must be loopback (`is_loopback_host`); the superuser
+   password and name must be storable (`PasswordNotStorable`,
+   `SuperuserNotStorable`: non-empty, no control character, no leading or
+   trailing space). Then IPv6 brackets are dropped (`[::1]` → `::1`), as
+   libpq and `bml.env` take the bare address.
 2. Refuse if `bml-pgserver.json` exists.
 3. A saved `bml-external.json` must name the requested host and port
-   (`StateMismatch` otherwise), and a saved `bml-admin.env` the requested
+   (`ExistingServerMismatch` otherwise, naming both `host:port`), and a saved `bml-admin.env` the requested
    host, port **and** superuser (`AdminCredentialsInUse` otherwise): bml never
    replaces another server's only saved superuser password. Both checks run
    before connecting.
@@ -176,10 +180,13 @@ Order of `adopt`, which is what makes a re-run resume:
     "unloading" (36); anything else is an error. `bootout` returns before the
     job is unloaded, so `bootstrap` is retried for up to 2 s while it fails
     with `5: Input/output error`. `enable` writes the plist only after
-    `bootout`, and removes it again if `bootstrap` fails; `disable` removes
+    `bootout`, and removes it again if `bootstrap` fails (if that removal
+    fails too, `AutostartLeftover` reports both, since the leftover plist would
+    make the next setup report start at login as already set up); `disable` removes
     the plist before `bootout`, so a failed unload never keeps the login
     entry.
-  - Linux: the unit's `ExecStop` stops the server when the user's systemd
+  - Linux: a failed `daemon-reload`/`enable` puts the previous unit back, or
+    removes the new one (`AutostartLeftover` if that fails). The unit's `ExecStop` stops the server when the user's systemd
     manager stops at logout. Output goes to the journal. Arguments are quoted
     with `%` → `%%` and `$` → `$$`.
   - Windows: output is lost (issue #397). Trailing backslashes in

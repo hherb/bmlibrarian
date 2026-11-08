@@ -5,7 +5,7 @@ members = ["bml-pgserver", "bml-cli", "bml-setup"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"  # File::try_lock (download lock)
 publish = false
 
 [workspace.lints.rust]

@@ -118,6 +118,24 @@ pub enum PgServerError {
         /// The value requested.
         requested: PathBuf,
     },
+    /// Start at login failed, and its file could not be put back as it was.
+    #[error("{error}. Also, {} could not be put back as it was ({source}); delete it by hand, or the next setup will think start at login is set up", path.display())]
+    AutostartLeftover {
+        /// Why start at login failed.
+        error: Box<PgServerError>,
+        /// The login entry file left behind.
+        path: PathBuf,
+        /// Why it could not be removed or restored.
+        source: io::Error,
+    },
+    /// The configuration folder already uses another existing server.
+    #[error("this configuration folder already uses the existing PostgreSQL at {saved}, not {requested}; pass --existing-server {saved}, or use a different --config-dir for the other server")]
+    ExistingServerMismatch {
+        /// `host:port` saved in the state file.
+        saved: String,
+        /// `host:port` requested.
+        requested: String,
+    },
     /// The server set up before is gone: its data folder is missing or
     /// empty (an unmounted disk, or deleted).
     #[error("the server's data folder {path} is missing or empty (is its disk mounted?); nothing was changed. To set up a new server there instead, delete {state_file} and run init again")]
@@ -213,10 +231,10 @@ pub enum PgServerError {
         state_file: PathBuf,
     },
     /// The password cannot be kept in the credentials files.
-    #[error("that password cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    #[error("that password cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with a space")]
     PasswordNotStorable,
     /// The superuser name cannot be kept in the credentials files.
-    #[error("that superuser name cannot be stored: it must not be empty, contain a line break, or start or end with a space")]
+    #[error("that superuser name cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with a space")]
     SuperuserNotStorable,
     /// The credentials file already holds another server's superuser.
     #[error("{admin_env} holds the credentials of another PostgreSQL server ({host}:{port}, user {user}); bml will not overwrite them. Use a different --config-dir for the existing server")]
