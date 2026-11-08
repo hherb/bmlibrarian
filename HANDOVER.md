@@ -41,8 +41,8 @@ off new work. Longer-term structural items live in
   import profile and any server restart must refuse when `bml-external.json`
   exists (an existing server is never restarted by bml). Portable
   PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
-- **`bml setup` review follow-ups** (2026-11-08, closes #403, most of #401;
-  branch `fix/bml-setup-followups`). Library API changes ahead of piece 4:
+- **`bml setup` review follow-ups** (2026-11-08, PR #404, closes #403,
+  most of #401). Library API changes ahead of piece 4:
   `bml_pgserver::external::check_request` (loopback host, storable
   password/superuser; the CLI calls it before any step, so a remote
   `--existing-server` or empty `--password-stdin` line exits 1 at once);
@@ -67,6 +67,12 @@ off new work. Longer-term structural items live in
   guard, crates.io 0.3.1 — only 0.3.0 is published), an existing-server
   `bml server status` exit-0 test and `pg_search` adopt in CI (#399),
   Windows drive-letter case (#397), installed-Ollama version never checked.
+- **macOS autostart re-enable keeps the old login entry** (2026-11-08,
+  closes #405). `autostart::enable` reads the old plist before `bootout`;
+  a failed `bootstrap` writes it back and `bootstrap`s it again
+  (`restore_launch_agent`, unit-tested with a fake reload), or removes the
+  new plist when there was none; a failed reload is `AutostartLeftover`.
+  Not exercised against a real failing `launchctl`.
 - **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
   check and password reset on `28P01`, richer connect/DB errors, `bml server
   status` exits 3 when stopped, stricter launchctl error handling, fake-bin
