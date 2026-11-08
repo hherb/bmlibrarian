@@ -429,22 +429,27 @@ def test_processing_session_is_written_whole_in_one_upsert(
             "INSERT INTO processing_metadata (session_id, input_file, total_statements, start_time, status, "
             "end_time, output_file, processed_statements, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [("bad", "in.json", 2, "2026-01-01", "completed", "not a time", None, 2, None),
-             ("good", "in.json", 3, "2026-01-01", "failed", "2026-01-02", "out.json", 1, "boom")])
+             ("good", "in.json", 3, "2026-01-01", "failed", "2026-01-02", "out.json", 1, "boom"),
+             ("blank", "in.json", 1, "2026-01-01", "running", "", "", None, "")])
     calls: List[Tuple[Dict[str, Any], bool]] = []
+    updates: List[Any] = []
 
     def insert(session_data: Dict[str, Any], overwrite: bool = False) -> int:
-        """Refuse the malformed end time like PostgreSQL's TIMESTAMPTZ cast."""
+        """Refuse a malformed or empty end time like PostgreSQL's TIMESTAMPTZ cast."""
         calls.append((session_data, overwrite))
-        if session_data["end_time"] == "not a time":
+        if session_data["end_time"] in ("not a time", ""):
             raise psycopg.errors.InvalidDatetimeFormat("invalid input syntax for type timestamp")
         return 1
     monkeypatch.setattr(fake_db, "insert_processing_session", insert, raising=False)
+    monkeypatch.setattr(fake_db, "update_processing_session", lambda *a: updates.append(a), raising=False)
 
     migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db))
     migrator.migrate_processing_metadata()
 
-    assert migrator.stats["processing_metadata"] == {"total": 2, "migrated": 1, "skipped": 0, "errors": 1}
-    good, overwrite = calls[1]
-    assert overwrite is True
-    assert (good["end_time"], good["output_file"], good["processed_statements"], good["error_message"]) == (
-        "2026-01-02", "out.json", 1, "boom")
+    assert migrator.stats["processing_metadata"] == {"total": 3, "migrated": 2, "skipped": 0, "errors": 1}
+    assert len(calls) == 3 and updates == []
+    assert all(overwrite is True for _, overwrite in calls)
+    end_fields = [(s["end_time"], s["output_file"], s["processed_statements"], s["error_message"])
+                  for s, _ in calls[1:]]
+    # an empty legacy end field is unset (NULL), not a value PostgreSQL refuses
+    assert end_fields == [("2026-01-02", "out.json", 1, "boom"), (None, None, None, None)]

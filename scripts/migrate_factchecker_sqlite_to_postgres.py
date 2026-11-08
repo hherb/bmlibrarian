@@ -535,10 +535,11 @@ class SQLiteToPostgresMigrator:
                         'start_time': row['start_time'],
                         'status': row['status'] or 'completed',
                         'config_snapshot': row['config_snapshot'],
-                        'end_time': row['end_time'],
-                        'output_file': row['output_file'],
+                        # '' means unset, as before #408 (and '' is no TIMESTAMPTZ)
+                        'end_time': row['end_time'] or None,
+                        'output_file': row['output_file'] or None,
                         'processed_statements': row['processed_statements'],
-                        'error_message': row['error_message'],
+                        'error_message': row['error_message'] or None,
                     }
 
                     if not self.dry_run:

@@ -263,12 +263,17 @@ def test_session_with_a_bad_end_time_leaves_no_row(session_db, db_manager) -> No
 
 def test_overwrite_completes_a_half_migrated_session(session_db, db_manager) -> None:
     """A re-run upserts over a row an older migration left without its end fields (#408)."""
-    session_db.insert_processing_session(_session())
+    session_db.insert_processing_session(_session(status="running", processed_statements=None))
+    # NULL processed_statements gets the column's default, 0 (the column is NOT NULL)
+    assert _stored_session(db_manager) == [(False, None, 0, None)]
     with pytest.raises(psycopg.errors.UniqueViolation):
         session_db.insert_processing_session(_session())
 
     session_db.insert_processing_session(
-        _session(end_time="2026-01-02T00:00:00+00:00", output_file="out.json",
+        _session(total_statements=3, end_time="2026-01-02T00:00:00+00:00", output_file="out.json",
                  processed_statements=2, error_message="boom"), overwrite=True)
 
     assert _stored_session(db_manager) == [(True, "out.json", 2, "boom")]
+    with db_manager.get_connection() as conn:
+        assert conn.execute("SELECT status, total_statements FROM factcheck.processing_metadata "
+                            "WHERE session_id = %s", (TEST_SESSION_ID,)).fetchall() == [("completed", 3)]

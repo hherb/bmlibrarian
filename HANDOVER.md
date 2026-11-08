@@ -17,7 +17,9 @@ off new work. Longer-term structural items live in
   `migrate_processing_metadata` makes one upsert per session instead of
   insert + `update_processing_session`, so a malformed end field stores
   nothing and a re-run repairs a session an older run left half-written
-  (re-runs no longer count present sessions as errors). Tests:
+  (re-runs no longer count present sessions as errors). Empty legacy end
+  fields become NULL, as before. Open: `--dry-run` validates no values a
+  write would refuse (#410). Tests:
   `test_migrate_factchecker_sqlite.py::test_processing_session_*`, opt-in
   `test_factcheck_audit_transactions_db.py` (`*session*`).
 - **Migration row errors; queue reused-PID check** (2026-11-08, closes
