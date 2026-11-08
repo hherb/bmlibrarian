@@ -282,10 +282,53 @@ fn restore_file(path: &Path, previous: Option<Vec<u8>>) -> std::io::Result<()> {
     }
 }
 
+/// The login entry file at `path` before enable replaces it, or `None` when
+/// there is none.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_previous(path: &Path) -> Result<Option<Vec<u8>>, PgServerError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(file_error(path)(e)),
+    }
+}
+
+/// Undo a macOS enable that failed with `error`: put back the plist that was
+/// there before (or none), and `reload` it, so the old login entry is loaded
+/// again and not only on disk (`bootout` unloaded it). Returns the error to
+/// report: `error` itself when undone, else with why the undo failed.
+#[cfg(any(target_os = "macos", test))]
+fn restore_launch_agent(
+    plist: &Path,
+    previous: Option<Vec<u8>>,
+    error: PgServerError,
+    reload: impl FnOnce(&Path) -> Result<(), PgServerError>,
+) -> PgServerError {
+    let had_previous = previous.is_some();
+    if let Err(source) = restore_file(plist, previous) {
+        return PgServerError::AutostartLeftover {
+            error: Box::new(error),
+            path: plist.to_owned(),
+            source,
+        };
+    }
+    if !had_previous {
+        return error;
+    }
+    match reload(plist) {
+        Ok(()) => error,
+        Err(source) => PgServerError::AutostartNotReloaded {
+            error: Box::new(error),
+            path: plist.to_owned(),
+            source: Box::new(source),
+        },
+    }
+}
+
 /// `result`; when it failed, also run `undo` for `path`. A failed undo is
 /// reported with the original error, as the leftover file would make the
 /// next run believe start at login is set up.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "linux", test))]
 fn undo_on_failure(
     result: Result<(), PgServerError>,
     path: &Path,
@@ -310,16 +353,23 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     {
         let plist = launch_agent_path()?;
         let domain = launchd_domain()?;
+        // Kept so a failed re-enable restores a login entry that worked before.
+        let previous = read_previous(&plist)?;
         // Unload a previous registration first, so enable can be repeated;
         // before writing, so a failure leaves no new login entry behind.
         bootout(&domain)?;
         let agents = plist.parent().expect("plist path has a parent");
-        fs::create_dir_all(agents).map_err(file_error(agents))?;
-        fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))?;
-        // Not enabled after all, so no login entry either.
-        undo_on_failure(bootstrap(&domain, &plist), &plist, || {
-            restore_file(&plist, None)
-        })
+        // Every failure from here on undoes the bootout too, not only a
+        // failed bootstrap (a failed write can leave the plist truncated).
+        fs::create_dir_all(agents)
+            .map_err(file_error(agents))
+            .and_then(|()| {
+                fs::write(&plist, render_launch_agent(exe, config_dir)).map_err(file_error(&plist))
+            })
+            .and_then(|()| bootstrap(&domain, &plist))
+            .map_err(|error| {
+                restore_launch_agent(&plist, previous, error, |old| bootstrap(&domain, old))
+            })
     }
     #[cfg(target_os = "linux")]
     {
@@ -327,11 +377,7 @@ pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
         let unit = unit_dir.join(SYSTEMD_UNIT_NAME);
         fs::create_dir_all(&unit_dir).map_err(file_error(&unit_dir))?;
         // Kept so a failed re-enable restores a unit that worked before.
-        let previous = match fs::read(&unit) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(file_error(&unit)(e)),
-        };
+        let previous = read_previous(&unit)?;
         fs::write(&unit, render_systemd_unit(exe, config_dir)).map_err(file_error(&unit))?;
         let enabled = (|| {
             let mut reload = Command::new("systemctl");
@@ -569,6 +615,73 @@ mod tests {
         undo_on_failure(Ok(()), &path, || panic!("no undo after success")).unwrap();
         // Removing a file that is already gone is fine.
         restore_file(&dir.path().join("none"), None).unwrap();
+    }
+
+    #[test]
+    fn failed_macos_enable_restores_and_reloads_the_old_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("agent.plist");
+
+        // An old entry is written back and loaded again; the original
+        // error is returned unchanged.
+        std::fs::write(&plist, "new").unwrap();
+        let mut reloaded = None;
+        let e = restore_launch_agent(&plist, Some(b"old".to_vec()), launchctl_failed(1), |p| {
+            reloaded = Some(std::fs::read(p).unwrap());
+            Ok(())
+        });
+        assert!(
+            matches!(
+                e,
+                PgServerError::Command {
+                    status: Some(1),
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert_eq!(std::fs::read(&plist).unwrap(), b"old");
+        assert_eq!(reloaded.as_deref(), Some(&b"old"[..]));
+
+        // No old entry: the new one is removed, nothing is loaded.
+        let e = restore_launch_agent(&plist, None, launchctl_failed(1), |_| {
+            panic!("nothing to reload")
+        });
+        assert!(
+            matches!(
+                e,
+                PgServerError::Command {
+                    status: Some(1),
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert!(!plist.exists());
+
+        // The old entry stays on disk when it cannot be loaded again; that
+        // is reported as such, not as a leftover to delete.
+        std::fs::write(&plist, "new").unwrap();
+        let e = restore_launch_agent(&plist, Some(b"old".to_vec()), launchctl_failed(1), |_| {
+            Err(launchctl_failed(5))
+        });
+        assert_eq!(std::fs::read(&plist).unwrap(), b"old");
+        let text = e.to_string();
+        assert!(
+            matches!(e, PgServerError::AutostartNotReloaded { .. })
+                && text.contains("attempt failed with 1")
+                && text.contains("attempt failed with 5")
+                && text.contains("next login")
+                && !text.contains("delete"),
+            "{text}"
+        );
+
+        // The file cannot be put back at all (its folder is gone): leftover.
+        let gone = dir.path().join("gone/agent.plist");
+        let e = restore_launch_agent(&gone, Some(b"old".to_vec()), launchctl_failed(1), |_| {
+            panic!("not restored, so not reloaded")
+        });
+        assert!(matches!(e, PgServerError::AutostartLeftover { .. }), "{e}");
     }
 
     #[test]

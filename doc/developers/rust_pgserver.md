@@ -179,10 +179,15 @@ Order of `adopt`, which is what makes a re-run resume:
     113), "no such domain" (112, e.g. over SSH without a GUI login) or
     "unloading" (36); anything else is an error. `bootout` returns before the
     job is unloaded, so `bootstrap` is retried for up to 2 s while it fails
-    with `5: Input/output error`. `enable` writes the plist only after
-    `bootout`, and removes it again if `bootstrap` fails (if that removal
-    fails too, `AutostartLeftover` reports both, since the leftover plist would
-    make the next setup report start at login as already set up); `disable` removes
+    with `5: Input/output error`. `enable` reads the old plist, writes the new
+    one only after `bootout`, and if writing or `bootstrap` fails puts the old
+    plist back and `bootstrap`s it again (or removes the new one when there was
+    none), so a failed re-enable keeps a working login entry (#405). If the
+    file cannot be put back, `AutostartLeftover` reports both, since the
+    leftover plist would make the next setup report start at login as already
+    set up. If the old plist is back but its `bootstrap` fails,
+    `AutostartNotReloaded` says so: the entry is intact and loads at the next
+    login; `disable` removes
     the plist before `bootout`, so a failed unload never keeps the login
     entry.
   - Linux: a failed `daemon-reload`/`enable` puts the previous unit back, or

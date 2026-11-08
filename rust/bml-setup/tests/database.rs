@@ -139,9 +139,11 @@ fn setup_database_existing_then_resume() {
         password: admin.password,
         needs_pg_search: false,
     };
-    assert_database(
-        step_database(&plan(dir_b.clone(), Some(DatabasePlan::Existing(req)))),
-        StepOutcome::Installed,
+    // Not required, so not installed even when the server has it.
+    let outcome = step_database(&plan(dir_b.clone(), Some(DatabasePlan::Existing(req))));
+    assert!(
+        matches!(&outcome, StepOutcome::Warnings(w) if w.iter().any(|m| m.contains("pg_search"))),
+        "{outcome:?}"
     );
     let resume = plan(dir_b, None);
     // Resume rebuilds the request with pg_search required (off Windows); the
