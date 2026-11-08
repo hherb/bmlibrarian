@@ -39,9 +39,15 @@ MIN_SQLITE_VERSION: tuple = (3, 35, 0)
 QUEUE_BUSY_TIMEOUT_MS: int = 30_000
 
 # Seconds a process's reported start time may lie after the task's claim time
-# and still count as the claiming worker: psutil derives the start time from
-# boot time plus clock ticks, which can be off by a fraction of a second.
-PROCESS_START_TOLERANCE_SECONDS: float = 1.0
+# and still count as the claiming worker. On Linux psutil derives the start
+# time from the *current* boot time, so a forward clock step (NTP on a machine
+# without a hardware clock, a VM resumed from a snapshot) moves a live
+# worker's start time past its claim; a false "dead" fails a running task,
+# while a false "alive" only needs ``--force``. A pid reused after a reboot or
+# crash is normally far newer than the claim.
+# shortcut: clock steps larger than this still read as dead; store the worker's
+# own create_time with the claim if that ever happens in practice.
+PROCESS_START_TOLERANCE_SECONDS: float = 300.0
 
 # Busy timeout for the SIGTERM-handler cleanup. The interrupted code may hold
 # the write lock itself (e.g. between executemany and commit), so waiting the
@@ -455,7 +461,8 @@ class QueueManager:
                     completed_at = datetime.now(timezone.utc).isoformat()
                     if mark_as_failed or process_dead:
                         if process_dead:
-                            reason = f"Task stuck in processing; process {process_id} no longer running"
+                            reason = (f"Task stuck in processing; process {process_id} no longer "
+                                      f"running (or its PID was reused)")
                         elif process_alive:
                             reason = (f"Task forcibly recovered while process "
                                       f"{process_id} was still running")
@@ -526,7 +533,7 @@ class QueueManager:
                             process_id = NULL, worker_id = NULL
                         WHERE id = ? AND status = ? AND worker_id IS ? AND started_at IS ?
                     """, (TaskStatus.FAILED.value,
-                          f"Process {pid} no longer running",
+                          f"Process {pid} no longer running (or its PID was reused)",
                           datetime.now(timezone.utc).isoformat(),
                           task_id, TaskStatus.PROCESSING.value, worker_id, started_at))
 

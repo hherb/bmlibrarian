@@ -152,8 +152,9 @@ def cmd_recover(args):
         print("   Inspect failed tasks with: python -m bmlibrarian.queue_cli list --status failed -v")
     if counts.skipped_running:
         print(f"⏳ {counts.skipped_running} skipped: the process that claimed them "
-              f"is still running (use --force to recover them anyway; a forced "
-              f"task's own result is then discarded)")
+              f"appears to be still running (when its start time cannot be read, "
+              f"only the PID is checked; use --force to recover them anyway; a "
+              f"forced task's own result is then discarded)")
     if not (counts.recovered or counts.skipped_running):
         print("✅ No stuck tasks found")
 

@@ -317,6 +317,18 @@ class TestReusedPid:
         assert qm._process_alive(pid, "not a time") is True
         assert qm._process_alive(DEAD_PID, stuck_since()) is False
 
+    def test_start_time_tolerance_covers_clock_steps(self) -> None:
+        """A start time a little after the claim (clock step) is alive; far after is dead."""
+        started = psutil.Process().create_time()
+        tolerance = qm.PROCESS_START_TOLERANCE_SECONDS
+
+        def claimed(seconds_before_start: float) -> str:
+            """A claim time this many seconds before this process started."""
+            return datetime.fromtimestamp(started - seconds_before_start, timezone.utc).isoformat()
+
+        assert qm._process_alive(os.getpid(), claimed(tolerance / 2)) is True
+        assert qm._process_alive(os.getpid(), claimed(tolerance * 2)) is False
+
     def test_unreadable_start_time_checks_the_pid_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Access denied → alive (as before); exited meanwhile → dead."""
         def process(error: type) -> Any:
@@ -354,6 +366,23 @@ class TestReusedPid:
         assert queue.cleanup_dead_process_tasks() == 1
         assert queue.get_task_status(reused.id).status == TaskStatus.FAILED
         assert queue.get_task_status(live.id).status == TaskStatus.PROCESSING
+
+    def test_cleanup_dead_leaves_a_task_reclaimed_meanwhile(
+            self, queue: QueueManager, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A task re-claimed between the SELECT and the UPDATE is not failed."""
+        task = claim(queue)
+
+        def reclaim_then_report_dead(pid: int, started_at: Any = None) -> bool:
+            """A live worker re-claims the task while cleanup inspects the old claim."""
+            with sqlite3.connect(queue.db_path) as conn:
+                conn.execute("UPDATE queue_tasks SET worker_id = ?, started_at = ? WHERE id = ?",
+                             ("other-worker", datetime.now(timezone.utc).isoformat(), task.id))
+            return False
+
+        monkeypatch.setattr(qm, "_process_alive", reclaim_then_report_dead)
+
+        assert queue.cleanup_dead_process_tasks() == 0
+        assert queue.get_task_status(task.id).status == TaskStatus.PROCESSING
 
 
 class TestTaskFailedEvent:

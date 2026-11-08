@@ -202,3 +202,20 @@ def test_review_status_update_of_a_missing_statement_raises(db_manager) -> None:
 
     with pytest.raises(ValueError):
         db.update_statement_review_status(NONEXISTENT_ID, "completed")
+
+
+def test_review_status_update_of_an_existing_statement_is_stored(db_manager) -> None:
+    """The rowcount check does not reject a real update (#395)."""
+    from bmlibrarian.factchecker.db.database import FactCheckerDB, Statement
+
+    db = FactCheckerDB.__new__(FactCheckerDB)
+    db.db_manager = db_manager
+    statement_id = db.insert_statement(Statement(statement_text=TEST_STATEMENT, source_file="test"))
+
+    db.update_statement_review_status(statement_id, "completed")
+
+    with db_manager.get_connection() as conn:
+        status = conn.execute(
+            "SELECT review_status FROM factcheck.statements WHERE statement_id = %s", (statement_id,)
+        ).fetchone()
+    assert status == ("completed",)

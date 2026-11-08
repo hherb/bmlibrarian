@@ -231,7 +231,11 @@ class SQLiteToPostgresMigrator:
             return ok
 
         except Exception as e:
-            logger.error(f"Migration failed: {e}", exc_info=True)
+            self.print_summary()
+            logger.error(f"Migration aborted: {e}. Rows counted as migrated above are "
+                         f"already committed; re-run with --skip-existing so their "
+                         f"evaluations are not stored again as new versions.",
+                         exc_info=True)
             raise
 
     def migrate_statements(self):
