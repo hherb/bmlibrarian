@@ -24,7 +24,10 @@ pub(crate) fn lock_downloads(config_dir: &Path) -> Result<std::fs::File, SetupEr
         path: path.clone(),
         source,
     };
-    std::fs::create_dir_all(config_dir).map_err(io)?;
+    std::fs::create_dir_all(config_dir).map_err(|source| SetupError::Io {
+        path: config_dir.to_path_buf(),
+        source,
+    })?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -35,11 +38,37 @@ pub(crate) fn lock_downloads(config_dir: &Path) -> Result<std::fs::File, SetupEr
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(SetupError::Other {
             message: format!(
-                "Another `bml setup` is downloading into {}; wait for it to finish, then run `bml setup` again.",
+                "Another BMLibrarian setup is downloading into {}; wait for it to finish, then run `bml setup` again.",
                 config_dir.display()
             ),
         }),
-        Err(std::fs::TryLockError::Error(e)) => Err(io(e)),
+        Err(std::fs::TryLockError::Error(e)) => Err(SetupError::Other {
+            message: format!(
+                "Could not lock {} ({e}), which keeps two setups from downloading at once. Use a --config-dir on a disk that supports file locks.",
+                path.display()
+            ),
+        }),
+    }
+}
+
+/// Report each of `warnings` for `step`, and return an outcome that repeats
+/// them (so the summary shows what scrolled away), or `otherwise` if none.
+pub(crate) fn report_warnings(
+    step: StepId,
+    warnings: Vec<String>,
+    otherwise: StepOutcome,
+    report: &mut dyn FnMut(StepEvent),
+) -> StepOutcome {
+    for message in &warnings {
+        report(StepEvent::Warning {
+            step,
+            message: message.clone(),
+        });
+    }
+    if warnings.is_empty() {
+        otherwise
+    } else {
+        StepOutcome::Warnings(warnings)
     }
 }
 
@@ -244,7 +273,7 @@ mod tests {
         let cfg = dir.path().join("cfg");
         let held = lock_downloads(&cfg).unwrap();
         let e = lock_downloads(&cfg).unwrap_err();
-        assert!(e.to_string().contains("Another `bml setup`"), "{e}");
+        assert!(e.to_string().contains("Another BMLibrarian setup"), "{e}");
         drop(held);
         lock_downloads(&cfg).unwrap();
     }

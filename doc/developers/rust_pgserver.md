@@ -145,7 +145,7 @@ Order of `adopt`, which is what makes a re-run resume:
    steps): the host must be loopback (`is_loopback_host`); the superuser
    password and name must be storable (`PasswordNotStorable`,
    `SuperuserNotStorable`: non-empty, no control character, no leading or
-   trailing space). Then IPv6 brackets are dropped (`[::1]` → `::1`), as
+   trailing whitespace). Then IPv6 brackets are dropped (`[::1]` → `::1`), as
    libpq and `bml.env` take the bare address.
 2. Refuse if `bml-pgserver.json` exists.
 3. A saved `bml-external.json` must name the requested host and port
@@ -186,7 +186,8 @@ Order of `adopt`, which is what makes a re-run resume:
     the plist before `bootout`, so a failed unload never keeps the login
     entry.
   - Linux: a failed `daemon-reload`/`enable` puts the previous unit back, or
-    removes the new one (`AutostartLeftover` if that fails). The unit's `ExecStop` stops the server when the user's systemd
+    removes the new one (`AutostartLeftover` if that fails; the leftover is
+    then the file to check or delete by hand). The unit's `ExecStop` stops the server when the user's systemd
     manager stops at logout. Output goes to the journal. Arguments are quoted
     with `%` → `%%` and `$` → `$$`.
   - Windows: output is lost (issue #397). Trailing backslashes in

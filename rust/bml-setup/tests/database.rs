@@ -65,6 +65,19 @@ fn step_database(plan: &SetupPlan) -> StepOutcome {
     run_step(StepId::Database, plan, &NoHttp, &mut |_| {})
 }
 
+/// `outcome` is `expected`, or, when the run supplies no pg_search, the
+/// warning about it.
+fn assert_database(outcome: StepOutcome, expected: StepOutcome) {
+    if common::test_extension_dirs().is_empty() {
+        assert!(
+            matches!(&outcome, StepOutcome::Warnings(w) if w.iter().any(|m| m.contains("pg_search"))),
+            "{outcome:?}"
+        );
+    } else {
+        assert_eq!(outcome, expected);
+    }
+}
+
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
 fn setup_database_private_then_resume() {
@@ -80,11 +93,11 @@ fn setup_database_private_then_resume() {
         data_dir: tmp.path().join("data"),
         extension_dirs: common::test_extension_dirs(),
     };
-    assert_eq!(
+    assert_database(
         step_database(&plan(cfg.clone(), Some(DatabasePlan::Private(req)))),
-        StepOutcome::Installed
+        StepOutcome::Installed,
     );
-    assert_eq!(step_database(&plan(cfg, None)), StepOutcome::AlreadyPresent);
+    assert_database(step_database(&plan(cfg, None)), StepOutcome::AlreadyPresent);
 }
 
 #[test]
@@ -126,9 +139,9 @@ fn setup_database_existing_then_resume() {
         password: admin.password,
         needs_pg_search: false,
     };
-    assert_eq!(
+    assert_database(
         step_database(&plan(dir_b.clone(), Some(DatabasePlan::Existing(req)))),
-        StepOutcome::Installed
+        StepOutcome::Installed,
     );
     let resume = plan(dir_b, None);
     // Resume rebuilds the request with pg_search required (off Windows); the
@@ -140,7 +153,7 @@ fn setup_database_existing_then_resume() {
             "{outcome:?}"
         );
     } else {
-        assert_eq!(outcome, StepOutcome::AlreadyPresent);
+        assert_database(outcome, StepOutcome::AlreadyPresent);
     }
     assert!(matches!(
         run_step(StepId::Autostart, &resume, &NoHttp, &mut |_| {}),

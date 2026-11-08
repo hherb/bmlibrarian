@@ -119,7 +119,7 @@ pub enum PgServerError {
         requested: PathBuf,
     },
     /// Start at login failed, and its file could not be put back as it was.
-    #[error("{error}. Also, {} could not be put back as it was ({source}); delete it by hand, or the next setup will think start at login is set up", path.display())]
+    #[error("{error}. Also, {} could not be put back as it was ({source}); check or delete it by hand, or the next setup may think start at login is set up", path.display())]
     AutostartLeftover {
         /// Why start at login failed.
         error: Box<PgServerError>,
@@ -231,10 +231,10 @@ pub enum PgServerError {
         state_file: PathBuf,
     },
     /// The password cannot be kept in the credentials files.
-    #[error("that password cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with a space")]
+    #[error("that password cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with whitespace")]
     PasswordNotStorable,
     /// The superuser name cannot be kept in the credentials files.
-    #[error("that superuser name cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with a space")]
+    #[error("that superuser name cannot be stored: it must not be empty, contain a control character such as a line break or tab, or start or end with whitespace")]
     SuperuserNotStorable,
     /// The credentials file already holds another server's superuser.
     #[error("{admin_env} holds the credentials of another PostgreSQL server ({host}:{port}, user {user}); bml will not overwrite them. Use a different --config-dir for the existing server")]

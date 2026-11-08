@@ -592,7 +592,7 @@ mod tests {
             superuser: "postgres".into(),
         };
         save_external_state(dir.path(), &state).unwrap();
-        // The saved host is stored unbracketed, so `[::1]` matches it.
+        // `[::1]` is compared unbracketed, so only the port differs here.
         let e = adopt(&request("[::1]", "pw"), dir.path()).unwrap_err();
         let text = e.to_string();
         assert!(
@@ -603,5 +603,48 @@ mod tests {
             text.contains("::1:5433") && text.contains("::1:5432"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn bracketed_ipv6_rerun_matches_the_saved_server() {
+        let dir = tempfile::tempdir().unwrap();
+        // A port nothing listens on, so the rerun stops at connecting.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        save_external_state(
+            dir.path(),
+            &ExternalState {
+                host: "::1".into(),
+                port,
+                superuser: "postgres".into(),
+            },
+        )
+        .unwrap();
+        let admin_env = dir.path().join(ADMIN_ENV_FILE_NAME);
+        let saved = render_env(&ConnInfo {
+            host: "::1".into(),
+            port,
+            dbname: DATABASE.into(),
+            user: "postgres".into(),
+            password: "pw".into(),
+        });
+        std::fs::write(&admin_env, &saved).unwrap();
+        let req = ExternalRequest {
+            port,
+            ..request("[::1]", "pw")
+        };
+        let e = adopt(&req, dir.path()).unwrap_err();
+        assert!(
+            !matches!(
+                e,
+                PgServerError::ExistingServerMismatch { .. }
+                    | PgServerError::AdminCredentialsInUse { .. }
+            ),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_to_string(&admin_env).unwrap(), saved);
     }
 }

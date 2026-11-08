@@ -15,7 +15,7 @@ use crate::models::{model_action, ApprovedModel, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
 use crate::runner::{DatabasePlan, SetupPlan};
-use crate::sweep_stale_parts;
+use crate::{report_warnings, sweep_stale_parts};
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
 
 /// The folder in the configuration folder that holds downloaded GGUF models.
@@ -84,7 +84,10 @@ fn hardware(
     let mut needs = Vec::new();
     // A remote Ollama keeps its models on its own disks.
     let ollama_dir = ollama_models_dir(
-        std::env::var_os(OLLAMA_MODELS_ENV).map(PathBuf::from),
+        // Ollama treats an empty value as unset.
+        std::env::var_os(OLLAMA_MODELS_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
         std::env::home_dir(),
         cfg!(target_os = "linux").then_some(Path::new(LINUX_OLLAMA_SERVICE_HOME)),
     )
@@ -99,25 +102,19 @@ fn hardware(
         ));
     }
     warnings.extend(disk_warnings(&needs, &mounts()));
-    let warnings: Vec<String> = warnings.iter().map(ToString::to_string).collect();
-    for message in &warnings {
-        report(StepEvent::Warning {
-            step,
-            message: message.clone(),
-        });
-    }
-    // Repeated in the outcome, so the summary shows what scrolled away.
-    Ok(if warnings.is_empty() {
-        StepOutcome::AlreadyPresent
-    } else {
-        StepOutcome::Warnings(warnings)
-    })
+    let warnings = warnings.iter().map(ToString::to_string).collect();
+    Ok(report_warnings(
+        step,
+        warnings,
+        StepOutcome::AlreadyPresent,
+        report,
+    ))
 }
 
 /// Where a local Ollama keeps its models: `OLLAMA_MODELS` if set; else, when
-/// `service_home` is given (Linux), the service user's folder unless only the
-/// user's own `~/.ollama/models` exists (a fresh install uses the service);
-/// else the user's own.
+/// `service_home` is given (Linux), `<service_home>/.ollama/models` if
+/// `service_home` exists or `~/.ollama/models` does not (a fresh install
+/// uses the service); else the user's own `~/.ollama/models`.
 fn ollama_models_dir(
     env: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -158,27 +155,22 @@ fn saved_external_request(config_dir: &Path) -> Result<Option<ExternalRequest>, 
     }))
 }
 
-/// Warnings for a database that works but lacks something; returns the outcome.
+/// Warnings for a database that works but lacks something; returns the
+/// outcome, which repeats them.
 fn database_outcome(
     created_now: bool,
     pg_search: bool,
     app_password_reset: bool,
     report: &mut dyn FnMut(StepEvent),
 ) -> StepOutcome {
-    let step = StepId::Database;
+    let mut warnings = Vec::new();
     if !pg_search {
-        report(StepEvent::Warning {
-            step,
-            message: "pg_search is not installed, so the database has no BM25 search index. For a private server, run setup again with --extension-dir pointing at a pg_search build.".into(),
-        });
+        warnings.push("pg_search is not installed, so the database has no BM25 search index. For a private server, run setup again with --extension-dir pointing at a pg_search build.".to_string());
     }
     if app_password_reset {
-        report(StepEvent::Warning {
-            step,
-            message: format!("the server refused the password in {APP_ENV_FILE_NAME}, so it was reset; other copies of the old password no longer work."),
-        });
+        warnings.push(format!("the server refused the password in {APP_ENV_FILE_NAME}, so it was reset; other copies of the old password no longer work."));
     }
-    created(created_now)
+    report_warnings(StepId::Database, warnings, created(created_now), report)
 }
 
 /// Set up the chosen database, or resume the saved one.
@@ -329,11 +321,16 @@ fn embedding_model(
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let model = &ARCTIC_EMBED_L_V2_F16;
-    if verify_model(&gguf_path(&plan.config_dir), model).is_ok() {
+    let good = || verify_model(&gguf_path(&plan.config_dir), model).is_ok();
+    if good() {
         return Ok(StepOutcome::AlreadyPresent);
     }
     let models_dir = plan.config_dir.join(MODELS_DIR_NAME);
     let _lock = crate::lock_downloads(&plan.config_dir)?;
+    // Another setup may have finished the download while this one waited.
+    if good() {
+        return Ok(StepOutcome::AlreadyPresent);
+    }
     sweep_stale_parts(&models_dir, model.file)?;
     download_model(model, &models_dir, &mut |done, total| {
         report(StepEvent::Progress {
@@ -409,7 +406,7 @@ mod tests {
                 warnings.push(message);
             }
         });
-        assert_eq!(outcome, StepOutcome::AlreadyPresent);
+        assert_eq!(outcome, StepOutcome::Warnings(warnings.clone()));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(warnings[0].contains("pg_search"));
         assert!(warnings[1].contains("reset"));
@@ -540,7 +537,7 @@ mod tests {
         // Remote and unreachable: models count as missing, but no Ollama
         // disk need, so the only disk warning possible is the GGUF's.
         let mut messages = Vec::new();
-        hardware(&p, &Fake::new(), &mut |e| {
+        let outcome = hardware(&p, &Fake::new(), &mut |e| {
             if let StepEvent::Warning { message, .. } = e {
                 messages.push(message);
             }
@@ -550,6 +547,27 @@ mod tests {
             !messages.iter().any(|m| m.contains(".ollama")),
             "{messages:?}"
         );
+        // The outcome repeats exactly the warnings reported.
+        if messages.is_empty() {
+            assert_eq!(outcome, StepOutcome::AlreadyPresent);
+        } else {
+            assert_eq!(outcome, StepOutcome::Warnings(messages));
+        }
+    }
+
+    #[test]
+    fn embedding_model_waits_for_another_setups_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = crate::lock_downloads(dir.path()).unwrap();
+        let models_dir = dir.path().join(MODELS_DIR_NAME);
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let part = models_dir.join(format!(".{}.123.part", ARCTIC_EMBED_L_V2_F16.file));
+        std::fs::write(&part, b"in progress").unwrap();
+        let e = embedding_model(&plan(dir.path()), &mut |_| {}).unwrap_err();
+        assert!(e.to_string().contains("Another BMLibrarian setup"), "{e}");
+        // The other setup's part file is left alone.
+        assert!(part.exists());
+        drop(held);
     }
 
     #[test]

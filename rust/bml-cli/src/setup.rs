@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use bml_pgserver::error::PgServerError;
-use bml_pgserver::external::{check_request, ExternalRequest};
+use bml_pgserver::external::{check_request, is_loopback_host, ExternalRequest};
 use bml_pgserver::init::InitRequest;
 use bml_setup::ollama::{parse_ollama_host, pull_http_client, OLLAMA_HOST_ENV};
 use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan};
@@ -133,6 +133,10 @@ fn database_plan(
 ) -> Result<Option<DatabasePlan>, PgServerError> {
     if let Some(raw) = &args.existing_server {
         let (host, port) = parse_host_port(raw)?;
+        // Refuse a remote host before asking for a password it would not need.
+        if !is_loopback_host(&host) {
+            return Err(PgServerError::NotLoopback { host });
+        }
         let superuser = args.pg_superuser.clone().unwrap_or_default();
         let password = read_password(args.password_stdin)?;
         let req = ExternalRequest {
@@ -142,7 +146,7 @@ fn database_plan(
             password,
             needs_pg_search: !cfg!(windows),
         };
-        // Refuse a remote host or an unusable password before any step runs.
+        // Refuse an unusable password or superuser name before any step runs.
         check_request(&req)?;
         return Ok(Some(DatabasePlan::Existing(req)));
     }

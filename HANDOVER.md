@@ -47,10 +47,10 @@ off new work. Longer-term structural items live in
   password/superuser; the CLI calls it before any step, so a remote
   `--existing-server` or empty `--password-stdin` line exits 1 at once);
   `adopt` drops `[::1]` brackets itself; new errors `ExistingServerMismatch`
-  and `AutostartLeftover` (a login entry that could not be removed after a
-  failed enable is reported instead of making the next run say "already in
-  place"); new `StepOutcome::Warnings(Vec<String>)` (hardware; the CLI
-  summary repeats them). The Models step tries both models and joins their
+  and `AutostartLeftover` (a login entry that could not be removed or put
+  back after a failed enable is reported, not left silently); new
+  `StepOutcome::Warnings(Vec<String>)` (Hardware, Database, Ollama via
+  `report_warnings`; the CLI summary repeats them). The Models step tries both models and joins their
   errors. Hardware: "unknown free space" warning for a disk not in the mount
   list, no Ollama-disk check for a remote `OLLAMA_HOST`, Linux checks
   `/usr/share/ollama/.ollama/models`. Ollama detection: `app_candidates`
@@ -59,9 +59,11 @@ off new work. Longer-term structural items live in
   found command is not started, setup says how. macOS unpacks into
   `~/Applications/.bml-ollama-extract` and renames, so no partial app.
   Downloads run under an OS file lock (`.bml-setup-download.lock`,
-  `File::try_lock`; workspace MSRV now 1.89). `parse_ollama_host` refuses
+  `File::try_lock`; workspace MSRV now 1.89); after taking it the Ollama and
+  Embedding steps re-check, so a second setup never downloads twice. macOS
+  deletes the installer only after the app is moved into place. `parse_ollama_host` refuses
   userinfo, port 0, text after `]`, `?`/`#`. CLI failures and warnings go to
-  stderr. Still open on #401: bmlib-side items (README count, tests, CI
+  stderr; a remote `--existing-server` is refused before the password is read. Still open on #401: bmlib-side items (README count, tests, CI
   guard, crates.io 0.3.1 — only 0.3.0 is published), an existing-server
   `bml server status` exit-0 test and `pg_search` adopt in CI (#399),
   Windows drive-letter case (#397), installed-Ollama version never checked.

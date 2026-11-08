@@ -311,7 +311,8 @@ pub fn ensure_ollama(
         env_dir(PROGRAM_FILES_ENV).as_deref(),
     );
     let path_var = std::env::var_os(PATH_ENV);
-    if let Some(app) = installed_app(&candidates, path_var.as_deref()) {
+    let installed = || installed_app(&candidates, path_var.as_deref());
+    if let Some(app) = installed() {
         start(http, host, &app)?;
         return Ok(StepOutcome::Started);
     }
@@ -327,6 +328,11 @@ pub fn ensure_ollama(
         source,
     })?;
     let _lock = crate::lock_downloads(config_dir)?;
+    // Another setup may have installed it while this one waited.
+    if let Some(app) = installed() {
+        start(http, host, &app)?;
+        return Ok(StepOutcome::Started);
+    }
     crate::sweep_stale_parts(&dir, asset.file)?;
     let file = bmlib::embed::download_verified(
         &installer_url(&asset),
@@ -358,35 +364,51 @@ pub fn ensure_ollama(
     for c in install_calls(&file, &home) {
         run_call(&c, true)?;
     }
+    let mut warnings = Vec::new();
+    #[cfg(target_os = "macos")]
+    let app = {
+        let app = home.join(USER_APPS_DIR).join(OLLAMA_APP_BUNDLE);
+        warnings.extend(place_unpacked_app(&staging, &app)?);
+        app
+    };
+    // Deleted only once the app is in place, so a failed move can reuse it.
     // Up to 1.6 GB that is no longer needed; a leftover only costs space.
     match std::fs::remove_file(&file) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => report(StepEvent::Warning {
-            step,
-            message: format!(
-                "Ollama is installed, but its installer {} could not be deleted ({e}); delete it to free the space.",
-                file.display()
-            ),
-        }),
+        Err(e) => warnings.push(format!(
+            "Ollama is installed, but its installer {} could not be deleted ({e}); delete it to free the space.",
+            file.display()
+        )),
     }
     #[cfg(target_os = "macos")]
-    {
-        let app = home.join(USER_APPS_DIR).join(OLLAMA_APP_BUNDLE);
-        let unpacked = staging.join(OLLAMA_APP_BUNDLE);
-        std::fs::rename(&unpacked, &app).map_err(|source| SetupError::Io {
-            path: app.clone(),
-            source,
-        })?;
-        remove_dir_if_present(&staging)?;
-        start(http, host, &app)?;
-        Ok(StepOutcome::Installed)
-    }
+    start(http, host, &app)?;
     #[cfg(not(target_os = "macos"))]
-    {
-        wait_until_running(http, host, OLLAMA_START_TIMEOUT)?;
-        Ok(StepOutcome::Installed)
-    }
+    wait_until_running(http, host, OLLAMA_START_TIMEOUT)?;
+    Ok(crate::report_warnings(
+        step,
+        warnings,
+        StepOutcome::Installed,
+        report,
+    ))
+}
+
+/// Move the app bundle `ditto` unpacked into `staging` to `app`, then
+/// delete `staging`; a staging folder left behind is only a warning.
+#[cfg(target_os = "macos")]
+fn place_unpacked_app(staging: &Path, app: &Path) -> Result<Option<String>, SetupError> {
+    let unpacked = staging.join(OLLAMA_APP_BUNDLE);
+    std::fs::rename(&unpacked, app).map_err(|source| SetupError::Io {
+        path: unpacked.clone(),
+        source,
+    })?;
+    Ok(match std::fs::remove_dir_all(staging) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(format!(
+            "Ollama is installed, but the folder it was unpacked into, {}, could not be deleted ({e}); delete it to free the space.",
+            staging.display()
+        )),
+        _ => None,
+    })
 }
 
 /// Start the installed Ollama `app` and wait until it answers.
@@ -623,5 +645,26 @@ mod tests {
         let host = crate::ollama::parse_ollama_host(Some("gpu-box")).unwrap();
         let e = ensure_ollama(&f, &host, Path::new("/nonexistent"), &mut |_| {}).unwrap_err();
         assert!(matches!(e, SetupError::NotLoopback { .. }), "{e}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn place_unpacked_app_moves_the_bundle_and_clears_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(EXTRACT_STAGING_DIR);
+        let app = tmp.path().join(OLLAMA_APP_BUNDLE);
+        std::fs::create_dir_all(staging.join(OLLAMA_APP_BUNDLE).join("Contents")).unwrap();
+        assert_eq!(place_unpacked_app(&staging, &app).unwrap(), None);
+        assert!(app.join("Contents").is_dir());
+        assert!(!staging.exists());
+
+        // A zip without Ollama.app at its top: the error names what is missing.
+        std::fs::create_dir_all(staging.join("Other.app")).unwrap();
+        let e = place_unpacked_app(&staging, &tmp.path().join("New.app")).unwrap_err();
+        let text = e.to_string();
+        assert!(
+            text.contains(&staging.join(OLLAMA_APP_BUNDLE).display().to_string()),
+            "{text}"
+        );
     }
 }

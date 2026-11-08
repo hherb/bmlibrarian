@@ -172,3 +172,45 @@ fn skip_all_but_hardware_succeeds() {
     }
     assert_eq!(std::fs::read_dir(cfg.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn remote_existing_server_refused_before_asking_for_a_password() {
+    let cfg = tempfile::tempdir().unwrap();
+    let args = [
+        "setup",
+        "--existing-server",
+        "db.example:5432",
+        "--pg-superuser",
+        "postgres",
+    ];
+    let out = bml(cfg.path(), &args, None);
+    assert_eq!(out.status.code(), Some(1));
+    let err = text(&out.stderr);
+    assert!(err.contains("must run on this computer"), "{err}");
+    assert!(!err.contains("password is needed"), "{err}");
+}
+
+#[test]
+fn failed_step_goes_to_stderr() {
+    let cfg = tempfile::tempdir().unwrap();
+    // No database chosen and none saved: the Database step fails. Port 1
+    // keeps the Hardware step's Ollama listing off any real Ollama.
+    let args = [
+        "setup",
+        "--ollama-host",
+        "http://127.0.0.1:1",
+        "--skip",
+        "autostart",
+        "--skip",
+        "ollama",
+        "--skip",
+        "models",
+        "--skip",
+        "embedding-model",
+    ];
+    let out = bml(cfg.path(), &args, None);
+    assert_eq!(out.status.code(), Some(1));
+    let (so, err) = (text(&out.stdout), text(&out.stderr));
+    assert!(err.contains("Database: FAILED"), "{err}");
+    assert!(!so.contains("Database: FAILED"), "{so}");
+}

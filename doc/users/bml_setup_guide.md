@@ -30,7 +30,8 @@ You see one line when each step starts and ends (a skipped step only gets
 the end line), a progress line about every
 five seconds during downloads, and a summary table at the end. Warnings start
 with `Warning:`. Warnings and failed steps are written to standard error,
-everything else to standard output. Setup exits with 0 when no step failed, 1
+everything else to standard output; the summary at the end (standard output)
+repeats every failure and warning. Setup exits with 0 when no step failed, 1
 otherwise. Only one setup at a time can download into a BMLibrarian folder; a
 second one stops its download steps with a message saying so.
 
@@ -87,8 +88,11 @@ Later steps still run when an earlier one failed, except those that depend on
 it (start at login needs the database; the models need Ollama). If one
 language model fails, setup still tries the other one.
 
-A wrong `--existing-server` (a server on another computer) or an empty
-password stops setup before any step runs, so nothing is downloaded first.
+An `--existing-server` on another computer, or a password or superuser name
+that cannot be used (empty, or starting or ending with a space), stops setup
+before any step runs, so nothing is downloaded first; a remote server is
+refused before the password is even read. A wrong port or password is only
+found by the Database step.
 
 ## Linux notes
 
