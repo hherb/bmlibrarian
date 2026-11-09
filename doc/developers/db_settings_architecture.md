@@ -274,7 +274,8 @@ CREATE TABLE bmlsettings.user_settings (
     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     category TEXT NOT NULL CHECK (category IN (
         'models', 'ollama', 'agents', 'database', 'search',
-        'query_generation', 'gui', 'openathens', 'pdf', 'general'
+        'query_generation', 'gui', 'openathens', 'pdf', 'general',
+        'document_qa', 'discovery', 'embeddings'   -- added by migration 030
     )),
     settings JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -304,6 +305,20 @@ CREATE TABLE bmlsettings.user_sessions (
     hostname TEXT
 );
 ```
+
+> **Adding a settings category.** The category list exists five times: the
+> Python constant `config.VALID_SETTINGS_CATEGORIES` (re-exported as
+> `auth.user_settings.VALID_CATEGORIES`) and, in SQL, the CHECK constraints of
+> `user_settings` and `default_settings`, the `v_user_complete_settings`
+> view and the `get_all_user_settings()` function. A new category needs the
+> Python change plus one migration that extends all four SQL lists (see
+> migrations 030, 036 and 037). Without it, saving that category to the
+> database fails at runtime (CHECK), or the saved settings are never loaded
+> back on login (`get_all_user_settings()`, which `UserSettingsManager.get_all()`
+> calls).
+> `tests/test_settings_categories_sql_sync.py` reads the migrations (no
+> database needed) and fails when the latest definition of any SQL list
+> differs from the Python set.
 
 > `'flet_gui'` is still accepted by the schema (migration `012_create_bmlsettings_schema.sql`) for existing rows, but no current client uses it: the Flet GUIs were removed on 2026-10-16.
 
