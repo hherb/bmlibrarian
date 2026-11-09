@@ -162,7 +162,8 @@ class FactCheckerDB:
         return statement_id, evaluation_id
 
     def store_verdicts(self, statement: Statement,
-                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]]) -> Tuple[int, List[int]]:
+                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]],
+                       conn: Optional[psycopg.Connection] = None) -> Tuple[int, List[int]]:
         """
         Store a statement and several evaluations with their evidence in one transaction.
 
@@ -174,11 +175,13 @@ class FactCheckerDB:
             statement: The statement (an existing one is reused).
             verdicts: (evaluation, evidence) pairs; ``statement_id`` and
                 ``evaluation_id`` are set here.
+            conn: Run inside this connection's transaction instead of an own,
+                committed one (the caller then rolls back on failure, e.g. a savepoint)
 
         Returns:
             (statement_id, evaluation ids in the given order)
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             statement_id = self.insert_statement(statement, conn=conn)
             evaluation_ids = []
             for evaluation, evidence in verdicts:
@@ -214,9 +217,10 @@ class FactCheckerDB:
                 statement_id = cur.fetchone()[0]
                 return statement_id
 
-    def get_statement(self, statement_id: int) -> Optional[Statement]:
-        """Get a statement by ID."""
-        with self.db_manager.get_connection() as conn:
+    def get_statement(self, statement_id: int,
+                      conn: Optional[psycopg.Connection] = None) -> Optional[Statement]:
+        """Get a statement by ID (inside ``conn``'s transaction if given)."""
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT statement_id, statement_text, input_statement_id, expected_answer,
@@ -237,14 +241,15 @@ class FactCheckerDB:
                     )
                 return None
 
-    def update_statement_review_status(self, statement_id: int, status: str) -> None:
+    def update_statement_review_status(self, statement_id: int, status: str,
+                                       conn: Optional[psycopg.Connection] = None) -> None:
         """
-        Update the review status of a statement.
+        Update the review status of a statement (inside ``conn``'s transaction if given).
 
         Raises:
             ValueError: No statement has ``statement_id``
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE factcheck.statements
@@ -256,17 +261,19 @@ class FactCheckerDB:
 
     # ========== Annotator Operations ==========
 
-    def insert_or_get_annotator(self, annotator: Annotator) -> int:
+    def insert_or_get_annotator(self, annotator: Annotator,
+                                conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a new annotator or return existing ID.
 
         Args:
             annotator: Annotator object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Annotator ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Use ON CONFLICT to handle duplicates atomically without transaction errors
                 cur.execute("""
@@ -367,9 +374,10 @@ class FactCheckerDB:
                       evaluation.session_id, Jsonb(notes) if notes else None, evaluation.statement_id))
                 return cur.fetchone()[0]
 
-    def get_latest_ai_evaluation(self, statement_id: int) -> Optional[AIEvaluation]:
-        """Get the latest AI evaluation for a statement."""
-        with self.db_manager.get_connection() as conn:
+    def get_latest_ai_evaluation(self, statement_id: int,
+                                 conn: Optional[psycopg.Connection] = None) -> Optional[AIEvaluation]:
+        """Get the latest AI evaluation for a statement (inside ``conn``'s transaction if given)."""
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT evaluation_id, statement_id, evaluation, reason, confidence,
@@ -486,17 +494,19 @@ class FactCheckerDB:
 
     # ========== Human Annotation Operations ==========
 
-    def insert_human_annotation(self, annotation: HumanAnnotation) -> int:
+    def insert_human_annotation(self, annotation: HumanAnnotation,
+                                conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert or update a human annotation.
 
         Args:
             annotation: HumanAnnotation object
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             Annotation ID
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Upsert using ON CONFLICT
                 cur.execute("""
@@ -545,7 +555,8 @@ class FactCheckerDB:
 
     # ========== Processing Metadata Operations ==========
 
-    def insert_processing_session(self, session_data: Dict[str, Any], overwrite: bool = False) -> int:
+    def insert_processing_session(self, session_data: Dict[str, Any], overwrite: bool = False,
+                                  conn: Optional[psycopg.Connection] = None) -> int:
         """
         Insert a processing session in one statement.
 
@@ -556,11 +567,12 @@ class FactCheckerDB:
                 ``error_message`` (a finished session is written whole, #408).
             overwrite: Replace every field of an existing session with the same
                 ``session_id`` instead of raising ``UniqueViolation``.
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Returns:
             The session's ``metadata_id``.
         """
-        with self.db_manager.get_connection() as conn:
+        with self._connection(conn) as conn:
             with conn.cursor() as cur:
                 # Convert config_snapshot to JSONB
                 config_jsonb = None

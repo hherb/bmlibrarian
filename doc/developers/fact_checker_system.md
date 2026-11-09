@@ -576,8 +576,16 @@ uses it so a failing newer version never leaves an older one as the latest
 verdict (#376). Before (#340) each insert
 committed on its own, so a failed evidence insert left a verdict with
 partial evidence that incremental mode treated as done. The individual
-`insert_statement`/`insert_ai_evaluation`/`insert_evidence` take an optional
-`conn` to join a caller's transaction.
+`insert_statement`/`insert_ai_evaluation`/`insert_evidence`, as well as
+`store_verdicts`, `get_statement`, `update_statement_review_status`,
+`get_latest_ai_evaluation`, `insert_or_get_annotator`,
+`insert_human_annotation` and `insert_processing_session`, take an optional
+`conn` to join a caller's transaction. The SQLite migration's `--dry-run`
+uses this (#410): `dry_run_transaction()` holds one
+`conn.transaction(force_rollback=True)` and `_row()` gives each row a
+savepoint inside it, so PostgreSQL refuses rows exactly as in a real run and
+nothing is committed (a dry-run step called outside that transaction raises
+`RuntimeError` before writing).
 `insert_statement` (`factcheck.get_or_create_statement`) never writes
 `review_status`; the SQLite migration sets a legacy status afterwards with
 `update_statement_review_status`, only while the PostgreSQL row is still

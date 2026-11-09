@@ -9,9 +9,10 @@ as the latest verdict. PostgreSQL is replaced by a fake; the atomicity of
 """
 
 import sqlite3
+from contextlib import contextmanager, nullcontext
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import psycopg
 import pytest
@@ -49,11 +50,51 @@ PG_ID_OFFSET = 1000
 UNRELATED_EVALUATED_PG_ID = 1
 
 
+class FakeConnection:
+    """Records how the dry run uses its transaction."""
+
+    def __init__(self) -> None:
+        """No transaction opened yet."""
+        self.force_rollback: List[bool] = []
+        self.savepoints = 0
+        self.open = False
+
+    @contextmanager
+    def transaction(self, force_rollback: bool = False) -> Iterator[None]:
+        """The first call is the dry run's outer transaction, later ones savepoints."""
+        if self.open:
+            self.savepoints += 1
+            yield
+            return
+        self.force_rollback.append(force_rollback)
+        self.open = True
+        try:
+            yield
+        finally:
+            self.open = False
+
+
+class FakeDBManager:
+    """Hands out one fake connection."""
+
+    def __init__(self) -> None:
+        """Create the connection."""
+        self.conn = FakeConnection()
+
+    @contextmanager
+    def get_connection(self) -> Iterator[FakeConnection]:
+        """Yield the connection."""
+        yield self.conn
+
+
 class FakeFactCheckerDB:
     """Records writes; ``store_verdicts`` fails like PostgreSQL on a missing document."""
 
     def __init__(self) -> None:
         """Start with one unrelated evaluated statement and no migrated verdicts."""
+        self.db_manager = FakeDBManager()
+        # the conn= of every call: None in a real run, the dry run's connection otherwise
+        self.conns: List[Any] = []
         self.statement_ids: Dict[str, int] = {}
         self.verdicts: List[Tuple[Statement, AIEvaluation, List[Evidence]]] = []
         self.evaluated: Set[int] = {UNRELATED_EVALUATED_PG_ID}
@@ -64,29 +105,34 @@ class FakeFactCheckerDB:
 
     def insert_statement(self, statement: Statement, conn: Any = None) -> int:
         """Return the existing id for the text, or a new one."""
+        self.conns.append(conn)
         if statement.statement_text in self.failing_statements:
             raise psycopg.errors.CheckViolation("statement insert failed")
         return self.statement_ids.setdefault(statement.statement_text, PG_ID_OFFSET + len(self.statement_ids) + 1)
 
-    def get_statement(self, statement_id: int) -> Optional[Statement]:
+    def get_statement(self, statement_id: int, conn: Any = None) -> Optional[Statement]:
         """Return the statement with its PostgreSQL review status ('pending' unless set)."""
+        self.conns.append(conn)
         text = next((t for t, i in self.statement_ids.items() if i == statement_id), None)
         if text is None:
             return None
         return Statement(statement_text=text, statement_id=statement_id,
                          review_status=self.review_statuses.get(statement_id, "pending"))
 
-    def update_statement_review_status(self, statement_id: int, status: str) -> None:
+    def update_statement_review_status(self, statement_id: int, status: str, conn: Any = None) -> None:
         """Record the status."""
+        self.conns.append(conn)
         self.review_statuses[statement_id] = status
 
     def store_verdicts(self, statement: Statement,
-                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]]) -> Tuple[int, List[int]]:
+                       verdicts: List[Tuple[AIEvaluation, List[Evidence]]],
+                       conn: Any = None) -> Tuple[int, List[int]]:
         """Store all or nothing, like the real single-transaction method."""
+        self.conns.append(conn)
         for _, evidence in verdicts:
             if any(item.document_id in self.missing_documents for item in evidence):
                 raise psycopg.errors.ForeignKeyViolation("violates foreign key constraint evidence_document_id_fkey")
-        statement_id = self.insert_statement(statement)
+        statement_id = self.insert_statement(statement, conn=conn)
         ids = []
         for evaluation, evidence in verdicts:
             self.verdicts.append((statement, evaluation, evidence))
@@ -94,16 +140,19 @@ class FakeFactCheckerDB:
         self.evaluated.add(statement_id)
         return statement_id, ids
 
-    def get_latest_ai_evaluation(self, statement_id: int) -> Optional[str]:
+    def get_latest_ai_evaluation(self, statement_id: int, conn: Any = None) -> Optional[str]:
         """Return a marker when the statement has a verdict."""
+        self.conns.append(conn)
         return "evaluated" if statement_id in self.evaluated else None
 
-    def insert_or_get_annotator(self, annotator: Any) -> int:
+    def insert_or_get_annotator(self, annotator: Any, conn: Any = None) -> int:
         """Not exercised beyond returning an id."""
+        self.conns.append(conn)
         return 1
 
-    def insert_human_annotation(self, annotation: Any) -> int:
+    def insert_human_annotation(self, annotation: Any, conn: Any = None) -> int:
         """Not exercised beyond returning an id."""
+        self.conns.append(conn)
         return 1
 
 
@@ -162,10 +211,11 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> FakeFactCheckerDB:
 
 
 def _run(sqlite_path: Path, **kwargs: Any) -> Any:
-    """Migrate statements and verdicts only."""
+    """Migrate statements and verdicts only (a dry run inside its rolled-back transaction)."""
     migrator = migrate.SQLiteToPostgresMigrator(str(sqlite_path), **kwargs)
-    migrator.migrate_statements()
-    migrator.migrate_verdicts()
+    with migrator.dry_run_transaction() if migrator.dry_run else nullcontext():
+        migrator.migrate_statements()
+        migrator.migrate_verdicts()
     return migrator
 
 
@@ -237,7 +287,7 @@ def test_unmigrated_statement_skips_its_evaluations(legacy_db: Path, fake_db: Fa
 def test_systemic_error_aborts_the_run(legacy_db: Path, fake_db: FakeFactCheckerDB,
                                        monkeypatch: pytest.MonkeyPatch) -> None:
     """A lost connection is not counted per statement: it stops the migration."""
-    def lost(*args: Any) -> None:
+    def lost(*args: Any, **kwargs: Any) -> None:
         """Fail like a dropped database connection."""
         raise psycopg.OperationalError("server closed the connection")
     monkeypatch.setattr(fake_db, "store_verdicts", lost)
@@ -246,12 +296,59 @@ def test_systemic_error_aborts_the_run(legacy_db: Path, fake_db: FakeFactChecker
         _run(legacy_db)
 
 
-def test_dry_run_writes_nothing(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """A dry run counts verdicts (an upper bound) without storing any."""
-    migrator = _run(legacy_db, dry_run=True)
+def _dry_run_rolled_back(fake: FakeFactCheckerDB) -> bool:
+    """Every call went to the dry run's connection, whose one transaction was forced to roll back."""
+    conn = fake.db_manager.conn
+    return bool(fake.conns) and all(c is conn for c in fake.conns) and conn.force_rollback == [True]
 
-    assert fake_db.verdicts == []
-    assert migrator.stats["ai_evaluations"]["migrated"] == 4
+
+def test_dry_run_counts_like_a_real_run_and_rolls_back(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A dry run makes the real writes in one rolled-back transaction, so it reports the real run's errors (#410)."""
+    real = _run(legacy_db)
+    real_stats = {table: dict(counts) for table, counts in real.stats.items()}
+    real_calls = len(fake_db.conns)
+    dry_fake = FakeFactCheckerDB()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(migrate, "FactCheckerDB", lambda: dry_fake)
+        dry = _run(legacy_db, dry_run=True)
+
+    assert dry.stats == real_stats
+    assert dry.stats["ai_evaluations"]["errors"] == 2  # statement 2's missing document, as in the real run
+    assert dry.failed_statements == real.failed_statements == [2]
+    assert _dry_run_rolled_back(dry_fake)
+    assert all(c is None for c in fake_db.conns[:real_calls])  # the real run commits each call itself
+    # a savepoint per row: 3 statement inserts + 3 status checks + 2 verdict groups
+    assert dry_fake.db_manager.conn.savepoints == 8
+
+
+def test_dry_run_step_outside_its_transaction_refuses(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
+    """A dry-run step called on its own would commit its writes, so it raises before the first one."""
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db), dry_run=True)
+
+    with pytest.raises(RuntimeError, match="dry_run_transaction"):
+        migrator.migrate_statements()
+    assert fake_db.conns == []
+
+
+def test_dry_run_counts_rows_postgres_refuses_in_other_steps(
+        legacy_db: Path, fake_db: FakeFactCheckerDB, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The #410 example: a session PostgreSQL refuses is an error in the dry run, not 'migrated'."""
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute("INSERT INTO processing_metadata (session_id, input_file, start_time, end_time) "
+                     "VALUES ('s', 'in.json', '2026-01-01', 'not a time')")
+
+    def insert(session_data: Dict[str, Any], overwrite: bool = False, conn: Any = None) -> int:
+        """Refuse the end time like PostgreSQL's TIMESTAMPTZ cast."""
+        fake_db.conns.append(conn)
+        raise psycopg.errors.InvalidDatetimeFormat("invalid input syntax for type timestamp")
+    monkeypatch.setattr(fake_db, "insert_processing_session", insert, raising=False)
+
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db), dry_run=True)
+    with migrator.dry_run_transaction():
+        migrator.migrate_processing_metadata()
+
+    assert migrator.stats["processing_metadata"] == {"total": 1, "migrated": 0, "skipped": 0, "errors": 1}
+    assert _dry_run_rolled_back(fake_db)
 
 
 def test_migrate_all_and_exit_code_report_errors(legacy_db: Path, fake_db: FakeFactCheckerDB,
@@ -358,13 +455,13 @@ def test_invalid_status_is_ignored_once_set_in_postgres(legacy_db: Path, fake_db
 
 
 def test_dry_run_reports_invalid_status(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """A dry run flags an invalid status without touching PostgreSQL."""
+    """A dry run flags an invalid status; its status writes are rolled back with the rest."""
     _set_legacy_status(legacy_db, 1, "reviewed")
     _set_legacy_status(legacy_db, 2, "flagged")
     migrator = _run(legacy_db, dry_run=True)
 
     assert migrator.stats["statements"]["errors"] == 1
-    assert fake_db.review_statuses == {} and fake_db.statement_ids == {}
+    assert _dry_run_rolled_back(fake_db)
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -390,7 +487,7 @@ def test_row_error_in_another_step_is_counted_and_the_run_continues(
     """A row the database refuses (e.g. a CHECK violation) is one error; later rows still migrate (#395)."""
     _add_annotators(legacy_db, "bad", "good")
 
-    def insert(annotator: Any) -> int:
+    def insert(annotator: Any, conn: Any = None) -> int:
         """Refuse the 'bad' annotator like a CHECK constraint."""
         if annotator.username == "bad":
             raise psycopg.errors.CheckViolation("violates check constraint")
@@ -409,7 +506,7 @@ def test_lost_connection_in_another_step_aborts_the_run(
     _add_annotators(legacy_db, "first", "second")
     calls: List[str] = []
 
-    def lost(annotator: Any) -> int:
+    def lost(annotator: Any, conn: Any = None) -> int:
         """Fail like a dropped database connection."""
         calls.append(annotator.username)
         raise psycopg.OperationalError("server closed the connection")
@@ -434,7 +531,7 @@ def test_processing_session_is_written_whole_in_one_upsert(
     calls: List[Tuple[Dict[str, Any], bool]] = []
     updates: List[Any] = []
 
-    def insert(session_data: Dict[str, Any], overwrite: bool = False) -> int:
+    def insert(session_data: Dict[str, Any], overwrite: bool = False, conn: Any = None) -> int:
         """Refuse a malformed or empty end time like PostgreSQL's TIMESTAMPTZ cast."""
         calls.append((session_data, overwrite))
         if session_data["end_time"] in ("not a time", ""):
