@@ -79,6 +79,17 @@ class TestReportingAgent(unittest.TestCase):
         self.assertEqual(references[0].document_id, "12345678")
         self.assertEqual(references[0].title, "COVID-19 Vaccine Effectiveness Study")
         self.assertEqual(references[0].pmid, "37123456")
+
+    def test_reference_carries_doi_and_publication(self):
+        """A citation's DOI and journal reach the reference and its Vancouver text."""
+        citation = self.sample_citations[0]
+        citation.doi = "10.1000/vaccine.2023.001"
+        citation.publication = "Journal of Vaccine Research"
+        reference = self.agent.create_references([citation])[0]
+        self.assertEqual((reference.doi, reference.publication), (citation.doi, citation.publication))
+        formatted = reference.format_vancouver_style()
+        self.assertIn(f"PMID: {citation.pmid}; DOI: {citation.doi}.", formatted)
+        self.assertIn(f" {citation.publication}.", formatted)
     
     def test_reference_deduplication(self):
         """Test that duplicate document IDs create only one reference."""

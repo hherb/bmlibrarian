@@ -5,7 +5,7 @@ import socket
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Iterator, List
 from unittest.mock import MagicMock
 from urllib.parse import urlsplit
 
@@ -18,6 +18,7 @@ import pytest
 RUN_LIVE_OPTION = "--run-live"
 TEST_DB_ENV_VARIABLE = "BMLIBRARIAN_TEST_DB_ENV"
 LIVE_MARKERS = ("requires_database", "requires_ollama")
+ENV_FILE_VARIABLE = "BMLIBRARIAN_ENV_FILE"  # bmlibrarian.env_loader, not imported here
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -25,12 +26,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         RUN_LIVE_OPTION, action="store_true", default=False,
         help="run tests marked requires_database/requires_ollama against the configured "
-             f"database and Ollama (also enabled when {TEST_DB_ENV_VARIABLE} is set)")
+             f"database and Ollama (also enabled when {TEST_DB_ENV_VARIABLE} is set, which "
+             f"then also selects that env file for the whole run)")
 
 
 def live_tests_enabled(config: pytest.Config) -> bool:
     """Whether live tests run: ``--run-live`` or ``BMLIBRARIAN_TEST_DB_ENV`` set."""
     return bool(config.getoption(RUN_LIVE_OPTION) or os.environ.get(TEST_DB_ENV_VARIABLE))
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Point every live test at the dev database named by ``BMLIBRARIAN_TEST_DB_ENV``.
+
+    Setting the variable turns all live tests on, so without this the tests that
+    do not read it themselves would use the default env file (production).
+    An explicit ``BMLIBRARIAN_ENV_FILE`` is left alone.
+    """
+    test_db_env = os.environ.get(TEST_DB_ENV_VARIABLE, "").strip()
+    if test_db_env:
+        os.environ.setdefault(ENV_FILE_VARIABLE, test_db_env)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
@@ -44,39 +58,61 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
             item.add_marker(skip)
 
 
+# Guard trips of the running test, kept so that one swallowed on the way (a Qt
+# slot or timer callback, a background thread) still fails the test.
+_GUARD_TRIPS: List[str] = []
+
+
 def _live_access_failure(service: str, marker: str) -> None:
     """Fail the current test for reaching a live service without its marker."""
-    pytest.fail(f"test reached a live {service} without @pytest.mark.{marker}; mock it, "
-                f"or mark the test and run it with {RUN_LIVE_OPTION}")
+    message = (f"test reached a live {service} without @pytest.mark.{marker}; mock it, "
+               f"or mark the test and run it with {RUN_LIVE_OPTION}")
+    _GUARD_TRIPS.append(message)
+    pytest.fail(message, pytrace=False)
 
 
-@pytest.fixture(autouse=True)
-def _block_live_services(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Any:
+    """Fail a test whose guard trip was swallowed instead of reaching pytest."""
+    _GUARD_TRIPS.clear()
+    result = yield  # a trip that propagated is already this test's failure
+    if _GUARD_TRIPS:
+        pytest.fail(f"swallowed by the code under test: {_GUARD_TRIPS[0]}", pytrace=False)
+    return result
+
+
+@pytest.fixture
+def live_guard_trips() -> List[str]:
+    """The guard trips of the running test; a test that trips on purpose clears it."""
+    return _GUARD_TRIPS
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _block_live_services(request: pytest.FixtureRequest) -> Iterator[None]:
     """Make an unmarked test that opens a PostgreSQL connection or reaches Ollama fail.
 
     Without live tests enabled, connecting through psycopg/psycopg_pool or to the
     local Ollama port fails the test with a message naming the marker it needs
     (``pytest.fail`` raises a ``BaseException``, so ``except Exception`` in the
-    code under test does not hide it). Tests that mock these themselves are
-    unaffected; a test's own monkeypatch replaces this one.
+    code under test does not hide it; see ``pytest_runtest_call`` for one caught
+    elsewhere). Session scope applies it before any module or class fixture.
+    Tests that mock these themselves are unaffected: their patches go on top.
     """
     if live_tests_enabled(request.config):
+        yield
         return
 
     def blocked_db(*_args: Any, **_kwargs: Any) -> None:
         """Stand-in for psycopg connection entry points."""
         _live_access_failure("PostgreSQL database", "requires_database")
 
-    monkeypatch.setattr(psycopg, "connect", blocked_db)
-    monkeypatch.setattr(psycopg.Connection, "connect", blocked_db)
-    monkeypatch.setattr(psycopg_pool.ConnectionPool, "__init__", blocked_db)
-
     # Imported here so that loading conftest does not import bmlibrarian.
     from bmlibrarian.llm.constants import DEFAULT_OLLAMA_HOST
 
     # shortcut: only Ollama on the default port is blocked; a test reaching a
-    # remote OLLAMA_HOST still gets through. Upgrade if such a test turns up.
+    # remote or non-default OLLAMA_HOST still gets through. Upgrade if such a test turns up.
     ollama_port = urlsplit(DEFAULT_OLLAMA_HOST).port
+    assert ollama_port is not None, f"DEFAULT_OLLAMA_HOST {DEFAULT_OLLAMA_HOST!r} names no port"
     real_connect = socket.socket.connect
 
     def guarded_connect(sock: socket.socket, address: Any) -> None:
@@ -85,7 +121,12 @@ def _block_live_services(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
             _live_access_failure("Ollama server", "requires_ollama")
         real_connect(sock, address)
 
-    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(psycopg, "connect", blocked_db)
+        patch.setattr(psycopg.Connection, "connect", blocked_db)
+        patch.setattr(psycopg_pool.ConnectionPool, "__init__", blocked_db)
+        patch.setattr(socket.socket, "connect", guarded_connect)
+        yield
 
 
 # Modules that bind list_ollama_models at import; the others look it up in

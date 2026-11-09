@@ -24,12 +24,10 @@ def test_citation_with_real_data() -> None:
     document = documents[0]
 
     citation_agent = CitationFinderAgent(show_model_info=False)
-    if not citation_agent.test_connection():
-        pytest.skip("LLM provider not reachable")
+    assert citation_agent.test_connection(), "LLM provider not reachable in a live run"
     citation = citation_agent.extract_citation_from_document(
         user_question=QUESTION, document=document, min_relevance=MIN_RELEVANCE)
-    if citation is None:
-        pytest.skip("no citation extracted (below relevance threshold)")
+    assert citation is not None, f"no citation extracted from document {document['id']}"
 
     assert (citation.doi, citation.pmid, citation.publication) == (
         document["doi"], document["pmid"], document.get("publication"))

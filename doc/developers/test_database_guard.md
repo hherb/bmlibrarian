@@ -78,9 +78,28 @@ Ollama. `tests/conftest.py`:
   (`psycopg.connect`, `psycopg.Connection.connect`, a `psycopg_pool`
   pool) or connects to the local Ollama port, with a message naming the
   marker it needs (`_block_live_services`). Mock the service, or mark the test.
+  The guard is session-scoped, so it is in place before module- and
+  class-scoped fixtures run;
+- records every trip, so a trip that the code under test swallows (a Qt slot
+  or `QTimer` callback, a background thread that finishes during the test,
+  `except BaseException`) still fails the test ("swallowed by the code under
+  test"). `tests/test_live_service_guard.py` checks the guard itself.
 
-With `--run-live` the tests use whatever the env file names, so production is
-read (read-only, see above); prefer `BMLIBRARIAN_ENV_FILE` plus
-`BMLIBRARIAN_TEST_DB_ENV` pointing at a dev database. Not caught: a remote
-`OLLAMA_HOST`, and connections opened in a background thread (the failure is
-raised there, not in the test).
+Setting `BMLIBRARIAN_TEST_DB_ENV` enables **all** live tests, and also sets
+`BMLIBRARIAN_ENV_FILE` to the same file (unless that is already set), so the
+tests that do not read the variable themselves use that dev database too
+rather than the default env file. With `--run-live` alone the tests use
+whatever the env file names, so production is read (read-only, see above).
+
+With live tests enabled the guard is off, so a live run cannot detect a
+missing marker; the hermetic run does that.
+
+Not caught:
+
+- Ollama on a remote host or a non-default port, and other LLM providers
+  (an `anthropic:` model reaching its API over HTTPS);
+- psycopg's async API (`AsyncConnection`, `AsyncConnectionPool`) and other
+  drivers; nothing in `src/` uses them today;
+- child processes (`subprocess`, `multiprocessing` spawn workers): the
+  patches do not cross process boundaries;
+- a trip in a background thread that is still running when the test ends.

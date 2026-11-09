@@ -29,8 +29,16 @@ off new work. Longer-term structural items live in
   `test_reference_fix.py` → `test_reporting_methodology.py`;
   `test_citation_data_flow.py` is a marked live test); `conftest.py` no longer
   puts `tests/` on `sys.path` (`from tests.llm_test_support import ...`).
+  The guard is session-scoped (in place before module/class fixtures) and
+  records trips, so one swallowed by a Qt slot, thread or `except
+  BaseException` still fails the test; `tests/test_live_service_guard.py`
+  checks it. `BMLIBRARIAN_TEST_DB_ENV` also sets `BMLIBRARIAN_ENV_FILE` (if
+  unset), so every live test uses that dev database. The benchmark recall
+  tests are marked live; `test_papercheck_database.py`'s mocked tests run
+  again (only the integration class is marked).
   Docs: `doc/developers/test_database_guard.md` "Live tests are opt-in".
-  Not caught: a remote `OLLAMA_HOST`, connections opened in background threads.
+  Not caught: a remote/non-default `OLLAMA_HOST`, other LLM providers,
+  psycopg async, child processes.
 - **Settings categories: SQL lists guarded against drift** (2026-11-09,
   closes #231). `tests/test_settings_categories_sql_sync.py` reads
   `migrations/*.sql` (no database) and checks that the latest definition of

@@ -31,6 +31,7 @@ import pytest
 
 if TYPE_CHECKING:
     from bmlibrarian.agents.systematic_review import SystematicReviewAgent
+    from bmlibrarian.database import DatabaseManager
 
 from .benchmark_utils import (
     CochraneGroundTruth,
@@ -64,31 +65,23 @@ SKIP_IF_NO_DATA = True
 # =============================================================================
 
 @pytest.fixture(scope="module")
-def systematic_review_agent():
+def database_manager() -> "DatabaseManager":
+    """
+    Create DatabaseManager for checking paper existence.
+    """
+    from bmlibrarian.database import DatabaseManager
+    return DatabaseManager()
+
+
+@pytest.fixture(scope="module")
+def systematic_review_agent(database_manager: "DatabaseManager") -> "SystematicReviewAgent":
     """
     Create SystematicReviewAgent for benchmark tests.
 
     Uses module scope so agent is reused across tests in this file.
     """
-    try:
-        from bmlibrarian.agents.systematic_review import SystematicReviewAgent
-        agent = SystematicReviewAgent(show_model_info=False)
-        return agent
-    except Exception as e:
-        pytest.skip(f"Could not create SystematicReviewAgent: {e}")
-
-
-@pytest.fixture(scope="module")
-def database_manager():
-    """
-    Create DatabaseManager for checking paper existence.
-    """
-    try:
-        from bmlibrarian.database import DatabaseManager
-        db = DatabaseManager()
-        return db
-    except Exception as e:
-        pytest.skip(f"Could not connect to database: {e}")
+    from bmlibrarian.agents.systematic_review import SystematicReviewAgent
+    return SystematicReviewAgent(db_manager=database_manager, show_model_info=False)
 
 
 def get_ground_truth_files() -> List[Path]:
@@ -340,6 +333,8 @@ class TestBenchmarkUtilities:
         assert result.papers_not_found == 1  # 789 not found
 
 
+@pytest.mark.requires_database
+@pytest.mark.requires_ollama
 class TestBenchmarkRecall:
     """
     Main benchmark tests comparing agent against Cochrane reviews.
@@ -404,6 +399,7 @@ class TestBenchmarkRecall:
         )
 
 
+@pytest.mark.requires_database
 class TestDatabaseCoverage:
     """
     Pre-flight tests to check database coverage before running benchmarks.
@@ -468,7 +464,9 @@ def run_all_benchmarks():
     """
     from bmlibrarian.agents.systematic_review import SystematicReviewAgent
 
-    agent = SystematicReviewAgent(show_model_info=False)
+    from bmlibrarian.database import DatabaseManager
+
+    agent = SystematicReviewAgent(db_manager=DatabaseManager(), show_model_info=False)
     ground_truths = load_all_ground_truths()
 
     if not ground_truths:

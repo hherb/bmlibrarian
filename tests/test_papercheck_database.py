@@ -40,10 +40,6 @@ from bmlibrarian.paperchecker.data_models import (
 )
 
 
-# Mark all tests in this module as database tests
-pytestmark = pytest.mark.requires_database
-
-
 class TestDatabaseConstants:
     """Tests for database module constants."""
 
@@ -633,6 +629,7 @@ def db_connection() -> PaperCheckDB:
 
 
 @pytest.mark.skip(reason="Requires database connection - run with -m requires_database")
+@pytest.mark.requires_database
 class TestPaperCheckDBIntegration:
     """Integration tests for PaperCheckDB (require database connection)."""
 

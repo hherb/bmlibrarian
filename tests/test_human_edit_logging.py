@@ -56,6 +56,32 @@ def test_query_edit_and_approval(insert: MagicMock) -> None:
     assert insert.call_args.args[2] == "APPROVED"
 
 
+def _db_manager(cursor: MagicMock) -> MagicMock:
+    """A ``get_db_manager()`` result whose connection hands out ``cursor``."""
+    manager = MagicMock()
+    conn = manager.get_connection.return_value.__enter__.return_value
+    conn.cursor.return_value.__enter__.return_value = cursor
+    return manager
+
+
+def test_insert_writes_human_edited_row() -> None:
+    """The log row goes to ``human_edited(context, machine, human)``."""
+    cursor = MagicMock()
+    with patch("bmlibrarian.database.get_db_manager", return_value=_db_manager(cursor)):
+        assert HumanEditLogger()._insert_to_database("ctx", "out", "edit") is True
+    sql, params = cursor.execute.call_args.args
+    assert "INSERT INTO human_edited (context, machine, human)" in sql
+    assert params == ("ctx", "out", "edit")
+
+
+def test_insert_database_error_returns_false() -> None:
+    """A failing INSERT is logged and reported as False."""
+    cursor = MagicMock()
+    cursor.execute.side_effect = RuntimeError("relation does not exist")
+    with patch("bmlibrarian.database.get_db_manager", return_value=_db_manager(cursor)):
+        assert HumanEditLogger()._insert_to_database("ctx", "out", "edit") is False
+
+
 def test_insert_failure_returns_false() -> None:
     """An exception while logging is reported as False, not raised."""
     with patch.object(HumanEditLogger, "_insert_to_database", side_effect=RuntimeError("down")):
