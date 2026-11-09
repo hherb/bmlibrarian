@@ -306,13 +306,16 @@ CREATE TABLE bmlsettings.user_sessions (
 );
 ```
 
-> **Adding a settings category.** The category list exists four times: the
+> **Adding a settings category.** The category list exists five times: the
 > Python constant `config.VALID_SETTINGS_CATEGORIES` (re-exported as
 > `auth.user_settings.VALID_CATEGORIES`) and, in SQL, the CHECK constraints of
-> `user_settings` and `default_settings` and the `v_user_complete_settings`
-> view. A new category needs the Python change plus one migration that
-> extends all three SQL lists (see migrations 030 and 036). Without it,
-> saving that category to the database fails at runtime.
+> `user_settings` and `default_settings`, the `v_user_complete_settings`
+> view and the `get_all_user_settings()` function. A new category needs the
+> Python change plus one migration that extends all four SQL lists (see
+> migrations 030, 036 and 037). Without it, saving that category to the
+> database fails at runtime (CHECK), or the saved settings are never loaded
+> back on login (`get_all_user_settings()`, which `UserSettingsManager.get_all()`
+> calls).
 > `tests/test_settings_categories_sql_sync.py` reads the migrations (no
 > database needed) and fails when the latest definition of any SQL list
 > differs from the Python set.

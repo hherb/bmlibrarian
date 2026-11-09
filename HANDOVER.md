@@ -13,13 +13,19 @@ off new work. Longer-term structural items live in
 - **Settings categories: SQL lists guarded against drift** (2026-11-09,
   closes #231). `tests/test_settings_categories_sql_sync.py` reads
   `migrations/*.sql` (no database) and checks that the latest definition of
-  each SQL category list — the `user_settings`/`default_settings` CHECK
-  constraints and the `v_user_complete_settings` view — equals
-  `config.VALID_SETTINGS_CATEGORIES`. That found the view still listing only
-  the original 10 categories; **migration 036** recreates it with all 13
-  (applied and re-run on `bmlibrarian_dev`; `knowledgebase` gets it on its
-  next non-test connection — a `CREATE OR REPLACE VIEW` only). Checklist for
-  a new category: `db_settings_architecture.md` "Database Schema".
+  each of the four SQL category lists — the `user_settings`/`default_settings`
+  CHECK constraints, the `v_user_complete_settings` view and the
+  `get_all_user_settings()` function — equals
+  `config.VALID_SETTINGS_CATEGORIES` (whitespace/case-insensitive, follows
+  DROPs, ignores comments). The view and the function still listed only the
+  original 10 categories. The function is what `UserSettingsManager.get_all()`
+  calls on login, so per-user `document_qa`/`discovery`/`embeddings` settings
+  were saved but never loaded back. **Migrations 036** (view) **and 037**
+  (function) recreate them with all 13. Both are applied on `bmlibrarian_dev`,
+  and 037 was verified there in a rolled-back transaction. `knowledgebase`
+  gets them on its next non-test connection; both are `CREATE OR REPLACE`
+  only. Checklist for a new category: `db_settings_architecture.md`
+  "Database Schema".
 - **Migrator `--dry-run` writes for real, then rolls back** (2026-11-09,
   closes #410; owner decision over client-side checks). The dry run of
   `scripts/migrate_factchecker_sqlite_to_postgres.py` runs every step inside
@@ -400,7 +406,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-09
-  (#231 branch): **4819 passed, 60 skipped** in 7–17 min. Without
+  (#231 branch): **4830 passed, 60 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the
