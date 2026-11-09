@@ -545,8 +545,21 @@ class FactCheckerDB:
 
     # ========== Processing Metadata Operations ==========
 
-    def insert_processing_session(self, session_data: Dict[str, Any]) -> int:
-        """Insert a new processing session."""
+    def insert_processing_session(self, session_data: Dict[str, Any], overwrite: bool = False) -> int:
+        """
+        Insert a processing session in one statement.
+
+        Args:
+            session_data: ``session_id``, ``input_file``, ``total_statements``,
+                ``start_time``, ``status`` and ``config_snapshot``; optionally
+                ``end_time``, ``output_file``, ``processed_statements`` and
+                ``error_message`` (a finished session is written whole, #408).
+            overwrite: Replace every field of an existing session with the same
+                ``session_id`` instead of raising ``UniqueViolation``.
+
+        Returns:
+            The session's ``metadata_id``.
+        """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Convert config_snapshot to JSONB
@@ -557,13 +570,27 @@ class FactCheckerDB:
                     else:
                         config_jsonb = session_data['config_snapshot']
 
-                cur.execute("""
+                on_conflict = """
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        input_file = EXCLUDED.input_file, total_statements = EXCLUDED.total_statements,
+                        start_time = EXCLUDED.start_time, status = EXCLUDED.status,
+                        config_snapshot = EXCLUDED.config_snapshot, end_time = EXCLUDED.end_time,
+                        output_file = EXCLUDED.output_file,
+                        processed_statements = EXCLUDED.processed_statements,
+                        error_message = EXCLUDED.error_message
+                """ if overwrite else ""
+                cur.execute(f"""
                     INSERT INTO factcheck.processing_metadata (
-                        session_id, input_file, total_statements, start_time, status, config_snapshot
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                        session_id, input_file, total_statements, start_time, status, config_snapshot,
+                        end_time, output_file, processed_statements, error_message
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    {on_conflict}
                     RETURNING metadata_id
                 """, (session_data['session_id'], session_data['input_file'], session_data['total_statements'],
-                      session_data['start_time'], session_data['status'], json.dumps(config_jsonb) if config_jsonb else None))
+                      session_data['start_time'], session_data['status'],
+                      json.dumps(config_jsonb) if config_jsonb else None,
+                      session_data.get('end_time'), session_data.get('output_file'),
+                      session_data.get('processed_statements') or 0, session_data.get('error_message')))
                 return cur.fetchone()[0]
 
     def update_processing_session(self, session_id: str, updates: Dict[str, Any]):

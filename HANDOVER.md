@@ -10,6 +10,18 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Migrated processing sessions written whole** (2026-11-09, closes
+  #408). `FactCheckerDB.insert_processing_session` also takes `end_time`,
+  `output_file`, `processed_statements`, `error_message` in its INSERT and
+  has `overwrite=` (`ON CONFLICT (session_id) DO UPDATE`).
+  `migrate_processing_metadata` makes one upsert per session instead of
+  insert + `update_processing_session`, so a malformed end field stores
+  nothing and a re-run repairs a session an older run left half-written
+  (re-runs no longer count present sessions as errors). Empty legacy end
+  fields become NULL, as before. Open: `--dry-run` validates no values a
+  write would refuse (#410). Tests:
+  `test_migrate_factchecker_sqlite.py::test_processing_session_*`, opt-in
+  `test_factcheck_audit_transactions_db.py` (`*session*`).
 - **Migration row errors; queue reused-PID check** (2026-11-08, closes
   #395, #388). `scripts/migrate_factchecker_sqlite_to_postgres.py` catches
   only `ROW_ERRORS` (`IntegrityError`/`DataError`/`ValueError`) per row in
@@ -367,8 +379,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-08
-  (#395/#388 branch, PR #407): **4809 passed, 57 skipped** in 7–17 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-09
+  (#408 branch): **4810 passed, 59 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

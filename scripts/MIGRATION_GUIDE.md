@@ -151,7 +151,7 @@ any versions the statement already has in PostgreSQL).
 - A statement's legacy `review_status` (`in_review`, `completed`, `flagged`; case and surrounding spaces ignored) is restored, unless the statement already has a non-`pending` status in PostgreSQL, which is kept (also on re-runs; `pending` counts as unset, so a statement reset to `pending` in PostgreSQL gets the legacy status again). Any other value counts as a statement error and leaves the status `pending`; the statement itself and its evaluations still migrate. `--dry-run` reports such values too
 - Logs per-record errors (a row PostgreSQL refuses: constraint violation, invalid value, malformed JSON) without stopping the migration; any other error, such as a lost database connection or an unexpected SQLite layout, stops it in every step
 - Provides detailed summary at the end and exits 1 if any record failed
-- Re-runs: statements, annotators and human annotations are upserted; evaluations are stored again as new versions unless `--skip-existing` is given; processing sessions already present fail (counted as errors) and export history rows are inserted again
+- Re-runs: statements, annotators and human annotations are upserted; evaluations are stored again as new versions unless `--skip-existing` is given; processing sessions are written whole in one upsert (empty end fields count as unset; a session that fails, e.g. on a malformed `end_time`, stores nothing; a re-run replaces a session already present with the legacy values, which also completes one an older migration left without its end fields) and export history rows are inserted again
 
 ### Progress Reporting
 
