@@ -58,8 +58,10 @@ class UserContext:
     session_token: Optional[str] = None
 
 
-# Valid settings categories for database storage
-# Must match bmlsettings schema constraints
+# Valid settings categories for database storage.
+# Adding one needs a migration that extends every bmlsettings SQL list (both
+# CHECK constraints and v_user_complete_settings, cf. migrations 030/036);
+# tests/test_settings_categories_sql_sync.py fails until it exists.
 VALID_SETTINGS_CATEGORIES = frozenset([
     'models', 'ollama', 'agents', 'database', 'search',
     'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa',

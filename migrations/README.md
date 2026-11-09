@@ -228,6 +228,9 @@ BMLibrarian migrations don't include automatic rollback. For rollback:
 | 031 | 031_ingest_ledger_and_revisions.sql | Resumable bulk-import bookkeeping and revision-aware merges | 2026-10-13 |
 | 032 | 032_withdrawn_documents.sql | PubMed withdrawals (DeleteCitation) are marked, not deleted | 2026-10-14 |
 | 033 | 033_fold_withdrawn_into_withdrawn_date.sql | Fold 032's first-revision `document.withdrawn` into the baseline `withdrawn_date` | 2026-10-15 |
+| 034 | 034_factcheck_degradation_notes.sql | Flag fact-check verdicts that rest on partial evidence | 2026-10-18 |
+| 035 | 035_citation_widened_from.sql | Record which citations were widened from a quoted fragment | 2026-10-23 |
+| 036 | 036_complete_settings_view_categories.sql | `v_user_complete_settings` lists all 13 settings categories | 2026-11-09 |
 
 031 and 032 carry the PubMed bulk-import changes (resumable ledger,
 revision-aware merges, withdrawals). See
