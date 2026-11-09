@@ -12,8 +12,8 @@ Usage:
 Options:
     --sqlite-db PATH     Path to SQLite database file (required)
     --skip-existing      Don't migrate evaluations for statements already evaluated in PostgreSQL
-    --dry-run           Count what would be migrated (an upper bound: --skip-existing
-                        and PostgreSQL constraint checks are not applied)
+    --dry-run           Run every write in one transaction, then roll it back: the
+                        counts and errors are those of a real run, nothing is kept
     --verbose           Also log skipped already-evaluated statements
 
 Exits 1 if any record failed to migrate; the summary lists the failed statements.
@@ -23,12 +23,14 @@ import argparse
 import sqlite3
 import logging
 import sys
+from contextlib import contextmanager
 from itertools import groupby
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import psycopg
 
+from bmlibrarian.database import DatabaseManager
 from bmlibrarian.factchecker.db.database import (
     STORABLE_VERDICTS,
     FactCheckerDB,
@@ -159,7 +161,8 @@ class SQLiteToPostgresMigrator:
             sqlite_path: Path to SQLite database file
             skip_existing: Don't migrate evaluations for statements that already
                 had one in PostgreSQL (without it, a re-run stores them as new versions)
-            dry_run: Show what would be migrated without actually migrating
+            dry_run: Do every write in one transaction that is rolled back at
+                the end (#410), so PostgreSQL checks each row as in a real run
         """
         self.sqlite_path = Path(sqlite_path)
         self.skip_existing = skip_existing
@@ -168,7 +171,9 @@ class SQLiteToPostgresMigrator:
         if not self.sqlite_path.exists():
             raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
 
-        self.pg_db = FactCheckerDB()
+        # A dry run lists pending schema migrations instead of applying them,
+        # since applied migrations are committed outside its rolled-back transaction
+        self.pg_db = FactCheckerDB(DatabaseManager(dry_run_migrations=True) if dry_run else None)
         self.stats = {
             'statements': {'total': 0, 'migrated': 0, 'skipped': 0, 'errors': 0},
             'annotators': {'total': 0, 'migrated': 0, 'skipped': 0, 'errors': 0},
@@ -192,11 +197,61 @@ class SQLiteToPostgresMigrator:
         # SQLite statement IDs none of whose evaluations could be migrated
         self.failed_statements: List[int] = []
 
+        # The dry run's connection while dry_run_transaction() is open
+        self._dry_conn: Optional[psycopg.Connection] = None
+
     def get_sqlite_connection(self):
         """Get SQLite database connection."""
         conn = sqlite3.connect(str(self.sqlite_path))
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextmanager
+    def dry_run_transaction(self) -> Iterator[None]:
+        """
+        Hold one transaction for a dry run's steps and roll it back afterwards.
+
+        The rows the dry run writes stay locked until it ends, so a fact-check or
+        review writing the same statements, annotators or sessions meanwhile waits.
+        """
+        with self.pg_db.db_manager.get_connection() as conn:
+            # force_rollback: nested transaction() blocks are savepoints, nothing is committed
+            with conn.transaction(force_rollback=True):
+                self._dry_conn = conn
+                try:
+                    yield
+                finally:
+                    self._dry_conn = None
+
+    @contextmanager
+    def _row(self) -> Iterator[Optional[psycopg.Connection]]:
+        """
+        Scope for one row's database calls.
+
+        Yields None in a real run (each FactCheckerDB call commits on its own
+        connection); in a dry run, the dry run's connection inside a savepoint,
+        so a refused row is undone without aborting the others.
+
+        Raises:
+            RuntimeError: A dry-run step was called outside ``dry_run_transaction``
+                (its writes would otherwise be committed)
+        """
+        if not self.dry_run:
+            yield None
+            return
+        if self._dry_conn is None:
+            raise RuntimeError("dry-run steps must run inside dry_run_transaction()")
+        with self._dry_conn.transaction():
+            yield self._dry_conn
+
+    def _run_steps(self) -> None:
+        """Run every migration step; order matters due to foreign key constraints."""
+        self.migrate_statements()
+        self.migrate_annotators()
+        self.migrate_verdicts()
+        self.migrate_human_annotations()
+        self.migrate_processing_metadata()
+        self.migrate_export_history()
 
     def migrate_all(self) -> bool:
         """
@@ -211,19 +266,19 @@ class SQLiteToPostgresMigrator:
         logger.info("-" * 80)
 
         try:
-            # Order matters due to foreign key constraints
-            self.migrate_statements()
-            self.migrate_annotators()
-            self.migrate_verdicts()
-            self.migrate_human_annotations()
-            self.migrate_processing_metadata()
-            self.migrate_export_history()
+            if self.dry_run:
+                with self.dry_run_transaction():
+                    self._run_steps()
+            else:
+                self._run_steps()
 
             self.print_summary()
             ok = sum(s['errors'] for s in self.stats.values()) == 0
 
             if self.dry_run:
-                logger.info("\n⚠️  DRY RUN - No data was actually migrated")
+                logger.info("\n⚠️  DRY RUN - every write was rolled back, no data was migrated")
+                if not ok:
+                    logger.error("❌ A real run would fail the rows counted as errors above")
             elif ok:
                 logger.info("\n✅ Migration completed successfully!")
             else:
@@ -232,10 +287,13 @@ class SQLiteToPostgresMigrator:
 
         except Exception as e:
             self.print_summary()
-            logger.error(f"Migration aborted: {e}. Rows counted as migrated above are "
-                         f"already committed; re-run with --skip-existing so their "
-                         f"evaluations are not stored again as new versions.",
-                         exc_info=True)
+            if self.dry_run:
+                logger.error(f"Dry run aborted: {e}. Nothing was migrated.", exc_info=True)
+            else:
+                logger.error(f"Migration aborted: {e}. Rows counted as migrated above are "
+                             f"already committed; re-run with --skip-existing so their "
+                             f"evaluations are not stored again as new versions.",
+                             exc_info=True)
             raise
 
     def migrate_statements(self):
@@ -261,16 +319,16 @@ class SQLiteToPostgresMigrator:
                         review_status=legacy_review_status(row)
                     )
 
-                    pg_id = None
-                    if not self.dry_run:
+                    with self._row() as conn:
                         # This will return existing ID if statement already exists
-                        pg_id = self.pg_db.insert_statement(statement)
-                        # Mapped before the status, so its verdicts migrate even if the status fails
-                        self.statement_id_map[sqlite_id] = pg_id
-                        self.statements[sqlite_id] = statement
+                        pg_id = self.pg_db.insert_statement(statement, conn=conn)
+                    # Mapped before the status, so its verdicts migrate even if the status fails
+                    self.statement_id_map[sqlite_id] = pg_id
+                    self.statements[sqlite_id] = statement
                     self.stats['statements']['migrated'] += 1
                     try:
-                        self.restore_review_status(pg_id, statement.review_status)
+                        with self._row() as conn:
+                            self.restore_review_status(pg_id, statement.review_status, conn=conn)
                     except ROW_ERRORS as e:
                         logger.error(f"Statement {sqlite_id} migrated, but its review_status was not restored: {e}")
                         self.stats['statements']['errors'] += 1
@@ -284,7 +342,8 @@ class SQLiteToPostgresMigrator:
 
         logger.info(f"✓ Statements: {self.stats['statements']['migrated']}/{self.stats['statements']['total']}")
 
-    def restore_review_status(self, pg_id: Optional[int], status: str) -> None:
+    def restore_review_status(self, pg_id: int, status: str,
+                              conn: Optional[psycopg.Connection] = None) -> None:
         """
         Give the PostgreSQL statement its legacy review status (#392).
 
@@ -295,8 +354,9 @@ class SQLiteToPostgresMigrator:
         reset to 'pending' in PostgreSQL gets the legacy status again.
 
         Args:
-            pg_id: PostgreSQL statement id (None in a dry run: only validate)
+            pg_id: PostgreSQL statement id
             status: Normalised legacy review status
+            conn: Run inside this connection's transaction (default: own, committed)
 
         Raises:
             ValueError: ``status`` is not one factcheck.statements accepts and
@@ -304,17 +364,15 @@ class SQLiteToPostgresMigrator:
         """
         if status == DEFAULT_REVIEW_STATUS:
             return
-        if pg_id is not None:
-            current = self.pg_db.get_statement(pg_id)
-            if current is not None and current.review_status != DEFAULT_REVIEW_STATUS:
-                if current.review_status != status:
-                    logger.info(f"Statement {pg_id}: kept PostgreSQL review_status "
-                                f"{current.review_status!r} (legacy: {status!r})")
-                return
+        current = self.pg_db.get_statement(pg_id, conn=conn)
+        if current is not None and current.review_status != DEFAULT_REVIEW_STATUS:
+            if current.review_status != status:
+                logger.info(f"Statement {pg_id}: kept PostgreSQL review_status "
+                            f"{current.review_status!r} (legacy: {status!r})")
+            return
         if status not in REVIEW_STATUSES:
             raise ValueError(f"invalid review_status {status!r} (allowed: {', '.join(REVIEW_STATUSES)})")
-        if pg_id is not None:
-            self.pg_db.update_statement_review_status(pg_id, status)
+        self.pg_db.update_statement_review_status(pg_id, status, conn=conn)
 
     def migrate_annotators(self):
         """Migrate annotators table."""
@@ -339,12 +397,10 @@ class SQLiteToPostgresMigrator:
                         institution=row['institution']
                     )
 
-                    if not self.dry_run:
-                        pg_id = self.pg_db.insert_or_get_annotator(annotator)
-                        self.annotator_id_map[sqlite_id] = pg_id
-                        self.stats['annotators']['migrated'] += 1
-                    else:
-                        self.stats['annotators']['migrated'] += 1
+                    with self._row() as conn:
+                        pg_id = self.pg_db.insert_or_get_annotator(annotator, conn=conn)
+                    self.annotator_id_map[sqlite_id] = pg_id
+                    self.stats['annotators']['migrated'] += 1
 
                 except ROW_ERRORS as e:
                     logger.error(f"Error migrating annotator {row['id']}: {e}")
@@ -389,9 +445,6 @@ class SQLiteToPostgresMigrator:
         if orphans:
             logger.warning(f"Skipping {orphans} evidence rows whose evaluation does not exist")
             ev_stats['skipped'] += orphans
-        if self.dry_run:
-            logger.info("  Dry run: counts are an upper bound (--skip-existing and "
-                        "PostgreSQL constraints are not checked)")
 
         # PostgreSQL statements given verdicts by this run (two legacy ids can share one)
         stored_this_run: Set[int] = set()
@@ -410,15 +463,19 @@ class SQLiteToPostgresMigrator:
             n_evidence = sum(len(evidence_by_eval.get(r['id'], [])) for r in verdict_rows)
 
             statement = self.statements.get(sqlite_stmt_id)
-            if statement is None and not self.dry_run:
+            if statement is None:
                 logger.warning(f"Skipping {len(verdict_rows)} evaluation(s): statement {sqlite_stmt_id} not migrated")
                 eval_stats['skipped'] += len(verdict_rows)
                 ev_stats['skipped'] += n_evidence
                 continue
 
-            if self.skip_existing and not self.dry_run:
+            if self.skip_existing:
                 pg_stmt_id = self.statement_id_map[sqlite_stmt_id]
-                if pg_stmt_id not in stored_this_run and self.pg_db.get_latest_ai_evaluation(pg_stmt_id) is not None:
+                evaluated = False
+                if pg_stmt_id not in stored_this_run:
+                    with self._row() as conn:
+                        evaluated = self.pg_db.get_latest_ai_evaluation(pg_stmt_id, conn=conn) is not None
+                if evaluated:
                     logger.debug(f"Skipping statement {sqlite_stmt_id}: already evaluated in PostgreSQL")
                     eval_stats['skipped'] += len(verdict_rows)
                     ev_stats['skipped'] += n_evidence
@@ -437,14 +494,9 @@ class SQLiteToPostgresMigrator:
                 verdicts.append((evaluation_from_row(row), evidence))
             n_usable = sum(len(evidence) for _, evidence in verdicts)
 
-            if self.dry_run:
-                eval_stats['migrated'] += len(verdicts)
-                ev_stats['migrated'] += n_usable
-                continue
-            assert statement is not None  # only a dry run gets past the check above without one
-
             try:
-                pg_stmt_id, _ = self.pg_db.store_verdicts(statement, verdicts)
+                with self._row() as conn:
+                    pg_stmt_id, _ = self.pg_db.store_verdicts(statement, verdicts, conn=conn)
             except ROW_ERRORS as e:
                 logger.error(f"Statement {sqlite_stmt_id}: none of its {len(verdicts)} evaluation(s) "
                              f"migrated, rolled back with their evidence: {e}")
@@ -480,18 +532,18 @@ class SQLiteToPostgresMigrator:
                     sqlite_annotator_id = row['annotator_id']
 
                     # Skip if references weren't migrated
-                    if sqlite_stmt_id not in self.statement_id_map and not self.dry_run:
+                    if sqlite_stmt_id not in self.statement_id_map:
                         logger.warning(f"Skipping annotation {row['id']}: statement {sqlite_stmt_id} not found")
                         self.stats['human_annotations']['skipped'] += 1
                         continue
 
-                    if sqlite_annotator_id not in self.annotator_id_map and not self.dry_run:
+                    if sqlite_annotator_id not in self.annotator_id_map:
                         logger.warning(f"Skipping annotation {row['id']}: annotator {sqlite_annotator_id} not found")
                         self.stats['human_annotations']['skipped'] += 1
                         continue
 
-                    pg_stmt_id = self.statement_id_map.get(sqlite_stmt_id, sqlite_stmt_id)
-                    pg_annotator_id = self.annotator_id_map.get(sqlite_annotator_id, sqlite_annotator_id)
+                    pg_stmt_id = self.statement_id_map[sqlite_stmt_id]
+                    pg_annotator_id = self.annotator_id_map[sqlite_annotator_id]
 
                     annotation = HumanAnnotation(
                         statement_id=pg_stmt_id,
@@ -503,11 +555,9 @@ class SQLiteToPostgresMigrator:
                         session_id=row['session_id']
                     )
 
-                    if not self.dry_run:
-                        self.pg_db.insert_human_annotation(annotation)
-                        self.stats['human_annotations']['migrated'] += 1
-                    else:
-                        self.stats['human_annotations']['migrated'] += 1
+                    with self._row() as conn:
+                        self.pg_db.insert_human_annotation(annotation, conn=conn)
+                    self.stats['human_annotations']['migrated'] += 1
 
                 except ROW_ERRORS as e:
                     logger.error(f"Error migrating human annotation {row['id']}: {e}")
@@ -542,13 +592,11 @@ class SQLiteToPostgresMigrator:
                         'error_message': row['error_message'] or None,
                     }
 
-                    if not self.dry_run:
+                    with self._row() as conn:
                         # One upsert: a failed row leaves nothing behind, and a
                         # re-run completes sessions an older run left half-written (#408)
-                        self.pg_db.insert_processing_session(session_data, overwrite=True)
-                        self.stats['processing_metadata']['migrated'] += 1
-                    else:
-                        self.stats['processing_metadata']['migrated'] += 1
+                        self.pg_db.insert_processing_session(session_data, overwrite=True, conn=conn)
+                    self.stats['processing_metadata']['migrated'] += 1
 
                 except ROW_ERRORS as e:
                     logger.error(f"Error migrating processing metadata {row['id']}: {e}")
@@ -580,25 +628,21 @@ class SQLiteToPostgresMigrator:
 
             for row in rows:
                 try:
-                    if not self.dry_run:
-                        # Insert directly using database manager
-                        with self.pg_db.db_manager.get_connection() as pg_conn:
-                            with pg_conn.cursor() as cur:
-                                cur.execute("""
-                                    INSERT INTO factcheck.export_history
-                                    (export_date, export_type, output_file, statement_count, requested_by, filters_applied)
-                                    VALUES (%s, %s, %s, %s, %s, %s)
-                                """, (
-                                    row['export_date'],
-                                    row['export_type'],
-                                    row['output_file'],
-                                    row['statement_count'],
-                                    row['requested_by'],
-                                    row['filters_applied']
-                                ))
-                        self.stats['export_history']['migrated'] += 1
-                    else:
-                        self.stats['export_history']['migrated'] += 1
+                    with self._row() as conn, self.pg_db._connection(conn) as pg_conn:
+                        with pg_conn.cursor() as cur:
+                            cur.execute("""
+                                INSERT INTO factcheck.export_history
+                                (export_date, export_type, output_file, statement_count, requested_by, filters_applied)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (
+                                row['export_date'],
+                                row['export_type'],
+                                row['output_file'],
+                                row['statement_count'],
+                                row['requested_by'],
+                                row['filters_applied']
+                            ))
+                    self.stats['export_history']['migrated'] += 1
 
                 except ROW_ERRORS as e:
                     logger.error(f"Error migrating export history {row['id']}: {e}")
@@ -657,7 +701,7 @@ def main() -> None:
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Count what would be migrated without migrating (an upper bound)'
+        help='Do every write, then roll it all back: real-run counts and errors, nothing kept'
     )
     parser.add_argument(
         '--verbose',

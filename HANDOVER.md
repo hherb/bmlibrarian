@@ -10,6 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Migrator `--dry-run` writes for real, then rolls back** (2026-11-09,
+  closes #410; owner decision over client-side checks). The dry run of
+  `scripts/migrate_factchecker_sqlite_to_postgres.py` runs every step inside
+  `dry_run_transaction()` (one `conn.transaction(force_rollback=True)`),
+  each row in a savepoint (`_row()`), so the rows a real run would refuse are
+  refused (CHECKs, evidence FK, JSON, TIMESTAMPTZ) and `--skip-existing`
+  applies; pending schema migrations are only listed
+  (`FactCheckerDB(DatabaseManager(dry_run_migrations=True))`); counts, errors and exit status match the real run, and nothing is
+  committed. A dry-run step called outside that transaction raises
+  `RuntimeError`. Trade-offs (documented in `MIGRATION_GUIDE.md`): needs
+  write permission, uses sequence ids, keeps the rows it writes locked until
+  it ends. `FactCheckerDB.store_verdicts`, `get_statement`,
+  `update_statement_review_status`, `get_latest_ai_evaluation`,
+  `insert_or_get_annotator`, `insert_human_annotation`,
+  `insert_processing_session` take an optional `conn`. Tests:
+  `test_migrate_factchecker_sqlite.py::test_dry_run_*`, opt-in
+  `test_factcheck_audit_transactions_db.py::test_dry_run_reports_refused_rows_and_keeps_nothing`.
 - **Migrated processing sessions written whole** (2026-11-09, closes
   #408). `FactCheckerDB.insert_processing_session` also takes `end_time`,
   `output_file`, `processed_statements`, `error_message` in its INSERT and
@@ -18,8 +35,7 @@ off new work. Longer-term structural items live in
   insert + `update_processing_session`, so a malformed end field stores
   nothing and a re-run repairs a session an older run left half-written
   (re-runs no longer count present sessions as errors). Empty legacy end
-  fields become NULL, as before. Open: `--dry-run` validates no values a
-  write would refuse (#410). Tests:
+  fields become NULL, as before. Tests:
   `test_migrate_factchecker_sqlite.py::test_processing_session_*`, opt-in
   `test_factcheck_audit_transactions_db.py` (`*session*`).
 - **Migration row errors; queue reused-PID check** (2026-11-08, closes
@@ -380,7 +396,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-09
-  (#408 branch): **4810 passed, 59 skipped** in 7–17 min. Without
+  (#410 branch): **4815 passed, 60 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

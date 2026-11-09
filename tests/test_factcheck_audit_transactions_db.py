@@ -26,6 +26,11 @@ CONNECTION_DEFAULTS = {"POSTGRES_HOST": "localhost", "POSTGRES_PORT": "5432"}
 # public.document ids and audit ids are positive serials, so no row has this id
 NONEXISTENT_ID = -340
 TEST_SESSION_ID = "bmlibrarian-test-408"
+# Largest INTEGER (public.document.id's type): a positive id no imported document has
+UNUSED_DOCUMENT_ID = 2**31 - 1
+# Annotator username and export file name of the dry-run test's rows
+TEST_ANNOTATOR = "bmlibrarian-test-410"
+TEST_EXPORT_FILE = "bmlibrarian-test-410.json"
 
 
 @pytest.fixture
@@ -277,3 +282,59 @@ def test_overwrite_completes_a_half_migrated_session(session_db, db_manager) -> 
     with db_manager.get_connection() as conn:
         assert conn.execute("SELECT status, total_statements FROM factcheck.processing_metadata "
                             "WHERE session_id = %s", (TEST_SESSION_ID,)).fetchall() == [("completed", 3)]
+
+
+def test_dry_run_reports_refused_rows_and_keeps_nothing(session_db, db_manager, tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The migrator's dry run writes for real, so PostgreSQL refuses what the real run would; then it rolls back (#410)."""
+    import sqlite3
+
+    from tests.test_migrate_factchecker_sqlite import EXPORT_HISTORY_SCHEMA, LEGACY_SCHEMA, migrate
+
+    legacy = tmp_path / "factchecker.db"
+    with sqlite3.connect(legacy) as conn:
+        conn.executescript(LEGACY_SCHEMA + EXPORT_HISTORY_SCHEMA)
+        conn.execute("INSERT INTO statements (id, statement_text) VALUES (1, ?)", (TEST_STATEMENT,))
+        conn.execute("INSERT INTO ai_evaluations (id, statement_id, evaluation, version) VALUES (10, 1, 'yes', 1)")
+        conn.execute("INSERT INTO evidence (id, ai_evaluation_id, citation_text, document_id) VALUES (100, 10, 'c', ?)",
+                     (str(UNUSED_DOCUMENT_ID),))  # positive, so the migrator keeps it
+        conn.execute("INSERT INTO processing_metadata (session_id, input_file, start_time, end_time) "
+                     "VALUES (?, 'in.json', '2026-01-01T00:00:00+00:00', 'not a time')", (TEST_SESSION_ID,))
+        conn.execute("INSERT INTO annotators (id, username) VALUES (5, ?)", (TEST_ANNOTATOR,))
+        conn.execute("INSERT INTO human_annotations (id, statement_id, annotator_id, annotation) "
+                     "VALUES (50, 1, 5, 'yes')")
+        conn.execute("INSERT INTO export_history (id, export_date, export_type, output_file, statement_count) "
+                     "VALUES (60, '2026-01-02T00:00:00+00:00', 'full', ?, 1)", (TEST_EXPORT_FILE,))
+    with db_manager.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM document WHERE id = %s", (UNUSED_DOCUMENT_ID,)).fetchone() == (0,)
+    monkeypatch.setattr(migrate, "FactCheckerDB", lambda _manager: session_db)
+    monkeypatch.setattr(migrate, "DatabaseManager", lambda **_: None)
+
+    def leftovers() -> tuple:
+        """Counts of the test's rows in each table the dry run writes."""
+        with db_manager.get_connection() as conn:
+            return conn.execute(
+                "SELECT (SELECT count(*) FROM factcheck.statements WHERE statement_text = %s), "
+                "(SELECT count(*) FROM factcheck.annotators WHERE username = %s), "
+                "(SELECT count(*) FROM factcheck.human_annotations h JOIN factcheck.annotators a "
+                " USING (annotator_id) WHERE a.username = %s), "
+                "(SELECT count(*) FROM factcheck.export_history WHERE output_file = %s)",
+                (TEST_STATEMENT, TEST_ANNOTATOR, TEST_ANNOTATOR, TEST_EXPORT_FILE)).fetchone()
+
+    try:
+        migrator = migrate.SQLiteToPostgresMigrator(str(legacy), dry_run=True)
+        assert migrator.migrate_all() is False
+
+        assert migrator.stats["statements"]["migrated"] == 1
+        assert migrator.stats["ai_evaluations"]["errors"] == 1  # evidence foreign key
+        assert migrator.stats["processing_metadata"]["errors"] == 1  # TIMESTAMPTZ cast
+        # a refused row is undone in its savepoint; the later rows still run
+        for table in ("annotators", "human_annotations", "export_history"):
+            assert migrator.stats[table]["migrated"] == 1, table
+        assert leftovers() == (0, 0, 0, 0)
+        assert _stored_session(db_manager) == []
+    finally:  # only if the dry run leaked (human annotations go with the statement or annotator)
+        with db_manager.get_connection() as conn:
+            conn.execute("DELETE FROM factcheck.statements WHERE statement_text = %s", (TEST_STATEMENT,))
+            conn.execute("DELETE FROM factcheck.annotators WHERE username = %s", (TEST_ANNOTATOR,))
+            conn.execute("DELETE FROM factcheck.export_history WHERE output_file = %s", (TEST_EXPORT_FILE,))

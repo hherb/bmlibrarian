@@ -57,7 +57,7 @@ If you're working in a cloud environment like GitHub Codespaces:
 
 ### Step 3: Run Dry-Run (Recommended)
 
-First, run a dry-run to see what will be migrated without making changes:
+First, run a dry-run to see what will be migrated without keeping any changes (every write is rolled back):
 
 ```bash
 cd /home/user/bmlibrarian
@@ -87,7 +87,7 @@ uv run python scripts/migrate_factchecker_sqlite_to_postgres.py \
 
 **Options:**
 - `--skip-existing`: Don't migrate evaluations for statements that already have one in PostgreSQL (use it for incremental migrations: without it, a re-run stores every evaluation again as a new version)
-- `--dry-run`: Count what would be migrated without making changes. The counts are an upper bound: `--skip-existing` and PostgreSQL constraints (such as evidence citing a document missing from `public.document`) are not checked
+- `--dry-run`: Make every write inside one transaction and roll it back at the end, so nothing is kept. Each row goes through the same write path as in a real run (PostgreSQL constraints, evidence citing a document missing from `public.document`, malformed timestamps; malformed JSON is refused before the insert), so the counts, errors and exit status are the ones the real run would report, `--skip-existing` included. Pending schema migrations are listed, not applied, so on an outdated schema the counts are those of the current one. It needs the same write permission as a real run, uses up sequence ids, and keeps the rows it writes locked until it ends, so a fact-check or review writing the same statements, annotators or sessions meanwhile waits for it
 - `--verbose`: Also log statements skipped by `--skip-existing`
 
 The script exits with status 1 if any record failed to migrate.
