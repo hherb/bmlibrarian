@@ -41,6 +41,11 @@ CREATE TABLE processing_metadata (id INTEGER PRIMARY KEY, session_id TEXT, input
     total_statements INTEGER, start_time TEXT, status TEXT, config_snapshot TEXT, end_time TEXT,
     output_file TEXT, processed_statements INTEGER, error_message TEXT);
 """
+# Optional in legacy files: the migrator skips the step when the table is missing
+EXPORT_HISTORY_SCHEMA = """
+CREATE TABLE export_history (id INTEGER PRIMARY KEY, export_date TEXT, export_type TEXT,
+    output_file TEXT, statement_count INTEGER, requested_by TEXT, filters_applied TEXT);
+"""
 
 # Document id the fake treats as missing from public.document (FK violation)
 MISSING_DOCUMENT_ID = 999
@@ -58,6 +63,16 @@ class FakeConnection:
         self.force_rollback: List[bool] = []
         self.savepoints = 0
         self.open = False
+        # (sql, params) of every execute() on this connection's cursors
+        self.executed: List[Tuple[str, Any]] = []
+
+    def cursor(self) -> Any:
+        """A cursor is this connection itself (only ``execute`` is used)."""
+        return nullcontext(self)
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        """Record the statement."""
+        self.executed.append((sql, params))
 
     @contextmanager
     def transaction(self, force_rollback: bool = False) -> Iterator[None]:
@@ -155,6 +170,18 @@ class FakeFactCheckerDB:
         self.conns.append(conn)
         return 1
 
+    def insert_processing_session(self, session_data: Dict[str, Any], overwrite: bool = False,
+                                  conn: Any = None) -> int:
+        """Not exercised beyond returning an id."""
+        self.conns.append(conn)
+        return 1
+
+    @contextmanager
+    def _connection(self, conn: Any) -> Iterator[FakeConnection]:
+        """``conn`` if given, else the pooled connection, like the real method."""
+        self.conns.append(conn)
+        yield conn if conn is not None else self.db_manager.conn
+
 
 def _make_legacy_db(path: Path) -> None:
     """
@@ -202,11 +229,36 @@ def legacy_db(tmp_path: Path) -> Path:
     return path
 
 
+def _add_every_other_table(path: Path) -> None:
+    """Give the legacy file one row in each table _make_legacy_db leaves empty."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript(EXPORT_HISTORY_SCHEMA)
+        conn.execute("INSERT INTO annotators (id, username) VALUES (5, 'alice')")
+        conn.execute("INSERT INTO human_annotations (id, statement_id, annotator_id, annotation) "
+                     "VALUES (50, 1, 5, 'yes')")
+        conn.execute("INSERT INTO processing_metadata (session_id, input_file, start_time) "
+                     "VALUES ('s', 'in.json', '2026-01-01T00:00:00+00:00')")
+        conn.execute("INSERT INTO export_history (id, export_date, export_type, statement_count) "
+                     "VALUES (60, '2026-01-02T00:00:00+00:00', 'full', 3)")
+
+
 @pytest.fixture
 def fake_db(monkeypatch: pytest.MonkeyPatch) -> FakeFactCheckerDB:
-    """Replace the script's FactCheckerDB with one shared fake."""
+    """
+    Replace the script's FactCheckerDB with one shared fake.
+
+    ``fake.managers`` records the DatabaseManager the migrator passed: None
+    (the shared one) or the kwargs of the one it opened itself.
+    """
     fake = FakeFactCheckerDB()
-    monkeypatch.setattr(migrate, "FactCheckerDB", lambda: fake)
+    fake.managers = []
+
+    def open_db(db_manager: Any) -> FakeFactCheckerDB:
+        """Record the manager, return the fake."""
+        fake.managers.append(db_manager)
+        return fake
+    monkeypatch.setattr(migrate, "FactCheckerDB", open_db)
+    monkeypatch.setattr(migrate, "DatabaseManager", lambda **kwargs: kwargs)
     return fake
 
 
@@ -302,23 +354,62 @@ def _dry_run_rolled_back(fake: FakeFactCheckerDB) -> bool:
     return bool(fake.conns) and all(c is conn for c in fake.conns) and conn.force_rollback == [True]
 
 
-def test_dry_run_counts_like_a_real_run_and_rolls_back(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:
-    """A dry run makes the real writes in one rolled-back transaction, so it reports the real run's errors (#410)."""
-    real = _run(legacy_db)
+def _evaluated_statement_1(fake: FakeFactCheckerDB) -> FakeFactCheckerDB:
+    """Mark statement 1 as already evaluated in PostgreSQL, so --skip-existing skips it."""
+    pg_id = fake.statement_ids.setdefault("Aspirin prevents MI", PG_ID_OFFSET + 1)
+    fake.evaluated.add(pg_id)
+    return fake
+
+
+@pytest.mark.parametrize("skip_existing", [False, True])
+def test_dry_run_counts_like_a_real_run_and_rolls_back(legacy_db: Path, fake_db: FakeFactCheckerDB,
+                                                       skip_existing: bool) -> None:
+    """A dry run makes every step's real writes in one rolled-back transaction, so it reports the real run's counts (#410)."""
+    _add_every_other_table(legacy_db)
+    _evaluated_statement_1(fake_db)
+    real = migrate.SQLiteToPostgresMigrator(str(legacy_db), skip_existing=skip_existing)
+    assert real.migrate_all() is False
     real_stats = {table: dict(counts) for table, counts in real.stats.items()}
-    real_calls = len(fake_db.conns)
-    dry_fake = FakeFactCheckerDB()
+    dry_fake = _evaluated_statement_1(FakeFactCheckerDB())
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(migrate, "FactCheckerDB", lambda: dry_fake)
-        dry = _run(legacy_db, dry_run=True)
+        mp.setattr(migrate, "FactCheckerDB", lambda _manager: dry_fake)
+        dry = migrate.SQLiteToPostgresMigrator(str(legacy_db), skip_existing=skip_existing, dry_run=True)
+        assert dry.migrate_all() is False
 
     assert dry.stats == real_stats
+    assert all(dry.stats[t]["migrated"] == 1 for t in
+               ("annotators", "human_annotations", "processing_metadata", "export_history"))
     assert dry.stats["ai_evaluations"]["errors"] == 2  # statement 2's missing document, as in the real run
+    # the failed check, plus statement 1's two versions with --skip-existing
+    assert dry.stats["ai_evaluations"]["skipped"] == (3 if skip_existing else 1)
     assert dry.failed_statements == real.failed_statements == [2]
     assert _dry_run_rolled_back(dry_fake)
-    assert all(c is None for c in fake_db.conns[:real_calls])  # the real run commits each call itself
-    # a savepoint per row: 3 statement inserts + 3 status checks + 2 verdict groups
-    assert dry_fake.db_manager.conn.savepoints == 8
+    assert len(dry_fake.db_manager.conn.executed) == 1  # the export row, on the dry run's connection
+    assert all(c is None for c in fake_db.conns)  # the real run commits each call itself
+
+
+def test_dry_run_lists_pending_migrations_instead_of_applying_them(legacy_db: Path,
+                                                                   fake_db: FakeFactCheckerDB) -> None:
+    """Applied migrations would be committed outside the rolled-back transaction, so a dry run only lists them."""
+    migrate.SQLiteToPostgresMigrator(str(legacy_db))
+    migrate.SQLiteToPostgresMigrator(str(legacy_db), dry_run=True)
+
+    assert fake_db.managers == [None, {"dry_run_migrations": True}]
+
+
+def test_dry_run_systemic_error_aborts_and_rolls_back(legacy_db: Path, fake_db: FakeFactCheckerDB,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lost connection aborts a dry run too; its transaction is still rolled back and released."""
+    def lost(*args: Any, **kwargs: Any) -> None:
+        """Fail like a dropped connection."""
+        raise psycopg.OperationalError("server closed the connection")
+    monkeypatch.setattr(fake_db, "store_verdicts", lost)
+
+    migrator = migrate.SQLiteToPostgresMigrator(str(legacy_db), dry_run=True)
+    with pytest.raises(psycopg.OperationalError):
+        migrator.migrate_all()
+    assert migrator._dry_conn is None
+    assert fake_db.db_manager.conn.force_rollback == [True]
 
 
 def test_dry_run_step_outside_its_transaction_refuses(legacy_db: Path, fake_db: FakeFactCheckerDB) -> None:

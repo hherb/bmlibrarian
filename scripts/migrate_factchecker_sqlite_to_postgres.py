@@ -30,6 +30,7 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import psycopg
 
+from bmlibrarian.database import DatabaseManager
 from bmlibrarian.factchecker.db.database import (
     STORABLE_VERDICTS,
     FactCheckerDB,
@@ -170,7 +171,9 @@ class SQLiteToPostgresMigrator:
         if not self.sqlite_path.exists():
             raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
 
-        self.pg_db = FactCheckerDB()
+        # A dry run lists pending schema migrations instead of applying them,
+        # since applied migrations are committed outside its rolled-back transaction
+        self.pg_db = FactCheckerDB(DatabaseManager(dry_run_migrations=True) if dry_run else None)
         self.stats = {
             'statements': {'total': 0, 'migrated': 0, 'skipped': 0, 'errors': 0},
             'annotators': {'total': 0, 'migrated': 0, 'skipped': 0, 'errors': 0},
@@ -208,8 +211,8 @@ class SQLiteToPostgresMigrator:
         """
         Hold one transaction for a dry run's steps and roll it back afterwards.
 
-        The statement rows the dry run touches stay locked until it ends, so a
-        fact-check writing the same statements meanwhile waits.
+        The rows the dry run writes stay locked until it ends, so a fact-check or
+        review writing the same statements, annotators or sessions meanwhile waits.
         """
         with self.pg_db.db_manager.get_connection() as conn:
             # force_rollback: nested transaction() blocks are savepoints, nothing is committed
@@ -274,6 +277,8 @@ class SQLiteToPostgresMigrator:
 
             if self.dry_run:
                 logger.info("\n⚠️  DRY RUN - every write was rolled back, no data was migrated")
+                if not ok:
+                    logger.error("❌ A real run would fail the rows counted as errors above")
             elif ok:
                 logger.info("\n✅ Migration completed successfully!")
             else:

@@ -583,9 +583,11 @@ partial evidence that incremental mode treated as done. The individual
 `conn` to join a caller's transaction. The SQLite migration's `--dry-run`
 uses this (#410): `dry_run_transaction()` holds one
 `conn.transaction(force_rollback=True)` and `_row()` gives each row a
-savepoint inside it, so PostgreSQL refuses rows exactly as in a real run and
+savepoint inside it, so rows are refused exactly as in a real run and
 nothing is committed (a dry-run step called outside that transaction raises
-`RuntimeError` before writing).
+`RuntimeError` before writing). Its `DatabaseManager` is opened with
+`dry_run_migrations=True` (passed as `FactCheckerDB(db_manager)`), so pending
+schema migrations are listed instead of committed.
 `insert_statement` (`factcheck.get_or_create_statement`) never writes
 `review_status`; the SQLite migration sets a legacy status afterwards with
 `update_statement_review_status`, only while the PostgreSQL row is still

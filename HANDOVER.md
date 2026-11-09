@@ -14,12 +14,13 @@ off new work. Longer-term structural items live in
   closes #410; owner decision over client-side checks). The dry run of
   `scripts/migrate_factchecker_sqlite_to_postgres.py` runs every step inside
   `dry_run_transaction()` (one `conn.transaction(force_rollback=True)`),
-  each row in a savepoint (`_row()`), so PostgreSQL refuses the rows a real
-  run would (CHECKs, evidence FK, JSON, TIMESTAMPTZ) and `--skip-existing`
-  applies; counts, errors and exit status match the real run, and nothing is
+  each row in a savepoint (`_row()`), so the rows a real run would refuse are
+  refused (CHECKs, evidence FK, JSON, TIMESTAMPTZ) and `--skip-existing`
+  applies; pending schema migrations are only listed
+  (`FactCheckerDB(DatabaseManager(dry_run_migrations=True))`); counts, errors and exit status match the real run, and nothing is
   committed. A dry-run step called outside that transaction raises
   `RuntimeError`. Trade-offs (documented in `MIGRATION_GUIDE.md`): needs
-  write permission, uses sequence ids, keeps touched statements locked until
+  write permission, uses sequence ids, keeps the rows it writes locked until
   it ends. `FactCheckerDB.store_verdicts`, `get_statement`,
   `update_statement_review_status`, `get_latest_ai_evaluation`,
   `insert_or_get_annotator`, `insert_human_annotation`,
@@ -395,7 +396,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-09
-  (#410 branch): **4812 passed, 60 skipped** in 7–17 min. Without
+  (#410 branch): **4815 passed, 60 skipped** in 7–17 min. Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

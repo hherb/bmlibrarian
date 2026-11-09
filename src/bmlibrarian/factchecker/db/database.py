@@ -21,7 +21,7 @@ from dataclasses import dataclass, asdict
 import psycopg
 from psycopg.types.json import Jsonb
 
-from bmlibrarian.database import get_db_manager
+from bmlibrarian.database import DatabaseManager, get_db_manager
 
 from .abstract_db import parse_degradation_notes as _as_notes
 
@@ -122,13 +122,15 @@ class FactCheckerDB:
     and factcheck schema with NO data duplication.
     """
 
-    def __init__(self):
+    def __init__(self, db_manager: Optional[DatabaseManager] = None):
         """
         Initialize the database manager.
 
-        Uses the centralized DatabaseManager for connection pooling.
+        Args:
+            db_manager: The DatabaseManager to use; the shared one from
+                ``get_db_manager()`` if None
         """
-        self.db_manager = get_db_manager()
+        self.db_manager = db_manager if db_manager is not None else get_db_manager()
         logger.info("FactCheckerDB initialized with centralized DatabaseManager")
 
     @contextmanager

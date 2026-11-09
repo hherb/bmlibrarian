@@ -87,7 +87,7 @@ uv run python scripts/migrate_factchecker_sqlite_to_postgres.py \
 
 **Options:**
 - `--skip-existing`: Don't migrate evaluations for statements that already have one in PostgreSQL (use it for incremental migrations: without it, a re-run stores every evaluation again as a new version)
-- `--dry-run`: Make every write inside one transaction and roll it back at the end, so nothing is kept. PostgreSQL checks each row as in a real run (constraints, evidence citing a document missing from `public.document`, malformed JSON or timestamps), so the counts, errors and exit status are the ones the real run would report, `--skip-existing` included. It needs the same write permission as a real run, uses up sequence ids, and keeps the statements it touches locked until it ends, so a fact-check writing those statements meanwhile waits for it
+- `--dry-run`: Make every write inside one transaction and roll it back at the end, so nothing is kept. Each row goes through the same write path as in a real run (PostgreSQL constraints, evidence citing a document missing from `public.document`, malformed timestamps; malformed JSON is refused before the insert), so the counts, errors and exit status are the ones the real run would report, `--skip-existing` included. Pending schema migrations are listed, not applied, so on an outdated schema the counts are those of the current one. It needs the same write permission as a real run, uses up sequence ids, and keeps the rows it writes locked until it ends, so a fact-check or review writing the same statements, annotators or sessions meanwhile waits for it
 - `--verbose`: Also log statements skipped by `--skip-existing`
 
 The script exits with status 1 if any record failed to migrate.
