@@ -66,3 +66,21 @@ Use a development database:
   database `is_protected_database()` protects;
 - or select the env file for the whole run with `BMLIBRARIAN_ENV_FILE`
   pointing at a dev database.
+
+## Live tests are opt-in (#334)
+
+A plain `pytest tests/` is hermetic: it reads no database and needs no
+Ollama. `tests/conftest.py`:
+
+- skips tests marked `requires_database` or `requires_ollama` unless live
+  tests are enabled with `--run-live` or by setting `BMLIBRARIAN_TEST_DB_ENV`;
+- fails any other test that opens a PostgreSQL connection
+  (`psycopg.connect`, `psycopg.Connection.connect`, a `psycopg_pool`
+  pool) or connects to the local Ollama port, with a message naming the
+  marker it needs (`_block_live_services`). Mock the service, or mark the test.
+
+With `--run-live` the tests use whatever the env file names, so production is
+read (read-only, see above); prefer `BMLIBRARIAN_ENV_FILE` plus
+`BMLIBRARIAN_TEST_DB_ENV` pointing at a dev database. Not caught: a remote
+`OLLAMA_HOST`, and connections opened in a background thread (the failure is
+raised there, not in the test).

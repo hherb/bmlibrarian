@@ -10,7 +10,7 @@ import json
 import pytest
 from unittest.mock import Mock, patch
 
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 from bmlibrarian.llm import LLMClient
 from bmlibrarian.paperchecker.components import StatementExtractor
@@ -570,6 +570,7 @@ class TestErrorHandling:
 LIVE_GENERATION_TIMEOUT_SECONDS = 600
 
 
+@pytest.mark.requires_ollama
 @pytest.mark.integration
 @pytest.mark.timeout(LIVE_GENERATION_TIMEOUT_SECONDS)
 class TestIntegration:

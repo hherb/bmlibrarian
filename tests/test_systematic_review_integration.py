@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch, MagicMock
 from typing import List, Dict, Any
 
 from bmlib.llm import LLMResponse as BmlibLLMResponse
-from llm_test_support import llm_response
+from tests.llm_test_support import llm_response
 
 from bmlibrarian.agents.systematic_review import (
     # Main agent (Phase 1)
@@ -339,6 +339,8 @@ class TestPlannerExecutorIntegration:
 class TestEndToEndWorkflow:
     """End-to-end workflow tests with mocked dependencies."""
 
+    @patch('bmlibrarian.database.search_hybrid')
+    @patch('bmlibrarian.database.find_abstracts')
     @patch('bmlib.llm.client.LLMClient.chat')
     @patch('bmlibrarian.database.fetch_documents_by_ids')
     @patch('bmlibrarian.database.search_with_semantic')
@@ -347,6 +349,8 @@ class TestEndToEndWorkflow:
         mock_search: MagicMock,
         mock_fetch: MagicMock,
         mock_llm: MagicMock,
+        mock_keyword: MagicMock,
+        mock_hybrid: MagicMock,
         clinical_criteria: SearchCriteria,
         mock_paper_database: List[Dict[str, Any]],
         mock_pico_response: Dict[str, Any],
@@ -356,6 +360,8 @@ class TestEndToEndWorkflow:
         mock_llm.return_value = mock_pico_response
         mock_search.return_value = iter(mock_paper_database)
         mock_fetch.return_value = mock_paper_database
+        mock_keyword.side_effect = lambda **_kwargs: iter(mock_paper_database)
+        mock_hybrid.return_value = (mock_paper_database, {})
 
         # Step 1: Plan
         planner = Planner()

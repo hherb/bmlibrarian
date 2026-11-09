@@ -247,6 +247,7 @@ class TestStudyAssessmentAgent:
 
     def test_assess_missing_text(self, assessment_agent, mock_bmlib_chat):
         """Test assessment fails gracefully with missing text."""
+        assessment_agent.test_connection = Mock(return_value=True)
         document_no_text = {
             'id': '999',
             'title': 'Study with no abstract'
@@ -605,6 +606,7 @@ class TestStudyAssessmentAgent:
 
     def test_missing_required_fields(self, assessment_agent, mock_bmlib_chat):
         """Test that missing required fields in LLM response causes failure."""
+        assessment_agent.test_connection = Mock(return_value=True)
         # Mock response missing required fields
         incomplete_assessment = {
             "study_type": "RCT",

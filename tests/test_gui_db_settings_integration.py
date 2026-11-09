@@ -12,6 +12,9 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 from pathlib import Path
 
+# The settings/configuration tabs list Ollama models when built.
+pytestmark = pytest.mark.usefixtures("offline_model_list")
+
 
 # Check if PySide6 is available (need to handle library loading issues too)
 def _check_pyside6_available():

@@ -13,7 +13,7 @@ from bmlibrarian.llm import LLMClient
 from bmlibrarian.paperchecker.data_models import Statement
 from bmlibrarian.paperchecker.components import CounterStatementGenerator, HyDEGenerator
 
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 
 # =============================================================================

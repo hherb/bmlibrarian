@@ -10,6 +10,27 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Plain `pytest tests/` is hermetic** (2026-11-10, closes #334, #251).
+  `tests/conftest.py` skips `requires_database`/`requires_ollama` tests
+  unless `--run-live` is passed or `BMLIBRARIAN_TEST_DB_ENV` is set, and
+  `_block_live_services` fails any other test that opens a PostgreSQL
+  connection (`psycopg.connect`, `Connection.connect`, `psycopg_pool`) or
+  connects to the local Ollama port, naming the marker it needs. Shared
+  fixture `offline_model_list` stubs `list_ollama_models` for GUI tabs whose
+  model pickers ask Ollama when built (research/settings/configuration tab
+  tests use it). Found and fixed on the way: tests that passed only because a
+  live server was up or for the wrong reason offline
+  (`test_verify_document_exists` asserted an always-truthy tuple; paperchecker
+  `test_connection_db_failure` and two study-assessment tests returned
+  False/None because Ollama was unreachable; the systematic-review workflow
+  test searched production); bool-returning "tests" that could not fail now
+  assert (`test_human_edit_logging.py`, `test_hyde.py`, `test_editor_agent_fix.py`,
+  `test_fallback_formatting.py`, `test_template_system.py`;
+  `test_reference_fix.py` → `test_reporting_methodology.py`;
+  `test_citation_data_flow.py` is a marked live test); `conftest.py` no longer
+  puts `tests/` on `sys.path` (`from tests.llm_test_support import ...`).
+  Docs: `doc/developers/test_database_guard.md` "Live tests are opt-in".
+  Not caught: a remote `OLLAMA_HOST`, connections opened in background threads.
 - **Settings categories: SQL lists guarded against drift** (2026-11-09,
   closes #231). `tests/test_settings_categories_sql_sync.py` reads
   `migrations/*.sql` (no database) and checks that the latest definition of
@@ -405,8 +426,9 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-09
-  (#231 branch): **4830 passed, 60 skipped** in 7–17 min. Without
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-10
+  (#334 branch): **4783 passed, 108 skipped** in about 2 min (hermetic since #334;
+  add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
   any other failure is a regression. Save the

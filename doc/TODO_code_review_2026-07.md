@@ -72,7 +72,7 @@ Gap analysis (2026-07-19) found these must be closed BEFORE deleting:
 
 ### 2. Make the test suite protect you
 - [ ] Fix the 5 unconditional collection errors: `tests/test_ef_search.py`, `test_chunker_comparison.py`, `test_adaptive_chunker_performance.py`, `test_fast_chunker_performance.py`, `test_spacy_chunker_performance.py` define `test_*` functions with required positional args (they are manual scripts). Rename functions or move to `scripts/`.
-- [ ] Mark live-service tests with the existing `requires_database`/`requires_ollama` markers (only 5/145 files use them; 74/145 are `__main__`-style scripts) so `pytest -m "not requires_database"` gives a hermetic suite.
+- [x] (#334, 2026-11-10: live tests skipped unless `--run-live`; unmarked live access fails) Mark live-service tests with the existing `requires_database`/`requires_ollama` markers (only 5/145 files use them; 74/145 are `__main__`-style scripts) so `pytest -m "not requires_database"` gives a hermetic suite.
 - [ ] Add asserts to assert-free tests (`test_hybrid_search.py`, `test_reference_fix.py` uses `return True/False` which pytest ignores, `test_hyde.py`, `test_fallback_formatting.py`).
 - [ ] Add per-importer write-path smoke tests against a throwaway schema (would have caught the PMC schema mismatch and the poisoned-transaction class).
 - [ ] Reconcile the ">95% coverage" claim in CLAUDE.md with reality (`--cov-fail-under=80`, suite currently far below).

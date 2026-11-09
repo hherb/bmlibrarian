@@ -32,7 +32,7 @@ from datetime import datetime
 from typing import Dict, List, Any
 from unittest.mock import MagicMock, patch
 
-from llm_test_support import llm_response
+from tests.llm_test_support import llm_response
 
 from bmlibrarian.agents.systematic_review import (
     # Enums

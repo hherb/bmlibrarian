@@ -1,16 +1,109 @@
 """Pytest configuration and fixtures for bmlibrarian tests."""
 
 import os
+import socket
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, List
 from unittest.mock import MagicMock
+from urllib.parse import urlsplit
 
+import psycopg
+import psycopg_pool
 import pytest
 
-# Make sibling test-support modules (llm_test_support, ...) importable by
-# name regardless of how pytest was invoked or which rootdir it inferred.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Live tests (#334): a plain ``pytest tests/`` must not read whatever database
+# the default .env points at (on a dev machine, production) or need Ollama.
+RUN_LIVE_OPTION = "--run-live"
+TEST_DB_ENV_VARIABLE = "BMLIBRARIAN_TEST_DB_ENV"
+LIVE_MARKERS = ("requires_database", "requires_ollama")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add ``--run-live`` (run tests that need a live database or Ollama)."""
+    parser.addoption(
+        RUN_LIVE_OPTION, action="store_true", default=False,
+        help="run tests marked requires_database/requires_ollama against the configured "
+             f"database and Ollama (also enabled when {TEST_DB_ENV_VARIABLE} is set)")
+
+
+def live_tests_enabled(config: pytest.Config) -> bool:
+    """Whether live tests run: ``--run-live`` or ``BMLIBRARIAN_TEST_DB_ENV`` set."""
+    return bool(config.getoption(RUN_LIVE_OPTION) or os.environ.get(TEST_DB_ENV_VARIABLE))
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
+    """Skip tests carrying a live marker unless live tests are enabled."""
+    if live_tests_enabled(config):
+        return
+    skip = pytest.mark.skip(reason=f"needs a live service; run with {RUN_LIVE_OPTION} "
+                                   f"or set {TEST_DB_ENV_VARIABLE}")
+    for item in items:
+        if any(item.get_closest_marker(name) for name in LIVE_MARKERS):
+            item.add_marker(skip)
+
+
+def _live_access_failure(service: str, marker: str) -> None:
+    """Fail the current test for reaching a live service without its marker."""
+    pytest.fail(f"test reached a live {service} without @pytest.mark.{marker}; mock it, "
+                f"or mark the test and run it with {RUN_LIVE_OPTION}")
+
+
+@pytest.fixture(autouse=True)
+def _block_live_services(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make an unmarked test that opens a PostgreSQL connection or reaches Ollama fail.
+
+    Without live tests enabled, connecting through psycopg/psycopg_pool or to the
+    local Ollama port fails the test with a message naming the marker it needs
+    (``pytest.fail`` raises a ``BaseException``, so ``except Exception`` in the
+    code under test does not hide it). Tests that mock these themselves are
+    unaffected; a test's own monkeypatch replaces this one.
+    """
+    if live_tests_enabled(request.config):
+        return
+
+    def blocked_db(*_args: Any, **_kwargs: Any) -> None:
+        """Stand-in for psycopg connection entry points."""
+        _live_access_failure("PostgreSQL database", "requires_database")
+
+    monkeypatch.setattr(psycopg, "connect", blocked_db)
+    monkeypatch.setattr(psycopg.Connection, "connect", blocked_db)
+    monkeypatch.setattr(psycopg_pool.ConnectionPool, "__init__", blocked_db)
+
+    # Imported here so that loading conftest does not import bmlibrarian.
+    from bmlibrarian.llm.constants import DEFAULT_OLLAMA_HOST
+
+    # shortcut: only Ollama on the default port is blocked; a test reaching a
+    # remote OLLAMA_HOST still gets through. Upgrade if such a test turns up.
+    ollama_port = urlsplit(DEFAULT_OLLAMA_HOST).port
+    real_connect = socket.socket.connect
+
+    def guarded_connect(sock: socket.socket, address: Any) -> None:
+        """``socket.connect`` that refuses the local Ollama port."""
+        if isinstance(address, tuple) and len(address) >= 2 and address[1] == ollama_port:
+            _live_access_failure("Ollama server", "requires_ollama")
+        real_connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+
+
+# Modules that bind list_ollama_models at import; the others look it up in
+# bmlibrarian.llm when called.
+MODEL_LIST_IMPORTERS = (
+    "bmlibrarian.llm",
+    "bmlibrarian.gui.qt.plugins.configuration.config_tab",
+    "bmlibrarian.gui.qt.plugins.settings.plugin",
+)
+OFFLINE_MODELS = ["gpt-oss:20b", "medgemma4B_it_q8:latest"]
+
+
+@pytest.fixture
+def offline_model_list(monkeypatch: pytest.MonkeyPatch) -> List[str]:
+    """Make GUI model pickers list ``OFFLINE_MODELS`` instead of asking Ollama."""
+    for module in MODEL_LIST_IMPORTERS:
+        monkeypatch.setattr(f"{module}.list_ollama_models", lambda *_a, **_k: list(OFFLINE_MODELS))
+    return OFFLINE_MODELS
 
 
 @pytest.fixture

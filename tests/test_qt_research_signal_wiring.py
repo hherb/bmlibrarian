@@ -9,6 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# The settings/configuration tabs list Ollama models when built.
+pytestmark = pytest.mark.usefixtures("offline_model_list")
+
 try:
     from PySide6.QtWidgets import QApplication
     HAS_QT = True
