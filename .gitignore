@@ -55,3 +55,4 @@ rust/target/
 
 # Brainstorming companion mockups
 .superpowers/
+rust/pgdist/out/
