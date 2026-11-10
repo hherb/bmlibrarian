@@ -390,6 +390,9 @@ value — pick one, or pull an item from ROADMAP.md:
      `rust/bml-setup/pgdist-release.json`, add test
      `release_pins_every_target`, and verify `bml setup` (fresh
      `--config-dir`, skip autostart/ollama/models/embedding-model) on the Mac.
+     Fold in the deferred review minors, #416, and drop the "Not available
+     yet" note from `doc/users/bml_setup_guide.md`. If the PR's Windows
+     pgdist job failed, fix `build.sh` first (its Windows path is unverified).
   2. Then pieces 2–6 of the design, each with its own plan: `bml-db` + schema
      (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
      pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are
