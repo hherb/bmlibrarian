@@ -13,6 +13,7 @@ guide: `doc/users/bml_setup_guide.md`.
 |---|---|
 | `lib.rs` | `StepId`, `StepEvent`, `StepOutcome`, `SetupError` |
 | `runner.rs` | `SetupPlan`, `DatabasePlan`, `run_setup`, `run_step`, `should_run`, `depends_on` |
+| `pgdist.rs` | the bundled PostgreSQL: pinned release, host target, atomic install (`ensure_pgdist`, `install_from_archive`) |
 | `steps.rs` | One function per step; each checks first, acts only when needed |
 | `hardware.rs` | Pure RAM/disk verdicts (`MIN_RAM_BYTES`, model sizes) |
 | `models.rs` | Approved-model plan: `gpt-oss:20b`; `medgemma1.5:4b-it-q8_0` pulled then `/api/copy` to `medgemma4B_it_q8:latest` |
@@ -97,6 +98,15 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   the llama-free `model-download` feature is in bmlib PR hherb/bmlib#703. When
   bmlib 0.3.1 is on crates.io, switch to the version dependency and drop the rev.
 - Approved models are fixed by policy; never substitute.
+- **PostgreSQL bundle (pgdist)**: `bml-setup/pgdist-release.json` pins the
+  published `pgdist-<version>` release (asset name, size and sha256 per
+  target), embedded at build time. `DatabasePlan::Bundled` (the CLI default)
+  resumes a saved server, else `pgdist::ensure_pgdist` downloads the asset
+  under the download lock, unpacks it with the system `tar` into
+  `<config>/pgdist/.<version>.partial` and renames it to
+  `<config>/pgdist/<version>` once its `pgdist.json` names that version and
+  target; then `init` runs with `pg/bin` and `ext/`. Building and bumping the
+  bundle: `doc/developers/pgdist.md`.
 
 ## Not verified
 
