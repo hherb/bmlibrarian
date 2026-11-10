@@ -6,6 +6,7 @@ pub mod hardware;
 pub mod models;
 pub mod ollama;
 pub mod ollama_install;
+pub mod pgdist;
 pub mod runner;
 mod steps;
 
