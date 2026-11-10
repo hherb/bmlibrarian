@@ -19,6 +19,9 @@ THESEUS_REPO="theseus-rs/postgresql-binaries"
 
 die() { echo "build.sh: $*" >&2; exit 1; }
 
+# jq -r without the carriage returns Windows' native jq.exe adds.
+jqr() { jq -r "$@" | tr -d '\r'; }
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -32,10 +35,10 @@ fetch() {
 }
 
 jq -e --arg t "$TARGET" '.targets[$t]' "$INPUTS" >/dev/null || die "unknown target $TARGET"
-VERSION="$(jq -r .version "$INPUTS")"
+VERSION="$(jqr .version "$INPUTS")"
 NAME="bml-pgdist-$VERSION-$TARGET"
 ROOT="$OUT/$NAME"
-input() { jq -r --arg t "$TARGET" ".targets[\$t]$1" "$INPUTS"; }
+input() { jqr --arg t "$TARGET" ".targets[\$t]$1" "$INPUTS"; }
 
 rm -rf "$WORK" "$ROOT"
 mkdir -p "$WORK" "$ROOT/ext/lib/postgresql" "$ROOT/ext/share/postgresql/extension" "$ROOT/notices"
@@ -76,11 +79,15 @@ esac
 
 # --- pgvector (from source) --------------------------------------------------
 PGV="$WORK/pgvector"
-git clone -q --depth 1 --branch "$(jq -r .pgvector.tag "$INPUTS")" "$(jq -r .pgvector.repo "$INPUTS")" "$PGV"
-[ "$(git -C "$PGV" rev-parse HEAD)" = "$(jq -r .pgvector.commit "$INPUTS")" ] || die "pgvector tag does not match the pinned commit"
+git clone -q --depth 1 --branch "$(jqr .pgvector.tag "$INPUTS")" "$(jqr .pgvector.repo "$INPUTS")" "$PGV"
+[ "$(git -C "$PGV" rev-parse HEAD)" = "$(jqr .pgvector.commit "$INPUTS")" ] || die "pgvector tag does not match the pinned commit"
 case "$TARGET" in
   *-windows-msvc)
-    (cd "$PGV" && PGROOT="$(cygpath -w "$PG")" nmake /nologo /F Makefile.win)
+    # MSVC's link.exe must come before Git's /usr/bin/link; nmake's switches
+    # are written with '-' and path conversion is off, or Git Bash would turn
+    # '/F' into a drive path.
+    PATH="$(dirname "$(command -v cl)"):$PATH"
+    (cd "$PGV" && PGROOT="$(cygpath -w "$PG")" MSYS_NO_PATHCONV=1 nmake -nologo -f Makefile.win)
     cp "$PGV/vector.dll" "$ROOT/ext/lib/postgresql/" ;;
   *-apple-darwin)
     # The bundle was configured --with-llvm and against the build machine's
@@ -114,9 +121,9 @@ if [ -n "$KIND" ]; then
     *) die "unknown pg_search kind $KIND" ;;
   esac
   mkdir -p "$ROOT/notices/pg_search"
-  fetch "$(jq -r .pg_search_license.url "$INPUTS")" "$ROOT/notices/pg_search/LICENSE" "$(jq -r .pg_search_license.sha256 "$INPUTS")"
+  fetch "$(jqr .pg_search_license.url "$INPUTS")" "$ROOT/notices/pg_search/LICENSE" "$(jqr .pg_search_license.sha256 "$INPUTS")"
   printf 'pg_search is licensed under the GNU AGPL-3.0.\nThe exact source of this build: %s\n' \
-    "$(jq -r .pg_search_source "$INPUTS")" > "$ROOT/notices/pg_search/SOURCE.txt"
+    "$(jqr .pg_search_source "$INPUTS")" > "$ROOT/notices/pg_search/SOURCE.txt"
 fi
 
 # --- contents manifest and archive -------------------------------------------

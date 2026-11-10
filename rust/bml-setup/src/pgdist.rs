@@ -87,24 +87,38 @@ pub fn bundled_release() -> Result<PgdistRelease, SetupError> {
     serde_json::from_str(RELEASE_JSON).map_err(|e| other(format!("The built-in list of database bundles is unreadable ({e}); this is a bug in this build of bml.")))
 }
 
-/// The bundle target for an operating system and CPU (Rust's `OS`/`ARCH`
-/// names), or `None` where no bundle is built.
+/// The bundle target for an operating system, CPU and C library (Rust's
+/// `OS`, `ARCH` and `target_env` names), or `None` where no bundle is built.
+/// The Linux bundles need glibc, so a musl build gets none.
 #[must_use]
-pub fn target_for(os: &str, arch: &str) -> Option<&'static str> {
-    match (os, arch) {
-        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
-        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
-        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+pub fn target_for(os: &str, arch: &str, env: &str) -> Option<&'static str> {
+    match (os, arch, env) {
+        ("macos", "aarch64", _) => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64", _) => Some("x86_64-apple-darwin"),
+        ("windows", "x86_64", _) => Some("x86_64-pc-windows-msvc"),
+        ("linux", "x86_64", "gnu") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64", "gnu") => Some("aarch64-unknown-linux-gnu"),
         _ => None,
+    }
+}
+
+/// The C library this bml was built for, as Rust's `target_env` names it.
+fn host_env() -> &'static str {
+    if cfg!(target_env = "gnu") {
+        "gnu"
+    } else if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "msvc") {
+        "msvc"
+    } else {
+        ""
     }
 }
 
 /// The bundle target of this computer.
 #[must_use]
 pub fn host_target() -> Option<&'static str> {
-    target_for(std::env::consts::OS, std::env::consts::ARCH)
+    target_for(std::env::consts::OS, std::env::consts::ARCH, host_env())
 }
 
 /// What to tell someone for whose computer no bundle is published.
@@ -351,22 +365,27 @@ mod tests {
 
     #[test]
     fn targets_map_to_bundles() {
-        assert_eq!(target_for("macos", "aarch64"), Some("aarch64-apple-darwin"));
-        assert_eq!(target_for("macos", "x86_64"), Some("x86_64-apple-darwin"));
-        assert_eq!(
-            target_for("windows", "x86_64"),
-            Some("x86_64-pc-windows-msvc")
-        );
-        assert_eq!(
-            target_for("linux", "x86_64"),
-            Some("x86_64-unknown-linux-gnu")
-        );
-        assert_eq!(
-            target_for("linux", "aarch64"),
-            Some("aarch64-unknown-linux-gnu")
-        );
-        assert_eq!(target_for("windows", "aarch64"), None);
-        assert_eq!(target_for("freebsd", "x86_64"), None);
+        let cases = [
+            (("macos", "aarch64", ""), Some("aarch64-apple-darwin")),
+            (("macos", "x86_64", ""), Some("x86_64-apple-darwin")),
+            (
+                ("windows", "x86_64", "msvc"),
+                Some("x86_64-pc-windows-msvc"),
+            ),
+            (("linux", "x86_64", "gnu"), Some("x86_64-unknown-linux-gnu")),
+            (
+                ("linux", "aarch64", "gnu"),
+                Some("aarch64-unknown-linux-gnu"),
+            ),
+            // A musl bml most likely runs where glibc is missing (Alpine),
+            // and the Linux bundles need glibc.
+            (("linux", "x86_64", "musl"), None),
+            (("windows", "aarch64", "msvc"), None),
+            (("freebsd", "x86_64", ""), None),
+        ];
+        for ((os, arch, env), expected) in cases {
+            assert_eq!(target_for(os, arch, env), expected, "{os} {arch} {env}");
+        }
     }
 
     #[test]

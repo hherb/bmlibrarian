@@ -47,6 +47,11 @@ Useful options:
 
 ## Choosing a database
 
+> **Not available yet (2026-11-11):** the ready-made database below is built
+> but not yet published, so until a later `bml` release `bml setup` without
+> `--pg-bindir` or `--existing-server` stops at the Database step with a
+> message saying so. Use `--pg-bindir` (below) meanwhile.
+
 **A private database (default).** With no database options, setup
 downloads BMLibrarian's own PostgreSQL 18 (with the `vector` extension, and
 `pg_search` on Apple-silicon Macs and Linux) and creates a database for

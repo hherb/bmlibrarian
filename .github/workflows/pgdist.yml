@@ -48,7 +48,7 @@ jobs:
       - name: Smoke-test the bundle
         working-directory: rust
         run: |
-          root="$PWD/pgdist/out/bml-pgdist-$(jq -r .version pgdist/inputs.json)-${{ matrix.target }}"
+          root="$PWD/pgdist/out/bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Only the extension smoke test: the rest of the ignored suite is
             # not yet verified on Windows (#397).
