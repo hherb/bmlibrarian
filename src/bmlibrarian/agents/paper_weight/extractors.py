@@ -111,17 +111,21 @@ DEFAULT_STUDY_TYPE_HIERARCHY = {
 # Score for a study type that cannot be determined from the text (neutral)
 UNKNOWN_STUDY_TYPE_SCORE = 5.0
 
-# Sample size regex patterns
+# A participant count, with or without thousands separators ("450", "1,234");
+# never starts mid-number, so "In 2019,200 patients" reads 200, not 19,200
+SAMPLE_SIZE_NUMBER = r'(?<!\d)(\d{1,3}(?:,\d{3})+(?!\d)|\d+)'
+
+# Sample size regex patterns (group 1 is SAMPLE_SIZE_NUMBER)
 SAMPLE_SIZE_PATTERNS = [
-    r'n\s*=\s*(\d+)',  # n = 450
-    r'N\s*=\s*(\d+)',  # N = 450
-    r'(\d+)\s+participants',  # 450 participants
-    r'(\d+)\s+subjects',  # 450 subjects
-    r'(\d+)\s+patients',  # 450 patients
-    r'sample\s+size\s+of\s+(\d+)',  # sample size of 450
-    r'total\s+of\s+(\d+)\s+(?:participants|subjects|patients)',  # total of 450 participants
-    r'enrolled\s+(\d+)\s+(?:participants|subjects|patients)',  # enrolled 450 participants
-    r'recruited\s+(\d+)\s+(?:participants|subjects|patients)',  # recruited 450 participants
+    r'n\s*=\s*' + SAMPLE_SIZE_NUMBER,  # n = 450
+    r'N\s*=\s*' + SAMPLE_SIZE_NUMBER,  # N = 450
+    SAMPLE_SIZE_NUMBER + r'\s+participants',  # 450 participants
+    SAMPLE_SIZE_NUMBER + r'\s+subjects',  # 450 subjects
+    SAMPLE_SIZE_NUMBER + r'\s+patients',  # 450 patients
+    r'sample\s+size\s+of\s+' + SAMPLE_SIZE_NUMBER,  # sample size of 450
+    r'total\s+of\s+' + SAMPLE_SIZE_NUMBER + r'\s+(?:participants|subjects|patients)',  # total of 450 participants
+    r'enrolled\s+' + SAMPLE_SIZE_NUMBER + r'\s+(?:participants|subjects|patients)',  # enrolled 450 participants
+    r'recruited\s+' + SAMPLE_SIZE_NUMBER + r'\s+(?:participants|subjects|patients)',  # recruited 450 participants
 ]
 
 # Power calculation keywords
@@ -220,7 +224,7 @@ def find_sample_size(text: str, min_n: int = 5, max_n: int = 1000000) -> Optiona
     for pattern in SAMPLE_SIZE_PATTERNS:
         matches = re.finditer(pattern, text, re.IGNORECASE)
         for match in matches:
-            size = int(match.group(1))
+            size = int(match.group(1).replace(',', ''))
             # Filter out unrealistic values
             if min_n <= size <= max_n:
                 found_sizes.append(size)
@@ -568,6 +572,7 @@ __all__ = [
     'DEFAULT_STUDY_TYPE_HIERARCHY',
     'STUDY_TYPE_EXCLUSIONS',
     'EXCLUSION_CONTEXT_WINDOW',
+    'SAMPLE_SIZE_NUMBER',
     'SAMPLE_SIZE_PATTERNS',
     'POWER_CALCULATION_KEYWORDS',
     'CI_PATTERNS',

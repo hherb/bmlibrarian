@@ -138,6 +138,22 @@ class TestFindSampleSize:
         size = find_sample_size(text, max_n=1000000)
         assert size is None
 
+    @pytest.mark.parametrize("text, expected", [
+        ("We enrolled 1,234 patients.", 1234),
+        ("N=1,234", 1234),
+        ("a total of 12,000 participants", 12000),
+        ("registry of 123,456 subjects", 123456),
+        # Not a separator: four digits after the comma, or a space after it
+        ("N=1,2345", None),
+        ("N=12, 345 patients", 345),
+        # A match never starts mid-number ("2019,200" is a year and a count)
+        ("In 2019,200 patients were enrolled", 200),
+        ("1234,567 patients", 567),
+    ])
+    def test_thousands_separators(self, text: str, expected: int | None) -> None:
+        """A count with thousands separators is read whole (#358)."""
+        assert find_sample_size(text) == expected
+
 
 class TestCalculateSampleSizeScore:
     """Tests for calculate_sample_size_score function."""
