@@ -12,8 +12,10 @@ Uses DatabaseManager for PostgreSQL connectivity (golden rule #5).
 
 import json
 import logging
-from typing import Optional, Dict, List
+from typing import Iterable, Optional, Dict, List
 
+from .extractors import DEFAULT_STUDY_TYPE_HIERARCHY
+from .llm_assessors import MQ_COMPONENTS, ROB_COMPONENTS
 from .models import (
     AssessmentDetail,
     DimensionScore,
@@ -52,12 +54,28 @@ PLACEHOLDER_REASONING_PREFIXES = (
     'LLM extraction failed',
     'No document text available for LLM extraction',
 )
+# Study type a reply may give besides a hierarchy key; pre-#349 rows also hold
+# off-hierarchy types ("cohort study"), which were scored a neutral 5.0
+UNKNOWN_STUDY_TYPE = 'unknown'
+# Pre-#349 MQ/RoB rows were written per reply key, so a malformed reply left a
+# component set other than the one the prompt asks for
+EXPECTED_COMPONENTS = {
+    DIMENSION_METHODOLOGICAL_QUALITY: frozenset(MQ_COMPONENTS),
+    DIMENSION_RISK_OF_BIAS: frozenset(ROB_COMPONENTS),
+}
+# Reasoning of MQ/RoB rows taken from a StudyAssessmentAgent result, which
+# uses its own component names and is exempt from EXPECTED_COMPONENTS
+STUDY_ASSESSMENT_REASONING_PREFIXES = (
+    'Extracted from StudyAssessmentAgent',
+    'Estimated from StudyAssessmentAgent',
+)
 
 
 def get_cached_assessment(
     document_id: int,
     version: str,
     db_manager: Optional[DatabaseManager] = None,
+    study_types: Optional[Iterable[str]] = None,
 ) -> Optional[PaperWeightResult]:
     """
     Retrieve cached assessment from database.
@@ -68,11 +86,14 @@ def get_cached_assessment(
         document_id: Database ID of document
         version: Assessor version to match
         db_manager: Database to use (default: the global manager)
+        study_types: Study types of the configured hierarchy, valid in a
+            cached row besides DEFAULT_STUDY_TYPE_HIERARCHY's
 
     Returns:
         PaperWeightResult if cached, None otherwise (also when the cached row
-        holds a failed assessment's placeholder scores, see
-        ``is_failure_placeholder``, so the caller re-assesses and overwrites it)
+        holds a failed or malformed assessment's placeholder scores, see
+        ``holds_failure_placeholder``, so the caller re-assesses and
+        overwrites it)
 
     Raises:
         Exception: Database errors are logged and re-raised, so callers can
@@ -124,7 +145,7 @@ def get_cached_assessment(
 
                 details = cur.fetchall()
 
-                if any(is_failure_placeholder(d) for d in details):
+                if holds_failure_placeholder(details, study_types):
                     logger.warning(
                         f"Ignoring cached assessment {assessment_id} of document "
                         f"{document_id}: it holds placeholder scores from a failed "
@@ -156,6 +177,51 @@ def is_failure_placeholder(detail_row: tuple) -> bool:
         PLACEHOLDER_MARKER in (dimension, component)
         or extracted_value == PLACEHOLDER_VALUE
         or (reasoning or '').startswith(PLACEHOLDER_REASONING_PREFIXES)
+    )
+
+
+def holds_failure_placeholder(
+    detail_rows: List[tuple],
+    study_types: Optional[Iterable[str]] = None,
+) -> bool:
+    """
+    Whether a cached assessment's audit trail shows pre-#349 placeholder scores.
+
+    Besides the failure markers of ``is_failure_placeholder``, catches the
+    malformed replies that were scored without a marker: an off-hierarchy
+    study type, and an LLM methodological-quality or risk-of-bias reply whose
+    components differ from the ones the prompt asks for. A reply that lacked
+    the ``study_type``/``sample_size`` key looks like a genuine answer and is
+    not caught (#357).
+
+    Args:
+        detail_rows: (dimension, component, extracted_value,
+            score_contribution, evidence_text, reasoning) rows of one
+            assessment from paper_weights.assessment_details
+        study_types: Study types of the configured hierarchy, valid besides
+            DEFAULT_STUDY_TYPE_HIERARCHY's and 'unknown'
+
+    Returns:
+        True if the assessment must be re-run instead of served from the cache
+    """
+    if any(is_failure_placeholder(row) for row in detail_rows):
+        return True
+    known_types = {*DEFAULT_STUDY_TYPE_HIERARCHY, *(study_types or ()), UNKNOWN_STUDY_TYPE}
+    components: Dict[str, set] = {dimension: set() for dimension in EXPECTED_COMPONENTS}
+    from_study_assessment = set()
+    for dimension, component, extracted_value, _, _, reasoning in detail_rows:
+        if (dimension == DIMENSION_STUDY_DESIGN and component == 'study_type'
+                and extracted_value not in known_types):
+            return True
+        if dimension in components:
+            components[dimension].add(component)
+            if (reasoning or '').startswith(STUDY_ASSESSMENT_REASONING_PREFIXES):
+                from_study_assessment.add(dimension)
+    # An empty set is not flagged: a study assessment with no stated risks writes no rows
+    return any(
+        found and found != EXPECTED_COMPONENTS[dimension]
+        for dimension, found in components.items()
+        if dimension not in from_study_assessment
     )
 
 
@@ -824,6 +890,7 @@ __all__ = [
     'search_documents',
     'semantic_search_documents',
     'get_recent_assessments',
+    'holds_failure_placeholder',
     'get_document_for_viewer',
     'get_document_metadata',
     'SEARCH_RESULT_LIMIT',

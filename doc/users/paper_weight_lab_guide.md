@@ -207,9 +207,18 @@ Assessments stored before this fix may contain such placeholder scores.
 Their audit trail says "LLM assessment failed", "LLM extraction failed" or
 "No document text available for LLM extraction" (the last also appeared
 when a database error hid the document's text), or has an "error" entry.
-Such a stored assessment is no longer reused: **Assess Paper Weight** (and
-a systematic review) re-assesses the paper and replaces it. Until then it
-may still appear in **Recent Assessments** with its old weight (#357).
+Older assessments without such a note are also re-assessed when their
+study type is not one of the known types (for example "cohort study"), or
+when the methodological-quality or risk-of-bias part lists other items
+than the ones asked for. Such a stored assessment is no longer reused:
+**Assess Paper Weight** (and a systematic review) re-assesses the paper and
+replaces it. Until then it may still appear in **Recent Assessments** with
+its old weight.
+
+Sample sizes written with thousands separators ("1,234 patients") are read
+whole since November 2026; before, they were cut at the comma (234).
+Assessments stored before then keep their old sample-size score until the
+paper is re-assessed.
 
 ### LLM Timeout
 If assessments take too long or timeout:

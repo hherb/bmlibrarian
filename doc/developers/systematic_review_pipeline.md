@@ -128,8 +128,8 @@ quality reads `quality_score`. Methodological rigor is the worst rated of
 the five `*_bias_risk` fields (`BIAS_RISK_SCORES`: low 8, moderate 5,
 high 2; any other rating, e.g. "unclear", is skipped and an unexpected
 one logged). Sample size parses the free-text `sample_size` with the
-paper-weight `find_sample_size()` patterns (thousands separators stripped
-first; a bare number or JSON integer is accepted; counts from
+paper-weight `find_sample_size()` patterns (which read thousands
+separators, "1,234"; a bare number or JSON integer is accepted; counts from
 `SAMPLE_SIZE_MIN_N` 1 to `SAMPLE_SIZE_MAX_N` 10^9) and scores it in
 `SAMPLE_SIZE_SCORE_STEPS`. A count of studies (`STUDY_COUNT_PATTERN`:
 "N=8 studies", "18 RCTs", as reviews report) is not a participant count
@@ -168,11 +168,17 @@ dict can't tell placeholder scores (stored before #349) from real ones. The
 paper weight agent's own cache (`paper_weights.assessments`, keyed by
 `PaperWeightAssessmentAgent.VERSION`) is used instead; `get_cached_assessment`
 treats rows whose audit trail carries a failure marker
-(`db.is_failure_placeholder`) as not cached, so they are re-assessed and
-overwritten (#351). `force_recompute` is passed on as `force_reassess`.
-`ResultsCacheManager` has no paper-weight getter. A placeholder without such
-a marker (written before #349's scoring fixes under the same version) is
-still served: #357.
+(`db.is_failure_placeholder`, #351) or a malformed reply scored before #349
+without one (`db.holds_failure_placeholder`, #357: a `study_type` outside
+`DEFAULT_STUDY_TYPE_HIERARCHY`, the configured hierarchy and `'unknown'`; an
+MQ/RoB dimension whose components differ from `MQ_COMPONENTS`/`ROB_COMPONENTS`,
+unless its rows came from a study assessment) as not cached, so they are
+re-assessed and overwritten. `force_recompute` is passed on as
+`force_reassess`. `ResultsCacheManager` has no paper-weight getter. Still
+served: a pre-#349 reply that lacked the `study_type` or `sample_size` key
+(it reads as "unknown" / "not reported"), and sample sizes cut at a
+thousands separator before #358 (`VERSION` was not bumped, owner decision
+2026-11-10; re-assess with `force_reassess`).
 
 ## Run outcome and evaluation-run status
 

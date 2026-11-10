@@ -540,7 +540,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Workflow (LLM-first mode - default):
             1. Check cache (unless force_reassess=True)
             2. If cached, version matches and the row is not a pre-#349
-               failure placeholder (db.is_failure_placeholder), return it
+               failure placeholder (db.holds_failure_placeholder), return it
             3. Otherwise, perform full assessment:
                a. Fetch document from database
                b. Ensure embeddings exist (create if full_text available but no chunks)
@@ -559,7 +559,10 @@ class PaperWeightAssessmentAgent(BaseAgent):
         try:
             # Check cache
             if not force_reassess:
-                cached = get_cached_assessment(document_id, self.version, db_manager=self.db_manager)
+                cached = get_cached_assessment(
+                    document_id, self.version, db_manager=self.db_manager,
+                    study_types=self.config.get('study_type_hierarchy'),
+                )
                 if cached:
                     logger.info(f"Using cached assessment for document {document_id} (version {self.version})")
                     return cached

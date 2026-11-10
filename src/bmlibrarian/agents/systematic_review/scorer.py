@@ -52,7 +52,7 @@ from .config import (
 )
 from .exceptions import EvaluationSaveError, ScoringError
 from .filters import InclusionEvaluator
-from ..paper_weight.extractors import find_sample_size
+from ..paper_weight.extractors import SAMPLE_SIZE_NUMBER, find_sample_size
 
 if TYPE_CHECKING:
     from ..scoring_agent import DocumentScoringAgent
@@ -100,8 +100,8 @@ SAMPLE_SIZE_TOP_SCORE = 10.0
 # (find_sample_size's own defaults, 5 to 1,000,000, would drop both ends).
 SAMPLE_SIZE_MIN_N = 1
 SAMPLE_SIZE_MAX_N = 1_000_000_000
-# Thousands separator inside a number ("1,234 patients")
-THOUSANDS_SEPARATOR_PATTERN = re.compile(r"(?<=\d),(?=\d{3}\b)")
+# A bare participant count ("450", "1,234")
+BARE_COUNT_PATTERN = re.compile(SAMPLE_SIZE_NUMBER)
 # A count of studies rather than participants ("N=8 studies", "18 RCTs",
 # "44 systematic reviews", "12 included trials")
 STUDY_COUNT_PATTERN = re.compile(
@@ -1183,10 +1183,10 @@ class CompositeScorer:
             text = str(text)  # a JSON number from the LLM despite the str field
         if not isinstance(text, str):
             return None
-        text = THOUSANDS_SEPARATOR_PATTERN.sub("", text).strip()
+        text = text.strip()
         if STUDY_COUNT_PATTERN.search(text):
             return None
-        if text.isdigit():
+        if BARE_COUNT_PATTERN.fullmatch(text):
             text = f"n={text}"
         n = find_sample_size(text, min_n=SAMPLE_SIZE_MIN_N, max_n=SAMPLE_SIZE_MAX_N)
         if n is None:

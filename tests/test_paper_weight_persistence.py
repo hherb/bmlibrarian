@@ -52,7 +52,7 @@ def agent():
 def sample_result():
     """Create sample result for testing"""
     study_design = DimensionScore('study_design', 8.0)
-    study_design.add_detail('study_type', 'RCT', 8.0, reasoning='RCT detected')
+    study_design.add_detail('study_type', 'rct', 8.0, reasoning='RCT detected')
 
     sample_size = DimensionScore('sample_size', 7.5)
     sample_size.add_detail('extracted_n', '450', 5.5, reasoning='Log10(450) * 2 = 5.3')
@@ -69,6 +69,8 @@ def sample_result():
         evidence='double-blind',
         reasoning='Double-blind design'
     )
+    for component in MQ_COMPONENTS[2:]:
+        methodological_quality.add_detail(component, '0.625', 0.625, reasoning='Partly reported')
 
     risk_of_bias = DimensionScore('risk_of_bias', 7.0)
     risk_of_bias.add_detail(
@@ -76,6 +78,8 @@ def sample_result():
         evidence='random sampling',
         reasoning='Low risk of selection bias'
     )
+    for component in ROB_COMPONENTS[1:]:
+        risk_of_bias.add_detail(component, 'low (1.5)', 1.5, reasoning='Low risk')
 
     replication_status = DimensionScore('replication_status', 0.0)
     replication_status.add_detail(
@@ -100,7 +104,7 @@ def sample_result():
             'risk_of_bias': 0.20,
             'replication_status': 0.10
         },
-        study_type='RCT',
+        study_type='rct',
         sample_size_n=450
     )
 
@@ -173,7 +177,7 @@ class TestResultSerialization:
         assert result_dict['risk_of_bias_score'] == 7.0
         assert result_dict['replication_status_score'] == 0.0
         assert result_dict['final_weight'] == 7.2
-        assert result_dict['study_type'] == 'RCT'
+        assert result_dict['study_type'] == 'rct'
         assert result_dict['sample_size'] == 450
 
     def test_get_all_details(self, sample_result):
@@ -197,7 +201,7 @@ class TestResultSerialization:
 
         assert '# Paper Weight Assessment Report' in markdown
         assert 'Document ID:** 99999' in markdown
-        assert 'Study Type:** RCT' in markdown
+        assert 'Study Type:** rct' in markdown
         assert 'Sample Size:** 450' in markdown
         assert 'Final Weight: 7.20/10' in markdown
         assert '### Study Design: 8.00/10' in markdown
@@ -732,6 +736,48 @@ class TestPlaceholderCacheRows:
         with self._db(details):
             cached = get_cached_assessment(42, '1.0.0')
         assert cached is not None and cached.final_weight == 3.5
+
+    @staticmethod
+    def _components(dimension: str, names: tuple, reasoning: str = 'LLM') -> list:
+        """Detail rows of one MQ/RoB dimension with the given components."""
+        return [(dimension, name, '1.0', 1.0, None, reasoning) for name in names]
+
+    @pytest.mark.parametrize('details', [
+        # Off-hierarchy study type, scored a neutral 5.0 before #349
+        [('study_design', 'study_type', 'cohort study', 5.0, None, 'LLM extraction')],
+        # MQ reply missing a component (it counted as 0)
+        _components('methodological_quality', MQ_COMPONENTS[1:]),
+        # RoB reply with an extra key (it added points)
+        _components('risk_of_bias', ROB_COMPONENTS + ('funding_bias',)),
+    ], ids=['off_hierarchy_study_type', 'mq_missing_component', 'rob_extra_component'])
+    def test_malformed_unmarked_row_is_not_served(self, details: list) -> None:
+        """Pre-#349 malformed replies stored without a failure marker are re-assessed (#357)."""
+        with self._db([self.REAL_DETAIL, *details]):
+            assert get_cached_assessment(42, '1.0.0') is None
+
+    def test_well_formed_rows_are_served(self) -> None:
+        """Full LLM component sets and study-assessment rows stay cached."""
+        study_assessment_mq = [
+            ('methodological_quality', name, 'yes', 2.0, None,
+             f'{verb} from StudyAssessmentAgent: ...')
+            for name, verb in (('randomization', 'Extracted'), ('blinding', 'Extracted'),
+                               ('other_components', 'Estimated'))
+        ]
+        details = [
+            self.REAL_DETAIL,
+            *study_assessment_mq,
+            *self._components('risk_of_bias', ROB_COMPONENTS),
+        ]
+        with self._db(details):
+            assert get_cached_assessment(42, '1.0.0') is not None
+
+    def test_configured_study_type_is_served(self) -> None:
+        """A study type of the configured hierarchy is not off-hierarchy."""
+        details = [('study_design', 'study_type', 'n_of_1', 9.0, None, 'LLM extraction')]
+        with self._db(details):
+            assert get_cached_assessment(42, '1.0.0') is None
+        with self._db(details):
+            assert get_cached_assessment(42, '1.0.0', study_types={'n_of_1': 9.0}) is not None
 
     def test_agent_version_is_the_class_version(
         self, monkeypatch: pytest.MonkeyPatch
