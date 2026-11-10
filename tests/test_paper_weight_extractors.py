@@ -146,6 +146,9 @@ class TestFindSampleSize:
         # Not a separator: four digits after the comma, or a space after it
         ("N=1,2345", None),
         ("N=12, 345 patients", 345),
+        # A match never starts mid-number ("2019,200" is a year and a count)
+        ("In 2019,200 patients were enrolled", 200),
+        ("1234,567 patients", 567),
     ])
     def test_thousands_separators(self, text: str, expected: int | None) -> None:
         """A count with thousands separators is read whole (#358)."""

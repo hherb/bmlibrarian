@@ -213,6 +213,9 @@ class TestAgentPassesItsManager:
 
         for name, mock in mocks.items():
             assert mock.call_args.kwargs.get("db_manager") is manager, name
+        # The configured hierarchy's types are valid in a cached row (#357)
+        cache_kwargs = mocks["get_cached_assessment"].call_args.kwargs
+        assert cache_kwargs["study_types"] == agent.config["study_type_hierarchy"]
 
     def test_validate_extractions(self) -> None:
         """Legacy-mode validation reads chunks via the agent's manager."""

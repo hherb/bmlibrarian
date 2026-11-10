@@ -12,19 +12,21 @@ off new work. Longer-term structural items live in
 
 - **Paper weight: thousands separators; unmarked placeholders not cached**
   (2026-11-10, closes #358, #357; owner decision: no `VERSION` bump, so no
-  full re-run). `extractors.SAMPLE_SIZE_NUMBER` (`\d{1,3}(?:,\d{3})+(?!\d)|\d+`)
+  full re-run). `extractors.SAMPLE_SIZE_NUMBER` (`(?<!\d)(\d{1,3}(?:,\d{3})+(?!\d)|\d+)`)
   is group 1 of every `SAMPLE_SIZE_PATTERNS`, so `find_sample_size` reads
   "1,234 patients" / "N=1,234" whole; the systematic-review scorer's
   `THOUSANDS_SEPARATOR_PATTERN` workaround is gone (`BARE_COUNT_PATTERN`
   accepts a bare "1,234"). `get_cached_assessment` now calls
-  `db.holds_failure_placeholder(details, study_types)`: besides the #351
+  `db.failure_placeholder_reason(details, study_types)` (logged): besides the #351
   markers it refuses a `study_type` outside `DEFAULT_STUDY_TYPE_HIERARCHY`,
   the configured hierarchy (the agent passes `study_type_hierarchy`) and
-  `'unknown'`, and an MQ/RoB dimension whose non-empty component set differs
-  from `MQ_COMPONENTS`/`ROB_COMPONENTS` (rows whose reasoning starts
-  "Extracted/Estimated from StudyAssessmentAgent" are exempt). Still served:
-  pre-#349 replies missing the `study_type`/`sample_size` key (look genuine)
-  and sample sizes cut at a comma before this fix. The lab's Recent
+  `'unknown'`, an assessment with no MQ rows, and an MQ/RoB dimension whose
+  non-empty component set differs from `MQ_COMPONENTS`/`ROB_COMPONENTS` (a
+  dimension with any row whose reasoning starts "Extracted/Estimated from
+  StudyAssessmentAgent" is exempt). Still served: pre-#349 replies missing
+  the `study_type`/`sample_size` key or every `score` (look genuine) and
+  sample sizes cut at a comma by the keyword path (`find_sample_size` runs
+  only with `use_llm_extraction=False`, the default before 2025-11-24). The lab's Recent
   Assessments list still shows placeholder weights: #414. The persistence
   test fixture was itself a malformed shape (`'RCT'`, partial MQ/RoB) and is
   now realistic. Tests: `test_paper_weight_extractors.py::...thousands_separators`,
@@ -421,7 +423,7 @@ value — pick one, or pull an item from ROADMAP.md:
   fetch the same PDF again (owner decision needed: skip fallback, compare
   redirect target, or document).
 - #414 — paper weight lab's Recent Assessments list: label placeholder /
-  old-version assessments (small; reuse `db.holds_failure_placeholder`).
+  old-version assessments (small; reuse `db.failure_placeholder_reason`).
 - #283 — rebuild `pmc_bulk_cli` list/download/sync on the PMC Cloud
   Service S3 inventory (structural; discovery side already ported).
 
@@ -454,7 +456,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-10
-  (#357/#358 branch): **4839 passed, 71 skipped** in about 2 min (hermetic since #334;
+  (#357/#358 branch): **4843 passed, 71 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

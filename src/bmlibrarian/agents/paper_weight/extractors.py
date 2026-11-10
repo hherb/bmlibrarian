@@ -111,8 +111,9 @@ DEFAULT_STUDY_TYPE_HIERARCHY = {
 # Score for a study type that cannot be determined from the text (neutral)
 UNKNOWN_STUDY_TYPE_SCORE = 5.0
 
-# A participant count, with or without thousands separators ("450", "1,234")
-SAMPLE_SIZE_NUMBER = r'(\d{1,3}(?:,\d{3})+(?!\d)|\d+)'
+# A participant count, with or without thousands separators ("450", "1,234");
+# never starts mid-number, so "In 2019,200 patients" reads 200, not 19,200
+SAMPLE_SIZE_NUMBER = r'(?<!\d)(\d{1,3}(?:,\d{3})+(?!\d)|\d+)'
 
 # Sample size regex patterns (group 1 is SAMPLE_SIZE_NUMBER)
 SAMPLE_SIZE_PATTERNS = [

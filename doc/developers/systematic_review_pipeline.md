@@ -169,16 +169,20 @@ paper weight agent's own cache (`paper_weights.assessments`, keyed by
 `PaperWeightAssessmentAgent.VERSION`) is used instead; `get_cached_assessment`
 treats rows whose audit trail carries a failure marker
 (`db.is_failure_placeholder`, #351) or a malformed reply scored before #349
-without one (`db.holds_failure_placeholder`, #357: a `study_type` outside
-`DEFAULT_STUDY_TYPE_HIERARCHY`, the configured hierarchy and `'unknown'`; an
-MQ/RoB dimension whose components differ from `MQ_COMPONENTS`/`ROB_COMPONENTS`,
-unless its rows came from a study assessment) as not cached, so they are
+without one (`db.failure_placeholder_reason`, #357: a `study_type` outside
+`DEFAULT_STUDY_TYPE_HIERARCHY`, the configured hierarchy and `'unknown'`; no
+MQ rows at all; an MQ/RoB dimension whose components differ from
+`MQ_COMPONENTS`/`ROB_COMPONENTS`, unless one of its rows came from a study
+assessment) as not cached, logging the reason,, so they are
 re-assessed and overwritten. `force_recompute` is passed on as
 `force_reassess`. `ResultsCacheManager` has no paper-weight getter. Still
 served: a pre-#349 reply that lacked the `study_type` or `sample_size` key
-(it reads as "unknown" / "not reported"), and sample sizes cut at a
-thousands separator before #358 (`VERSION` was not bumped, owner decision
-2026-11-10; re-assess with `force_reassess`).
+(it reads as "unknown" / "not reported"), one with every component but no
+`score` (each counted 0.0), an LLM RoB reply that wrote no rows, and sample
+sizes cut at a thousands separator by the keyword path (`find_sample_size`,
+`use_llm_extraction=False`, the default before 2025-11-24) before #358
+(`VERSION` was not bumped, owner decision 2026-11-10; re-assess with
+`force_reassess`).
 
 ## Run outcome and evaluation-run status
 

@@ -540,7 +540,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Workflow (LLM-first mode - default):
             1. Check cache (unless force_reassess=True)
             2. If cached, version matches and the row is not a pre-#349
-               failure placeholder (db.holds_failure_placeholder), return it
+               failure placeholder (db.failure_placeholder_reason), return it
             3. Otherwise, perform full assessment:
                a. Fetch document from database
                b. Ensure embeddings exist (create if full_text available but no chunks)

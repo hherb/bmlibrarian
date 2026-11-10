@@ -63,8 +63,9 @@ EXPECTED_COMPONENTS = {
     DIMENSION_METHODOLOGICAL_QUALITY: frozenset(MQ_COMPONENTS),
     DIMENSION_RISK_OF_BIAS: frozenset(ROB_COMPONENTS),
 }
-# Reasoning of MQ/RoB rows taken from a StudyAssessmentAgent result, which
-# uses its own component names and is exempt from EXPECTED_COMPONENTS
+# Reasoning of MQ/RoB rows taken from a StudyAssessmentAgent result, exempt
+# from EXPECTED_COMPONENTS: its MQ rows use their own component names, and it
+# writes only the RoB components the study assessment rated
 STUDY_ASSESSMENT_REASONING_PREFIXES = (
     'Extracted from StudyAssessmentAgent',
     'Estimated from StudyAssessmentAgent',
@@ -92,7 +93,7 @@ def get_cached_assessment(
     Returns:
         PaperWeightResult if cached, None otherwise (also when the cached row
         holds a failed or malformed assessment's placeholder scores, see
-        ``holds_failure_placeholder``, so the caller re-assesses and
+        ``failure_placeholder_reason``, so the caller re-assesses and
         overwrites it)
 
     Raises:
@@ -145,11 +146,12 @@ def get_cached_assessment(
 
                 details = cur.fetchall()
 
-                if holds_failure_placeholder(details, study_types):
+                reason = failure_placeholder_reason(details, study_types)
+                if reason:
                     logger.warning(
                         f"Ignoring cached assessment {assessment_id} of document "
-                        f"{document_id}: it holds placeholder scores from a failed "
-                        f"assessment; re-assessing"
+                        f"{document_id}: placeholder scores from a failed or "
+                        f"malformed assessment ({reason}); re-assessing"
                     )
                     return None
 
@@ -180,19 +182,21 @@ def is_failure_placeholder(detail_row: tuple) -> bool:
     )
 
 
-def holds_failure_placeholder(
+def failure_placeholder_reason(
     detail_rows: List[tuple],
     study_types: Optional[Iterable[str]] = None,
-) -> bool:
+) -> Optional[str]:
     """
-    Whether a cached assessment's audit trail shows pre-#349 placeholder scores.
+    Why a cached assessment's audit trail shows pre-#349 placeholder scores.
 
     Besides the failure markers of ``is_failure_placeholder``, catches the
     malformed replies that were scored without a marker: an off-hierarchy
-    study type, and an LLM methodological-quality or risk-of-bias reply whose
-    components differ from the ones the prompt asks for. A reply that lacked
-    the ``study_type``/``sample_size`` key looks like a genuine answer and is
-    not caught (#357).
+    study type, no methodological-quality rows at all, and an LLM
+    methodological-quality or risk-of-bias reply whose components differ
+    from the ones the prompt asks for. Not caught, because they look like
+    genuine answers (#357): a reply that lacked the ``study_type`` or
+    ``sample_size`` key, one with every expected component but no ``score``
+    (each counted 0.0), and an LLM risk-of-bias reply that wrote no rows.
 
     Args:
         detail_rows: (dimension, component, extracted_value,
@@ -202,27 +206,30 @@ def holds_failure_placeholder(
             DEFAULT_STUDY_TYPE_HIERARCHY's and 'unknown'
 
     Returns:
-        True if the assessment must be re-run instead of served from the cache
+        The reason the assessment must be re-run instead of served from the
+        cache, or None if it can be served
     """
     if any(is_failure_placeholder(row) for row in detail_rows):
-        return True
+        return 'a row marks a failed assessment'
     known_types = {*DEFAULT_STUDY_TYPE_HIERARCHY, *(study_types or ()), UNKNOWN_STUDY_TYPE}
     components: Dict[str, set] = {dimension: set() for dimension in EXPECTED_COMPONENTS}
     from_study_assessment = set()
     for dimension, component, extracted_value, _, _, reasoning in detail_rows:
         if (dimension == DIMENSION_STUDY_DESIGN and component == 'study_type'
                 and extracted_value not in known_types):
-            return True
+            return f"study type {extracted_value!r} is not in the hierarchy"
         if dimension in components:
             components[dimension].add(component)
             if (reasoning or '').startswith(STUDY_ASSESSMENT_REASONING_PREFIXES):
                 from_study_assessment.add(dimension)
-    # An empty set is not flagged: a study assessment with no stated risks writes no rows
-    return any(
-        found and found != EXPECTED_COMPONENTS[dimension]
-        for dimension, found in components.items()
-        if dimension not in from_study_assessment
-    )
+    # Every writer stores MQ rows; a pre-#345 reply without dict values stored none
+    if not components[DIMENSION_METHODOLOGICAL_QUALITY]:
+        return 'it has no methodological quality rows'
+    for dimension, found in components.items():
+        # An empty RoB set is not flagged: a study assessment with no stated risks writes no rows
+        if found and dimension not in from_study_assessment and found != EXPECTED_COMPONENTS[dimension]:
+            return f"its {dimension} components {sorted(found)} differ from the prompt's"
+    return None
 
 
 def _reconstruct_result_from_db(
@@ -890,7 +897,7 @@ __all__ = [
     'search_documents',
     'semantic_search_documents',
     'get_recent_assessments',
-    'holds_failure_placeholder',
+    'failure_placeholder_reason',
     'get_document_for_viewer',
     'get_document_metadata',
     'SEARCH_RESULT_LIMIT',
