@@ -38,6 +38,12 @@ pub enum DatabasePlan {
     Private(InitRequest),
     /// A PostgreSQL server that already exists.
     Existing(ExternalRequest),
+    /// The saved server if there is one, otherwise a private server from the
+    /// bundled PostgreSQL (`pgdist`), with its data in `data_dir`.
+    Bundled {
+        /// Where the private database lives.
+        data_dir: PathBuf,
+    },
 }
 
 /// What to set up.
@@ -178,5 +184,30 @@ mod tests {
             .filter(|e| matches!(e, StepEvent::Finished(..)))
             .count();
         assert_eq!(finished, ALL_STEPS.len());
+    }
+
+    #[test]
+    fn bundled_without_asset_fails_database_and_skips_autostart() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = SetupPlan {
+            config_dir: dir.path().to_path_buf(),
+            database: Some(DatabasePlan::Bundled {
+                data_dir: dir.path().join("pgdata"),
+            }),
+            ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),
+            skip: set(&[StepId::Ollama, StepId::Models, StepId::EmbeddingModel]),
+        };
+        let out = run_setup(&plan, &Fake::new(), &mut |_| {});
+        assert!(!matches!(out[0].1, StepOutcome::Failed(_)), "{:?}", out[0]);
+        assert!(
+            matches!(&out[1].1, StepOutcome::Failed(m) if m.contains("--pg-bindir")),
+            "{:?}",
+            out[1]
+        );
+        assert!(
+            matches!(out[2].1, StepOutcome::Skipped { .. }),
+            "{:?}",
+            out[2]
+        );
     }
 }

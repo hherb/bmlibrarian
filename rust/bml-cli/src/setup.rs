@@ -57,11 +57,12 @@ impl SkipStep {
 /// `bml setup` options.
 #[derive(Args)]
 pub struct SetupArgs {
-    /// Folder with the PostgreSQL 18 tools, to set up a private database.
+    /// Folder with the PostgreSQL 18 tools, to set up a private database from
+    /// them instead of the bundled PostgreSQL.
     #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     pg_bindir: Option<PathBuf>,
     /// Where the private database lives (default: <config folder>/pgdata).
-    #[arg(long, value_name = "DIR", requires = "pg_bindir")]
+    #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     data_dir: Option<PathBuf>,
     /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
     #[arg(long = "extension-dir", value_name = "DIR", requires = "pg_bindir")]
@@ -150,15 +151,18 @@ fn database_plan(
         check_request(&req)?;
         return Ok(Some(DatabasePlan::Existing(req)));
     }
-    Ok(args.pg_bindir.as_ref().map(|bindir| {
-        DatabasePlan::Private(InitRequest {
+    let data_dir = args
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| config_dir.join(DEFAULT_DATA_DIR_NAME));
+    Ok(Some(match &args.pg_bindir {
+        Some(bindir) => DatabasePlan::Private(InitRequest {
             bindir: bindir.clone(),
-            data_dir: args
-                .data_dir
-                .clone()
-                .unwrap_or_else(|| config_dir.join(DEFAULT_DATA_DIR_NAME)),
+            data_dir,
             extension_dirs: args.extension_dirs.clone(),
-        })
+        }),
+        // A saved server is resumed; otherwise the bundled PostgreSQL.
+        None => DatabasePlan::Bundled { data_dir },
     }))
 }
 

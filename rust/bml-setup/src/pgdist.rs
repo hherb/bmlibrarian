@@ -371,6 +371,7 @@ mod tests {
 
     #[test]
     fn installs_atomically() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         let got = install_from_archive(
@@ -390,6 +391,7 @@ mod tests {
 
     #[test]
     fn already_installed_is_found() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         let a = archive(tmp.path(), VERSION, TARGET, true);
@@ -401,6 +403,7 @@ mod tests {
 
     #[test]
     fn leftover_partial_is_replaced() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         let partial = pgdist.join(format!(".{VERSION}{PARTIAL_SUFFIX}"));
@@ -419,6 +422,7 @@ mod tests {
 
     #[test]
     fn mismatched_archive_is_refused() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         let other = "x86_64-pc-windows-msvc";
@@ -437,6 +441,7 @@ mod tests {
 
     #[test]
     fn archive_without_manifest_is_refused() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         assert!(install_from_archive(
@@ -451,6 +456,7 @@ mod tests {
 
     #[test]
     fn foreign_folder_in_place_is_an_error() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let pgdist = tmp.path().join(PGDIST_DIR_NAME);
         std::fs::create_dir_all(pgdist.join(VERSION)).unwrap();
@@ -459,6 +465,7 @@ mod tests {
 
     #[test]
     fn install_refuses_while_another_setup_downloads() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let _held = crate::lock_downloads(tmp.path()).unwrap();
         let err = ensure_pgdist(tmp.path(), &release_with_asset(), TARGET, &mut |_, _| {})
@@ -470,6 +477,7 @@ mod tests {
 
     #[test]
     fn missing_asset_names_the_way_out() {
+        let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
         let mut release = release_with_asset();
         release.assets.clear();

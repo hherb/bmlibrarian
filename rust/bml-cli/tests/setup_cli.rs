@@ -87,13 +87,37 @@ fn pg_bindir_conflicts_with_existing_server() {
 }
 
 #[test]
-fn data_and_extension_dirs_need_pg_bindir() {
+fn extension_dir_needs_pg_bindir() {
     let cfg = tempfile::tempdir().unwrap();
-    for flag in ["--data-dir", "--extension-dir"] {
-        let out = bml(cfg.path(), &["setup", flag, "/x"], None);
-        assert_eq!(out.status.code(), Some(2), "{flag}");
-        assert!(text(&out.stderr).contains("--pg-bindir"), "{flag}");
-    }
+    let out = bml(cfg.path(), &["setup", "--extension-dir", "/x"], None);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("--pg-bindir"));
+}
+
+#[test]
+fn data_dir_without_pg_bindir_is_accepted() {
+    // The data folder of the bundled database; every step that would
+    // download is skipped, so only the argument parsing is under test.
+    let cfg = tempfile::tempdir().unwrap();
+    let data = cfg.path().join("data");
+    let out = bml(
+        cfg.path(),
+        &[
+            "setup",
+            "--data-dir",
+            data.to_str().unwrap(),
+            "--skip",
+            "database",
+            "--skip",
+            "ollama",
+            "--skip",
+            "models",
+            "--skip",
+            "embedding-model",
+        ],
+        None,
+    );
+    assert_ne!(out.status.code(), Some(2), "{}", text(&out.stderr));
 }
 
 #[test]

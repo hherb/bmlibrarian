@@ -14,6 +14,7 @@ use crate::hardware::{disk_warnings, mounts, ram_warning};
 use crate::models::{model_action, ApprovedModel, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
+use crate::pgdist::{bundled_release, ensure_pgdist, host_target, no_bundle_message};
 use crate::runner::{DatabasePlan, SetupPlan};
 use crate::{report_warnings, sweep_stale_parts};
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
@@ -197,27 +198,53 @@ fn database(
             report,
         ))
     };
+    // The saved private server, else the saved existing one, else `None`.
+    let resume_saved = |report: &mut dyn FnMut(StepEvent)| {
+        if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
+            let req = InitRequest {
+                bindir: s.bindir,
+                data_dir: s.data_dir,
+                extension_dirs: s.extension_dirs,
+            };
+            return private(&req, report).map(Some);
+        }
+        match saved_external_request(dir)? {
+            Some(req) => existing(&req, report).map(Some),
+            None => Ok(None),
+        }
+    };
     match &plan.database {
         Some(DatabasePlan::Private(req)) => private(req, report),
         Some(DatabasePlan::Existing(req)) => existing(req, report),
-        None => {
-            if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-                return private(
-                    &InitRequest {
-                        bindir: s.bindir,
-                        data_dir: s.data_dir,
-                        extension_dirs: s.extension_dirs,
-                    },
-                    report,
-                );
+        Some(DatabasePlan::Bundled { data_dir }) => {
+            if let Some(outcome) = resume_saved(report)? {
+                return Ok(outcome);
             }
-            match saved_external_request(dir)? {
-                Some(req) => existing(&req, report),
-                None => Ok(StepOutcome::Failed(
-                    "no database chosen; pass --pg-bindir or --existing-server".into(),
-                )),
+            let Some(target) = host_target() else {
+                return Ok(StepOutcome::Failed(no_bundle_message(None)));
+            };
+            let release = bundled_release()?;
+            if !release.assets.contains_key(target) {
+                return Ok(StepOutcome::Failed(no_bundle_message(Some(target))));
             }
+            let (pg, _) = ensure_pgdist(dir, &release, target, &mut |done, total| {
+                report(StepEvent::Progress {
+                    step: StepId::Database,
+                    detail: "Downloading the database".into(),
+                    done,
+                    total,
+                });
+            })?;
+            let req = InitRequest {
+                bindir: pg.bindir(),
+                data_dir: data_dir.clone(),
+                extension_dirs: vec![pg.extension_dir()],
+            };
+            private(&req, report)
         }
+        None => Ok(resume_saved(report)?.unwrap_or_else(|| {
+            StepOutcome::Failed("no database chosen; pass --pg-bindir or --existing-server".into())
+        })),
     }
 }
 
@@ -225,7 +252,8 @@ fn database(
 fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
     let existing_server = matches!(plan.database, Some(DatabasePlan::Existing(_)))
-        || (plan.database.is_none()
+        // No plan, or the bundled plan, resumes whatever was saved.
+        || (matches!(plan.database, None | Some(DatabasePlan::Bundled { .. }))
             && load_state(dir).map_err(PgServerError::from)?.is_none()
             && load_external_state(dir)
                 .map_err(PgServerError::from)?
@@ -371,6 +399,42 @@ mod tests {
         (200, serde_json::json!({"models": models}).to_string())
     }
 
+    fn bundled(dir: &Path) -> SetupPlan {
+        SetupPlan {
+            database: Some(DatabasePlan::Bundled {
+                data_dir: dir.join("pgdata"),
+            }),
+            ..plan(dir)
+        }
+    }
+
+    #[test]
+    fn bundled_plan_resumes_saved_private_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = bml_pgserver::state::ServerState {
+            bindir: dir.path().join("saved-fake-bin"),
+            data_dir: dir.path().join("saved-data"),
+            port: 5418,
+            extension_dirs: vec![],
+        };
+        bml_pgserver::state::save_state(dir.path(), &saved).unwrap();
+        // Resuming the saved (fake) server fails on its bin folder, which
+        // proves the saved state was chosen over the bundle.
+        let err = database(&bundled(dir.path()), &mut |_| {}).unwrap_err();
+        assert!(err.to_string().contains("saved-fake-bin"), "{err}");
+        assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn bundled_plan_without_asset_fails_plainly() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = database(&bundled(dir.path()), &mut |_| {}).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("--pg-bindir")),
+            "{outcome:?}"
+        );
+    }
+
     #[test]
     fn autostart_without_private_database_fails_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -494,6 +558,26 @@ mod tests {
         assert_eq!(
             ollama_models_dir(None, Some(home), Some(&service)),
             service_models
+        );
+    }
+
+    #[test]
+    fn bundled_plan_with_saved_existing_server_skips_autostart() {
+        use bml_pgserver::external::{save_external_state, ExternalState};
+        let dir = tempfile::tempdir().unwrap();
+        save_external_state(
+            dir.path(),
+            &ExternalState {
+                host: "127.0.0.1".into(),
+                port: 5433,
+                superuser: "postgres".into(),
+            },
+        )
+        .unwrap();
+        let outcome = autostart(&bundled(dir.path())).unwrap();
+        assert!(
+            matches!(outcome, StepOutcome::Skipped { .. }),
+            "{outcome:?}"
         );
     }
 
