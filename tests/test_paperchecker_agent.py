@@ -16,7 +16,7 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Dict, Any
 
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 from bmlibrarian.paperchecker import (
     PaperCheckerAgent,
@@ -335,7 +335,8 @@ class TestPaperCheckerAgentConnection:
 
         agent = PaperCheckerAgent(show_model_info=False)
 
-        assert agent.test_connection() is True
+        with patch.object(agent, '_test_ollama_connection', return_value=True):
+            assert agent.test_connection() is True
 
     @patch('bmlibrarian.paperchecker.agent.get_config')
     @patch('bmlibrarian.paperchecker.agent.get_model')
@@ -370,7 +371,10 @@ class TestPaperCheckerAgentConnection:
 
         agent = PaperCheckerAgent(show_model_info=False)
 
-        assert agent.test_connection() is False
+        # Ollama reachable, so the False must come from the database check
+        with patch.object(agent, '_test_ollama_connection', return_value=True):
+            assert agent.test_connection() is False
+        mock_db_instance.test_connection.assert_called_once()
 
 
 # ==================== PUBLIC API VALIDATION ====================

@@ -5,6 +5,7 @@ Tests signal flow between WorkflowThread, QtWorkflowExecutor and ResearchTabWidg
 """
 
 import unittest
+import pytest
 from unittest.mock import Mock, patch, MagicMock
 import sys
 from pathlib import Path
@@ -18,6 +19,9 @@ from PySide6.QtCore import Qt
 # Import the classes to test
 from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
 from bmlibrarian.gui.qt.plugins.research.workflow_thread import WorkflowThread
+
+# The settings/configuration tabs list Ollama models when built.
+pytestmark = pytest.mark.usefixtures("offline_model_list")
 
 # Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
 AGENT_NAMES = (

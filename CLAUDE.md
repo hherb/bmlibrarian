@@ -78,7 +78,7 @@ BMLibrarian supports database-backed settings for authenticated users:
 Since this project uses `uv` for package management:
 - `uv sync` - Install/sync dependencies
 - `uv run python -m [module]` - Run Python modules in the virtual environment
-- **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
+- **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite (hermetic: tests marked `requires_database`/`requires_ollama` are skipped, and any other test that opens a PostgreSQL connection or reaches local Ollama fails; `--run-live` or `BMLIBRARIAN_TEST_DB_ENV` enables them, see `doc/developers/test_database_guard.md`)
 - **Database Setup & Battle Testing**:
   - `uv run python initial_setup_and_download.py test_database.env` - Complete database setup and import testing
   - `uv run python initial_setup_and_download.py test.env --skip-medrxiv --skip-pubmed` - Schema setup only

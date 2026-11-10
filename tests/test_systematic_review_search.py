@@ -17,7 +17,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import asdict
 
-from llm_test_support import llm_response
+from tests.llm_test_support import llm_response
 
 from bmlibrarian.agents.systematic_review import (
     # Phase 1 models

@@ -145,7 +145,7 @@ def test_fallback_formatting():
             print(f"❌ FAKE DATA PATTERN '{pattern}' found in output!")
             success = False
     
-    return success
+    assert success, "checks failed; see the output above"
 
 def main():
     """Run the test."""
@@ -153,7 +153,8 @@ def main():
     print("=" * 80)
     
     try:
-        success = test_fallback_formatting()
+        test_fallback_formatting()  # raises AssertionError on failure
+        success = True
         
         print("\n" + "=" * 80)
         if success:

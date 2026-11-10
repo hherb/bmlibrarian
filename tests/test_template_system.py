@@ -189,7 +189,7 @@ def test_template_system():
         else:
             print(f"✅ REQUIRED SECTION '{section}' found")
     
-    return success
+    assert success, "checks failed; see the output above"
 
 def main():
     """Run the comprehensive test."""
@@ -197,7 +197,8 @@ def main():
     print("=" * 80)
     
     try:
-        success = test_template_system()
+        test_template_system()  # raises AssertionError on failure
+        success = True
         
         print("\n" + "=" * 80)
         if success:

@@ -12,7 +12,7 @@ Tests the verdict analysis functionality including:
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 from bmlibrarian.llm import LLMClient, Provider
 from bmlibrarian.paperchecker.components.verdict_analyzer import (

@@ -18,7 +18,7 @@ import pytest
 from bmlib.llm import EmbeddingResponse as BmlibEmbeddingResponse
 
 import bmlib.llm.client as _bmlib_llm_client
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 from bmlibrarian.agents.utils.hyde_search import (
     embed_documents,

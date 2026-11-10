@@ -5,6 +5,7 @@ Tests Qt GUI components for research tab including widget cleanup and citation c
 """
 
 import unittest
+import pytest
 from unittest.mock import Mock, patch, MagicMock
 import sys
 from pathlib import Path
@@ -21,6 +22,9 @@ from bmlibrarian.gui.qt.plugins.research.research_tab import ResearchTabWidget
 from bmlibrarian.gui.qt.plugins.research.tab_updaters import clear_layout_widgets
 from bmlibrarian.gui.qt.widgets.citation_card import CitationCard
 from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+# The settings/configuration tabs list Ollama models when built.
+pytestmark = pytest.mark.usefixtures("offline_model_list")
 
 # Agents the research tab needs for its workflow executor (mocked: no Ollama/DB)
 AGENT_NAMES = (

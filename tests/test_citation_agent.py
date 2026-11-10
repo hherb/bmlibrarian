@@ -6,7 +6,7 @@ Tests citation extraction, queue processing, and document verification.
 
 import json
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from datetime import datetime
 
 import sys
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from bmlibrarian.agents.citation_agent import CitationFinderAgent, Citation
 
-from llm_test_support import patch_llm
+from tests.llm_test_support import patch_llm
 
 
 class TestCitationFinderAgent(unittest.TestCase):
@@ -38,7 +38,9 @@ class TestCitationFinderAgent(unittest.TestCase):
             'abstract': 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease. We studied 10,000 participants over 6 months.',
             'authors': ['Smith, J.', 'Doe, A.'],
             'publication_date': '2023-01-15',
-            'pmid': '12345678'
+            'pmid': '12345678',
+            'doi': '10.1000/vaccine.2023.001',
+            'publication': 'Journal of Vaccine Research'
         }
         
         self.sample_question = "What is the effectiveness of COVID-19 vaccines?"
@@ -108,6 +110,11 @@ class TestCitationFinderAgent(unittest.TestCase):
             # Validation should extract exact text from abstract
             self.assertIn('vaccines are 95% effective', result.passage)
             self.assertEqual(result.relevance_score, 0.9)
+            # The citation keeps the document's identifiers, not the model's
+            self.assertEqual(
+                (result.doi, result.pmid, result.publication),
+                (self.sample_document['doi'], self.sample_document['pmid'],
+                 self.sample_document['publication']))
             self.assertEqual(result.document_id, '12345678')
             self.assertEqual(result.document_title, self.sample_document['title'])
     
@@ -284,10 +291,23 @@ class TestCitationFinderAgent(unittest.TestCase):
             
             self.assertFalse(result['has_citation'])
     
+    def _verify_with_row(self, row: tuple | None, expected_title: str | None = None) -> tuple:
+        """Run verify_document_exists against a mocked database returning ``row``."""
+        db_manager = MagicMock()
+        cursor = db_manager.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = row
+        with patch('bmlibrarian.database.get_db_manager', return_value=db_manager):
+            return self.agent.verify_document_exists('12345678', expected_title)
+
     def test_verify_document_exists(self):
-        """Test document verification (currently always returns True)."""
-        result = self.agent.verify_document_exists('12345678')
-        self.assertTrue(result)
+        """A found document is (True, title); a title differing beyond case/whitespace is not."""
+        self.assertEqual(self._verify_with_row((12345678, 'A  Title')), (True, 'A  Title'))
+        self.assertEqual(self._verify_with_row((12345678, 'A  Title'), 'a title'), (True, 'A  Title'))
+        self.assertEqual(self._verify_with_row((12345678, 'A Title'), 'Other'), (False, 'A Title'))
+
+    def test_verify_document_missing(self):
+        """A missing document is (False, None)."""
+        self.assertEqual(self._verify_with_row(None), (False, None))
     
     def test_get_citation_stats_empty(self):
         """Test statistics calculation with no citations."""

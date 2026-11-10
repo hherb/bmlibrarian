@@ -196,6 +196,7 @@ class TestQueryAgent:
             agent.get_available_models()
 
 
+@pytest.mark.requires_ollama
 @pytest.mark.integration
 class TestQueryAgentIntegration:
     """Integration tests for QueryAgent (require Ollama server)."""

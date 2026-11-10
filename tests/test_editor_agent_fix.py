@@ -158,7 +158,7 @@ def test_editor_agent_reference_fix():
             print(f"❌ FAKE DATA PATTERN '{pattern}' found in output!")
             success = False
     
-    return success
+    assert success, "checks failed; see the output above"
 
 def main():
     """Run the test."""
@@ -166,7 +166,8 @@ def main():
     print("=" * 80)
     
     try:
-        success = test_editor_agent_reference_fix()
+        test_editor_agent_reference_fix()  # raises AssertionError on failure
+        success = True
         
         print("\n" + "=" * 80)
         if success:
