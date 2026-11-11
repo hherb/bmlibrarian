@@ -4,9 +4,9 @@
 bundle of PostgreSQL + pgvector + (where it exists) pg_search. It is built
 by a GitHub workflow from pinned upstream inputs and published as a GitHub
 Release of this repository, so installs never depend on the upstream
-projects' download servers. Until the first release is published and pinned
-(Releasing, step 3), `pgdist-release.json` lists no assets and the bundled
-default fails with a pointer to `--pg-bindir`/`--existing-server`. Design:
+projects' download servers. The pinned release is `pgdist-18.6-r1` (2026-11-11);
+a target without an asset in `pgdist-release.json` fails the bundled default
+with a pointer to `--pg-bindir`/`--existing-server`. Design:
 `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
 (Goal A).
 
@@ -149,7 +149,8 @@ verified there (#397).
    `bml-pgdist-<version>-<target>.tar.gz`. Its `version` must equal
    `inputs.json`'s and its `base_url` must be
    `…/releases/download/pgdist-<version>/` (the test
-   `bundled_release_is_well_formed` checks both). Then commit.
+   `bundled_release_is_well_formed` checks both; `release_pins_every_target`
+   checks that every target in `inputs.json` has an asset). Then commit.
 
 ## Bumping an input
 

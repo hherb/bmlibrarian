@@ -472,6 +472,17 @@ mod tests {
     }
 
     #[test]
+    fn release_pins_every_target() {
+        let release = bundled_release().unwrap();
+        let inputs: serde_json::Value =
+            serde_json::from_str(include_str!("../../pgdist/inputs.json")).unwrap();
+        let built: std::collections::BTreeSet<&String> =
+            inputs["targets"].as_object().unwrap().keys().collect();
+        let pinned: std::collections::BTreeSet<&String> = release.assets.keys().collect();
+        assert_eq!(pinned, built, "every built target needs a pinned asset");
+    }
+
+    #[test]
     fn verified_download_is_installed_once() {
         let _spawn = crate::test_support::spawn_guard();
         let tmp = tempfile::tempdir().unwrap();
