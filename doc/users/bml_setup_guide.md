@@ -52,7 +52,7 @@ downloads BMLibrarian's own PostgreSQL 18 (with the `vector` extension, and
 `pg_search` on Apple-silicon Macs and Linux) and creates a database for
 BMLibrarian only, in `<BMLibrarian folder>/pgdata` or the folder given with
 `--data-dir`. It listens on this computer only. The program files go into
-`<BMLibrarian folder>/pgdist/18.6-r1/` (up to about 360 MB); the download (31 MB on
+`<BMLibrarian folder>/pgdist/18.6-r1/` (up to about 360 MB); the download (31–32 MB on
 Intel Macs and Windows, 105–115 MB elsewhere) is checked against a fixed checksum before anything is unpacked. On
 Intel Macs and Windows there is no `pg_search`, so setup warns that the BM25
 search index is missing; BMLibrarian will fall back to PostgreSQL's built-in
