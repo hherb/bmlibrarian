@@ -60,11 +60,13 @@ BMLibrarian only, in `<BMLibrarian folder>/pgdata` or the folder given with
 `<BMLibrarian folder>/pgdist/18.6-r1/` (about 360 MB); the download (about
 115 MB) is checked against a fixed checksum before anything is unpacked. On
 Intel Macs and Windows there is no `pg_search`, so setup warns that the BM25
-search index is missing; BMLibrarian falls back to PostgreSQL's built-in text
-search there.
+search index is missing; BMLibrarian will fall back to PostgreSQL's built-in
+text search there.
 
 If you already set up a database with an earlier `bml setup`, a later run
-continues with that one and downloads nothing.
+continues with that one and downloads nothing. Passing `--data-dir` then is
+only allowed with that database's own folder; setup refuses a different one
+rather than ignore it.
 
 To use a PostgreSQL 18 installation of your own instead, point `--pg-bindir`
 at its bin folder (the one with `initdb`); add `--extension-dir FOLDER` for a

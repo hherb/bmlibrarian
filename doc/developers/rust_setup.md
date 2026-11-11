@@ -58,12 +58,12 @@ a failed unpack never leaves a partial app that later runs would find. The
 installer is deleted only after the app is in place; failing to delete it, or
 the staging folder, is a warning (the step then ends in `Warnings`).
 
-Downloads (the Ollama installer, the GGUF) and the stale part-file sweep run
+Downloads (the Ollama installer, the GGUF, the pgdist bundle) and the stale part-file sweep run
 under `lock_downloads`: an OS file lock (`File::try_lock`, hence MSRV 1.89)
 on `.bml-setup-download.lock` in the config folder. A second setup in the same
 folder fails that step at once ("Another BMLibrarian setup is
 downloading…"); the lock is released when the process exits, even by a
-crash. Once the lock is held, the Ollama and Embedding steps check again
+crash. Once the lock is held, the Ollama, Embedding and Database (pgdist) steps check again
 whether the other setup already finished, so nothing is downloaded twice. A
 disk without file locks fails with a message saying so.
 `SetupError::Other` is for errors that are neither Ollama's nor the database
@@ -103,9 +103,13 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   target), embedded at build time. `DatabasePlan::Bundled` (the CLI default)
   resumes a saved server, else `pgdist::ensure_pgdist` downloads the asset
   under the download lock, unpacks it with the system `tar` into
-  `<config>/pgdist/.<version>.partial` and renames it to
-  `<config>/pgdist/<version>` once its `pgdist.json` names that version and
-  target; then `init` runs with `pg/bin` and `ext/`. Building and bumping the
+  `<config>/pgdist/.<version>.partial`, renames the one bundle folder inside
+  it to `<config>/pgdist/<version>` once its `pgdist.json` names that version
+  and target, and deletes the archive; then `init` runs with `pg/bin` and
+  `ext/` and the data folder (`Bundled { data_dir: None }` means
+  `<config>/pgdata`). A `data_dir` the person gave must equal a saved private
+  server's (else `StateMismatch`) and is refused when an existing server is
+  saved. Building and bumping the
   bundle: `doc/developers/pgdist.md`.
 
 ## Not verified

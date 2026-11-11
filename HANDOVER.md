@@ -25,7 +25,8 @@ off new work. Longer-term structural items live in
   wins), `jit = off` in `bml.conf`, smoke test `bml-pgserver/tests/extensions.rs`.
   The macOS arm64 bundle was built and passed every ignored test locally.
   `pgdist-release.json` has **no assets yet**, so `bml setup` without
-  `--pg-bindir` fails plainly until the release is pinned (Next up).
+  `--pg-bindir` fails plainly until the release is pinned (Next up). An
+  explicit `--data-dir` must match a saved private server (else refused).
   Docs: `doc/developers/pgdist.md`.
 
 - **Paper weight: thousands separators; unmarked placeholders not cached**
@@ -387,12 +388,14 @@ value — pick one, or pull an item from ROADMAP.md:
      `pgdist` workflow's PR run was green on all 5 targets, ask the owner to
      run it with `publish=true`, copy the 5 assets' size/sha256 from
      `gh release view pgdist-18.6-r1 --json assets` into
-     `rust/bml-setup/pgdist-release.json`, add test
-     `release_pins_every_target`, and verify `bml setup` (fresh
+     `rust/bml-setup/pgdist-release.json` (`bundled_release_is_well_formed`
+     then checks every asset; add `release_pins_every_target`), and verify `bml setup` (fresh
      `--config-dir`, skip autostart/ollama/models/embedding-model) on the Mac.
      Fold in the deferred review minors, #416, and drop the "Not available
      yet" note from `doc/users/bml_setup_guide.md`. If the PR's Windows
      pgdist job failed, fix `build.sh` first (its Windows path is unverified).
+     **Before publishing**, fix #418 (Linux pgvector built on the 24.04
+     runner needs glibc ≥ 2.38; macOS deployment target; Windows rename).
   2. Then pieces 2–6 of the design, each with its own plan: `bml-db` + schema
      (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
      pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are

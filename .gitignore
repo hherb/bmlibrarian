@@ -55,4 +55,6 @@ rust/target/
 
 # Brainstorming companion mockups
 .superpowers/
+
+# pgdist bundles built by rust/pgdist/build.sh
 rust/pgdist/out/

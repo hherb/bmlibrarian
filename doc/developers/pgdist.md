@@ -4,7 +4,9 @@
 bundle of PostgreSQL + pgvector + (where it exists) pg_search. It is built
 by a GitHub workflow from pinned upstream inputs and published as a GitHub
 Release of this repository, so installs never depend on the upstream
-projects' download servers. Design:
+projects' download servers. Until the first release is published and pinned
+(Releasing, step 3), `pgdist-release.json` lists no assets and the bundled
+default fails with a pointer to `--pg-bindir`/`--existing-server`. Design:
 `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
 (Goal A).
 
@@ -17,8 +19,8 @@ projects' download servers. Design:
 | pg_search 0.26.6 | ParadeDB release assets: macOS `pg_search-pg18-0.26.6.pkg` (the Postgres.app package), Linux `…-bookworm_{amd64,arm64}.deb` | The macOS dylib is arm64-only and links only system libraries, so it loads into any PostgreSQL 18. AGPL-3.0. |
 
 There is no pg_search for Intel Macs or Windows: ParadeDB ships no build for
-them. Those bundles carry pgvector only, and BMLibrarian uses PostgreSQL's
-built-in text search there.
+them. Those bundles carry pgvector only; the Rust side's fallback to
+PostgreSQL's built-in text search there is planned work (design piece 2).
 
 **Rejected:**
 - building pg_search with pgrx (a heavy toolchain to keep current)
@@ -45,19 +47,22 @@ they can be forked if the project is abandoned.
 
 1. Downloads the theseus tarball and checks its sha256. Runs
    `gh attestation verify … --repo theseus-rs/postgresql-binaries`.
-2. Unpacks it as `pg/`, then prunes `libLLVM*`, `llvmjit*`, the bundled
-   Python and every `*plpython*` file. The server runs with `jit = off`
-   (`bml-pgserver` writes it into `bml.conf`), and fresh installs have no
-   `plpython3u`. On macOS and Linux it fails if anything left links a
-   pruned library.
+2. Unpacks it as `pg/`, then prunes `libLLVM*`, `llvmjit*`, `libpython*`,
+   the bundled Python, `lib/bitcode`, `lib/postgresql/bitcode` and every
+   `*plpython*` file. The server runs with `jit = off` (`bml-pgserver`
+   writes it into `bml.conf`), and fresh installs have no `plpython3u`. On
+   macOS it fails if anything left links a pruned library; on Linux, if
+   `ldd` reports any missing library. Windows is not checked.
 3. Clones pgvector at the tag, checks the pinned commit, and builds it
    against `pg/bin/pg_config`:
    - macOS/Linux: `make … with_llvm=no`, because theseus was configured
      `--with-llvm`. On macOS also `PG_SYSROOT=$(xcrun --show-sdk-path)`,
      because theseus recorded its build runner's SDK path.
-   - Windows: `nmake /F Makefile.win` with `PGROOT`, from an MSVC
-     developer shell.
-4. Downloads pg_search, checks its sha256, and extracts it without running
+   - Windows: `nmake -nologo -f Makefile.win` with `PGROOT` (a Windows
+     path) and `MSYS_NO_PATHCONV=1`, from an MSVC developer shell with
+     MSVC's `cl`/`link.exe` folder first on `PATH` (Git Bash would otherwise
+     find its own `/usr/bin/link` and turn `/F` into a drive path).
+4. Where `inputs.json` has a pg_search entry, downloads it, checks its sha256, and extracts it without running
    package scripts: `pkgutil --expand-full` for the `.pkg`, `dpkg-deb -x`
    for the `.deb`.
 5. Copies the licence notices, and writes `notices/pg_search/SOURCE.txt`
@@ -84,7 +89,7 @@ bml-pgdist-18.6-r1-<target>/
 ## Building and testing locally
 
 ```
-bash rust/pgdist/build.sh aarch64-apple-darwin     # needs curl jq tar git gh make
+bash rust/pgdist/build.sh aarch64-apple-darwin     # tools: see the script's header
 cd rust
 R=$PWD/pgdist/out/bml-pgdist-18.6-r1-aarch64-apple-darwin
 BML_TEST_PG_BINDIR=$R/pg/bin BML_TEST_PG_EXTENSION_DIRS=$R/ext cargo test -- --include-ignored
@@ -105,7 +110,11 @@ verified there (#397).
    source.
 3. Copy each asset's size and sha256 from the published release
    (`gh release view pgdist-<version> --json assets`), not from a local build,
-   into `rust/bml-setup/pgdist-release.json`. Then commit.
+   into `rust/bml-setup/pgdist-release.json`, keyed by target, with `file`
+   `bml-pgdist-<version>-<target>.tar.gz`. Its `version` must equal
+   `inputs.json`'s and its `base_url` must be
+   `…/releases/download/pgdist-<version>/` (the test
+   `bundled_release_is_well_formed` checks both). Then commit.
 
 ## Bumping an input
 
@@ -115,7 +124,9 @@ Change the pins in `inputs.json`. Fetch the values, never guess them:
 - pgvector: `gh api repos/pgvector/pgvector/git/ref/tags/<tag>`
 
 Then raise `version` to the next `-rN`, or a new PostgreSQL minor
-(`18.7-r1`). The new version installs side by side in
+(`18.7-r1`), in `inputs.json` and `pgdist-release.json` together (with
+`base_url`; assets follow once the new release is published, Releasing
+step 3). The new version installs side by side in
 `<config>/pgdist/<version>/`.
 
 An existing private server keeps the binaries it was set up with:

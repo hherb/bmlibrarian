@@ -15,7 +15,8 @@ pub const INCLUDE_LINE: &str = "include 'bml.conf'";
 /// Where the server listens: loopback only, never the network.
 pub const LISTEN_ADDRESS: &str = "127.0.0.1";
 
-/// JIT compilation is off: the bundled PostgreSQL ships without LLVM.
+/// JIT compilation is off on every private server, because the bundled
+/// PostgreSQL ships without LLVM.
 pub const JIT_SETTING: &str = "jit = off";
 
 /// Separator between entries of a PostgreSQL path-list setting.

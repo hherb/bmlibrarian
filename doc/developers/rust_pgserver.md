@@ -33,7 +33,7 @@ through the `postgres` crate.
 - `listen_addresses = '127.0.0.1'`
 - `unix_socket_directories = ''` (TCP only, on every platform)
 - `password_encryption = 'scram-sha-256'`
-- `jit = off` (the bundled PostgreSQL, `doc/developers/pgdist.md`, ships without LLVM)
+- `jit = off` on every private server, `--pg-bindir` ones included (the bundled PostgreSQL, `doc/developers/pgdist.md`, ships without LLVM)
 - `dynamic_library_path = '$libdir:<ext>/lib/postgresql:…'`
 - `extension_control_path = '$system:<ext>/share/postgresql:…'`
 - `shared_preload_libraries = 'pg_search'`, when an extension folder provides

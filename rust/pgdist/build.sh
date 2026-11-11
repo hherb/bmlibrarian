@@ -5,9 +5,10 @@
 #   bash rust/pgdist/build.sh <target>
 #
 # Output: rust/pgdist/out/bml-pgdist-<version>-<target>.tar.gz (+ .sha256).
-# Needs curl, jq, tar, git, gh (for the attestation check), and make, or nmake
-# on Windows (run from an MSVC developer environment). Runs on macOS, Linux
-# and Git Bash on Windows. Developer docs: doc/developers/pgdist.md.
+# Needs curl, jq, tar, git and gh (for the attestation check), plus make, file,
+# otool, xcrun and pkgutil on macOS; make, file, ldd and dpkg-deb on Linux;
+# nmake, cl and cygpath on Windows (Git Bash in an MSVC developer environment).
+# Developer docs: doc/developers/pgdist.md.
 set -euo pipefail
 
 TARGET="${1:?usage: build.sh <target>}"
@@ -19,8 +20,11 @@ THESEUS_REPO="theseus-rs/postgresql-binaries"
 
 die() { echo "build.sh: $*" >&2; exit 1; }
 
-# jq -r without the carriage returns Windows' native jq.exe adds.
-jqr() { jq -r "$@" | tr -d '\r'; }
+# jq -r without the carriage returns Windows' native jq.exe adds; -e makes a
+# missing (null) value an error instead of the text "null".
+jqr() { jq -er "$@" | tr -d '\r'; }
+
+need() { for t in "$@"; do command -v "$t" >/dev/null 2>&1 || die "$t is needed"; done; }
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -34,6 +38,12 @@ fetch() {
   [ "$got" = "$3" ] || die "checksum mismatch for $1: expected $3, got $got"
 }
 
+need curl jq tar git gh
+case "$TARGET" in
+  *-apple-darwin) need make file otool xcrun pkgutil ;;
+  *-linux-gnu) need make file ldd dpkg-deb ;;
+  *-windows-msvc) need nmake cl cygpath ;;
+esac
 jq -e --arg t "$TARGET" '.targets[$t]' "$INPUTS" >/dev/null || die "unknown target $TARGET"
 VERSION="$(jqr .version "$INPUTS")"
 NAME="bml-pgdist-$VERSION-$TARGET"
@@ -60,19 +70,22 @@ PG="$ROOT/pg"
 find "$PG" \( -name 'libLLVM*' -o -name 'llvmjit*' -o -name '*plpython*' -o -name 'libpython*' \) -prune -exec rm -rf {} +
 rm -rf "$PG/lib/Python" "$PG/lib/bitcode" "$PG/lib/postgresql/bitcode"
 
+# grep without -q reads all its input: under pipefail, grep -q quitting early
+# can SIGPIPE the writer and turn a match into "no match".
 case "$TARGET" in
   *-apple-darwin)
     while IFS= read -r f; do
-      if file -b "$f" | grep -q 'Mach-O'; then
-        if otool -L "$f" | tail -n +2 | grep -Eq 'LLVM|[Pp]ython'; then
+      if file -b "$f" | grep 'Mach-O' >/dev/null; then
+        deps="$(otool -L "$f")" || die "otool failed on $f"
+        if tail -n +2 <<<"$deps" | grep -E 'LLVM|[Pp]ython' >/dev/null; then
           die "$f still links a pruned library"
         fi
       fi
     done < <(find "$PG/bin" "$PG/lib" -type f) ;;
   *-linux-gnu)
     while IFS= read -r f; do
-      if file -b "$f" | grep -q 'ELF'; then
-        if ldd "$f" 2>/dev/null | grep -q 'not found'; then die "$f has a missing library"; fi
+      if file -b "$f" | grep 'ELF' >/dev/null; then
+        if ldd "$f" 2>/dev/null | grep 'not found' >/dev/null; then die "$f has a missing library"; fi
       fi
     done < <(find "$PG/bin" "$PG/lib" -type f) ;;
 esac
@@ -103,7 +116,8 @@ mkdir -p "$ROOT/notices/pgvector" && cp "$PGV/LICENSE" "$ROOT/notices/pgvector/"
 
 # --- pg_search (ParadeDB release asset) ---------------------------------------
 HAS_PG_SEARCH=false
-KIND="$(input '.pg_search.kind // empty')"
+# Plain jq -r: a null pg_search (no build for this target) yields no output.
+KIND="$(jq -r --arg t "$TARGET" '.targets[$t].pg_search.kind // empty' "$INPUTS" | tr -d '\r')"
 if [ -n "$KIND" ]; then
   HAS_PG_SEARCH=true
   ASSET="$WORK/pg_search.$KIND"
@@ -122,15 +136,18 @@ if [ -n "$KIND" ]; then
   esac
   mkdir -p "$ROOT/notices/pg_search"
   fetch "$(jqr .pg_search_license.url "$INPUTS")" "$ROOT/notices/pg_search/LICENSE" "$(jqr .pg_search_license.sha256 "$INPUTS")"
+  SOURCE="$(jqr .pg_search_source "$INPUTS")"
   printf 'pg_search is licensed under the GNU AGPL-3.0.\nThe exact source of this build: %s\n' \
-    "$(jqr .pg_search_source "$INPUTS")" > "$ROOT/notices/pg_search/SOURCE.txt"
+    "$SOURCE" > "$ROOT/notices/pg_search/SOURCE.txt"
 fi
 
 # --- contents manifest and archive -------------------------------------------
 (
   cd "$ROOT"
   find . -type f ! -path ./pgdist.json | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do
-    printf '%s\t%s\t%s\n' "$f" "$(wc -c < "$f" | tr -d ' ')" "$(sha256_of "$f")"
+    size="$(wc -c < "$f" | tr -d ' ')"
+    sum="$(sha256_of "$f")"
+    printf '%s\t%s\t%s\n' "$f" "$size" "$sum"
   done > "$WORK/files.tsv"
   find . -type l | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do
     printf '%s\t%s\n' "$f" "$(readlink "$f")"

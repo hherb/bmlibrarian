@@ -53,7 +53,9 @@ pub struct PgdistRelease {
 /// The fields of a bundle's `pgdist.json` that installing checks.
 #[derive(Deserialize)]
 struct Manifest {
+    /// The bundle version it was built as.
     version: String,
+    /// The target triple it was built for.
     target: String,
 }
 
@@ -130,10 +132,12 @@ pub fn no_bundle_message(target: Option<&str>) -> String {
     )
 }
 
+/// A [`SetupError`] carrying `message` as is.
 fn other(message: String) -> SetupError {
     SetupError::Other { message }
 }
 
+/// Turns an I/O error on `path` into a [`SetupError`] naming that path.
 fn io(path: &Path) -> impl Fn(std::io::Error) -> SetupError + '_ {
     move |source| SetupError::Io {
         path: path.to_path_buf(),
@@ -202,11 +206,14 @@ pub fn install_from_archive(
     }
     std::fs::create_dir_all(&partial).map_err(io(&partial))?;
     let result = unpack_into(archive, &partial, pgdist_dir, version, target);
-    // The partial folder is ours alone; it never outlives this call.
+    // Best effort: the partial folder is ours alone, and a leftover is
+    // removed by the next install before it unpacks.
     let _ = std::fs::remove_dir_all(&partial);
     result
 }
 
+/// [`install_from_archive`] once `partial` exists and is empty: unpack,
+/// check the single bundle folder's manifest, move it to `pgdist_dir/<version>`.
 fn unpack_into(
     archive: &Path,
     partial: &Path,
@@ -223,8 +230,9 @@ fn unpack_into(
         .map_err(|e| other(format!("Could not run the system `tar` to unpack the database ({e}); installing it needs `tar` on the PATH.")))?;
     if !status.success() {
         return Err(other(format!(
-            "Unpacking {} failed ({status}). Run `bml setup` again; if it keeps failing, the download may be damaged.",
-            archive.display()
+            "Unpacking {} failed ({status}). Check that there is free space and that {} is writable, then run `bml setup` again.",
+            archive.display(),
+            pgdist_dir.display()
         )));
     }
     let entries: Vec<PathBuf> = std::fs::read_dir(partial)
@@ -246,7 +254,7 @@ fn unpack_into(
     })?;
     if manifest.version != version || manifest.target != target {
         return Err(other(format!(
-            "{} holds the database bundle {} for {}, not {version} for {target}.",
+            "{} holds the database bundle {} for {}, not {version} for {target}; this is a bug in this build of bml. Meanwhile, pass --pg-bindir or --existing-server.",
             archive.display(),
             manifest.version,
             manifest.target
@@ -286,7 +294,8 @@ pub fn ensure_pgdist(
         .get(target)
         .ok_or_else(|| other(no_bundle_message(Some(target))))?;
     let _lock = lock_downloads(config_dir)?;
-    // Another setup may have finished the install while this one waited.
+    // Another setup may have finished the install between the check above
+    // and taking the lock.
     if let Some(found) = installed(&dir, &release.version, target)? {
         return Ok((found, false));
     }
@@ -343,6 +352,7 @@ mod tests {
         path
     }
 
+    /// A release with a placeholder asset for [`TARGET`] (never downloadable).
     fn release_with_asset() -> PgdistRelease {
         PgdistRelease {
             version: VERSION.into(),
@@ -358,9 +368,122 @@ mod tests {
         }
     }
 
+    /// A release pinning `archive` for [`TARGET`], served from nowhere: any
+    /// fetch fails, so only an already downloaded copy can satisfy it.
+    fn release_for(archive: &Path) -> PgdistRelease {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(archive).unwrap();
+        let sha256 = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        PgdistRelease {
+            version: VERSION.into(),
+            base_url: "http://127.0.0.1:1/".into(),
+            assets: BTreeMap::from([(
+                TARGET.to_string(),
+                PgdistAsset {
+                    file: format!("bml-pgdist-{VERSION}-{TARGET}.tar.gz"),
+                    size: bytes.len() as u64,
+                    sha256,
+                },
+            )]),
+        }
+    }
+
+    /// Put `bytes` where `ensure_pgdist` keeps the download of `release`'s
+    /// [`TARGET`] asset under `config_dir`; returns that path.
+    fn seed_download(config_dir: &Path, release: &PgdistRelease, bytes: &[u8]) -> PathBuf {
+        let dir = config_dir.join(PGDIST_DIR_NAME).join(DOWNLOADS_DIR_NAME);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(&release.assets[TARGET].file);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
     #[test]
-    fn bundled_release_parses() {
-        assert_eq!(bundled_release().unwrap().version, VERSION);
+    fn bundled_release_is_well_formed() {
+        let release = bundled_release().unwrap();
+        let inputs: serde_json::Value =
+            serde_json::from_str(include_str!("../../pgdist/inputs.json")).unwrap();
+        assert_eq!(inputs["version"], release.version.as_str());
+        assert!(
+            release.base_url.starts_with("https://")
+                && release
+                    .base_url
+                    .ends_with(&format!("/pgdist-{}/", release.version)),
+            "{}",
+            release.base_url
+        );
+        for (target, asset) in &release.assets {
+            assert!(inputs["targets"].get(target).is_some(), "{target}");
+            assert_eq!(
+                asset.file,
+                format!("bml-pgdist-{}-{target}.tar.gz", release.version)
+            );
+            assert!(asset.size > 0, "{target}");
+            assert!(
+                asset.sha256.len() == 64
+                    && asset
+                        .sha256
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_download_is_installed_once() {
+        let _spawn = crate::test_support::spawn_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let a = archive(tmp.path(), VERSION, TARGET, true);
+        let release = release_for(&a);
+        let seeded = seed_download(&cfg, &release, &std::fs::read(&a).unwrap());
+        let (got, fresh) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        assert!(fresh);
+        assert!(got.bindir().join("marker").is_file());
+        assert!(!seeded.exists(), "the archive is deleted once unpacked");
+        let pgdist = cfg.join(PGDIST_DIR_NAME);
+        assert!(!pgdist.join(format!(".{VERSION}{PARTIAL_SUFFIX}")).exists());
+        let (again, fresh) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        assert!(!fresh);
+        assert_eq!(again, got);
+    }
+
+    #[test]
+    fn damaged_download_is_never_unpacked() {
+        let _spawn = crate::test_support::spawn_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let a = archive(tmp.path(), VERSION, TARGET, true);
+        let release = release_for(&a);
+        let mut bytes = std::fs::read(&a).unwrap();
+        bytes[0] ^= 0xff;
+        seed_download(&cfg, &release, &bytes);
+        let err = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {})
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("127.0.0.1:1"), "{err}");
+        assert!(!cfg.join(PGDIST_DIR_NAME).join(VERSION).exists());
+    }
+
+    #[test]
+    fn installed_bundle_for_another_target_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pgdist = tmp.path().join(PGDIST_DIR_NAME);
+        let root = pgdist.join(VERSION);
+        std::fs::create_dir_all(&root).unwrap();
+        let manifest = root.join(PGDIST_MANIFEST_FILE);
+        std::fs::write(
+            &manifest,
+            format!(r#"{{"version":"{VERSION}","target":"x86_64-apple-darwin"}}"#),
+        )
+        .unwrap();
+        assert!(installed(&pgdist, VERSION, TARGET).is_err());
+        std::fs::write(&manifest, "{").unwrap();
+        assert!(installed(&pgdist, VERSION, TARGET).is_err());
     }
 
     #[test]
