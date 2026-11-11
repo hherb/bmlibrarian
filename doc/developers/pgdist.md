@@ -49,7 +49,8 @@ they can be forked if the project is abandoned.
    `gh attestation verify … --repo theseus-rs/postgresql-binaries`.
 2. Unpacks it as `pg/`, then prunes `libLLVM*`, `llvmjit*`, `libpython*`,
    the bundled Python, `lib/bitcode`, `lib/postgresql/bitcode` and every
-   `*plpython*` file. The server runs with `jit = off` (`bml-pgserver`
+   `*plpython*` file; on Windows also the CPython theseus copies into `bin/`
+   (`python*.exe`, `python*.dll`, `bin/Lib`, `bin/DLLs`) and its notice. The server runs with `jit = off` (`bml-pgserver`
    writes it into `bml.conf`), and fresh installs have no `plpython3u`.
 3. Clones pgvector at the tag, checks the pinned commit, and builds it
    against `pg/bin/pg_config`, always with `OPTFLAGS=` (pgvector's default

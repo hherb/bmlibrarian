@@ -79,6 +79,12 @@ PG="$ROOT/pg"
 # and Python (fresh installs have no plpython3u).
 find "$PG" \( -name 'libLLVM*' -o -name 'llvmjit*' -o -name '*plpython*' -o -name 'libpython*' \) -prune -exec rm -rf {} +
 rm -rf "$PG/lib/Python" "$PG/lib/bitcode" "$PG/lib/postgresql/bitcode"
+# On Windows theseus copies a whole CPython into bin/ for plpython3u; bin/ is
+# where Windows looks for DLLs, never bin/DLLs, so the server needs none of it.
+case "$TARGET" in
+  *-windows-msvc)
+    rm -rf "$PG"/bin/python*.exe "$PG"/bin/python*.dll "$PG/bin/Lib" "$PG/bin/DLLs" "$PG/dependency-notices/python" ;;
+esac
 
 # --- pgvector (from source) --------------------------------------------------
 PGV="$WORK/pgvector"
