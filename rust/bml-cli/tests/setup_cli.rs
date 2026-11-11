@@ -237,10 +237,14 @@ fn remote_existing_server_refused_before_asking_for_a_password() {
 #[test]
 fn failed_step_goes_to_stderr() {
     let cfg = tempfile::tempdir().unwrap();
-    // No database chosen and none saved: the Database step fails. Port 1
-    // keeps the Hardware step's Ollama listing off any real Ollama.
+    // A PostgreSQL folder that does not exist fails the Database step without
+    // downloading the bundled one. Port 1 keeps the Hardware step's Ollama
+    // listing off any real Ollama.
+    let missing = cfg.path().join("no-such-pg-bin");
     let args = [
         "setup",
+        "--pg-bindir",
+        missing.to_str().unwrap(),
         "--ollama-host",
         "http://127.0.0.1:1",
         "--skip",

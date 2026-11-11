@@ -1,5 +1,31 @@
 {
   "version": "18.6-r1",
   "base_url": "https://github.com/hherb/bmlibrarian/releases/download/pgdist-18.6-r1/",
-  "assets": {}
+  "assets": {
+    "aarch64-apple-darwin": {
+      "file": "bml-pgdist-18.6-r1-aarch64-apple-darwin.tar.gz",
+      "size": 105522640,
+      "sha256": "4cc548dfa7e84b9173f139e8b825cd0538653701a64225e8acc17c7db2a9a731"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "file": "bml-pgdist-18.6-r1-aarch64-unknown-linux-gnu.tar.gz",
+      "size": 111840594,
+      "sha256": "be8ac8363539b3c47433e000bd75fa754e0436372d271fd1e43fb96d167c94a7"
+    },
+    "x86_64-apple-darwin": {
+      "file": "bml-pgdist-18.6-r1-x86_64-apple-darwin.tar.gz",
+      "size": 30827438,
+      "sha256": "e101e5aa45fccecec19519d059e6013e87afd0966900841a0c137c69f3840ffa"
+    },
+    "x86_64-pc-windows-msvc": {
+      "file": "bml-pgdist-18.6-r1-x86_64-pc-windows-msvc.tar.gz",
+      "size": 32015701,
+      "sha256": "a14a6b878ffed5793e7f5c2962e9b11bd65a5b68a74a1b5af7b0a77151b57c24"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "file": "bml-pgdist-18.6-r1-x86_64-unknown-linux-gnu.tar.gz",
+      "size": 114110879,
+      "sha256": "ac8a7f4b3acb106e51db007cc5cf5c6362a6ea6ac0bcf0231a0563f18b7f2620"
+    }
+  }
 }

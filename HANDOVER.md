@@ -10,53 +10,34 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **pgdist portability before the first release** (2026-11-11, PR #420,
-  closes #418, #416; `pgdist` PR run green on all 5 targets).
-  `build.sh`: pgvector is built with `OPTFLAGS=` on macOS/Linux (its default
-  `-march=native` would have crashed on CPUs older than the runner's), on
-  Linux inside `linux_build.image` (bookworm, pinned by digest, via
-  `docker`), on macOS with `MACOSX_DEPLOYMENT_TARGET` = the minimum macOS of
-  `pg/bin/postgres` (15.0). A link-check pass after all components covers
-  `pg/` **and** `ext/`: macOS pruned-library + minimum-OS check (unreadable
-  minimum = error), Linux `ldd` inside `linux_build.image` (so too-new
-  `GLIBCXX_*` is caught too) + no glibc newer than `linux_build.glibc` (**2.36**: theseus's own
-  `libstdc++`/`libcrypt`/`libexpat` already need it, so Ubuntu 22.04 and
-  RHEL 9 are out regardless), Windows `dumpbin -dependents` (no LLVM/Python;
-  it caught the CPython theseus copies into `bin/` — `python*.exe/.dll`,
-  `bin/Lib`, `bin/DLLs` — now pruned, and a leftover `bin/python*` fails; macOS/Linux also drop the
-  `lib/python3.*` stdlib theseus ships, 23 MB on macOS);
-  `COPYFILE_DISABLE=1` tar, and the build fails on any archive entry beside
-  the bundle folder. Workflow: `rust/bml-pgserver/**` and `rust/bml-setup/**`
-  in PR paths, smoke test runs on the unpacked archive in `$RUNNER_TEMP`, a
-  `publish=true` run off `refs/heads/master` fails at once. Rust: the bundle move retries on `PermissionDenied`
-  (Windows only, 6 tries from 100 ms, `rename_with_retry`) and fails with its
-  own sentence; `ensure_pgdist` returns warnings instead of a `fresh` flag (a
-  failed archive delete is a warning, not a failed step); `bundled_database`
-  no longer refuses an already-unpacked bundle when the release has no asset;
-  the pg_search warning for a bundled server no longer advises
-  `--extension-dir`. No user-side OS check yet: #419. Docs:
-  `doc/developers/pgdist.md` ("What the bundles need"), `bml_setup_guide.md`.
-
-- **Bundled PostgreSQL (pgdist) for the Rust installer** (2026-11-11,
-  PR #417). New design for the whole
-  milestone: `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
+- **Bundled PostgreSQL (pgdist), piece 1 of the installer milestone**
+  (2026-11-11, PRs #417, #420 and this one; closes #416, #418). Design:
+  `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
   (Mac-first GUI wizard → private PG18 → medRxiv download/full text/chunk
-  embedding → test search; owner decisions recorded there). Piece 1 plan:
-  `docs/superpowers/plans/2026-11-11-pgdist.md`. Built: `rust/pgdist/inputs.json`
-  (theseus-rs PG 18.6.1 + attestation, pgvector v0.8.7 from source, ParadeDB
-  pg_search 0.26.6 for macOS arm64/Linux), `rust/pgdist/build.sh`,
-  `.github/workflows/pgdist.yml` (PRs build + smoke-test 5 targets; manual
-  run with `publish=true` releases `pgdist-18.6-r1`), `bml_setup::pgdist`
-  (download under the lock, atomic unpack into `<config>/pgdist/<version>`),
-  `DatabasePlan::Bundled` as the `bml setup` default (a saved server always
-  wins), `jit = off` in `bml.conf`, smoke test `bml-pgserver/tests/extensions.rs`.
-  The macOS arm64 bundle was built and passed every ignored test locally.
-  `pgdist-release.json` has **no assets yet**, so `bml setup` without
-  `--pg-bindir` fails plainly until the release is pinned (Next up). An
-  explicit `--data-dir` must match a saved private server (else refused).
-  `pg_ctl start` now writes to `bml-pg_ctl.out` instead of a pipe: the
-  Windows smoke test hung on it for hours (#397's first item).
-  Docs: `doc/developers/pgdist.md`.
+  embedding → test search; owner decisions recorded there); plan
+  `docs/superpowers/plans/2026-11-11-pgdist.md`. Release **`pgdist-18.6-r1`**
+  is published (5 targets, built from `04edd55`) and pinned in
+  `rust/bml-setup/pgdist-release.json` (`release_pins_every_target` checks
+  that every `inputs.json` target has an asset), so `bml setup` with no
+  database options downloads and installs it into
+  `<config>/pgdist/18.6-r1/` (a saved server always wins; an explicit
+  `--data-dir` must match a saved private server). Inputs: theseus-rs PG
+  18.6.1, pgvector v0.8.7 from source (`OPTFLAGS=`, no `-march=native`;
+  Linux built in pinned bookworm), ParadeDB pg_search 0.26.6 (macOS arm64,
+  Linux only). Floors: macOS 15, glibc 2.36 (Ubuntu 22.04/RHEL 9 out);
+  `build.sh` checks both, Windows `dumpbin` checks for pruned LLVM/Python.
+  Windows rename retried on `PermissionDenied`; `jit = off`; `pg_ctl start`
+  writes to `bml-pg_ctl.out` (a pipe hung Windows). The CLI test
+  `failed_step_goes_to_stderr` now fails the Database step with a missing
+  `--pg-bindir` (with assets pinned it would have downloaded the bundle).
+  Verified by hand on the owner's Mac (macOS arm64, 2026-11-11): fresh
+  `--config-dir`, `bml setup --skip autostart --skip ollama --skip models
+  --skip embedding-model` downloaded the release asset, installed it,
+  `server status` exit 0, `\dx` shows vector 0.8.7 + pg_search 0.26.6, a
+  second run is "already in place" with no download.
+  Docs: `doc/developers/pgdist.md` (Releasing, Bumping an input),
+  `doc/users/bml_setup_guide.md`. Open: #419 (OS check before download),
+  #421 (review follow-ups), #397 (Windows).
 
 - **Paper weight: thousands separators; unmarked placeholders not cached**
   (2026-11-10, closes #358, #357; owner decision: no `VERSION` bump, so no
@@ -413,17 +394,9 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
-  1. Finish piece 1 (plan Task 5): after the portability PR merges (its
-     `pgdist` PR run must be green on all 5 targets), ask the owner to
-     run the workflow on `master` with `publish=true`, copy the 5 assets' size/sha256 from
-     `gh release view pgdist-18.6-r1 --json assets` into
-     `rust/bml-setup/pgdist-release.json` (`bundled_release_is_well_formed`
-     then checks every asset; add `release_pins_every_target`), and verify `bml setup` (fresh
-     `--config-dir`, skip autostart/ollama/models/embedding-model) on the Mac.
-     Drop the "Not available yet" note from `doc/users/bml_setup_guide.md`
-     and close #416/#418. #419 (refuse a too-old glibc/macOS before
-     downloading) is a good companion slice.
-  2. Then pieces 2–6 of the design, each with its own plan: `bml-db` + schema
+  1. Piece 1 (pgdist) is done. Small companions: #419 (refuse a too-old
+     glibc/macOS before downloading), #421.
+  2. Next: pieces 2–6 of the design, each with its own plan: `bml-db` + schema
      (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
      pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are
      bmlib Python+Rust work), hybrid search, Tauri wizard, signed Mac `.dmg`.
