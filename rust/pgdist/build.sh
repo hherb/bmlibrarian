@@ -6,8 +6,9 @@
 #
 # Output: rust/pgdist/out/bml-pgdist-<version>-<target>.tar.gz (+ .sha256).
 # Needs curl, jq, tar, git and gh (for the attestation check), plus make, file,
-# otool, xcrun and pkgutil on macOS; make, file, ldd and dpkg-deb on Linux;
-# nmake, cl and cygpath on Windows (Git Bash in an MSVC developer environment).
+# otool, xcrun and pkgutil on macOS; make, file, ldd, objdump, dpkg-deb and
+# docker on Linux; nmake, cl, dumpbin and cygpath on Windows (Git Bash in an
+# MSVC developer environment).
 # Developer docs: doc/developers/pgdist.md.
 set -euo pipefail
 
@@ -38,11 +39,20 @@ fetch() {
   [ "$got" = "$3" ] || die "checksum mismatch for $1: expected $3, got $got"
 }
 
+# The minimum macOS version a Mach-O file was built for.
+macho_minos() {
+  otool -l "$1" | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { b = 1 }
+    b && ($1 == "minos" || $1 == "version") { print $2; exit }'
+}
+
+# Succeeds when version $1 is no newer than version $2.
+version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$2" ]; }
+
 need curl jq tar git gh
 case "$TARGET" in
   *-apple-darwin) need make file otool xcrun pkgutil ;;
-  *-linux-gnu) need make file ldd dpkg-deb ;;
-  *-windows-msvc) need nmake cl cygpath ;;
+  *-linux-gnu) need make file ldd objdump dpkg-deb docker ;;
+  *-windows-msvc) need nmake cl dumpbin cygpath ;;
 esac
 jq -e --arg t "$TARGET" '.targets[$t]' "$INPUTS" >/dev/null || die "unknown target $TARGET"
 VERSION="$(jqr .version "$INPUTS")"
@@ -70,30 +80,12 @@ PG="$ROOT/pg"
 find "$PG" \( -name 'libLLVM*' -o -name 'llvmjit*' -o -name '*plpython*' -o -name 'libpython*' \) -prune -exec rm -rf {} +
 rm -rf "$PG/lib/Python" "$PG/lib/bitcode" "$PG/lib/postgresql/bitcode"
 
-# grep without -q reads all its input: under pipefail, grep -q quitting early
-# can SIGPIPE the writer and turn a match into "no match".
-case "$TARGET" in
-  *-apple-darwin)
-    while IFS= read -r f; do
-      if file -b "$f" | grep 'Mach-O' >/dev/null; then
-        deps="$(otool -L "$f")" || die "otool failed on $f"
-        if tail -n +2 <<<"$deps" | grep -E 'LLVM|[Pp]ython' >/dev/null; then
-          die "$f still links a pruned library"
-        fi
-      fi
-    done < <(find "$PG/bin" "$PG/lib" -type f) ;;
-  *-linux-gnu)
-    while IFS= read -r f; do
-      if file -b "$f" | grep 'ELF' >/dev/null; then
-        if ldd "$f" 2>/dev/null | grep 'not found' >/dev/null; then die "$f has a missing library"; fi
-      fi
-    done < <(find "$PG/bin" "$PG/lib" -type f) ;;
-esac
-
 # --- pgvector (from source) --------------------------------------------------
 PGV="$WORK/pgvector"
 git clone -q --depth 1 --branch "$(jqr .pgvector.tag "$INPUTS")" "$(jqr .pgvector.repo "$INPUTS")" "$PGV"
 [ "$(git -C "$PGV" rev-parse HEAD)" = "$(jqr .pgvector.commit "$INPUTS")" ] || die "pgvector tag does not match the pinned commit"
+# OPTFLAGS= drops pgvector's default -march=native: the bundle must run on
+# any CPU of its architecture, not only ones like the build machine's.
 case "$TARGET" in
   *-windows-msvc)
     # MSVC's link.exe must come before Git's /usr/bin/link; nmake's switches
@@ -104,11 +96,19 @@ case "$TARGET" in
     cp "$PGV/vector.dll" "$ROOT/ext/lib/postgresql/" ;;
   *-apple-darwin)
     # The bundle was configured --with-llvm and against the build machine's
-    # SDK; build without bitcode and against this machine's SDK.
-    make -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no PG_SYSROOT="$(xcrun --show-sdk-path)"
+    # SDK; build without bitcode, against this machine's SDK, for the oldest
+    # macOS the PostgreSQL binaries run on (else the runner's own).
+    MACOSX_DEPLOYMENT_TARGET="$(macho_minos "$PG/bin/postgres")" \
+      make -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no OPTFLAGS= PG_SYSROOT="$(xcrun --show-sdk-path)"
     cp "$PGV/vector.dylib" "$ROOT/ext/lib/postgresql/" ;;
   *)
-    make -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no
+    # In an old-glibc container: built against the runner's glibc (2.38 or
+    # newer), pgvector would need it (_GNU_SOURCE turns strtol into
+    # __isoc23_strtol@GLIBC_2.38). The files are handed back to this user.
+    docker run --rm -v "$PG:$PG:ro" -v "$PGV:$PGV" -w "$PGV" "$(jqr .linux_build.image "$INPUTS")" sh -c '
+      apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc make libc6-dev >/dev/null \
+        && make PG_CONFIG="$1" with_llvm=no OPTFLAGS=
+      status=$?; chown -R "$2" .; exit $status' sh "$PG/bin/pg_config" "$(id -u):$(id -g)"
     cp "$PGV/vector.so" "$ROOT/ext/lib/postgresql/" ;;
 esac
 cp "$PGV/vector.control" "$PGV"/sql/vector--*.sql "$ROOT/ext/share/postgresql/extension/"
@@ -141,6 +141,43 @@ if [ -n "$KIND" ]; then
     "$SOURCE" > "$ROOT/notices/pg_search/SOURCE.txt"
 fi
 
+# --- link checks over the whole bundle ---------------------------------------
+# grep without -q reads all its input: under pipefail, grep -q quitting early
+# can SIGPIPE the writer and turn a match into "no match".
+case "$TARGET" in
+  *-apple-darwin)
+    MIN_OS="$(macho_minos "$PG/bin/postgres")"
+    [ -n "$MIN_OS" ] || die "cannot read the minimum macOS version of $PG/bin/postgres"
+    while IFS= read -r f; do
+      if file -b "$f" | grep 'Mach-O' >/dev/null; then
+        deps="$(otool -L "$f")" || die "otool failed on $f"
+        if tail -n +2 <<<"$deps" | grep -E 'LLVM|[Pp]ython' >/dev/null; then
+          die "$f still links a pruned library"
+        fi
+        minos="$(macho_minos "$f")"
+        version_le "${minos:-0}" "$MIN_OS" || die "$f needs macOS $minos, newer than the bundle's $MIN_OS"
+      fi
+    done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f) ;;
+  *-linux-gnu)
+    GLIBC_FLOOR="$(jqr .linux_build.glibc "$INPUTS")"
+    while IFS= read -r f; do
+      if file -b "$f" | grep 'ELF' >/dev/null; then
+        deps="$(ldd "$f" 2>&1)" || true  # ldd fails on a static file; "not found" is what counts
+        if grep 'not found' <<<"$deps" >/dev/null; then die "$f has a missing library"; fi
+        refs="$(objdump -p "$f")" || die "objdump failed on $f"
+        newest="$({ grep -o 'GLIBC_[0-9][0-9.]*' <<<"$refs" || true; } | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
+        version_le "${newest:-0}" "$GLIBC_FLOOR" || die "$f needs glibc $newest, newer than the bundle's $GLIBC_FLOOR"
+      fi
+    done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f) ;;
+  *-windows-msvc)
+    while IFS= read -r f; do
+      out="$(dumpbin -nologo -dependents "$(cygpath -w "$f")")" || die "dumpbin failed on $f"
+      if tr -d '\r' <<<"$out" | sed '/Dump of file/d' | grep -Ei 'LLVM|python' >/dev/null; then
+        die "$f still links a pruned library"
+      fi
+    done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f \( -iname '*.exe' -o -iname '*.dll' \)) ;;
+esac
+
 # --- contents manifest and archive -------------------------------------------
 (
   cd "$ROOT"
@@ -166,7 +203,8 @@ jq -n --arg version "$VERSION" --arg target "$TARGET" --argjson pg_search "$HAS_
              | { path: .[0], target: .[1] } ] }' > "$ROOT/pgdist.json"
 
 ARCHIVE="$OUT/$NAME.tar.gz"
-tar -czf "$ARCHIVE" -C "$OUT" "$NAME"
+# COPYFILE_DISABLE: no AppleDouble ._* entries from macOS's tar.
+COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" -C "$OUT" "$NAME"
 echo "$(sha256_of "$ARCHIVE")  $NAME.tar.gz" > "$ARCHIVE.sha256"
 rm -rf "$WORK"
 echo "built $ARCHIVE (pg_search: $HAS_PG_SEARCH)"

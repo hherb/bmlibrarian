@@ -5,6 +5,10 @@
     "tag": "v0.8.7",
     "commit": "f37c13f68b57d2c3472b2214fbcff699d6d34876"
   },
+  "linux_build": {
+    "image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "glibc": "2.36"
+  },
   "pg_search_source": "https://github.com/paradedb/paradedb/tree/v0.26.6",
   "pg_search_license": {
     "url": "https://raw.githubusercontent.com/paradedb/paradedb/v0.26.6/LICENSE",

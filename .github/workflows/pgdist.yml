@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - "rust/pgdist/**"
+      - "rust/bml-pgserver/**"
       - ".github/workflows/pgdist.yml"
   workflow_dispatch:
     inputs:
@@ -52,8 +53,13 @@ jobs:
         # A hang (as `pg_ctl start` once did on Windows) fails fast instead of
         # holding the runner for hours.
         timeout-minutes: 30
+        # Tests the published archive, unpacked elsewhere, not the build folder.
         run: |
-          root="$PWD/pgdist/out/bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
+          name="bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
+          unpacked="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/pgdist"
+          mkdir -p "$unpacked"
+          tar -xzf "pgdist/out/$name.tar.gz" -C "$unpacked"
+          root="$unpacked/$name"
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Only the extension smoke test: the rest of the ignored suite is
             # not yet verified on Windows (#397). MSVC's link.exe must come
@@ -74,7 +80,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: inputs.publish
+    # Only what is on the default branch is ever released.
+    if: inputs.publish && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
     permissions:

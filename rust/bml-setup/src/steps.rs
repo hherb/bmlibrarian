@@ -158,17 +158,24 @@ fn saved_external_request(config_dir: &Path) -> Result<Option<ExternalRequest>, 
     }))
 }
 
-/// Warnings for a database that works but lacks something; returns the
-/// outcome, which repeats them.
+/// Warnings for a database that works but lacks something, after `warnings`
+/// already gathered; returns the outcome, which repeats them. `bundled`: the
+/// server runs from the bundle, whose only missing pg_search is the one
+/// ParadeDB does not build for this computer.
 fn database_outcome(
     created_now: bool,
     pg_search: bool,
     app_password_reset: bool,
+    bundled: bool,
+    mut warnings: Vec<String>,
     report: &mut dyn FnMut(StepEvent),
 ) -> StepOutcome {
-    let mut warnings = Vec::new();
     if !pg_search {
-        warnings.push("pg_search is not installed, so the database has no BM25 search index. To add it, run setup again with --pg-bindir and an --extension-dir holding a pg_search build.".to_string());
+        warnings.push(if bundled {
+            "pg_search is not installed, so the database has no BM25 search index: no pg_search build exists for this computer yet.".to_string()
+        } else {
+            "pg_search is not installed, so the database has no BM25 search index. To add it, run setup again with --pg-bindir and an --extension-dir holding a pg_search build.".to_string()
+        });
     }
     if app_password_reset {
         warnings.push(format!("the server refused the password in {APP_ENV_FILE_NAME}, so it was reset; other copies of the old password no longer work."));
@@ -176,17 +183,26 @@ fn database_outcome(
     report_warnings(StepId::Database, warnings, created(created_now), report)
 }
 
-/// Set up (or resume) the private server `req` describes.
+/// Set up (or resume) the private server `req` describes; `warnings` come
+/// before its own.
 fn private_database(
     req: &InitRequest,
     config_dir: &Path,
+    warnings: Vec<String>,
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let o = init(req, config_dir)?;
+    // Saved bin folders are absolute, so compare with an absolute config folder.
+    let bundled = std::path::absolute(config_dir).is_ok_and(|dir| {
+        req.bindir
+            .starts_with(dir.join(crate::pgdist::PGDIST_DIR_NAME))
+    });
     Ok(database_outcome(
         o.created,
         o.pg_search,
         o.app_password_reset,
+        bundled,
+        warnings,
         report,
     ))
 }
@@ -203,10 +219,9 @@ fn bundled_database(
     let Some(target) = target else {
         return Ok(StepOutcome::Failed(no_bundle_message(None)));
     };
-    if !release.assets.contains_key(target) {
-        return Ok(StepOutcome::Failed(no_bundle_message(Some(target))));
-    }
-    let (pg, _) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
+    // An already unpacked bundle is used even if the release has no asset
+    // for it; `ensure_pgdist` says when one is needed and missing.
+    let (pg, warnings) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
         report(StepEvent::Progress {
             step: StepId::Database,
             detail: "Downloading the database".into(),
@@ -219,7 +234,7 @@ fn bundled_database(
         data_dir: data_dir.to_path_buf(),
         extension_dirs: vec![pg.extension_dir()],
     };
-    private_database(&req, config_dir, report)
+    private_database(&req, config_dir, warnings, report)
 }
 
 /// Set up the chosen database, or resume the saved one.
@@ -228,14 +243,17 @@ fn database(
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
-    let private =
-        |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| private_database(req, dir, report);
+    let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
+        private_database(req, dir, Vec::new(), report)
+    };
     let existing = |req: &ExternalRequest, report: &mut dyn FnMut(StepEvent)| {
         let o = adopt(req, dir)?;
         Ok(database_outcome(
             o.created,
             o.pg_search,
             o.app_password_reset,
+            false,
+            Vec::new(),
             report,
         ))
     };
@@ -524,14 +542,21 @@ mod tests {
             assets: std::collections::BTreeMap::new(),
         };
         let data = dir.path().join("pgdata");
-        for target in [Some("aarch64-apple-darwin"), None] {
-            let outcome =
-                bundled_database(dir.path(), &data, &release, target, &mut |_| {}).unwrap();
-            assert!(
-                matches!(&outcome, StepOutcome::Failed(m) if m.contains("--pg-bindir")),
-                "{outcome:?}"
-            );
-        }
+        let outcome = bundled_database(dir.path(), &data, &release, None, &mut |_| {}).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("--pg-bindir")),
+            "{outcome:?}"
+        );
+        let err = bundled_database(
+            dir.path(),
+            &data,
+            &release,
+            Some("aarch64-apple-darwin"),
+            &mut |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--pg-bindir"), "{err}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
@@ -565,18 +590,31 @@ mod tests {
     #[test]
     fn database_outcome_warns_about_missing_pg_search_and_password_reset() {
         let mut warnings = Vec::new();
-        let outcome = database_outcome(false, false, true, &mut |e| {
+        let earlier = vec!["archive left over".to_string()];
+        let outcome = database_outcome(false, false, true, false, earlier, &mut |e| {
             if let StepEvent::Warning { message, .. } = e {
                 warnings.push(message);
             }
         });
         assert_eq!(outcome, StepOutcome::Warnings(warnings.clone()));
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings[0].contains("pg_search"));
-        assert!(warnings[1].contains("reset"));
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("left over"));
+        assert!(warnings[1].contains("pg_search") && warnings[1].contains("--extension-dir"));
+        assert!(warnings[2].contains("reset"));
+        // Bundled users cannot follow --extension-dir advice.
+        let mut bundled = Vec::new();
+        database_outcome(true, false, false, true, Vec::new(), &mut |e| {
+            if let StepEvent::Warning { message, .. } = e {
+                bundled.push(message);
+            }
+        });
+        assert!(
+            bundled.len() == 1 && !bundled[0].contains("--extension-dir"),
+            "{bundled:?}"
+        );
         let mut quiet = true;
         assert_eq!(
-            database_outcome(true, true, false, &mut |_| quiet = false),
+            database_outcome(true, true, false, false, Vec::new(), &mut |_| quiet = false),
             StepOutcome::Installed
         );
         assert!(quiet);

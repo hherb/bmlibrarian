@@ -50,14 +50,21 @@ they can be forked if the project is abandoned.
 2. Unpacks it as `pg/`, then prunes `libLLVM*`, `llvmjit*`, `libpython*`,
    the bundled Python, `lib/bitcode`, `lib/postgresql/bitcode` and every
    `*plpython*` file. The server runs with `jit = off` (`bml-pgserver`
-   writes it into `bml.conf`), and fresh installs have no `plpython3u`. On
-   macOS it fails if anything left links a pruned library; on Linux, if
-   `ldd` reports any missing library. Windows is not checked.
+   writes it into `bml.conf`), and fresh installs have no `plpython3u`.
 3. Clones pgvector at the tag, checks the pinned commit, and builds it
-   against `pg/bin/pg_config`:
+   against `pg/bin/pg_config`, always with `OPTFLAGS=` (pgvector's default
+   is `-march=native`, which would tie the bundle to CPUs like the build
+   runner's and crash with "illegal instruction" on older ones):
    - macOS/Linux: `make … with_llvm=no`, because theseus was configured
-     `--with-llvm`. On macOS also `PG_SYSROOT=$(xcrun --show-sdk-path)`,
-     because theseus recorded its build runner's SDK path.
+     `--with-llvm`.
+   - macOS also: `PG_SYSROOT=$(xcrun --show-sdk-path)`, because theseus
+     recorded its build runner's SDK path, and `MACOSX_DEPLOYMENT_TARGET`
+     set to the minimum macOS of `pg/bin/postgres` (else the dylib would
+     need the runner's own macOS).
+   - Linux: inside the `linux_build.image` container (Debian bookworm,
+     pinned by digest), not on the runner. Built against the runner's glibc
+     (2.39), pgvector would need glibc 2.38: PGXS passes `-D_GNU_SOURCE`,
+     which since glibc 2.38 turns `strtol` into `__isoc23_strtol@GLIBC_2.38`.
    - Windows: `nmake -nologo -f Makefile.win` with `PGROOT` (a Windows
      path) and `MSYS_NO_PATHCONV=1`, from an MSVC developer shell with
      MSVC's `cl`/`link.exe` folder first on `PATH` (Git Bash would otherwise
@@ -65,11 +72,27 @@ they can be forked if the project is abandoned.
 4. Where `inputs.json` has a pg_search entry, downloads it, checks its sha256, and extracts it without running
    package scripts: `pkgutil --expand-full` for the `.pkg`, `dpkg-deb -x`
    for the `.deb`.
-5. Copies the licence notices, and writes `notices/pg_search/SOURCE.txt`
+5. Checks every binary in `pg/` and `ext/`. On macOS: nothing links a
+   pruned library, and none needs a newer macOS than `pg/bin/postgres`. On
+   Linux: `ldd` reports no missing library, and no file needs a glibc newer
+   than `linux_build.glibc` (from `objdump -p`). On Windows: `dumpbin
+   -dependents` shows no LLVM or Python DLL.
+6. Copies the licence notices, and writes `notices/pg_search/SOURCE.txt`
    linking the exact pg_search source.
-6. Writes `pgdist.json`: version, target, inputs, `pg_search` flag, and
+7. Writes `pgdist.json`: version, target, inputs, `pg_search` flag, and
    every file with size and sha256, plus symlinks.
-7. Packs `bml-pgdist-<version>-<target>.tar.gz` with a `.sha256` beside it.
+8. Packs `bml-pgdist-<version>-<target>.tar.gz` (`COPYFILE_DISABLE=1`, so
+   no macOS `._*` entries) with a `.sha256` beside it.
+
+## What the bundles need
+
+| Target | Needs |
+|---|---|
+| macOS (arm64, Intel) | the minimum macOS of theseus's binaries: 15.0 for 18.6.1 |
+| Linux (x86_64, arm64) | glibc 2.36 or newer (`linux_build.glibc`): Debian 12, Ubuntu 23.04, Fedora 37, RHEL 10 or later. Not Ubuntu 22.04 (2.35) or RHEL 9 (2.34): the libraries theseus ships (`libstdc++`, `libcrypt`, `libexpat`) already need 2.36, as does the bookworm pg_search. No musl bundle. |
+| Windows (x86_64) | what theseus's build needs; not checked yet (#397) |
+
+Any CPU of the architecture: pgvector is built without `-march=native`.
 
 ## Bundle layout
 
@@ -102,9 +125,11 @@ verified there (#397).
 
 ## Releasing
 
-1. Pull requests that touch `rust/pgdist/**` or the workflow build and
-   smoke-test all five targets. They never publish.
-2. After merge, run the `pgdist` workflow by hand with `publish=true`. It
+1. Pull requests that touch `rust/pgdist/**`, `rust/bml-pgserver/**` or the
+   workflow build all five targets and smoke-test each published archive,
+   unpacked outside the build folder. They never publish.
+2. After merge, run the `pgdist` workflow by hand with `publish=true` on
+   `master` (the publish job refuses any other branch). It
    creates the release `pgdist-<version>` with the five tarballs and their
    `.sha256` files. The notes list every input and link the pg_search
    source.

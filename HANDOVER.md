@@ -10,8 +10,30 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **pgdist portability before the first release** (2026-11-11, branch
+  `fix/pgdist-portability`, #418 items 1–5 and the open #416 items).
+  `build.sh`: pgvector is built with `OPTFLAGS=` everywhere (its default
+  `-march=native` would have crashed on CPUs older than the runner's), on
+  Linux inside `linux_build.image` (bookworm, pinned by digest, via
+  `docker`), on macOS with `MACOSX_DEPLOYMENT_TARGET` = the minimum macOS of
+  `pg/bin/postgres` (15.0). A link-check pass after all components covers
+  `pg/` **and** `ext/`: macOS pruned-library + minimum-OS check, Linux
+  `ldd` + no glibc newer than `linux_build.glibc` (**2.36**: theseus's own
+  `libstdc++`/`libcrypt`/`libexpat` already need it, so Ubuntu 22.04 and
+  RHEL 9 are out regardless), Windows `dumpbin -dependents` (no LLVM/Python);
+  `COPYFILE_DISABLE=1` tar. Workflow: `rust/bml-pgserver/**` in PR paths,
+  smoke test runs on the unpacked archive in `$RUNNER_TEMP`, publish only from
+  `refs/heads/master`. Rust: the bundle move retries on `PermissionDenied`
+  (Windows only, 6 tries from 100 ms, `rename_with_retry`) and fails with its
+  own sentence; `ensure_pgdist` returns warnings instead of a `fresh` flag (a
+  failed archive delete is a warning, not a failed step); `bundled_database`
+  no longer refuses an already-unpacked bundle when the release has no asset;
+  the pg_search warning for a bundled server no longer advises
+  `--extension-dir`. No user-side OS check yet: #419. Docs:
+  `doc/developers/pgdist.md` ("What the bundles need"), `bml_setup_guide.md`.
+
 - **Bundled PostgreSQL (pgdist) for the Rust installer** (2026-11-11,
-  branch `feat/pgdist-bundled-postgres`). New design for the whole
+  PR #417). New design for the whole
   milestone: `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
   (Mac-first GUI wizard → private PG18 → medRxiv download/full text/chunk
   embedding → test search; owner decisions recorded there). Piece 1 plan:
@@ -386,18 +408,16 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
-  1. Finish piece 1 (plan Task 5): after the pgdist PR merges, check the
-     `pgdist` workflow's PR run was green on all 5 targets, ask the owner to
-     run it with `publish=true`, copy the 5 assets' size/sha256 from
+  1. Finish piece 1 (plan Task 5): after the portability PR merges (its
+     `pgdist` PR run must be green on all 5 targets), ask the owner to
+     run the workflow on `master` with `publish=true`, copy the 5 assets' size/sha256 from
      `gh release view pgdist-18.6-r1 --json assets` into
      `rust/bml-setup/pgdist-release.json` (`bundled_release_is_well_formed`
      then checks every asset; add `release_pins_every_target`), and verify `bml setup` (fresh
      `--config-dir`, skip autostart/ollama/models/embedding-model) on the Mac.
-     Fold in the deferred review minors, #416, and drop the "Not available
-     yet" note from `doc/users/bml_setup_guide.md`. If the PR's Windows
-     pgdist job failed, fix `build.sh` first (its Windows path is unverified).
-     **Before publishing**, fix #418 (Linux pgvector built on the 24.04
-     runner needs glibc ≥ 2.38; macOS deployment target; Windows rename).
+     Drop the "Not available yet" note from `doc/users/bml_setup_guide.md`
+     and close #416/#418. #419 (refuse a too-old glibc/macOS before
+     downloading) is a good companion slice.
   2. Then pieces 2–6 of the design, each with its own plan: `bml-db` + schema
      (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
      pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are
