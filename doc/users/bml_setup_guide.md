@@ -63,6 +63,11 @@ Intel Macs and Windows there is no `pg_search`, so setup warns that the BM25
 search index is missing; BMLibrarian will fall back to PostgreSQL's built-in
 text search there.
 
+The ready-made database needs macOS 15 or later on a Mac, and on Linux a
+system with glibc 2.36 or later (Debian 12, Ubuntu 23.04, Fedora 37, RHEL 10
+or newer; not Ubuntu 22.04 or RHEL 9). On an older system, use `--pg-bindir`
+with a PostgreSQL 18 of your own.
+
 If you already set up a database with an earlier `bml setup`, a later run
 continues with that one and downloads nothing. Passing `--data-dir` then is
 only allowed with that database's own folder; setup refuses a different one

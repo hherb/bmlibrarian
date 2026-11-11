@@ -25,6 +25,12 @@ pub const PGDIST_EXT_SUBDIR: &str = "ext";
 const DOWNLOADS_DIR_NAME: &str = "downloads";
 /// Suffix of the folder a bundle is unpacked into before it is moved in place.
 const PARTIAL_SUFFIX: &str = ".partial";
+/// How often moving the unpacked bundle into place is tried: on Windows,
+/// antivirus scanners briefly hold freshly written files open, which fails
+/// the move with "access denied" (as rustup also found).
+const RENAME_ATTEMPTS: u32 = if cfg!(windows) { 6 } else { 1 };
+/// Wait before the second attempt; it doubles after each further one.
+const RENAME_FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 /// The pinned release, published by `.github/workflows/pgdist.yml`.
 const RELEASE_JSON: &str = include_str!("../pgdist-release.json");
 
@@ -267,12 +273,38 @@ fn unpack_into(
             root.display()
         )));
     }
-    std::fs::rename(top, &root).map_err(io(&root))?;
+    rename_with_retry(top, &root).map_err(|e| {
+        other(format!(
+            "Could not move the unpacked database into {} ({e}). Check that the folder is writable and nothing (such as a virus scanner) holds it open, then run `bml setup` again.",
+            root.display()
+        ))
+    })?;
     Ok(InstalledPgdist { root })
 }
 
+/// `std::fs::rename`, retried with a growing wait while it fails with
+/// "permission denied"; tried at most [`RENAME_ATTEMPTS`] times in all.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut wait = RENAME_FIRST_BACKOFF;
+    let mut attempt = 1;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    && attempt < RENAME_ATTEMPTS =>
+            {
+                std::thread::sleep(wait);
+                wait *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// The bundle for `target`, downloaded and unpacked under `config_dir` unless
-/// it already is; the flag says whether this call installed it. `progress`
+/// it already is, with warnings about anything left over that did not stop
+/// the install (a downloaded archive that could not be deleted). `progress`
 /// gets bytes done and total while downloading.
 ///
 /// # Errors
@@ -284,10 +316,10 @@ pub fn ensure_pgdist(
     release: &PgdistRelease,
     target: &str,
     progress: &mut dyn FnMut(u64, u64),
-) -> Result<(InstalledPgdist, bool), SetupError> {
+) -> Result<(InstalledPgdist, Vec<String>), SetupError> {
     let dir = config_dir.join(PGDIST_DIR_NAME);
     if let Some(found) = installed(&dir, &release.version, target)? {
-        return Ok((found, false));
+        return Ok((found, Vec::new()));
     }
     let asset = release
         .assets
@@ -297,7 +329,7 @@ pub fn ensure_pgdist(
     // Another setup may have finished the install between the check above
     // and taking the lock.
     if let Some(found) = installed(&dir, &release.version, target)? {
-        return Ok((found, false));
+        return Ok((found, Vec::new()));
     }
     let downloads = dir.join(DOWNLOADS_DIR_NAME);
     sweep_stale_parts(&downloads, &asset.file)?;
@@ -315,8 +347,14 @@ pub fn ensure_pgdist(
     )
     .map_err(|e| other(format!("Downloading the database ({url}) failed: {e}. Check your network, then run `bml setup` again.")))?;
     let found = install_from_archive(&archive, &dir, &release.version, target)?;
-    std::fs::remove_file(&archive).map_err(io(&archive))?;
-    Ok((found, true))
+    let mut warnings = Vec::new();
+    if let Err(e) = std::fs::remove_file(&archive) {
+        warnings.push(format!(
+            "the database is installed, but its downloaded archive {} could not be deleted ({e}); you can delete it yourself.",
+            archive.display()
+        ));
+    }
+    Ok((found, warnings))
 }
 
 #[cfg(test)]
@@ -441,14 +479,19 @@ mod tests {
         let a = archive(tmp.path(), VERSION, TARGET, true);
         let release = release_for(&a);
         let seeded = seed_download(&cfg, &release, &std::fs::read(&a).unwrap());
-        let (got, fresh) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
-        assert!(fresh);
+        let (got, warnings) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(got.bindir().join("marker").is_file());
         assert!(!seeded.exists(), "the archive is deleted once unpacked");
         let pgdist = cfg.join(PGDIST_DIR_NAME);
         assert!(!pgdist.join(format!(".{VERSION}{PARTIAL_SUFFIX}")).exists());
-        let (again, fresh) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
-        assert!(!fresh);
+        // The archive is gone, the release cannot be fetched and no longer
+        // lists this target, so this succeeds only by finding the installed
+        // bundle.
+        let mut release = release;
+        release.assets.clear();
+        let (again, warnings) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(again, got);
     }
 
@@ -594,6 +637,18 @@ mod tests {
         )
         .is_err());
         assert!(!pgdist.join(VERSION).exists());
+    }
+
+    #[test]
+    fn rename_retry_gives_up_on_other_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+        let err = rename_with_retry(&missing, &tmp.path().join("to")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let from = tmp.path().join("from");
+        std::fs::create_dir(&from).unwrap();
+        rename_with_retry(&from, &tmp.path().join("to")).unwrap();
+        assert!(tmp.path().join("to").is_dir());
     }
 
     #[test]
