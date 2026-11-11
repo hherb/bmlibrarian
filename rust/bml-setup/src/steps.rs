@@ -183,6 +183,13 @@ fn database_outcome(
     report_warnings(StepId::Database, warnings, created(created_now), report)
 }
 
+/// Whether `bindir` lies in the bundles folder under `config_dir`. Saved bin
+/// folders are absolute, so the config folder is made absolute to compare.
+fn runs_from_bundle(bindir: &Path, config_dir: &Path) -> bool {
+    std::path::absolute(config_dir)
+        .is_ok_and(|dir| bindir.starts_with(dir.join(crate::pgdist::PGDIST_DIR_NAME)))
+}
+
 /// Set up (or resume) the private server `req` describes; `warnings` come
 /// before its own.
 fn private_database(
@@ -192,16 +199,11 @@ fn private_database(
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let o = init(req, config_dir)?;
-    // Saved bin folders are absolute, so compare with an absolute config folder.
-    let bundled = std::path::absolute(config_dir).is_ok_and(|dir| {
-        req.bindir
-            .starts_with(dir.join(crate::pgdist::PGDIST_DIR_NAME))
-    });
     Ok(database_outcome(
         o.created,
         o.pg_search,
         o.app_password_reset,
-        bundled,
+        runs_from_bundle(&req.bindir, config_dir),
         warnings,
         report,
     ))
@@ -585,6 +587,20 @@ mod tests {
             matches!(&e, SetupError::Other { message } if message.contains("missing")),
             "{e}"
         );
+    }
+
+    #[test]
+    fn runs_from_bundle_only_under_the_bundles_folder() {
+        let cfg = std::path::absolute("cfg").unwrap();
+        let pgdist = cfg.join(crate::pgdist::PGDIST_DIR_NAME);
+        assert!(runs_from_bundle(&pgdist.join("18.6-r1/pg/bin"), &cfg));
+        // A relative config folder still matches the absolute saved bin folder.
+        assert!(runs_from_bundle(
+            &pgdist.join("18.6-r1/pg/bin"),
+            Path::new("cfg")
+        ));
+        assert!(!runs_from_bundle(&cfg.join("pgdist-old/pg/bin"), &cfg));
+        assert!(!runs_from_bundle(&cfg.join("elsewhere/bin"), &cfg));
     }
 
     #[test]

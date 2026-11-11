@@ -14,6 +14,7 @@ on:
     paths:
       - "rust/pgdist/**"
       - "rust/bml-pgserver/**"
+      - "rust/bml-setup/**"
       - ".github/workflows/pgdist.yml"
   workflow_dispatch:
     inputs:
@@ -41,6 +42,12 @@ jobs:
       run:
         shell: bash
     steps:
+      # Fails the run at once rather than building and then skipping publish.
+      - name: Refuse to publish from another branch
+        if: inputs.publish && github.ref != 'refs/heads/master'
+        run: |
+          echo "::error::publish=true only runs on master, not $GITHUB_REF"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         if: runner.os == 'Windows'
@@ -53,7 +60,7 @@ jobs:
         # A hang (as `pg_ctl start` once did on Windows) fails fast instead of
         # holding the runner for hours.
         timeout-minutes: 30
-        # Tests the published archive, unpacked elsewhere, not the build folder.
+        # Tests the release archive, unpacked elsewhere, not the build folder.
         run: |
           name="bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
           unpacked="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/pgdist"
@@ -80,7 +87,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # Only what is on the default branch is ever released.
+    # Only what is on the default branch is ever released; the build job
+    # fails a publish run started from any other branch.
     if: inputs.publish && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest

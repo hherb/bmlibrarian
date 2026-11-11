@@ -37,7 +37,7 @@ they can be forked if the project is abandoned.
 
 | File | Role |
 |---|---|
-| `rust/pgdist/inputs.json` | Every input, pinned: theseus URL and sha256 per target, the pgvector tag and commit, the pg_search asset URL and sha256 per target (`null` = none), and the pg_search licence text and sha256 |
+| `rust/pgdist/inputs.json` | Every input, pinned: theseus URL and sha256 per target, the pgvector tag and commit, the pg_search asset URL and sha256 per target (`null` = none), the pg_search licence text and sha256, and `linux_build`: the Linux build image (pinned by digest) and its glibc floor |
 | `rust/pgdist/build.sh <target>` | Builds one bundle into `rust/pgdist/out/` (git-ignored) |
 | `.github/workflows/pgdist.yml` | Runs the build on five runners, smoke-tests each bundle, and publishes the release (manual run with `publish=true`) |
 | `rust/bml-setup/pgdist-release.json` | What `bml` installs: release base URL and, per target, the asset file, size and sha256 |
@@ -48,14 +48,15 @@ they can be forked if the project is abandoned.
 1. Downloads the theseus tarball and checks its sha256. Runs
    `gh attestation verify … --repo theseus-rs/postgresql-binaries`.
 2. Unpacks it as `pg/`, then prunes `libLLVM*`, `llvmjit*`, `libpython*`,
-   the bundled Python, `lib/bitcode`, `lib/postgresql/bitcode` and every
+   the bundled Python (`lib/Python`, the `lib/python3.*` standard library), `lib/bitcode`, `lib/postgresql/bitcode` and every
    `*plpython*` file; on Windows also the CPython theseus copies into `bin/`
    (`python*.exe`, `python*.dll`, `bin/Lib`, `bin/DLLs`) and its notice. The server runs with `jit = off` (`bml-pgserver`
    writes it into `bml.conf`), and fresh installs have no `plpython3u`.
 3. Clones pgvector at the tag, checks the pinned commit, and builds it
-   against `pg/bin/pg_config`, always with `OPTFLAGS=` (pgvector's default
-   is `-march=native`, which would tie the bundle to CPUs like the build
-   runner's and crash with "illegal instruction" on older ones):
+   against `pg/bin/pg_config`; on macOS and Linux with `OPTFLAGS=`
+   (pgvector's default there is `-march=native`, which would tie the bundle
+   to CPUs like the build runner's and crash with "illegal instruction" on
+   older ones; `Makefile.win` sets no such flag):
    - macOS/Linux: `make … with_llvm=no`, because theseus was configured
      `--with-llvm`.
    - macOS also: `PG_SYSROOT=$(xcrun --show-sdk-path)`, because theseus
@@ -73,17 +74,23 @@ they can be forked if the project is abandoned.
 4. Where `inputs.json` has a pg_search entry, downloads it, checks its sha256, and extracts it without running
    package scripts: `pkgutil --expand-full` for the `.pkg`, `dpkg-deb -x`
    for the `.deb`.
-5. Checks every binary in `pg/` and `ext/`. On macOS: nothing links a
-   pruned library, and none needs a newer macOS than `pg/bin/postgres`. On
-   Linux: `ldd` reports no missing library, and no file needs a glibc newer
-   than `linux_build.glibc` (from `objdump -p`). On Windows: `dumpbin
-   -dependents` shows no LLVM or Python DLL.
+5. Checks the binaries in `pg/bin`, `pg/lib` and `ext/` (on Windows the
+   `.exe`/`.dll` files). On macOS: nothing links a pruned library, and none
+   needs a newer macOS than `pg/bin/postgres` (an unreadable minimum is an
+   error). On Linux: no file needs a glibc newer than `linux_build.glibc`
+   (from `objdump -p`), and `ldd` run inside the `linux_build.image`
+   container (not on the runner) reports nothing "not found", which covers
+   missing libraries and too-new `GLIBC_*`/`GLIBCXX_*` symbol versions. On
+   Windows: `dumpbin -dependents` shows no LLVM or Python DLL, and no
+   `python*` file is left in `bin/`.
 6. Copies the licence notices, and writes `notices/pg_search/SOURCE.txt`
    linking the exact pg_search source.
 7. Writes `pgdist.json`: version, target, inputs, `pg_search` flag, and
    every file with size and sha256, plus symlinks.
 8. Packs `bml-pgdist-<version>-<target>.tar.gz` (`COPYFILE_DISABLE=1`, so
-   no macOS `._*` entries) with a `.sha256` beside it.
+   no macOS `._*` entries; the build fails if the archive holds anything
+   beside the bundle folder, which the installer would refuse) with a
+   `.sha256` beside it.
 
 ## What the bundles need
 
@@ -93,7 +100,8 @@ they can be forked if the project is abandoned.
 | Linux (x86_64, arm64) | glibc 2.36 or newer (`linux_build.glibc`): Debian 12, Ubuntu 23.04, Fedora 37, RHEL 10 or later. Not Ubuntu 22.04 (2.35) or RHEL 9 (2.34): the libraries theseus ships (`libstdc++`, `libcrypt`, `libexpat`) already need 2.36, as does the bookworm pg_search. No musl bundle. |
 | Windows (x86_64) | what theseus's build needs; not checked yet (#397) |
 
-Any CPU of the architecture: pgvector is built without `-march=native`.
+pgvector is built without `-march=native`, so it adds no CPU requirement
+beyond those of theseus's and ParadeDB's builds (not checked).
 
 ## Bundle layout
 
@@ -126,11 +134,12 @@ verified there (#397).
 
 ## Releasing
 
-1. Pull requests that touch `rust/pgdist/**`, `rust/bml-pgserver/**` or the
-   workflow build all five targets and smoke-test each published archive,
-   unpacked outside the build folder. They never publish.
+1. Pull requests that touch `rust/pgdist/**`, `rust/bml-pgserver/**`,
+   `rust/bml-setup/**` or the workflow build all five targets and
+   smoke-test each release archive (`out/<name>.tar.gz`), unpacked outside
+   the build folder. They never publish.
 2. After merge, run the `pgdist` workflow by hand with `publish=true` on
-   `master` (the publish job refuses any other branch). It
+   `master` (a `publish=true` run from any other branch fails at once). It
    creates the release `pgdist-<version>` with the five tarballs and their
    `.sha256` files. The notes list every input and link the pg_search
    source.

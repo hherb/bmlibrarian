@@ -6,8 +6,8 @@
 #
 # Output: rust/pgdist/out/bml-pgdist-<version>-<target>.tar.gz (+ .sha256).
 # Needs curl, jq, tar, git and gh (for the attestation check), plus make, file,
-# otool, xcrun and pkgutil on macOS; make, file, ldd, objdump, dpkg-deb and
-# docker on Linux; nmake, cl, dumpbin and cygpath on Windows (Git Bash in an
+# otool, xcrun and pkgutil on macOS; make, file, objdump, dpkg-deb and docker
+# on Linux; nmake, cl, dumpbin and cygpath on Windows (Git Bash in an
 # MSVC developer environment).
 # Developer docs: doc/developers/pgdist.md.
 set -euo pipefail
@@ -39,19 +39,23 @@ fetch() {
   [ "$got" = "$3" ] || die "checksum mismatch for $1: expected $3, got $got"
 }
 
-# The minimum macOS version a Mach-O file was built for.
+# The minimum macOS version a Mach-O file was built for. awk reads all its
+# input: exiting early could SIGPIPE otool under pipefail.
 macho_minos() {
   otool -l "$1" | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { b = 1 }
-    b && ($1 == "minos" || $1 == "version") { print $2; exit }'
+    b && !done && ($1 == "minos" || $1 == "version") { print $2; done = 1 }'
 }
 
 # Succeeds when version $1 is no newer than version $2.
 version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$2" ]; }
+# The OS-floor checks below rest on this ordering.
+version_le 2.36 2.36 && version_le 2.4 2.36 && version_le 10.13 11.0 \
+  && ! version_le 2.38 2.36 && ! version_le 11.0 10.13 || die "sort -V does not order versions"
 
 need curl jq tar git gh
 case "$TARGET" in
   *-apple-darwin) need make file otool xcrun pkgutil ;;
-  *-linux-gnu) need make file ldd objdump dpkg-deb docker ;;
+  *-linux-gnu) need make file objdump dpkg-deb docker ;;
   *-windows-msvc) need nmake cl dumpbin cygpath ;;
 esac
 jq -e --arg t "$TARGET" '.targets[$t]' "$INPUTS" >/dev/null || die "unknown target $TARGET"
@@ -59,6 +63,7 @@ VERSION="$(jqr .version "$INPUTS")"
 NAME="bml-pgdist-$VERSION-$TARGET"
 ROOT="$OUT/$NAME"
 input() { jqr --arg t "$TARGET" ".targets[\$t]$1" "$INPUTS"; }
+case "$TARGET" in *-linux-gnu) LINUX_IMAGE="$(jqr .linux_build.image "$INPUTS")" ;; esac
 
 rm -rf "$WORK" "$ROOT"
 mkdir -p "$WORK" "$ROOT/ext/lib/postgresql" "$ROOT/ext/share/postgresql/extension" "$ROOT/notices"
@@ -78,20 +83,24 @@ PG="$ROOT/pg"
 # Prune what fresh installs never use: LLVM (the server runs with jit = off)
 # and Python (fresh installs have no plpython3u).
 find "$PG" \( -name 'libLLVM*' -o -name 'llvmjit*' -o -name '*plpython*' -o -name 'libpython*' \) -prune -exec rm -rf {} +
-rm -rf "$PG/lib/Python" "$PG/lib/bitcode" "$PG/lib/postgresql/bitcode"
+# lib/python3.* is the CPython standard library theseus ships with it.
+rm -rf "$PG/lib/Python" "$PG"/lib/python3* "$PG/lib/bitcode" "$PG/lib/postgresql/bitcode"
 # On Windows theseus copies a whole CPython into bin/ for plpython3u; bin/ is
 # where Windows looks for DLLs, never bin/DLLs, so the server needs none of it.
 case "$TARGET" in
   *-windows-msvc)
-    rm -rf "$PG"/bin/python*.exe "$PG"/bin/python*.dll "$PG/bin/Lib" "$PG/bin/DLLs" "$PG/dependency-notices/python" ;;
+    rm -rf "$PG"/bin/python*.exe "$PG"/bin/python*.dll "$PG/bin/Lib" "$PG/bin/DLLs" "$PG/dependency-notices/python"
+    # The globs match nothing if theseus renames its CPython; say so.
+    ! compgen -G "$PG/bin/[Pp]ython*" >/dev/null || die "CPython is still in $PG/bin" ;;
 esac
 
 # --- pgvector (from source) --------------------------------------------------
 PGV="$WORK/pgvector"
 git clone -q --depth 1 --branch "$(jqr .pgvector.tag "$INPUTS")" "$(jqr .pgvector.repo "$INPUTS")" "$PGV"
 [ "$(git -C "$PGV" rev-parse HEAD)" = "$(jqr .pgvector.commit "$INPUTS")" ] || die "pgvector tag does not match the pinned commit"
-# OPTFLAGS= drops pgvector's default -march=native: the bundle must run on
-# any CPU of its architecture, not only ones like the build machine's.
+# On macOS and Linux, OPTFLAGS= drops pgvector's default -march=native, so it
+# runs on any CPU of its architecture, not only ones like the build machine's
+# (Makefile.win sets no such flag).
 case "$TARGET" in
   *-windows-msvc)
     # MSVC's link.exe must come before Git's /usr/bin/link; nmake's switches
@@ -104,14 +113,16 @@ case "$TARGET" in
     # The bundle was configured --with-llvm and against the build machine's
     # SDK; build without bitcode, against this machine's SDK, for the oldest
     # macOS the PostgreSQL binaries run on (else the runner's own).
-    MACOSX_DEPLOYMENT_TARGET="$(macho_minos "$PG/bin/postgres")" \
+    MIN_OS="$(macho_minos "$PG/bin/postgres")"
+    [ -n "$MIN_OS" ] || die "cannot read the minimum macOS version of $PG/bin/postgres"
+    MACOSX_DEPLOYMENT_TARGET="$MIN_OS" \
       make -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no OPTFLAGS= PG_SYSROOT="$(xcrun --show-sdk-path)"
     cp "$PGV/vector.dylib" "$ROOT/ext/lib/postgresql/" ;;
   *)
     # In an old-glibc container: built against the runner's glibc (2.38 or
     # newer), pgvector would need it (_GNU_SOURCE turns strtol into
     # __isoc23_strtol@GLIBC_2.38). The files are handed back to this user.
-    docker run --rm -v "$PG:$PG:ro" -v "$PGV:$PGV" -w "$PGV" "$(jqr .linux_build.image "$INPUTS")" sh -c '
+    docker run --rm -v "$PG:$PG:ro" -v "$PGV:$PGV" -w "$PGV" "$LINUX_IMAGE" sh -c '
       apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc make libc6-dev >/dev/null \
         && make PG_CONFIG="$1" with_llvm=no OPTFLAGS=
       status=$?; chown -R "$2" .; exit $status' sh "$PG/bin/pg_config" "$(id -u):$(id -g)"
@@ -152,8 +163,6 @@ fi
 # can SIGPIPE the writer and turn a match into "no match".
 case "$TARGET" in
   *-apple-darwin)
-    MIN_OS="$(macho_minos "$PG/bin/postgres")"
-    [ -n "$MIN_OS" ] || die "cannot read the minimum macOS version of $PG/bin/postgres"
     while IFS= read -r f; do
       if file -b "$f" | grep 'Mach-O' >/dev/null; then
         deps="$(otool -L "$f")" || die "otool failed on $f"
@@ -161,20 +170,32 @@ case "$TARGET" in
           die "$f still links a pruned library"
         fi
         minos="$(macho_minos "$f")"
-        version_le "${minos:-0}" "$MIN_OS" || die "$f needs macOS $minos, newer than the bundle's $MIN_OS"
+        [ -n "$minos" ] || die "cannot read the minimum macOS version of $f"
+        version_le "$minos" "$MIN_OS" || die "$f needs macOS $minos, newer than the bundle's $MIN_OS"
       fi
     done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f) ;;
   *-linux-gnu)
     GLIBC_FLOOR="$(jqr .linux_build.glibc "$INPUTS")"
+    ELFS=()
     while IFS= read -r f; do
       if file -b "$f" | grep 'ELF' >/dev/null; then
-        deps="$(ldd "$f" 2>&1)" || true  # ldd fails on a static file; "not found" is what counts
-        if grep 'not found' <<<"$deps" >/dev/null; then die "$f has a missing library"; fi
+        ELFS+=("$f")
         refs="$(objdump -p "$f")" || die "objdump failed on $f"
+        # No GLIBC reference at all (a static file) needs no glibc.
         newest="$({ grep -o 'GLIBC_[0-9][0-9.]*' <<<"$refs" || true; } | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
         version_le "${newest:-0}" "$GLIBC_FLOOR" || die "$f needs glibc $newest, newer than the bundle's $GLIBC_FLOOR"
       fi
-    done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f) ;;
+    done < <(find "$PG/bin" "$PG/lib" "$ROOT/ext" -type f)
+    [ "${#ELFS[@]}" -gt 0 ] || die "no ELF files found in $ROOT"
+    # Resolved on the oldest supported system, not the runner: its loader
+    # reports a missing library and a too-new symbol version (GLIBC_*,
+    # GLIBCXX_*) alike as "not found". ldd fails on a static file; only
+    # "not found" counts.
+    deps="$(docker run --rm -v "$ROOT:$ROOT:ro" "$LINUX_IMAGE" \
+      sh -c 'for f; do echo "$f:"; ldd "$f" 2>&1 || :; done' sh "${ELFS[@]}")" \
+      || die "running ldd in $LINUX_IMAGE failed"
+    missing="$(awk '/:$/ { f = $0 } /not found/ { print f, $0 }' <<<"$deps")"
+    [ -z "$missing" ] || die "libraries missing on glibc $GLIBC_FLOOR:"$'\n'"$missing" ;;
   *-windows-msvc)
     while IFS= read -r f; do
       out="$(dumpbin -nologo -dependents "$(cygpath -w "$f")")" || die "dumpbin failed on $f"
@@ -211,6 +232,9 @@ jq -n --arg version "$VERSION" --arg target "$TARGET" --argjson pg_search "$HAS_
 ARCHIVE="$OUT/$NAME.tar.gz"
 # COPYFILE_DISABLE: no AppleDouble ._* entries from macOS's tar.
 COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" -C "$OUT" "$NAME"
+# The installer refuses an archive with anything beside the bundle folder.
+stray="$(tar -tzf "$ARCHIVE" | { grep -Ev "^$NAME(/|\$)" || true; })"
+[ -z "$stray" ] || die "unexpected entries in $ARCHIVE:"$'\n'"$stray"
 echo "$(sha256_of "$ARCHIVE")  $NAME.tar.gz" > "$ARCHIVE.sha256"
 rm -rf "$WORK"
 echo "built $ARCHIVE (pg_search: $HAS_PG_SEARCH)"

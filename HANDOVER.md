@@ -12,20 +12,23 @@ off new work. Longer-term structural items live in
 
 - **pgdist portability before the first release** (2026-11-11, PR #420,
   closes #418, #416; `pgdist` PR run green on all 5 targets).
-  `build.sh`: pgvector is built with `OPTFLAGS=` everywhere (its default
+  `build.sh`: pgvector is built with `OPTFLAGS=` on macOS/Linux (its default
   `-march=native` would have crashed on CPUs older than the runner's), on
   Linux inside `linux_build.image` (bookworm, pinned by digest, via
   `docker`), on macOS with `MACOSX_DEPLOYMENT_TARGET` = the minimum macOS of
   `pg/bin/postgres` (15.0). A link-check pass after all components covers
-  `pg/` **and** `ext/`: macOS pruned-library + minimum-OS check, Linux
-  `ldd` + no glibc newer than `linux_build.glibc` (**2.36**: theseus's own
+  `pg/` **and** `ext/`: macOS pruned-library + minimum-OS check (unreadable
+  minimum = error), Linux `ldd` inside `linux_build.image` (so too-new
+  `GLIBCXX_*` is caught too) + no glibc newer than `linux_build.glibc` (**2.36**: theseus's own
   `libstdc++`/`libcrypt`/`libexpat` already need it, so Ubuntu 22.04 and
   RHEL 9 are out regardless), Windows `dumpbin -dependents` (no LLVM/Python;
   it caught the CPython theseus copies into `bin/` — `python*.exe/.dll`,
-  `bin/Lib`, `bin/DLLs` — now pruned);
-  `COPYFILE_DISABLE=1` tar. Workflow: `rust/bml-pgserver/**` in PR paths,
-  smoke test runs on the unpacked archive in `$RUNNER_TEMP`, publish only from
-  `refs/heads/master`. Rust: the bundle move retries on `PermissionDenied`
+  `bin/Lib`, `bin/DLLs` — now pruned, and a leftover `bin/python*` fails; macOS/Linux also drop the
+  `lib/python3.*` stdlib theseus ships, 23 MB on macOS);
+  `COPYFILE_DISABLE=1` tar, and the build fails on any archive entry beside
+  the bundle folder. Workflow: `rust/bml-pgserver/**` and `rust/bml-setup/**`
+  in PR paths, smoke test runs on the unpacked archive in `$RUNNER_TEMP`, a
+  `publish=true` run off `refs/heads/master` fails at once. Rust: the bundle move retries on `PermissionDenied`
   (Windows only, 6 tries from 100 ms, `rename_with_retry`) and fails with its
   own sentence; `ensure_pgdist` returns warnings instead of a `fresh` flag (a
   failed archive delete is a warning, not a failed step); `bundled_database`

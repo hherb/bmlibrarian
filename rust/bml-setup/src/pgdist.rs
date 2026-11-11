@@ -283,7 +283,7 @@ fn unpack_into(
 }
 
 /// `std::fs::rename`, retried with a growing wait while it fails with
-/// "permission denied", up to [`RENAME_ATTEMPTS`] times.
+/// "permission denied"; tried at most [`RENAME_ATTEMPTS`] times in all.
 fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut wait = RENAME_FIRST_BACKOFF;
     let mut attempt = 1;
@@ -485,8 +485,11 @@ mod tests {
         assert!(!seeded.exists(), "the archive is deleted once unpacked");
         let pgdist = cfg.join(PGDIST_DIR_NAME);
         assert!(!pgdist.join(format!(".{VERSION}{PARTIAL_SUFFIX}")).exists());
-        // The archive is gone and the release cannot be fetched, so this
-        // succeeds only by finding the installed bundle.
+        // The archive is gone, the release cannot be fetched and no longer
+        // lists this target, so this succeeds only by finding the installed
+        // bundle.
+        let mut release = release;
+        release.assets.clear();
         let (again, warnings) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(again, got);
