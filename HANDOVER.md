@@ -10,8 +10,8 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **pgdist portability before the first release** (2026-11-11, branch
-  `fix/pgdist-portability`, #418 items 1–5 and the open #416 items).
+- **pgdist portability before the first release** (2026-11-11, PR #420,
+  closes #418, #416; `pgdist` PR run green on all 5 targets).
   `build.sh`: pgvector is built with `OPTFLAGS=` everywhere (its default
   `-march=native` would have crashed on CPUs older than the runner's), on
   Linux inside `linux_build.image` (bookworm, pinned by digest, via
@@ -20,7 +20,9 @@ off new work. Longer-term structural items live in
   `pg/` **and** `ext/`: macOS pruned-library + minimum-OS check, Linux
   `ldd` + no glibc newer than `linux_build.glibc` (**2.36**: theseus's own
   `libstdc++`/`libcrypt`/`libexpat` already need it, so Ubuntu 22.04 and
-  RHEL 9 are out regardless), Windows `dumpbin -dependents` (no LLVM/Python);
+  RHEL 9 are out regardless), Windows `dumpbin -dependents` (no LLVM/Python;
+  it caught the CPython theseus copies into `bin/` — `python*.exe/.dll`,
+  `bin/Lib`, `bin/DLLs` — now pruned);
   `COPYFILE_DISABLE=1` tar. Workflow: `rust/bml-pgserver/**` in PR paths,
   smoke test runs on the unpacked archive in `$RUNNER_TEMP`, publish only from
   `refs/heads/master`. Rust: the bundle move retries on `PermissionDenied`
