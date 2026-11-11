@@ -15,6 +15,10 @@ pub const INCLUDE_LINE: &str = "include 'bml.conf'";
 /// Where the server listens: loopback only, never the network.
 pub const LISTEN_ADDRESS: &str = "127.0.0.1";
 
+/// JIT compilation is off on every private server, because the bundled
+/// PostgreSQL ships without LLVM.
+pub const JIT_SETTING: &str = "jit = off";
+
 /// Separator between entries of a PostgreSQL path-list setting.
 pub const PATH_LIST_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
 
@@ -64,6 +68,7 @@ pub fn render_bml_conf(cfg: &ServerConfig) -> String {
         format!("listen_addresses = {}", quote_conf_value(LISTEN_ADDRESS)),
         "unix_socket_directories = ''".to_owned(),
         "password_encryption = 'scram-sha-256'".to_owned(),
+        JIT_SETTING.to_owned(),
         format!(
             "dynamic_library_path = {}",
             quote_conf_value(&path_list("$libdir", &cfg.extension_dirs, EXT_LIB_SUBDIR))
@@ -147,6 +152,18 @@ mod tests {
         let text = render_bml_conf(&cfg);
         assert!(text.contains("dynamic_library_path = '$libdir'"));
         assert!(!text.contains("shared_preload_libraries"));
+    }
+
+    #[test]
+    fn renders_jit_off() {
+        for preload_pg_search in [false, true] {
+            let cfg = ServerConfig {
+                port: 5418,
+                extension_dirs: vec![],
+                preload_pg_search,
+            };
+            assert!(render_bml_conf(&cfg).lines().any(|l| l == "jit = off"));
+        }
     }
 
     #[test]

@@ -52,3 +52,9 @@ LONG_bmlibrarian_results_20251126_220515.json
 
 # Rust workspace build output
 rust/target/
+
+# Brainstorming companion mockups
+.superpowers/
+
+# pgdist bundles built by rust/pgdist/build.sh
+rust/pgdist/out/

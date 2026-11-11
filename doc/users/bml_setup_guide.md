@@ -23,7 +23,7 @@ Python program (`.env`, `config.json`).
 ## Running it
 
 ```
-bml setup --pg-bindir /path/to/postgresql18/bin
+bml setup
 ```
 
 You see one line when each step starts and ends (a skipped step only gets
@@ -47,14 +47,35 @@ Useful options:
 
 ## Choosing a database
 
-**A private database (default).** Point `--pg-bindir` at a PostgreSQL 18
-installation (the folder with `initdb`). Setup creates a database for
+> **Not available yet (2026-11-11):** the ready-made database below is built
+> but not yet published, so until a later `bml` release `bml setup` without
+> `--pg-bindir` or `--existing-server` stops at the Database step with a
+> message saying so. Use `--pg-bindir` (below) meanwhile.
+
+**A private database (default).** With no database options, setup
+downloads BMLibrarian's own PostgreSQL 18 (with the `vector` extension, and
+`pg_search` on Apple-silicon Macs and Linux) and creates a database for
 BMLibrarian only, in `<BMLibrarian folder>/pgdata` or the folder given with
-`--data-dir`, and listens on this computer only. If your PostgreSQL has the
-`pg_search` extension in its own folder, add `--extension-dir FOLDER`
-(repeat for more folders). `--data-dir` and `--extension-dir` only work
-together with `--pg-bindir`. On later runs you can leave all three out: setup
-continues with the saved database. Setup warns if `pg_search` is missing.
+`--data-dir`. It listens on this computer only. The program files go into
+`<BMLibrarian folder>/pgdist/18.6-r1/` (about 360 MB); the download (about
+115 MB) is checked against a fixed checksum before anything is unpacked. On
+Intel Macs and Windows there is no `pg_search`, so setup warns that the BM25
+search index is missing; BMLibrarian will fall back to PostgreSQL's built-in
+text search there.
+
+If you already set up a database with an earlier `bml setup`, a later run
+continues with that one and downloads nothing. Passing `--data-dir` then is
+only allowed with that database's own folder; setup refuses a different one
+rather than ignore it.
+
+To use a PostgreSQL 18 installation of your own instead, point `--pg-bindir`
+at its bin folder (the one with `initdb`); add `--extension-dir FOLDER` for a
+`pg_search` kept in its own folder (repeat for more folders).
+`--extension-dir` only works together with `--pg-bindir`.
+
+If no ready-made database exists for your computer (for example Windows on
+ARM), the Database step fails with a message saying so; use `--pg-bindir` or
+`--existing-server`.
 
 **A PostgreSQL you already have.** Use it instead with:
 

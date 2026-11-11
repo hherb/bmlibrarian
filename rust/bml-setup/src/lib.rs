@@ -6,6 +6,7 @@ pub mod hardware;
 pub mod models;
 pub mod ollama;
 pub mod ollama_install;
+pub mod pgdist;
 pub mod runner;
 mod steps;
 
@@ -269,6 +270,7 @@ mod tests {
 
     #[test]
     fn download_lock_is_exclusive_until_dropped() {
+        let _spawn = crate::test_support::spawn_guard();
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("cfg");
         let held = lock_downloads(&cfg).unwrap();
@@ -292,6 +294,18 @@ pub(crate) mod test_support {
     };
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::sync::{Mutex, MutexGuard};
+
+    static SPAWN: Mutex<()> = Mutex::new(());
+
+    /// Held by tests that start child processes and by the download-lock
+    /// test: a child forked on another thread shares the lock file until it
+    /// execs, so a lock dropped then and taken again at once looks held.
+    pub fn spawn_guard() -> MutexGuard<'static, ()> {
+        SPAWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Scripted client: one canned answer for every call, recording URLs.
     pub struct Fake {

@@ -1,0 +1,62 @@
+{
+  "version": "18.6-r1",
+  "pgvector": {
+    "repo": "https://github.com/pgvector/pgvector.git",
+    "tag": "v0.8.7",
+    "commit": "f37c13f68b57d2c3472b2214fbcff699d6d34876"
+  },
+  "pg_search_source": "https://github.com/paradedb/paradedb/tree/v0.26.6",
+  "pg_search_license": {
+    "url": "https://raw.githubusercontent.com/paradedb/paradedb/v0.26.6/LICENSE",
+    "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+  },
+  "targets": {
+    "aarch64-apple-darwin": {
+      "postgresql": {
+        "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.6.1/postgresql-18.6.1-aarch64-apple-darwin.tar.gz",
+        "sha256": "89e91cc80650a43d22c018b95ca356a0c9e15838a1182fed2880bfb5d7d9c9a6"
+      },
+      "pg_search": {
+        "kind": "pkg",
+        "url": "https://github.com/paradedb/paradedb/releases/download/v0.26.6/pg_search-pg18-0.26.6.pkg",
+        "sha256": "19086a552da3170b3e6a622d48ad07f6b8174961346eb0c0e49d4a97514e16da"
+      }
+    },
+    "x86_64-apple-darwin": {
+      "postgresql": {
+        "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.6.1/postgresql-18.6.1-x86_64-apple-darwin.tar.gz",
+        "sha256": "4229812543e19c91864ebdf5d8f78883c5816d51d4cc5d065298260c1f64d37e"
+      },
+      "pg_search": null
+    },
+    "x86_64-pc-windows-msvc": {
+      "postgresql": {
+        "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.6.1/postgresql-18.6.1-x86_64-pc-windows-msvc.tar.gz",
+        "sha256": "0c0c845626ed77c605d716051c9e8df3368d07fbbd9f61ea39a4c5c0536fde7e"
+      },
+      "pg_search": null
+    },
+    "x86_64-unknown-linux-gnu": {
+      "postgresql": {
+        "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.6.1/postgresql-18.6.1-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "e84b02dd8d0ce5879fb697330a789231c8b8f8d958dae3ad4d90fecc710b1315"
+      },
+      "pg_search": {
+        "kind": "deb",
+        "url": "https://github.com/paradedb/paradedb/releases/download/v0.26.6/postgresql-18-pg-search_0.26.6-1PARADEDB-bookworm_amd64.deb",
+        "sha256": "65072cd431a7ded29dc645d116ddfdd97e909cf26d919bb39b5b6b0f6629c56d"
+      }
+    },
+    "aarch64-unknown-linux-gnu": {
+      "postgresql": {
+        "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.6.1/postgresql-18.6.1-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "1ab47fa2f06ff70454309ad02e5d89c46488300d43977231481fd6b160b9d556"
+      },
+      "pg_search": {
+        "kind": "deb",
+        "url": "https://github.com/paradedb/paradedb/releases/download/v0.26.6/postgresql-18-pg-search_0.26.6-1PARADEDB-bookworm_arm64.deb",
+        "sha256": "87745bed948b22011d95e0669699dd9d398aa36b21929dca8e34ab18179ddffd"
+      }
+    }
+  }
+}

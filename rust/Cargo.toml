@@ -28,3 +28,5 @@ thiserror = "2"
 getrandom = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system", "disk"] }
 tempfile = "3"
+# Tests only (hashing a fixture); the same version bmlib already pulls in.
+sha2 = "0.10"

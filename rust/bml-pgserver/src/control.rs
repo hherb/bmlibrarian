@@ -2,9 +2,9 @@
 //! plus reading the machine's RAM for the import profile.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
-use crate::error::PgServerError;
+use crate::error::{file_error, PgServerError};
 use crate::state::ServerState;
 
 /// Oldest supported PostgreSQL major version.
@@ -12,6 +12,11 @@ pub const MIN_PG_MAJOR: u32 = 18;
 
 /// The server's log file, inside the data directory.
 pub const SERVER_LOG_NAME: &str = "bml-server.log";
+
+/// What `pg_ctl start` itself prints, inside the data directory. A file, not
+/// a pipe: the server `pg_ctl` starts inherits these handles (on Windows), so
+/// a pipe would not reach end-of-file until the server stops.
+pub const PG_CTL_OUTPUT_NAME: &str = "bml-pg_ctl.out";
 
 /// Seconds `pg_ctl` waits for the server to start or stop.
 pub const PG_CTL_WAIT_SECONDS: u32 = 60;
@@ -66,6 +71,34 @@ pub(crate) fn run(mut command: Command) -> Result<Output, PgServerError> {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         })
     }
+}
+
+/// Run `command` with its output going to the file `output` instead of a
+/// pipe, for a program that leaves a child running on its handles; a failed
+/// exit becomes [`PgServerError::Command`] quoting that file.
+fn run_to_file(mut command: Command, output: &Path) -> Result<(), PgServerError> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let file = std::fs::File::create(output).map_err(file_error(output))?;
+    let stderr = file.try_clone().map_err(file_error(output))?;
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(file)
+        .stderr(stderr)
+        .status()
+        .map_err(|source| PgServerError::Spawn {
+            program: PathBuf::from(&program),
+            source,
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    let printed = std::fs::read_to_string(output)
+        .unwrap_or_else(|e| format!("(cannot read {}: {e})", output.display()));
+    Err(PgServerError::Command {
+        program,
+        status: status.code(),
+        stderr: printed.trim().to_owned(),
+    })
 }
 
 /// The major version of the PostgreSQL in `bindir`, if supported.
@@ -144,7 +177,7 @@ pub fn start(state: &ServerState) -> Result<(), PgServerError> {
         .arg("-w")
         .arg("-t")
         .arg(PG_CTL_WAIT_SECONDS.to_string());
-    run(command).map(drop).map_err(|source| {
+    run_to_file(command, &state.data_dir.join(PG_CTL_OUTPUT_NAME)).map_err(|source| {
         let tail = std::fs::read_to_string(&log)
             .map(|text| last_lines(&text, LOG_TAIL_LINES))
             .unwrap_or_else(|e| format!("(cannot read it: {e})"));

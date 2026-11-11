@@ -28,6 +28,14 @@ pub fn test_extension_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Whether one of the [`test_extension_dirs`] holds pg_search (a pgdist
+/// bundle's extension folder may hold only pgvector).
+pub fn test_provides_pg_search() -> bool {
+    test_extension_dirs()
+        .iter()
+        .any(|d| bml_pgserver::conf::provides_pg_search(d))
+}
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 /// Serialise integration tests so two never race for the same port.

@@ -68,7 +68,7 @@ fn step_database(plan: &SetupPlan) -> StepOutcome {
 /// `outcome` is `expected`, or, when the run supplies no pg_search, the
 /// warning about it.
 fn assert_database(outcome: StepOutcome, expected: StepOutcome) {
-    if common::test_extension_dirs().is_empty() {
+    if !common::test_provides_pg_search() {
         assert!(
             matches!(&outcome, StepOutcome::Warnings(w) if w.iter().any(|m| m.contains("pg_search"))),
             "{outcome:?}"
@@ -147,9 +147,9 @@ fn setup_database_existing_then_resume() {
     );
     let resume = plan(dir_b, None);
     // Resume rebuilds the request with pg_search required (off Windows); the
-    // temp server only has it when the run supplies extension folders.
+    // temp server only has it when the run's extension folders supply it.
     let outcome = step_database(&resume);
-    if common::test_extension_dirs().is_empty() && !cfg!(windows) {
+    if !common::test_provides_pg_search() && !cfg!(windows) {
         assert!(
             matches!(&outcome, StepOutcome::Failed(m) if m.contains("pg_search")),
             "{outcome:?}"

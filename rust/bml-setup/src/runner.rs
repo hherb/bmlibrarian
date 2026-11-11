@@ -11,6 +11,9 @@ use bmlib::publications::fetchers::registry::HttpClient;
 use crate::ollama::OllamaHost;
 use crate::{steps, StepEvent, StepId, StepOutcome};
 
+/// Folder name of the private database inside the configuration folder.
+pub const DEFAULT_DATA_DIR_NAME: &str = "pgdata";
+
 /// Every step, in the order they run.
 pub const ALL_STEPS: [StepId; 6] = [
     StepId::Hardware,
@@ -38,6 +41,14 @@ pub enum DatabasePlan {
     Private(InitRequest),
     /// A PostgreSQL server that already exists.
     Existing(ExternalRequest),
+    /// The saved server if there is one, otherwise a private server from the
+    /// bundled PostgreSQL (`pgdist`), with its data in `data_dir`.
+    Bundled {
+        /// Where the private database lives; `None` means
+        /// `<config dir>/`[`DEFAULT_DATA_DIR_NAME`]. A folder given here must
+        /// be the saved private server's, if one is saved.
+        data_dir: Option<PathBuf>,
+    },
 }
 
 /// What to set up.
@@ -178,5 +189,36 @@ mod tests {
             .filter(|e| matches!(e, StepEvent::Finished(..)))
             .count();
         assert_eq!(finished, ALL_STEPS.len());
+    }
+
+    #[test]
+    fn failed_bundled_database_skips_autostart() {
+        let dir = tempfile::tempdir().unwrap();
+        // A saved (fake) server is resumed and fails, without any download.
+        let saved = bml_pgserver::state::ServerState {
+            bindir: dir.path().join("saved-fake-bin"),
+            data_dir: dir.path().join("saved-data"),
+            port: 5418,
+            extension_dirs: vec![],
+        };
+        bml_pgserver::state::save_state(dir.path(), &saved).unwrap();
+        let plan = SetupPlan {
+            config_dir: dir.path().to_path_buf(),
+            database: Some(DatabasePlan::Bundled { data_dir: None }),
+            ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),
+            skip: set(&[StepId::Ollama, StepId::Models, StepId::EmbeddingModel]),
+        };
+        let out = run_setup(&plan, &Fake::new(), &mut |_| {});
+        assert!(!matches!(out[0].1, StepOutcome::Failed(_)), "{:?}", out[0]);
+        assert!(
+            matches!(&out[1].1, StepOutcome::Failed(m) if m.contains("saved-fake-bin")),
+            "{:?}",
+            out[1]
+        );
+        assert!(
+            matches!(out[2].1, StepOutcome::Skipped { .. }),
+            "{:?}",
+            out[2]
+        );
     }
 }

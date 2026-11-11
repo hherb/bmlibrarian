@@ -10,6 +10,27 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Bundled PostgreSQL (pgdist) for the Rust installer** (2026-11-11,
+  branch `feat/pgdist-bundled-postgres`). New design for the whole
+  milestone: `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
+  (Mac-first GUI wizard → private PG18 → medRxiv download/full text/chunk
+  embedding → test search; owner decisions recorded there). Piece 1 plan:
+  `docs/superpowers/plans/2026-11-11-pgdist.md`. Built: `rust/pgdist/inputs.json`
+  (theseus-rs PG 18.6.1 + attestation, pgvector v0.8.7 from source, ParadeDB
+  pg_search 0.26.6 for macOS arm64/Linux), `rust/pgdist/build.sh`,
+  `.github/workflows/pgdist.yml` (PRs build + smoke-test 5 targets; manual
+  run with `publish=true` releases `pgdist-18.6-r1`), `bml_setup::pgdist`
+  (download under the lock, atomic unpack into `<config>/pgdist/<version>`),
+  `DatabasePlan::Bundled` as the `bml setup` default (a saved server always
+  wins), `jit = off` in `bml.conf`, smoke test `bml-pgserver/tests/extensions.rs`.
+  The macOS arm64 bundle was built and passed every ignored test locally.
+  `pgdist-release.json` has **no assets yet**, so `bml setup` without
+  `--pg-bindir` fails plainly until the release is pinned (Next up). An
+  explicit `--data-dir` must match a saved private server (else refused).
+  `pg_ctl start` now writes to `bml-pg_ctl.out` instead of a pipe: the
+  Windows smoke test hung on it for hours (#397's first item).
+  Docs: `doc/developers/pgdist.md`.
+
 - **Paper weight: thousands separators; unmarked placeholders not cached**
   (2026-11-10, closes #358, #357; owner decision: no `VERSION` bump, so no
   full re-run). `extractors.SAMPLE_SIZE_NUMBER` (`(?<!\d)(\d{1,3}(?:,\d{3})+(?!\d)|\d+)`)
@@ -299,58 +320,14 @@ off new work. Longer-term structural items live in
   process start time with `started_at` (#388, PR #407). `task_failed` carries `will_retry`. Docs: `queue_recovery.md`,
   `queue_system_architecture.md`, `queue_management_guide.md`,
   `queue_system_guide.md`. Tests: `tests/test_queue_ownership.py`.
-- **Queue worker robustness** (2026-11-05, closes #294). The orchestrator
-  worker (`_process_agent_tasks(agent_type)` → `_run_task`) looks the agent
-  up per task, so re-registering a type takes effect on its next task. An
-  exception from the agent method is retried (`Task execution failed:
-  <Type>: <msg>`, traceback logged), and so is an `sqlite3.Error` while
-  storing the result; a result json cannot serialise
-  (`ResultNotSerializableError` from `complete_task`, raised before any
-  write) fails the task without retry, so side effects are not repeated.
-  Any other error after a claim goes to `_abandon_task` (FAILED, `Worker
-  error: ...`; if that write fails too, a `task_stuck` event), so a claimed
-  task never stays PROCESSING silently. A worker whose queue file is deleted
-  stops (`worker_stopped`). `QueueManager` installs one `atexit` hook and one
-  SIGINT/SIGTERM handler per process (weak registry of live managers;
-  signals only from the main thread); a signal exits `128 + signum`, waits
-  at most 1 s for the SQLite lock (atexit retries), cleanup errors go to
-  stderr, a deleted queue file is skipped; `db_path` is stored absolute.
-  `recover_stuck_tasks(mark_as_failed=False)` counts the reset as a retry and
-  fails a task out of retries (dead-process tasks are failed in either
-  mode). Docs: `queue_recovery.md`, `queue_system_architecture.md`,
-  `doc/users/queue_management_guide.md`, `queue_system_guide.md`. Tests:
-  `tests/test_queue_worker_robustness.py`. Follow-ups #384–#386: done
-  (entry above).
-- **A migration that fails after startup is fatal too; no direct
-  `DatabaseManager()` callers left** (2026-11-05, closes #381; owner
-  decision: central fatal handler). `database.set_migration_failure_handler()`
-  registers a function that `get_db_manager()` calls (outside its lock,
-  handler errors logged) the first time it remembers a `MigrationError`.
-  `check_schema_current()` installs a Qt handler whenever it lets the window
-  start: a `QObject` notifier created in the GUI thread queues the same
-  "Database Migration Failed" dialog onto it, calls
-  `QApplication.closeAllWindows()` (the main window stops plugin workers in
-  `closeEvent`) and `QApplication.exit(MIGRATION_FAILED_EXIT_CODE)` (1), and
-  re-posts the exit with `QTimer.singleShot(0, …)` (an `exit()` from a
-  modal's loop before `app.exec()` is otherwise lost). `run_pubmed_search_lab()`
-  now returns `app.exec()` (it dropped the exit code). `audit_validation_gui.py`
-  no longer calls the nonexistent `plugin.initialize()` (it crashed every
-  start). `audit_validation_gui.py`
-  (reviewer lookup), the audit validation plugin (its `cleanup()` no longer
-  closes the shared pool), `scripts/pdflab.py` and `thesaurus_import_cli.py`
-  use `get_db_manager()`; the GUIs skip their own error message on
-  `MigrationError`. `tests/conftest.py::isolate_tests` resets the handler.
-  Tests: `tests/test_auto_migration_failure.py`
-  (`TestLateMigrationFailureIsFatal`, `TestDirectCallersUseSharedManager`).
-- **Failed auto-migration is fatal** (2026-11-04, closes #342, #378,
-  #379): a pending migration that fails raises `MigrationError`
-  (a `RuntimeError`), `get_db_manager()` remembers and re-raises it, and
-  Qt entry points run `gui/qt/core/schema_check.check_schema_current()`
-  (critical dialog, exit 1; skipped by `fact_checker_review_gui.py
-  --db-file`). Other manager construction errors are not remembered, and
-  failing to *check* for migrations is not fatal. Docs: `architecture.md` "Failed
-  auto-migration is fatal", `SETUP_GUIDE.md`, `troubleshooting.md`. Tests:
-  `tests/test_auto_migration_failure.py`.
+- **Queue worker robustness** (2026-11-05, #294): per-task agent lookup,
+  retries vs. `ResultNotSerializableError`, `_abandon_task`, one
+  atexit/signal hook per process. Docs `queue_recovery.md`; tests
+  `tests/test_queue_worker_robustness.py`.
+- **Failed migrations are fatal, at startup and later** (2026-11-04/05,
+  #342, #378, #379, #381): `MigrationError`, `set_migration_failure_handler()`,
+  Qt `check_schema_current()`; no direct `DatabaseManager()` callers left.
+  Tests `tests/test_auto_migration_failure.py`.
 - **Early November / October 2026 slices** (details in git history and the
   linked docs): fact-check verdicts stored with their evidence in one
   transaction (`FactCheckerDB.store_verdict`), audit queries in
@@ -407,11 +384,26 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- Rust installer: a plan for obtaining portable PG18 + pgvector + pg_search
-  binaries (ROADMAP); then piece 4, the Tauri first-run screen driving
-  `bml-setup` (the "before piece 4" API items of #401 are done; call
-  `check_request` before `run_setup`). `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner
-  decision on a port taken after init).
+- **Rust installer (current focus)**, design
+  `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
+  1. Finish piece 1 (plan Task 5): after the pgdist PR merges, check the
+     `pgdist` workflow's PR run was green on all 5 targets, ask the owner to
+     run it with `publish=true`, copy the 5 assets' size/sha256 from
+     `gh release view pgdist-18.6-r1 --json assets` into
+     `rust/bml-setup/pgdist-release.json` (`bundled_release_is_well_formed`
+     then checks every asset; add `release_pins_every_target`), and verify `bml setup` (fresh
+     `--config-dir`, skip autostart/ollama/models/embedding-model) on the Mac.
+     Fold in the deferred review minors, #416, and drop the "Not available
+     yet" note from `doc/users/bml_setup_guide.md`. If the PR's Windows
+     pgdist job failed, fix `build.sh` first (its Windows path is unverified).
+     **Before publishing**, fix #418 (Linux pgvector built on the 24.04
+     runner needs glibc ≥ 2.38; macOS deployment target; Windows rename).
+  2. Then pieces 2–6 of the design, each with its own plan: `bml-db` + schema
+     (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
+     pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are
+     bmlib Python+Rust work), hybrid search, Tauri wizard, signed Mac `.dmg`.
+  `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
+  port taken after init).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single

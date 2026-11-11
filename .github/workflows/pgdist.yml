@@ -1,0 +1,103 @@
+name: pgdist
+
+# Builds the bundled PostgreSQL 18 + pgvector (+ pg_search where ParadeDB
+# ships it: macOS arm64, Linux) ("pgdist") for every target from the pins in
+# rust/pgdist/inputs.json, smoke-tests each bundle, and, only when run with
+# publish=true, publishes them as a GitHub Release.
+# Actions are pinned by commit: their output is what users install.
+# Developer docs: doc/developers/pgdist.md.
+
+on:
+  # Pull requests build and smoke-test only; publishing needs the manual run
+  # (which GitHub offers once this file is on the default branch).
+  pull_request:
+    paths:
+      - "rust/pgdist/**"
+      - ".github/workflows/pgdist.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the bundles as a GitHub Release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+      - name: Build the bundle
+        run: bash rust/pgdist/build.sh ${{ matrix.target }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Smoke-test the bundle
+        working-directory: rust
+        # A hang (as `pg_ctl start` once did on Windows) fails fast instead of
+        # holding the runner for hours.
+        timeout-minutes: 30
+        run: |
+          root="$PWD/pgdist/out/bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Only the extension smoke test: the rest of the ignored suite is
+            # not yet verified on Windows (#397). MSVC's link.exe must come
+            # before Git's /usr/bin/link, which Git Bash puts first.
+            PATH="$(dirname "$(command -v cl)"):$PATH"
+            BML_TEST_PG_BINDIR="$(cygpath -w "$root/pg/bin")" BML_TEST_PG_EXTENSION_DIRS="$(cygpath -w "$root/ext")" \
+              cargo test -p bml-pgserver --test extensions -- --include-ignored
+          else
+            BML_TEST_PG_BINDIR="$root/pg/bin" BML_TEST_PG_EXTENSION_DIRS="$root/ext" \
+              cargo test -- --include-ignored
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pgdist-${{ matrix.target }}
+          path: |
+            rust/pgdist/out/*.tar.gz
+            rust/pgdist/out/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(jq -er .version rust/pgdist/inputs.json)"
+          jq -er '
+            "PostgreSQL 18 with pgvector and (macOS arm64, Linux) pg_search, for the BMLibrarian installer.\n",
+            "Inputs (each verified by sha256 before use):",
+            (.targets | to_entries[] | "- \(.key): PostgreSQL \(.value.postgresql.url) (sha256 \(.value.postgresql.sha256))"
+              + (if .value.pg_search then "; pg_search \(.value.pg_search.url) (sha256 \(.value.pg_search.sha256))" else "; no pg_search" end)),
+            "- pgvector \(.pgvector.tag), built from source at commit \(.pgvector.commit)",
+            "",
+            "pg_search is licensed under the GNU AGPL-3.0; the exact source of these builds: \(.pg_search_source // error("inputs.json has no pg_search_source"))"
+          ' rust/pgdist/inputs.json > notes.md
+          # Tag the commit that was built, not whatever the default branch is now.
+          gh release create "pgdist-$version" --target "$GITHUB_SHA" --title "pgdist $version" --notes-file notes.md dist/*

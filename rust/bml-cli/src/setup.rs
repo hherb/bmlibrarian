@@ -10,7 +10,7 @@ use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{check_request, is_loopback_host, ExternalRequest};
 use bml_pgserver::init::InitRequest;
 use bml_setup::ollama::{parse_ollama_host, pull_http_client, OLLAMA_HOST_ENV};
-use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan};
+use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
 use bml_setup::{StepEvent, StepId, StepOutcome};
 use clap::{Args, ValueEnum};
 
@@ -19,8 +19,6 @@ use crate::server::{say, EXIT_FAILED, EXIT_HEALTHY};
 /// Environment variable holding the existing server's superuser password
 /// (kept out of the command line, where other users could read it).
 pub const PASSWORD_ENV: &str = "BML_PG_SUPERUSER_PASSWORD";
-/// Folder name of the private database inside the configuration folder.
-pub const DEFAULT_DATA_DIR_NAME: &str = "pgdata";
 /// Least time between two progress lines of one step.
 pub const PROGRESS_PRINT_INTERVAL: Duration = Duration::from_secs(5);
 /// Bytes in a megabyte, for progress lines.
@@ -57,11 +55,13 @@ impl SkipStep {
 /// `bml setup` options.
 #[derive(Args)]
 pub struct SetupArgs {
-    /// Folder with the PostgreSQL 18 tools, to set up a private database.
+    /// Folder with the PostgreSQL 18 tools, to set up a private database from
+    /// them instead of the bundled PostgreSQL.
     #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     pg_bindir: Option<PathBuf>,
-    /// Where the private database lives (default: <config folder>/pgdata).
-    #[arg(long, value_name = "DIR", requires = "pg_bindir")]
+    /// Where the private database lives (default: <config folder>/pgdata); must
+    /// match the saved one when a private database is already set up.
+    #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     data_dir: Option<PathBuf>,
     /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
     #[arg(long = "extension-dir", value_name = "DIR", requires = "pg_bindir")]
@@ -150,15 +150,19 @@ fn database_plan(
         check_request(&req)?;
         return Ok(Some(DatabasePlan::Existing(req)));
     }
-    Ok(args.pg_bindir.as_ref().map(|bindir| {
-        DatabasePlan::Private(InitRequest {
+    Ok(Some(match &args.pg_bindir {
+        Some(bindir) => DatabasePlan::Private(InitRequest {
             bindir: bindir.clone(),
             data_dir: args
                 .data_dir
                 .clone()
                 .unwrap_or_else(|| config_dir.join(DEFAULT_DATA_DIR_NAME)),
             extension_dirs: args.extension_dirs.clone(),
-        })
+        }),
+        // A saved server is resumed; otherwise the bundled PostgreSQL.
+        None => DatabasePlan::Bundled {
+            data_dir: args.data_dir.clone(),
+        },
     }))
 }
 

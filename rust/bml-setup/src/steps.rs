@@ -14,7 +14,10 @@ use crate::hardware::{disk_warnings, mounts, ram_warning};
 use crate::models::{model_action, ApprovedModel, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
-use crate::runner::{DatabasePlan, SetupPlan};
+use crate::pgdist::{
+    bundled_release, ensure_pgdist, host_target, no_bundle_message, PgdistRelease,
+};
+use crate::runner::{DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
 use crate::{report_warnings, sweep_stale_parts};
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
 
@@ -165,12 +168,58 @@ fn database_outcome(
 ) -> StepOutcome {
     let mut warnings = Vec::new();
     if !pg_search {
-        warnings.push("pg_search is not installed, so the database has no BM25 search index. For a private server, run setup again with --extension-dir pointing at a pg_search build.".to_string());
+        warnings.push("pg_search is not installed, so the database has no BM25 search index. To add it, run setup again with --pg-bindir and an --extension-dir holding a pg_search build.".to_string());
     }
     if app_password_reset {
         warnings.push(format!("the server refused the password in {APP_ENV_FILE_NAME}, so it was reset; other copies of the old password no longer work."));
     }
     report_warnings(StepId::Database, warnings, created(created_now), report)
+}
+
+/// Set up (or resume) the private server `req` describes.
+fn private_database(
+    req: &InitRequest,
+    config_dir: &Path,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<StepOutcome, SetupError> {
+    let o = init(req, config_dir)?;
+    Ok(database_outcome(
+        o.created,
+        o.pg_search,
+        o.app_password_reset,
+        report,
+    ))
+}
+
+/// A new private server from `release`'s bundle for `target` (`None`: this
+/// computer has no bundle target), with its data in `data_dir`.
+fn bundled_database(
+    config_dir: &Path,
+    data_dir: &Path,
+    release: &PgdistRelease,
+    target: Option<&str>,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<StepOutcome, SetupError> {
+    let Some(target) = target else {
+        return Ok(StepOutcome::Failed(no_bundle_message(None)));
+    };
+    if !release.assets.contains_key(target) {
+        return Ok(StepOutcome::Failed(no_bundle_message(Some(target))));
+    }
+    let (pg, _) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
+        report(StepEvent::Progress {
+            step: StepId::Database,
+            detail: "Downloading the database".into(),
+            done,
+            total,
+        });
+    })?;
+    let req = InitRequest {
+        bindir: pg.bindir(),
+        data_dir: data_dir.to_path_buf(),
+        extension_dirs: vec![pg.extension_dir()],
+    };
+    private_database(&req, config_dir, report)
 }
 
 /// Set up the chosen database, or resume the saved one.
@@ -179,15 +228,8 @@ fn database(
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
-    let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
-        let o = init(req, dir)?;
-        Ok(database_outcome(
-            o.created,
-            o.pg_search,
-            o.app_password_reset,
-            report,
-        ))
-    };
+    let private =
+        |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| private_database(req, dir, report);
     let existing = |req: &ExternalRequest, report: &mut dyn FnMut(StepEvent)| {
         let o = adopt(req, dir)?;
         Ok(database_outcome(
@@ -197,27 +239,63 @@ fn database(
             report,
         ))
     };
+    // The saved private server, else the saved existing one, else `None`.
+    let resume_saved = |report: &mut dyn FnMut(StepEvent)| {
+        if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
+            let req = InitRequest {
+                bindir: s.bindir,
+                data_dir: s.data_dir,
+                extension_dirs: s.extension_dirs,
+            };
+            return private(&req, report).map(Some);
+        }
+        match saved_external_request(dir)? {
+            Some(req) => existing(&req, report).map(Some),
+            None => Ok(None),
+        }
+    };
     match &plan.database {
         Some(DatabasePlan::Private(req)) => private(req, report),
         Some(DatabasePlan::Existing(req)) => existing(req, report),
-        None => {
-            if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-                return private(
-                    &InitRequest {
-                        bindir: s.bindir,
-                        data_dir: s.data_dir,
-                        extension_dirs: s.extension_dirs,
-                    },
-                    report,
-                );
+        Some(DatabasePlan::Bundled { data_dir }) => {
+            if let Some(wanted) = data_dir {
+                // A folder the person named must not be silently replaced by
+                // the saved server's.
+                if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
+                    let requested =
+                        std::path::absolute(wanted).map_err(|source| SetupError::Io {
+                            path: wanted.clone(),
+                            source,
+                        })?;
+                    if requested != s.data_dir {
+                        return Err(PgServerError::StateMismatch {
+                            field: "data folder",
+                            saved: s.data_dir,
+                            requested,
+                        }
+                        .into());
+                    }
+                }
+                if load_external_state(dir)
+                    .map_err(PgServerError::from)?
+                    .is_some()
+                {
+                    return Ok(StepOutcome::Failed(
+                        "--data-dir does not apply: this setup uses an existing server. Run setup without --data-dir.".into(),
+                    ));
+                }
             }
-            match saved_external_request(dir)? {
-                Some(req) => existing(&req, report),
-                None => Ok(StepOutcome::Failed(
-                    "no database chosen; pass --pg-bindir or --existing-server".into(),
-                )),
+            if let Some(outcome) = resume_saved(report)? {
+                return Ok(outcome);
             }
+            let data_dir = data_dir
+                .clone()
+                .unwrap_or_else(|| dir.join(DEFAULT_DATA_DIR_NAME));
+            bundled_database(dir, &data_dir, &bundled_release()?, host_target(), report)
         }
+        None => Ok(resume_saved(report)?.unwrap_or_else(|| {
+            StepOutcome::Failed("no database chosen; pass --pg-bindir or --existing-server".into())
+        })),
     }
 }
 
@@ -225,7 +303,8 @@ fn database(
 fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
     let existing_server = matches!(plan.database, Some(DatabasePlan::Existing(_)))
-        || (plan.database.is_none()
+        // No plan, or the bundled plan, resumes whatever was saved.
+        || (matches!(plan.database, None | Some(DatabasePlan::Bundled { .. }))
             && load_state(dir).map_err(PgServerError::from)?.is_none()
             && load_external_state(dir)
                 .map_err(PgServerError::from)?
@@ -371,6 +450,91 @@ mod tests {
         (200, serde_json::json!({"models": models}).to_string())
     }
 
+    /// A plan for the bundled database, with `data_dir` if given.
+    fn bundled(dir: &Path, data_dir: Option<PathBuf>) -> SetupPlan {
+        SetupPlan {
+            database: Some(DatabasePlan::Bundled { data_dir }),
+            ..plan(dir)
+        }
+    }
+
+    /// Save a private server whose (fake) bin folder `init` cannot use.
+    fn save_fake_private_server(dir: &Path) {
+        let saved = bml_pgserver::state::ServerState {
+            bindir: dir.join("saved-fake-bin"),
+            data_dir: std::path::absolute(dir.join("saved-data")).unwrap(),
+            port: 5418,
+            extension_dirs: vec![],
+        };
+        bml_pgserver::state::save_state(dir, &saved).unwrap();
+    }
+
+    #[test]
+    fn bundled_plan_resumes_saved_private_server() {
+        let dir = tempfile::tempdir().unwrap();
+        save_fake_private_server(dir.path());
+        // Resuming the saved (fake) server fails on its bin folder, which
+        // proves the saved state was chosen over the bundle.
+        let err = database(&bundled(dir.path(), None), &mut |_| {}).unwrap_err();
+        assert!(err.to_string().contains("saved-fake-bin"), "{err}");
+        assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn bundled_plan_refuses_another_data_dir_than_the_saved_one() {
+        let dir = tempfile::tempdir().unwrap();
+        save_fake_private_server(dir.path());
+        let other = dir.path().join("elsewhere");
+        let err = database(&bundled(dir.path(), Some(other)), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("saved-data") && err.contains("elsewhere"),
+            "{err}"
+        );
+        assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn bundled_plan_refuses_data_dir_for_a_saved_existing_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = bml_pgserver::external::ExternalState {
+            host: "127.0.0.1".into(),
+            port: 5432,
+            superuser: "postgres".into(),
+        };
+        bml_pgserver::external::save_external_state(dir.path(), &state).unwrap();
+        let outcome = database(
+            &bundled(dir.path(), Some(dir.path().join("pgdata"))),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("--data-dir")),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn bundle_missing_for_this_computer_fails_plainly() {
+        let dir = tempfile::tempdir().unwrap();
+        let release = PgdistRelease {
+            version: "18.6-r1".into(),
+            base_url: "https://example.invalid/".into(),
+            assets: std::collections::BTreeMap::new(),
+        };
+        let data = dir.path().join("pgdata");
+        for target in [Some("aarch64-apple-darwin"), None] {
+            let outcome =
+                bundled_database(dir.path(), &data, &release, target, &mut |_| {}).unwrap();
+            assert!(
+                matches!(&outcome, StepOutcome::Failed(m) if m.contains("--pg-bindir")),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn autostart_without_private_database_fails_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -494,6 +658,26 @@ mod tests {
         assert_eq!(
             ollama_models_dir(None, Some(home), Some(&service)),
             service_models
+        );
+    }
+
+    #[test]
+    fn bundled_plan_with_saved_existing_server_skips_autostart() {
+        use bml_pgserver::external::{save_external_state, ExternalState};
+        let dir = tempfile::tempdir().unwrap();
+        save_external_state(
+            dir.path(),
+            &ExternalState {
+                host: "127.0.0.1".into(),
+                port: 5433,
+                superuser: "postgres".into(),
+            },
+        )
+        .unwrap();
+        let outcome = autostart(&bundled(dir.path(), None)).unwrap();
+        assert!(
+            matches!(outcome, StepOutcome::Skipped { .. }),
+            "{outcome:?}"
         );
     }
 

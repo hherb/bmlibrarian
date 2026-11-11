@@ -189,9 +189,6 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
   returned instead of the bare results dict. Only worth it once something
   beyond the docs calls this API.
 
-- Portable PG18/pgvector/pg_search binaries for the one-click installer (own
-  plan; `bml setup --pg-bindir` meanwhile).
-
 ## Tracked separately on GitHub
 
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker
