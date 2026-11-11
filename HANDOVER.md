@@ -27,6 +27,8 @@ off new work. Longer-term structural items live in
   `pgdist-release.json` has **no assets yet**, so `bml setup` without
   `--pg-bindir` fails plainly until the release is pinned (Next up). An
   explicit `--data-dir` must match a saved private server (else refused).
+  `pg_ctl start` now writes to `bml-pg_ctl.out` instead of a pipe: the
+  Windows smoke test hung on it for hours (#397's first item).
   Docs: `doc/developers/pgdist.md`.
 
 - **Paper weight: thousands separators; unmarked placeholders not cached**

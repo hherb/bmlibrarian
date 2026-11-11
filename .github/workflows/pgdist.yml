@@ -49,6 +49,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Smoke-test the bundle
         working-directory: rust
+        # A hang (as `pg_ctl start` once did on Windows) fails fast instead of
+        # holding the runner for hours.
+        timeout-minutes: 30
         run: |
           root="$PWD/pgdist/out/bml-pgdist-$(jq -r .version pgdist/inputs.json | tr -d '\r')-${{ matrix.target }}"
           if [ "$RUNNER_OS" = "Windows" ]; then
