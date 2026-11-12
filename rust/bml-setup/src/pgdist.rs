@@ -45,6 +45,16 @@ pub struct PgdistAsset {
     pub sha256: String,
 }
 
+/// The oldest systems a release's bundles run on (`doc/developers/pgdist.md`
+/// "What the bundles need").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PgdistRequires {
+    /// Oldest macOS, such as `15.0` (`inputs.json` `macos_build.min_os`).
+    pub macos: String,
+    /// Oldest glibc on Linux, such as `2.36` (`inputs.json` `linux_build.glibc`).
+    pub glibc: String,
+}
+
 /// A published pgdist release.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PgdistRelease {
@@ -52,6 +62,8 @@ pub struct PgdistRelease {
     pub version: String,
     /// URL the asset file names are appended to (ends in `/`).
     pub base_url: String,
+    /// The oldest systems its bundles run on.
+    pub requires: PgdistRequires,
     /// Assets by target triple; a target without one has no bundle.
     pub assets: BTreeMap<String, PgdistAsset>,
 }
@@ -63,6 +75,9 @@ struct Manifest {
     version: String,
     /// The target triple it was built for.
     target: String,
+    /// Whether it holds pg_search (`None`: a manifest that does not say).
+    #[serde(default)]
+    pg_search: Option<bool>,
 }
 
 /// An unpacked bundle.
@@ -136,6 +151,113 @@ pub fn no_bundle_message(target: Option<&str>) -> String {
         "No ready-made database is published for this computer ({}) yet; pass --pg-bindir with a PostgreSQL 18 bin folder, or --existing-server.",
         target.unwrap_or("this platform")
     )
+}
+
+/// Whether dot-separated version `found` is older than `floor` (`14.7.1` is
+/// older than `15.0`, `15` is not); `None` when either is not such a version.
+#[must_use]
+pub fn older_than(found: &str, floor: &str) -> Option<bool> {
+    let parse = |v: &str| -> Option<Vec<u32>> {
+        let mut parts = v
+            .trim()
+            .split('.')
+            .map(|p| p.parse().ok())
+            .collect::<Option<Vec<u32>>>()?;
+        // `15` and `15.0` are the same version.
+        while parts.len() > 1 && parts.last() == Some(&0) {
+            parts.pop();
+        }
+        Some(parts)
+    };
+    Some(parse(found)? < parse(floor)?)
+}
+
+/// What to tell someone whose `system` (`macOS` or `glibc`) at version
+/// `found` is older than the bundle's `floor`; `None` when it is not, or
+/// when `found` is unknown or unreadable: then the download goes ahead and
+/// the server's own start-up error says what is missing.
+#[must_use]
+pub fn too_old_message(system: &str, floor: &str, found: Option<&str>) -> Option<String> {
+    let found = found?;
+    older_than(found, floor)?.then(|| {
+        format!(
+            "This computer has {system} {found}, but the ready-made database needs {system} {floor} or newer. Update the system, or pass --pg-bindir with a PostgreSQL 18 bin folder, or --existing-server."
+        )
+    })
+}
+
+/// The macOS version this computer runs, if it runs macOS.
+fn macos_version() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        sysinfo::System::os_version()
+    } else {
+        None
+    }
+}
+
+/// The glibc version this computer runs (`getconf GNU_LIBC_VERSION` prints
+/// `glibc 2.36`), if this bml is a glibc build and the version is readable.
+fn glibc_version() -> Option<String> {
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        return None;
+    }
+    let out = Command::new("getconf")
+        .arg("GNU_LIBC_VERSION")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .strip_prefix("glibc ")
+        .map(|v| v.trim().to_string())
+}
+
+/// Why `target`'s bundle cannot run on this computer, when its macOS or
+/// glibc is older than `requires` says ([`too_old_message`]); checked before
+/// downloading, so an old system is told so instead of fetching ~100 MB
+/// that `initdb` then fails to start.
+#[must_use]
+pub fn system_too_old(target: &str, requires: &PgdistRequires) -> Option<String> {
+    if target.ends_with("-apple-darwin") {
+        too_old_message("macOS", &requires.macos, macos_version().as_deref())
+    } else if target.ends_with("-linux-gnu") {
+        too_old_message("glibc", &requires.glibc, glibc_version().as_deref())
+    } else {
+        None
+    }
+}
+
+/// Whether the bundle whose PostgreSQL bin folder is `bindir` says in its
+/// manifest that it was built without pg_search (no ParadeDB build exists
+/// for its target); `false` when `bindir` is not in a bundle or the
+/// manifest does not say.
+#[must_use]
+pub fn built_without_pg_search(bindir: &Path) -> bool {
+    if !bindir.ends_with(PGDIST_BIN_SUBDIR) {
+        return false;
+    }
+    let depth = Path::new(PGDIST_BIN_SUBDIR).components().count();
+    bindir.ancestors().nth(depth).is_some_and(|root| {
+        matches!(
+            read_manifest(root),
+            Ok(Some(Manifest {
+                pg_search: Some(false),
+                ..
+            }))
+        )
+    })
+}
+
+/// Delete the downloaded `archive` once its bundle is installed; a warning
+/// when it is there and cannot be deleted (none when it is already gone).
+fn remove_archive(archive: &Path) -> Vec<String> {
+    match std::fs::remove_file(archive) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => vec![format!(
+            "the database is installed, but its downloaded archive {} could not be deleted ({e}); you can delete it yourself.",
+            archive.display()
+        )],
+        _ => Vec::new(),
+    }
 }
 
 /// A [`SetupError`] carrying `message` as is.
@@ -304,7 +426,8 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The bundle for `target`, downloaded and unpacked under `config_dir` unless
 /// it already is, with warnings about anything left over that did not stop
-/// the install (a downloaded archive that could not be deleted). `progress`
+/// the install (a downloaded archive that could not be deleted; an earlier
+/// run's leftover is deleted, or warned about, on every later run). `progress`
 /// gets bytes done and total while downloading.
 ///
 /// # Errors
@@ -318,8 +441,14 @@ pub fn ensure_pgdist(
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<(InstalledPgdist, Vec<String>), SetupError> {
     let dir = config_dir.join(PGDIST_DIR_NAME);
+    let downloads = dir.join(DOWNLOADS_DIR_NAME);
+    // Without the lock: once the bundle is in place no setup reads its
+    // archive any more.
+    let leftover = |asset: Option<&PgdistAsset>| {
+        asset.map_or_else(Vec::new, |a| remove_archive(&downloads.join(&a.file)))
+    };
     if let Some(found) = installed(&dir, &release.version, target)? {
-        return Ok((found, Vec::new()));
+        return Ok((found, leftover(release.assets.get(target))));
     }
     let asset = release
         .assets
@@ -329,9 +458,8 @@ pub fn ensure_pgdist(
     // Another setup may have finished the install between the check above
     // and taking the lock.
     if let Some(found) = installed(&dir, &release.version, target)? {
-        return Ok((found, Vec::new()));
+        return Ok((found, leftover(Some(asset))));
     }
-    let downloads = dir.join(DOWNLOADS_DIR_NAME);
     sweep_stale_parts(&downloads, &asset.file)?;
     let url = format!("{}{}", release.base_url, asset.file);
     let archive = bmlib::embed::download_verified(
@@ -347,14 +475,7 @@ pub fn ensure_pgdist(
     )
     .map_err(|e| other(format!("Downloading the database ({url}) failed: {e}. Check your network, then run `bml setup` again.")))?;
     let found = install_from_archive(&archive, &dir, &release.version, target)?;
-    let mut warnings = Vec::new();
-    if let Err(e) = std::fs::remove_file(&archive) {
-        warnings.push(format!(
-            "the database is installed, but its downloaded archive {} could not be deleted ({e}); you can delete it yourself.",
-            archive.display()
-        ));
-    }
-    Ok((found, warnings))
+    Ok((found, remove_archive(&archive)))
 }
 
 #[cfg(test)]
@@ -390,11 +511,20 @@ mod tests {
         path
     }
 
+    /// Floors every computer that runs these tests meets.
+    fn test_requires() -> PgdistRequires {
+        PgdistRequires {
+            macos: "10.0".into(),
+            glibc: "2.0".into(),
+        }
+    }
+
     /// A release with a placeholder asset for [`TARGET`] (never downloadable).
     fn release_with_asset() -> PgdistRelease {
         PgdistRelease {
             version: VERSION.into(),
             base_url: "https://example.invalid/".into(),
+            requires: test_requires(),
             assets: BTreeMap::from([(
                 TARGET.to_string(),
                 PgdistAsset {
@@ -418,6 +548,7 @@ mod tests {
         PgdistRelease {
             version: VERSION.into(),
             base_url: "http://127.0.0.1:1/".into(),
+            requires: test_requires(),
             assets: BTreeMap::from([(
                 TARGET.to_string(),
                 PgdistAsset {
@@ -469,6 +600,132 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    #[test]
+    fn release_floors_match_the_build_inputs() {
+        let requires = bundled_release().unwrap().requires;
+        let inputs: serde_json::Value =
+            serde_json::from_str(include_str!("../../pgdist/inputs.json")).unwrap();
+        assert_eq!(inputs["macos_build"]["min_os"], requires.macos.as_str());
+        assert_eq!(inputs["linux_build"]["glibc"], requires.glibc.as_str());
+        for floor in [&requires.macos, &requires.glibc] {
+            assert_eq!(older_than(floor, floor), Some(false), "{floor}");
+        }
+    }
+
+    #[test]
+    fn versions_compare_numerically() {
+        let cases = [
+            ("14.7.1", "15.0", Some(true)),
+            ("15", "15.0", Some(false)),
+            ("15.0", "15", Some(false)),
+            ("15.0.1", "15.0", Some(false)),
+            ("26.1", "15.0", Some(false)),
+            ("2.35", "2.36", Some(true)),
+            ("2.36", "2.36", Some(false)),
+            ("2.100", "2.36", Some(false)),
+            (" 2.39\n", "2.36", Some(false)),
+            ("2.36-ubuntu", "2.36", None),
+            ("", "2.36", None),
+            ("2.36", "x", None),
+        ];
+        for (found, floor, expected) in cases {
+            assert_eq!(older_than(found, floor), expected, "{found:?} vs {floor}");
+        }
+    }
+
+    #[test]
+    fn too_old_system_is_told_the_way_out() {
+        let m = too_old_message("glibc", "2.36", Some("2.35")).unwrap();
+        assert!(
+            m.contains("glibc 2.35") && m.contains("2.36") && m.contains("--pg-bindir"),
+            "{m}"
+        );
+        assert_eq!(too_old_message("glibc", "2.36", Some("2.36")), None);
+        // Unknown or unreadable: let it through.
+        assert_eq!(too_old_message("macOS", "15.0", None), None);
+        assert_eq!(too_old_message("macOS", "15.0", Some("fifteen")), None);
+        // No floor for a Windows bundle yet (#397).
+        assert_eq!(
+            system_too_old(
+                "x86_64-pc-windows-msvc",
+                &bundled_release().unwrap().requires
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn this_computers_system_version_is_readable() {
+        let _spawn = crate::test_support::spawn_guard();
+        let version = if cfg!(target_os = "macos") {
+            macos_version()
+        } else if cfg!(all(target_os = "linux", target_env = "gnu")) {
+            glibc_version()
+        } else {
+            return;
+        };
+        let version = version.expect("the system version is readable");
+        assert_eq!(older_than(&version, "1.0"), Some(false), "{version}");
+        let target = host_target().unwrap();
+        assert_eq!(system_too_old(target, &test_requires()), None);
+    }
+
+    #[test]
+    fn pg_search_flag_is_read_from_the_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(VERSION);
+        let bindir = root.join(PGDIST_BIN_SUBDIR);
+        std::fs::create_dir_all(&bindir).unwrap();
+        let manifest = root.join(PGDIST_MANIFEST_FILE);
+        let write = |pg_search: &str| {
+            std::fs::write(
+                &manifest,
+                format!(r#"{{"version":"{VERSION}","target":"{TARGET}"{pg_search}}}"#),
+            )
+            .unwrap();
+        };
+        write(r#","pg_search":false"#);
+        assert!(built_without_pg_search(&bindir));
+        assert!(!built_without_pg_search(&root.join("bin")));
+        write(r#","pg_search":true"#);
+        assert!(!built_without_pg_search(&bindir));
+        write("");
+        assert!(!built_without_pg_search(&bindir));
+        std::fs::remove_file(&manifest).unwrap();
+        assert!(!built_without_pg_search(&bindir));
+    }
+
+    #[test]
+    fn leftover_archive_is_deleted_by_a_later_run() {
+        let _spawn = crate::test_support::spawn_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let a = archive(tmp.path(), VERSION, TARGET, true);
+        let release = release_for(&a);
+        let bytes = std::fs::read(&a).unwrap();
+        seed_download(&cfg, &release, &bytes);
+        ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        // As if the first run could not delete it.
+        let left = seed_download(&cfg, &release, &bytes);
+        let (_, warnings) = ensure_pgdist(&cfg, &release, TARGET, &mut |_, _| {}).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!left.exists());
+    }
+
+    #[test]
+    fn undeletable_archive_is_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A non-empty folder in its place cannot be removed as a file.
+        let blocked = tmp.path().join("archive.tar.gz");
+        std::fs::create_dir_all(blocked.join("x")).unwrap();
+        let warnings = remove_archive(&blocked);
+        assert!(
+            warnings.len() == 1 && warnings[0].contains("could not be deleted"),
+            "{warnings:?}"
+        );
+        assert!(remove_archive(&tmp.path().join("gone")).is_empty());
     }
 
     #[test]

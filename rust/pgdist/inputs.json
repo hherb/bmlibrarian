@@ -9,6 +9,9 @@
     "image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
     "glibc": "2.36"
   },
+  "macos_build": {
+    "min_os": "15.0"
+  },
   "pg_search_source": "https://github.com/paradedb/paradedb/tree/v0.26.6",
   "pg_search_license": {
     "url": "https://raw.githubusercontent.com/paradedb/paradedb/v0.26.6/LICENSE",

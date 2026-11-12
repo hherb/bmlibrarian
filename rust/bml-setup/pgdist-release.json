@@ -1,6 +1,10 @@
 {
   "version": "18.6-r1",
   "base_url": "https://github.com/hherb/bmlibrarian/releases/download/pgdist-18.6-r1/",
+  "requires": {
+    "macos": "15.0",
+    "glibc": "2.36"
+  },
   "assets": {
     "aarch64-apple-darwin": {
       "file": "bml-pgdist-18.6-r1-aarch64-apple-darwin.tar.gz",

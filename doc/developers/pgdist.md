@@ -37,10 +37,10 @@ they can be forked if the project is abandoned.
 
 | File | Role |
 |---|---|
-| `rust/pgdist/inputs.json` | Every input, pinned: theseus URL and sha256 per target, the pgvector tag and commit, the pg_search asset URL and sha256 per target (`null` = none), the pg_search licence text and sha256, and `linux_build`: the Linux build image (pinned by digest) and its glibc floor |
+| `rust/pgdist/inputs.json` | Every input, pinned: theseus URL and sha256 per target, the pgvector tag and commit, the pg_search asset URL and sha256 per target (`null` = none), the pg_search licence text and sha256, `linux_build`: the Linux build image (pinned by digest) and its glibc floor, and `macos_build.min_os`: the macOS floor (the minimum macOS of theseus's `postgres`) |
 | `rust/pgdist/build.sh <target>` | Builds one bundle into `rust/pgdist/out/` (git-ignored) |
 | `.github/workflows/pgdist.yml` | Runs the build on five runners, smoke-tests each bundle, and publishes the release (manual run with `publish=true`) |
-| `rust/bml-setup/pgdist-release.json` | What `bml` installs: release base URL and, per target, the asset file, size and sha256 |
+| `rust/bml-setup/pgdist-release.json` | What `bml` installs: release base URL, `requires` (the `macos` and `glibc` floors, equal to `inputs.json`'s), and, per target, the asset file, size and sha256 |
 | `rust/bml-setup/src/pgdist.rs` | Download, verify and atomic install (`ensure_pgdist`) |
 
 ## What `build.sh` does
@@ -56,13 +56,18 @@ they can be forked if the project is abandoned.
    against `pg/bin/pg_config`; on macOS and Linux with `OPTFLAGS=`
    (pgvector's default there is `-march=native`, which would tie the bundle
    to CPUs like the build runner's and crash with "illegal instruction" on
-   older ones; `Makefile.win` sets no such flag):
+   older ones; `Makefile.win` sets no such flag). A `make -n` dry run
+   with the same arguments is saved first, and the build fails if it
+   contains `-march=native`, so a pgvector that stops honouring
+   `OPTFLAGS=` cannot slip through (the smoke test runs on the build
+   machine's own CPU and would not notice):
    - macOS/Linux: `make … with_llvm=no`, because theseus was configured
      `--with-llvm`.
    - macOS also: `PG_SYSROOT=$(xcrun --show-sdk-path)`, because theseus
      recorded its build runner's SDK path, and `MACOSX_DEPLOYMENT_TARGET`
      set to the minimum macOS of `pg/bin/postgres` (else the dylib would
-     need the runner's own macOS).
+     need the runner's own macOS). That minimum must equal
+     `macos_build.min_os`, or the build fails.
    - Linux: inside the `linux_build.image` container (Debian bookworm,
      pinned by digest), not on the runner. Built against the runner's glibc
      (2.39), pgvector would need glibc 2.38: PGXS passes `-D_GNU_SOURCE`,
@@ -99,6 +104,12 @@ they can be forked if the project is abandoned.
 | macOS (arm64, Intel) | the minimum macOS of theseus's binaries: 15.0 for 18.6.1 |
 | Linux (x86_64, arm64) | glibc 2.36 or newer (`linux_build.glibc`): Debian 12, Ubuntu 23.04, Fedora 37, RHEL 10 or later. Not Ubuntu 22.04 (2.35) or RHEL 9 (2.34): the libraries theseus ships (`libstdc++`, `libcrypt`, `libexpat`) already need 2.36, as does the bookworm pg_search. No musl bundle. |
 | Windows (x86_64) | what theseus's build needs; not checked yet (#397) |
+
+Before downloading, `bml setup` compares this computer with
+`pgdist-release.json`'s `requires` (`pgdist::system_too_old`): the macOS
+product version (`sysinfo`), or glibc from `getconf GNU_LIBC_VERSION`. An
+older system fails the Database step with the way out (`--pg-bindir`,
+`--existing-server`). A version it cannot read lets the download go ahead.
 
 pgvector is built without `-march=native`, so it adds no CPU requirement
 beyond those of theseus's and ParadeDB's builds (not checked).
@@ -150,7 +161,9 @@ verified there (#397).
    `inputs.json`'s and its `base_url` must be
    `…/releases/download/pgdist-<version>/` (the test
    `bundled_release_is_well_formed` checks both; `release_pins_every_target`
-   checks that every target in `inputs.json` has an asset). Then commit.
+   checks that every target in `inputs.json` has an asset). Its `requires`
+   must equal `inputs.json`'s `macos_build.min_os` and `linux_build.glibc`
+   (`release_floors_match_the_build_inputs`). Then commit.
 
 ## Bumping an input
 
