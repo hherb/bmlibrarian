@@ -2,3 +2,6 @@
 //! server, the database), and the database schema the library is stored in.
 
 pub mod library;
+pub mod schema;
+
+pub use schema::*;

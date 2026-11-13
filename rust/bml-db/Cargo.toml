@@ -13,6 +13,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+bml-pgserver.workspace = true
+postgres.workspace = true
 tempfile.workspace = true
 
 [lints]

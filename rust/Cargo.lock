@@ -158,7 +158,9 @@ dependencies = [
 name = "bml-db"
 version = "0.1.0"
 dependencies = [
+ "bml-pgserver",
  "bmlib",
+ "postgres",
  "serde",
  "serde_json",
  "tempfile",
