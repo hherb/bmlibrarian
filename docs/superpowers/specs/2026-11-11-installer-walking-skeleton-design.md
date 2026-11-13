@@ -446,6 +446,18 @@ All of the 2026-11-07 spec's anti-goals, plus:
 - Binary sourcing as in Goal A (owner asked for the most reliable and
   sustainable option and approved the recommendation).
 
+### Made by the owner (2026-11-14, after measuring)
+
+- bmlib's bioRxiv/medRxiv fetcher gains a `/details/` mode (Python + Rust,
+  bmlib #341). `/pubs/` lists only preprints later published in a journal and
+  carries no JATS link or version.
+- MECA bulk is the main full-text route for the backlog, and piece 3c
+  follows piece 3. Measured: medRxiv answered 429 after about 10 requests
+  at one request every 1.5 s, and blocked most PDFs with a Cloudflare 403.
+  At one request every 30 s there was no 429, and JATS came through for 28
+  of 30 papers.
+  Details are in `docs/superpowers/plans/2026-11-14-library-pipeline.md`.
+
 ### Made by Claude (open to correction)
 
 - Intel Macs use the text-search fallback (no pg_search build exists).
@@ -487,8 +499,9 @@ Each piece gets its own implementation plan (`docs/superpowers/plans/`).
      JATS or PDF are stored abstract-only and retried.
    - **3c, in bmlib (Python + Rust):** the MECA reader and requester-pays S3
      download, then the bulk route in the pipeline and the wizard's AWS-key
-     fields. It can also land after 3, since paper by paper covers "All of
-     medRxiv" too, only more slowly.
+     fields. It follows 3 directly (owner, 2026-11-14): medRxiv rate-limits
+     paper-by-paper downloads, so MECA is the practical route to the
+     backlog's full text.
 4. **Hybrid search**: the crate and `bml search`.
 5. **`bml-app`**: the six wizard screens and the search screen over pieces
    1–4.
