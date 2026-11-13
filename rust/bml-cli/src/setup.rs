@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use bml_db::library::resolve_library;
 use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{check_request, is_loopback_host, ExternalRequest};
 use bml_pgserver::init::InitRequest;
+use bml_pgserver::state::load_state;
 use bml_setup::ollama::{parse_ollama_host, pull_http_client, OLLAMA_HOST_ENV};
-use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
+use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan};
 use bml_setup::{StepEvent, StepId, StepOutcome};
 use clap::{Args, ValueEnum};
 
@@ -29,6 +31,8 @@ const MEGABYTE: u64 = 1_000_000;
 pub enum SkipStep {
     /// The PostgreSQL database.
     Database,
+    /// The library folder and the database schema.
+    Library,
     /// Starting the database at login.
     Autostart,
     /// The Ollama runtime.
@@ -44,6 +48,7 @@ impl SkipStep {
     fn id(self) -> StepId {
         match self {
             Self::Database => StepId::Database,
+            Self::Library => StepId::Library,
             Self::Autostart => StepId::Autostart,
             Self::Ollama => StepId::Ollama,
             Self::Models => StepId::Models,
@@ -59,10 +64,10 @@ pub struct SetupArgs {
     /// them instead of the bundled PostgreSQL.
     #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     pg_bindir: Option<PathBuf>,
-    /// Where the private database lives (default: <config folder>/pgdata); must
-    /// match the saved one when a private database is already set up.
-    #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
-    data_dir: Option<PathBuf>,
+    /// The library folder for your papers and, for a new private database,
+    /// its data (default: ~/BMLibrarian); must match the saved one once set up.
+    #[arg(long, value_name = "DIR")]
+    library_dir: Option<PathBuf>,
     /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
     #[arg(long = "extension-dir", value_name = "DIR", requires = "pg_bindir")]
     extension_dirs: Vec<PathBuf>,
@@ -130,6 +135,7 @@ fn read_password(from_stdin: bool) -> Result<String, PgServerError> {
 fn database_plan(
     args: &SetupArgs,
     config_dir: &Path,
+    home: Option<PathBuf>,
 ) -> Result<Option<DatabasePlan>, PgServerError> {
     if let Some(raw) = &args.existing_server {
         let (host, port) = parse_host_port(raw)?;
@@ -153,16 +159,18 @@ fn database_plan(
     Ok(Some(match &args.pg_bindir {
         Some(bindir) => DatabasePlan::Private(InitRequest {
             bindir: bindir.clone(),
-            data_dir: args
-                .data_dir
-                .clone()
-                .unwrap_or_else(|| config_dir.join(DEFAULT_DATA_DIR_NAME)),
+            // A saved private server keeps its folder; a new one goes in the
+            // library.
+            data_dir: match load_state(config_dir)? {
+                Some(saved) => saved.data_dir,
+                None => resolve_library(config_dir, args.library_dir.as_deref(), home)
+                    .map_err(|e| fail(e.to_string()))?
+                    .database_dir(),
+            },
             extension_dirs: args.extension_dirs.clone(),
         }),
         // A saved server is resumed; otherwise the bundled PostgreSQL.
-        None => DatabasePlan::Bundled {
-            data_dir: args.data_dir.clone(),
-        },
+        None => DatabasePlan::Bundled,
     }))
 }
 
@@ -228,12 +236,15 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
             )))
         }
     };
+    let home = std::env::home_dir();
     let plan = SetupPlan {
         config_dir: config_dir.to_path_buf(),
-        database: database_plan(&args, config_dir)?,
+        database: database_plan(&args, config_dir, home.clone())?,
         ollama_host: parse_ollama_host(args.ollama_host.as_deref().or(host.as_deref()))
             .map_err(|e| fail(e.to_string()))?,
         skip: args.skip.iter().map(|s| s.id()).collect::<BTreeSet<_>>(),
+        library_dir: args.library_dir.clone(),
+        home,
     };
     let results = run_setup(&plan, &pull_http_client(), &mut make_reporter());
     say!("\nSummary");
@@ -258,6 +269,83 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bml_db::library::{ensure_library, Library, DATABASE_DIR_NAME, DEFAULT_LIBRARY_DIR_NAME};
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        args: SetupArgs,
+    }
+
+    fn setup_args(args: &[&str]) -> SetupArgs {
+        Wrap::parse_from(std::iter::once("bml").chain(args.iter().copied())).args
+    }
+
+    fn private_data_dir(plan: Option<DatabasePlan>) -> PathBuf {
+        match plan {
+            Some(DatabasePlan::Private(req)) => req.data_dir,
+            _ => panic!("not a private plan"),
+        }
+    }
+
+    #[test]
+    fn new_private_server_goes_in_the_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, home) = (tmp.path().join("cfg"), tmp.path().join("home"));
+        let plan = database_plan(
+            &setup_args(&["--pg-bindir", "/b"]),
+            &cfg,
+            Some(home.clone()),
+        );
+        assert_eq!(
+            private_data_dir(plan.unwrap()),
+            home.join(DEFAULT_LIBRARY_DIR_NAME).join(DATABASE_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn saved_private_server_keeps_its_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let legacy = cfg.join("pgdata");
+        let saved = bml_pgserver::state::ServerState {
+            bindir: PathBuf::from("/b"),
+            data_dir: legacy.clone(),
+            port: 5418,
+            extension_dirs: vec![],
+        };
+        std::fs::create_dir_all(&cfg).unwrap();
+        bml_pgserver::state::save_state(&cfg, &saved).unwrap();
+        let plan = database_plan(
+            &setup_args(&["--pg-bindir", "/b"]),
+            &cfg,
+            Some(tmp.path().join("home")),
+        );
+        assert_eq!(private_data_dir(plan.unwrap()), legacy);
+    }
+
+    #[test]
+    fn mismatching_library_is_refused_before_any_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let saved = Library {
+            dir: tmp.path().join("saved"),
+        };
+        ensure_library(&cfg, &saved).unwrap();
+        let other = tmp.path().join("other");
+        let args = setup_args(&[
+            "--pg-bindir",
+            "/b",
+            "--library-dir",
+            other.to_str().unwrap(),
+        ]);
+        let err = database_plan(&args, &cfg, None)
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("saved") && err.contains("other"), "{err}");
+        assert!(!other.exists());
+    }
 
     #[test]
     fn host_port_forms() {

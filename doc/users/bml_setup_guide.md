@@ -11,13 +11,15 @@ where it stopped.
 |---|---|
 | Hardware check | Warns if the computer has less than 16 GB of memory, too little free disk space for the downloads, or a disk whose free space it cannot read. It never stops setup, and the summary repeats its warnings. When Ollama runs on another computer, its disk is not checked. |
 | Database | Sets up the PostgreSQL database BMLibrarian stores its literature in (see "Choosing a database" below). |
+| Library | Creates your library folder (see "Your library folder" below) and brings the database's tables up to date. Safe to repeat; it only adds what is missing. |
 | Start at login | Starts the private database automatically when you log in. |
 | Ollama | Installs or starts Ollama, the program that runs the AI models on your computer. An Ollama you installed yourself (also with Homebrew) is used rather than installed again; if it is a command rather than an app, setup tells you how to start it. |
 | Language models | Downloads the two approved models: `gpt-oss:20b` (about 14 GB) and `medgemma4B_it_q8:latest` (about 5 GB). Other models are never substituted. |
 | Embedding model | Downloads the search model (about 1.2 GB) into `models/` inside the BMLibrarian folder and checks it is intact. |
 
-The BMLibrarian folder is `~/.bmlibrarian` unless you give `--config-dir` or
-set `BML_CONFIG_DIR`. `bml setup` never reads or changes the files of the
+The BMLibrarian folder (settings, passwords, programs) is `~/.bmlibrarian`
+unless you give `--config-dir` or set `BML_CONFIG_DIR`. Your papers live in a
+separate library folder. `bml setup` never reads or changes the files of the
 Python program (`.env`, `config.json`).
 
 ## Running it
@@ -38,20 +40,37 @@ second one stops its download steps with a message saying so.
 Useful options:
 
 - `--skip STEP` leaves a step out; repeat it for several. Steps:
-  `database`, `autostart`, `ollama`, `models`, `embedding-model`. The
-  hardware check cannot be skipped. Skipping `database` also skips
-  `autostart`; skipping `ollama` also skips `models`.
+  `database`, `library`, `autostart`, `ollama`, `models`,
+  `embedding-model`. The hardware check cannot be skipped. Skipping
+  `database` also skips `library` and `autostart`; skipping `ollama` also
+  skips `models`.
+- `--library-dir PATH` chooses the library folder (see below).
 - `--ollama-host URL` (or the `OLLAMA_HOST` variable) says where Ollama is.
   The default is `http://127.0.0.1:11434`.
 - `--config-dir PATH` uses another BMLibrarian folder (put it before `setup`).
+
+## Your library folder
+
+The library folder holds the papers BMLibrarian downloads for you
+(`documents/`) and, for the private database setup installs, the database
+itself (`database/`). It is `~/BMLibrarian` (a visible folder in your home
+folder) unless you choose another with `--library-dir PATH`. Setup remembers
+the folder in `bml-library.json` in the BMLibrarian folder; later runs use it
+without `--library-dir`, and refuse a different one, because moving a
+library is not supported yet. Folders with spaces or accents in their name
+are fine. Keep the library on the computer's own disk for now: external disks
+are not supported yet.
+
+With `--existing-server` the library folder holds only `documents/`; the
+data stays in your own PostgreSQL.
 
 ## Choosing a database
 
 **A private database (default).** With no database options, setup
 downloads BMLibrarian's own PostgreSQL 18 (with the `vector` extension, and
 `pg_search` on Apple-silicon Macs and Linux) and creates a database for
-BMLibrarian only, in `<BMLibrarian folder>/pgdata` or the folder given with
-`--data-dir`. It listens on this computer only. The program files go into
+BMLibrarian only, in the library folder's `database/`. It listens on this
+computer only. The program files go into
 `<BMLibrarian folder>/pgdist/18.6-r1/` (up to about 360 MB); the download (31–32 MB on
 Intel Macs and Windows, 105–115 MB elsewhere) is checked against a fixed checksum before anything is unpacked. On
 Intel Macs and Windows there is no `pg_search`, so setup warns that the BM25
@@ -66,9 +85,8 @@ naming the version found and the one needed. Use `--pg-bindir` with a
 PostgreSQL 18 of your own, or `--existing-server`, instead.
 
 If you already set up a database with an earlier `bml setup`, a later run
-continues with that one and downloads nothing. Passing `--data-dir` then is
-only allowed with that database's own folder; setup refuses a different one
-rather than ignore it.
+continues with that one, wherever it is (databases set up before the library
+folder existed stay in `<BMLibrarian folder>/pgdata`), and downloads nothing.
 
 To use a PostgreSQL 18 installation of your own instead, point `--pg-bindir`
 at its bin folder (the one with `initdb`); add `--extension-dir FOLDER` for a
@@ -108,8 +126,8 @@ disk space, a missing program) and run `bml setup` again. An interrupted languag
 stopped (Ollama keeps the partial data); an interrupted embedding-model or
 Ollama-installer download starts again from the beginning on the next run.
 Later steps still run when an earlier one failed, except those that depend on
-it (start at login needs the database; the models need Ollama). If one
-language model fails, setup still tries the other one.
+it (the library and start at login need the database; the models need
+Ollama). If one language model fails, setup still tries the other one.
 
 An `--existing-server` on another computer, or a password or superuser name
 that cannot be used (empty, or starting or ending with a space), stops setup

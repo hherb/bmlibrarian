@@ -11,6 +11,7 @@ name = "bml"
 path = "src/main.rs"
 
 [dependencies]
+bml-db.workspace = true
 bml-pgserver.workspace = true
 bml-setup.workspace = true
 clap.workspace = true
