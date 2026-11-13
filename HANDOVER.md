@@ -10,8 +10,26 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **pgdist: OS floor checked before download; #420 review follow-ups**
+  (2026-11-13, closes #419, #421). `pgdist-release.json` gains `requires`
+  (`macos` 15.0, `glibc` 2.36; the test `release_floors_match_the_build_inputs`
+  ties them to `inputs.json`'s new `macos_build.min_os` and
+  `linux_build.glibc`, and `build.sh` fails when theseus's `postgres`
+  minimum macOS differs from `macos_build.min_os`). `pgdist::system_too_old`
+  (macOS via `sysinfo`, glibc via `getconf GNU_LIBC_VERSION`; unreadable =
+  let through) fails the Database step before `ensure_pgdist`. The "no
+  pg_search build for this computer" reason now comes from the bundle's
+  `pgdist.json` `pg_search: false` (`built_without_pg_search`), not from
+  "runs from a bundle". `ensure_pgdist` deletes (or warns again about) a
+  leftover archive whenever it finds the bundle installed (only reached
+  while no server is saved; a saved server is resumed first), and
+  `private_database` reports earlier warnings even when `init` fails.
+  `build.sh` saves a `make -n` dry run of pgvector and fails on
+  `-march=native` (macOS/Linux). The macOS/Linux `build.sh` changes run
+  only in the `pgdist` workflow's PR build; not run locally.
+
 - **Bundled PostgreSQL (pgdist), piece 1 of the installer milestone**
-  (2026-11-11, PRs #417, #420 and this one; closes #416, #418). Design:
+  (2026-11-11, PRs #417, #420, #422; closes #416, #418). Design:
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
   (Mac-first GUI wizard → private PG18 → medRxiv download/full text/chunk
   embedding → test search; owner decisions recorded there); plan
@@ -36,8 +54,7 @@ off new work. Longer-term structural items live in
   `server status` exit 0, `\dx` shows vector 0.8.7 + pg_search 0.26.6, a
   second run is "already in place" with no download.
   Docs: `doc/developers/pgdist.md` (Releasing, Bumping an input),
-  `doc/users/bml_setup_guide.md`. Open: #419 (OS check before download),
-  #421 (review follow-ups), #397 (Windows).
+  `doc/users/bml_setup_guide.md`. Open: #397 (Windows).
 
 - **Paper weight: thousands separators; unmarked placeholders not cached**
   (2026-11-10, closes #358, #357; owner decision: no `VERSION` bump, so no
@@ -394,8 +411,7 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
-  1. Piece 1 (pgdist) is done. Small companions: #419 (refuse a too-old
-     glibc/macOS before downloading), #421.
+  1. Piece 1 (pgdist) is done, with its follow-ups #419/#421.
   2. Next: pieces 2–6 of the design, each with its own plan: `bml-db` + schema
      (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
      pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are

@@ -100,7 +100,11 @@ git clone -q --depth 1 --branch "$(jqr .pgvector.tag "$INPUTS")" "$(jqr .pgvecto
 [ "$(git -C "$PGV" rev-parse HEAD)" = "$(jqr .pgvector.commit "$INPUTS")" ] || die "pgvector tag does not match the pinned commit"
 # On macOS and Linux, OPTFLAGS= drops pgvector's default -march=native, so it
 # runs on any CPU of its architecture, not only ones like the build machine's
-# (Makefile.win sets no such flag).
+# (Makefile.win sets no such flag). Its dry run (make -n) is checked, so a
+# future pgvector that stops honouring OPTFLAGS= fails the build instead of
+# silently going back to -march=native, which the smoke test (same CPU as
+# the build) would not notice.
+PGV_DRY_RUN=make-n.txt
 case "$TARGET" in
   *-windows-msvc)
     # MSVC's link.exe must come before Git's /usr/bin/link; nmake's switches
@@ -115,6 +119,13 @@ case "$TARGET" in
     # macOS the PostgreSQL binaries run on (else the runner's own).
     MIN_OS="$(macho_minos "$PG/bin/postgres")"
     [ -n "$MIN_OS" ] || die "cannot read the minimum macOS version of $PG/bin/postgres"
+    # bml refuses to install on a macOS older than pgdist-release.json's
+    # requires.macos (kept equal to min_os here by a test), so a new theseus
+    # floor must be written in both.
+    [ "$MIN_OS" = "$(jqr .macos_build.min_os "$INPUTS")" ] \
+      || die "$PG/bin/postgres needs macOS $MIN_OS; set macos_build.min_os in inputs.json (and requires.macos in pgdist-release.json) to it"
+    MACOSX_DEPLOYMENT_TARGET="$MIN_OS" \
+      make -n -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no OPTFLAGS= PG_SYSROOT="$(xcrun --show-sdk-path)" >"$PGV/$PGV_DRY_RUN"
     MACOSX_DEPLOYMENT_TARGET="$MIN_OS" \
       make -C "$PGV" PG_CONFIG="$PG/bin/pg_config" with_llvm=no OPTFLAGS= PG_SYSROOT="$(xcrun --show-sdk-path)"
     cp "$PGV/vector.dylib" "$ROOT/ext/lib/postgresql/" ;;
@@ -124,10 +135,16 @@ case "$TARGET" in
     # __isoc23_strtol@GLIBC_2.38). The files are handed back to this user.
     docker run --rm -v "$PG:$PG:ro" -v "$PGV:$PGV" -w "$PGV" "$LINUX_IMAGE" sh -c '
       apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc make libc6-dev >/dev/null \
+        && make -n PG_CONFIG="$1" with_llvm=no OPTFLAGS= >"$3" \
         && make PG_CONFIG="$1" with_llvm=no OPTFLAGS=
-      status=$?; chown -R "$2" .; exit $status' sh "$PG/bin/pg_config" "$(id -u):$(id -g)"
+      status=$?; chown -R "$2" .; exit $status' sh "$PG/bin/pg_config" "$(id -u):$(id -g)" "$PGV_DRY_RUN"
     cp "$PGV/vector.so" "$ROOT/ext/lib/postgresql/" ;;
 esac
+if [ "${TARGET%-windows-msvc}" = "$TARGET" ]; then
+  [ -s "$PGV/$PGV_DRY_RUN" ] || die "the pgvector dry run left no $PGV_DRY_RUN"
+  ! grep -e '-march=native' "$PGV/$PGV_DRY_RUN" >/dev/null \
+    || die "pgvector was built with -march=native: OPTFLAGS= no longer drops it"
+fi
 cp "$PGV/vector.control" "$PGV"/sql/vector--*.sql "$ROOT/ext/share/postgresql/extension/"
 mkdir -p "$ROOT/notices/pgvector" && cp "$PGV/LICENSE" "$ROOT/notices/pgvector/"
 

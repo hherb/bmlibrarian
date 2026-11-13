@@ -15,7 +15,8 @@ use crate::models::{model_action, ApprovedModel, ModelAction, APPROVED_MODELS};
 use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEvent};
 use crate::ollama_install::ensure_ollama;
 use crate::pgdist::{
-    bundled_release, ensure_pgdist, host_target, no_bundle_message, PgdistRelease,
+    built_without_pg_search, bundled_release, ensure_pgdist, host_target, no_bundle_message,
+    system_too_old, PgdistRelease,
 };
 use crate::runner::{DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
 use crate::{report_warnings, sweep_stale_parts};
@@ -159,19 +160,20 @@ fn saved_external_request(config_dir: &Path) -> Result<Option<ExternalRequest>, 
 }
 
 /// Warnings for a database that works but lacks something, after `warnings`
-/// already gathered; returns the outcome, which repeats them. `bundled`: the
-/// server runs from the bundle, whose only missing pg_search is the one
-/// ParadeDB does not build for this computer.
+/// already gathered; returns the outcome, which repeats them.
+/// `no_pg_search_build`: the server runs from a bundle whose manifest says
+/// it has no pg_search (ParadeDB builds none for this computer), so the
+/// `--extension-dir` advice does not apply.
 fn database_outcome(
     created_now: bool,
     pg_search: bool,
     app_password_reset: bool,
-    bundled: bool,
+    no_pg_search_build: bool,
     mut warnings: Vec<String>,
     report: &mut dyn FnMut(StepEvent),
 ) -> StepOutcome {
     if !pg_search {
-        warnings.push(if bundled {
+        warnings.push(if no_pg_search_build {
             "pg_search is not installed, so the database has no BM25 search index: no pg_search build exists for this computer yet.".to_string()
         } else {
             "pg_search is not installed, so the database has no BM25 search index. To add it, run setup again with --pg-bindir and an --extension-dir holding a pg_search build.".to_string()
@@ -191,19 +193,30 @@ fn runs_from_bundle(bindir: &Path, config_dir: &Path) -> bool {
 }
 
 /// Set up (or resume) the private server `req` describes; `warnings` come
-/// before its own.
+/// before its own, and are still reported when `init` fails.
 fn private_database(
     req: &InitRequest,
     config_dir: &Path,
     warnings: Vec<String>,
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
-    let o = init(req, config_dir)?;
+    let o = match init(req, config_dir) {
+        Ok(o) => o,
+        Err(e) => {
+            for message in warnings {
+                report(StepEvent::Warning {
+                    step: StepId::Database,
+                    message,
+                });
+            }
+            return Err(e.into());
+        }
+    };
     Ok(database_outcome(
         o.created,
         o.pg_search,
         o.app_password_reset,
-        runs_from_bundle(&req.bindir, config_dir),
+        runs_from_bundle(&req.bindir, config_dir) && built_without_pg_search(&req.bindir),
         warnings,
         report,
     ))
@@ -221,6 +234,9 @@ fn bundled_database(
     let Some(target) = target else {
         return Ok(StepOutcome::Failed(no_bundle_message(None)));
     };
+    if let Some(message) = system_too_old(target, &release.requires) {
+        return Ok(StepOutcome::Failed(message));
+    }
     // An already unpacked bundle is used even if the release has no asset
     // for it; `ensure_pgdist` says when one is needed and missing.
     let (pg, warnings) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
@@ -541,6 +557,10 @@ mod tests {
         let release = PgdistRelease {
             version: "18.6-r1".into(),
             base_url: "https://example.invalid/".into(),
+            requires: crate::pgdist::PgdistRequires {
+                macos: "10.0".into(),
+                glibc: "2.0".into(),
+            },
             assets: std::collections::BTreeMap::new(),
         };
         let data = dir.path().join("pgdata");
@@ -560,6 +580,58 @@ mod tests {
         .to_string();
         assert!(err.contains("--pg-bindir"), "{err}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn too_old_system_fails_before_downloading() {
+        let Some(target) = host_target().filter(|t| !t.contains("windows")) else {
+            return;
+        };
+        let _spawn = crate::test_support::spawn_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let release = PgdistRelease {
+            version: "18.6-r1".into(),
+            // Without the check, the empty `assets` would give the "no
+            // bundle" message, which does not name 999.0.
+            base_url: "http://127.0.0.1:1/".into(),
+            requires: crate::pgdist::PgdistRequires {
+                macos: "999.0".into(),
+                glibc: "999.0".into(),
+            },
+            assets: std::collections::BTreeMap::new(),
+        };
+        let data = dir.path().join("pgdata");
+        let outcome =
+            bundled_database(dir.path(), &data, &release, Some(target), &mut |_| {}).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("999.0") && m.contains("--existing-server")),
+            "{outcome:?}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn earlier_warnings_are_reported_when_init_fails() {
+        let _spawn = crate::test_support::spawn_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let req = InitRequest {
+            bindir: dir.path().join("no-such-bin"),
+            data_dir: dir.path().join("pgdata"),
+            extension_dirs: Vec::new(),
+        };
+        let mut reported = Vec::new();
+        let result = private_database(
+            &req,
+            dir.path(),
+            vec!["archive left over".into()],
+            &mut |e| {
+                if let StepEvent::Warning { message, .. } = e {
+                    reported.push(message);
+                }
+            },
+        );
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(reported, ["archive left over"]);
     }
 
     #[test]
