@@ -1,5 +1,5 @@
 //! Guided first-run setup for BMLibrarian: the hardware check, database,
-//! start at login, Ollama, the approved models and the embedding model, run
+//! library folder and schema, start at login, Ollama, the approved models and the embedding model, run
 //! in order by [`runner::run_setup`] (the engine behind `bml setup`).
 
 pub mod hardware;
@@ -107,6 +107,8 @@ pub enum StepId {
     Hardware,
     /// The PostgreSQL database.
     Database,
+    /// The library folder and the database schema.
+    Library,
     /// Start the database at login.
     Autostart,
     /// The Ollama runtime.
@@ -124,6 +126,7 @@ impl StepId {
         match self {
             Self::Hardware => "Hardware check",
             Self::Database => "Database",
+            Self::Library => "Library",
             Self::Autostart => "Start at login",
             Self::Ollama => "Ollama",
             Self::Models => "Language models",
@@ -216,6 +219,9 @@ pub enum SetupError {
     /// The database layer failed.
     #[error("{0}")]
     PgServer(#[from] bml_pgserver::error::PgServerError),
+    /// The library folder could not be chosen or set up.
+    #[error("{0}")]
+    Library(#[from] bml_db::library::LibraryError),
     /// A file could not be read or written.
     #[error("Could not access {}: {source}. Check the folder exists and is writable, then run `bml setup` again.", path.display())]
     Io {

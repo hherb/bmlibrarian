@@ -7,7 +7,10 @@ fn bml(config_dir: &std::path::Path, args: &[&str], password: Option<&str>) -> O
     cmd.arg("--config-dir")
         .arg(config_dir)
         .args(args)
-        .env_remove("BML_PG_SUPERUSER_PASSWORD");
+        .env_remove("BML_PG_SUPERUSER_PASSWORD")
+        // The default library folder goes under the home folder; never the real one.
+        .env("HOME", config_dir)
+        .env("USERPROFILE", config_dir);
     if let Some(p) = password {
         cmd.env("BML_PG_SUPERUSER_PASSWORD", p);
     }
@@ -95,13 +98,22 @@ fn extension_dir_needs_pg_bindir() {
 }
 
 #[test]
-fn data_dir_with_existing_server_is_refused() {
+fn data_dir_is_no_longer_an_option() {
+    let cfg = tempfile::tempdir().unwrap();
+    let out = bml(cfg.path(), &["setup", "--data-dir", "/x"], None);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("--data-dir"));
+}
+
+#[test]
+fn library_dir_with_existing_server_is_accepted() {
+    // Parsing succeeds; setup then stops for want of the password (exit 1).
     let cfg = tempfile::tempdir().unwrap();
     let out = bml(
         cfg.path(),
         &[
             "setup",
-            "--data-dir",
+            "--library-dir",
             "/x",
             "--existing-server",
             "127.0.0.1:5432",
@@ -110,34 +122,33 @@ fn data_dir_with_existing_server_is_refused() {
         ],
         None,
     );
-    assert_eq!(out.status.code(), Some(2));
-    assert!(text(&out.stderr).contains("--data-dir"));
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("BML_PG_SUPERUSER_PASSWORD"), "{err}");
 }
 
 #[test]
-fn data_dir_without_pg_bindir_is_accepted() {
-    // The data folder of the bundled database; every step that would
-    // download is skipped, so only the argument parsing is under test.
+fn library_dir_and_skip_library_are_accepted() {
+    // Every step that would download or write is skipped, so only the
+    // argument parsing is under test.
     let cfg = tempfile::tempdir().unwrap();
-    let data = cfg.path().join("data");
-    let out = bml(
-        cfg.path(),
-        &[
-            "setup",
-            "--data-dir",
-            data.to_str().unwrap(),
-            "--skip",
-            "database",
-            "--skip",
-            "ollama",
-            "--skip",
-            "models",
-            "--skip",
-            "embedding-model",
-        ],
-        None,
-    );
+    let lib = cfg.path().join("lib");
+    let mut args = vec![
+        "setup",
+        "--library-dir",
+        lib.to_str().unwrap(),
+        "--skip",
+        "library",
+    ];
+    args.extend(SKIP_ALL);
+    let out = bml(cfg.path(), &args, None);
     assert_ne!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("Library"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(!lib.exists());
 }
 
 #[test]

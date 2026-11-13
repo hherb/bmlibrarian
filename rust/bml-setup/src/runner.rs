@@ -11,13 +11,11 @@ use bmlib::publications::fetchers::registry::HttpClient;
 use crate::ollama::OllamaHost;
 use crate::{steps, StepEvent, StepId, StepOutcome};
 
-/// Folder name of the private database inside the configuration folder.
-pub const DEFAULT_DATA_DIR_NAME: &str = "pgdata";
-
 /// Every step, in the order they run.
-pub const ALL_STEPS: [StepId; 6] = [
+pub const ALL_STEPS: [StepId; 7] = [
     StepId::Hardware,
     StepId::Database,
+    StepId::Library,
     StepId::Autostart,
     StepId::Ollama,
     StepId::Models,
@@ -28,7 +26,7 @@ pub const ALL_STEPS: [StepId; 6] = [
 #[must_use]
 pub fn depends_on(step: StepId) -> &'static [StepId] {
     match step {
-        StepId::Autostart => &[StepId::Database],
+        StepId::Autostart | StepId::Library => &[StepId::Database],
         StepId::Models => &[StepId::Ollama],
         _ => &[],
     }
@@ -42,13 +40,9 @@ pub enum DatabasePlan {
     /// A PostgreSQL server that already exists.
     Existing(ExternalRequest),
     /// The saved server if there is one, otherwise a private server from the
-    /// bundled PostgreSQL (`pgdist`), with its data in `data_dir`.
-    Bundled {
-        /// Where the private database lives; `None` means
-        /// `<config dir>/`[`DEFAULT_DATA_DIR_NAME`]. A folder given here must
-        /// be the saved private server's, if one is saved.
-        data_dir: Option<PathBuf>,
-    },
+    /// bundled PostgreSQL (`pgdist`), with its data in the library's
+    /// `database/` folder.
+    Bundled,
 }
 
 /// What to set up.
@@ -62,6 +56,11 @@ pub struct SetupPlan {
     pub ollama_host: OllamaHost,
     /// Steps to leave out.
     pub skip: BTreeSet<StepId>,
+    /// The library folder asked for (`--library-dir`); `None` keeps the
+    /// saved one, or uses `home/BMLibrarian` when none is saved.
+    pub library_dir: Option<PathBuf>,
+    /// The home folder, for the default library folder.
+    pub home: Option<PathBuf>,
 }
 
 /// `Ok` if `step` should run; otherwise the reason it must not.
@@ -137,6 +136,14 @@ mod tests {
         assert!(should_run(StepId::Models, &none, &set(&[StepId::Ollama])).is_err());
         assert!(should_run(StepId::Autostart, &none, &set(&[StepId::Database])).is_err());
         assert!(should_run(StepId::Models, &none, &set(&[StepId::Database])).is_ok());
+    }
+
+    #[test]
+    fn should_run_skips_library_when_database_failed() {
+        let none = set(&[]);
+        assert!(should_run(StepId::Library, &none, &set(&[StepId::Database])).is_err());
+        assert!(should_run(StepId::Library, &set(&[StepId::Database]), &none).is_err());
+        assert!(should_run(StepId::Library, &none, &set(&[StepId::Ollama])).is_ok());
         assert!(should_run(StepId::EmbeddingModel, &none, &set(&[StepId::Ollama])).is_ok());
     }
 
@@ -156,6 +163,8 @@ mod tests {
             database: None,
             ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),
             skip: set(&[StepId::EmbeddingModel]),
+            library_dir: None,
+            home: Some(dir.path().join("home")),
         };
         let mut events = Vec::new();
         let out = run_setup(&plan, &Fake::new(), &mut |e| events.push(e));
@@ -175,14 +184,19 @@ mod tests {
             "{:?}",
             out[1]
         );
-        assert!(matches!(out[2].1, StepOutcome::Skipped { .. }));
         assert!(
-            matches!(&out[3].1, StepOutcome::Failed(m) if m.contains("not on this computer")),
+            matches!(out[2].1, StepOutcome::Skipped { .. }),
             "{:?}",
-            out[3]
+            out[2]
         );
-        assert!(matches!(out[4].1, StepOutcome::Skipped { .. }));
+        assert!(matches!(out[3].1, StepOutcome::Skipped { .. }));
+        assert!(
+            matches!(&out[4].1, StepOutcome::Failed(m) if m.contains("not on this computer")),
+            "{:?}",
+            out[4]
+        );
         assert!(matches!(out[5].1, StepOutcome::Skipped { .. }));
+        assert!(matches!(out[6].1, StepOutcome::Skipped { .. }));
         assert!(events.contains(&StepEvent::Started(StepId::Hardware)));
         let finished = events
             .iter()
@@ -204,9 +218,11 @@ mod tests {
         bml_pgserver::state::save_state(dir.path(), &saved).unwrap();
         let plan = SetupPlan {
             config_dir: dir.path().to_path_buf(),
-            database: Some(DatabasePlan::Bundled { data_dir: None }),
+            database: Some(DatabasePlan::Bundled),
             ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),
             skip: set(&[StepId::Ollama, StepId::Models, StepId::EmbeddingModel]),
+            library_dir: None,
+            home: Some(dir.path().join("home")),
         };
         let out = run_setup(&plan, &Fake::new(), &mut |_| {});
         assert!(!matches!(out[0].1, StepOutcome::Failed(_)), "{:?}", out[0]);
@@ -215,10 +231,12 @@ mod tests {
             "{:?}",
             out[1]
         );
-        assert!(
-            matches!(out[2].1, StepOutcome::Skipped { .. }),
-            "{:?}",
-            out[2]
-        );
+        for i in [2, 3] {
+            assert!(
+                matches!(out[i].1, StepOutcome::Skipped { .. }),
+                "{:?}",
+                out[i]
+            );
+        }
     }
 }

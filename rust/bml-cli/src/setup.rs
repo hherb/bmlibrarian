@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use bml_db::library::resolve_library;
 use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{check_request, is_loopback_host, ExternalRequest};
 use bml_pgserver::init::InitRequest;
+use bml_pgserver::state::load_state;
 use bml_setup::ollama::{parse_ollama_host, pull_http_client, OLLAMA_HOST_ENV};
-use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
+use bml_setup::runner::{run_setup, DatabasePlan, SetupPlan};
 use bml_setup::{StepEvent, StepId, StepOutcome};
 use clap::{Args, ValueEnum};
 
@@ -29,6 +31,8 @@ const MEGABYTE: u64 = 1_000_000;
 pub enum SkipStep {
     /// The PostgreSQL database.
     Database,
+    /// The library folder and the database schema.
+    Library,
     /// Starting the database at login.
     Autostart,
     /// The Ollama runtime.
@@ -44,6 +48,7 @@ impl SkipStep {
     fn id(self) -> StepId {
         match self {
             Self::Database => StepId::Database,
+            Self::Library => StepId::Library,
             Self::Autostart => StepId::Autostart,
             Self::Ollama => StepId::Ollama,
             Self::Models => StepId::Models,
@@ -59,10 +64,10 @@ pub struct SetupArgs {
     /// them instead of the bundled PostgreSQL.
     #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
     pg_bindir: Option<PathBuf>,
-    /// Where the private database lives (default: <config folder>/pgdata); must
-    /// match the saved one when a private database is already set up.
-    #[arg(long, value_name = "DIR", conflicts_with = "existing_server")]
-    data_dir: Option<PathBuf>,
+    /// The library folder for your papers and, for a new private database,
+    /// its data (default: ~/BMLibrarian); must match the saved one once set up.
+    #[arg(long, value_name = "DIR")]
+    library_dir: Option<PathBuf>,
     /// An extension folder (with lib/postgresql and share/postgresql); repeatable.
     #[arg(long = "extension-dir", value_name = "DIR", requires = "pg_bindir")]
     extension_dirs: Vec<PathBuf>,
@@ -130,6 +135,7 @@ fn read_password(from_stdin: bool) -> Result<String, PgServerError> {
 fn database_plan(
     args: &SetupArgs,
     config_dir: &Path,
+    home: Option<PathBuf>,
 ) -> Result<Option<DatabasePlan>, PgServerError> {
     if let Some(raw) = &args.existing_server {
         let (host, port) = parse_host_port(raw)?;
@@ -153,16 +159,18 @@ fn database_plan(
     Ok(Some(match &args.pg_bindir {
         Some(bindir) => DatabasePlan::Private(InitRequest {
             bindir: bindir.clone(),
-            data_dir: args
-                .data_dir
-                .clone()
-                .unwrap_or_else(|| config_dir.join(DEFAULT_DATA_DIR_NAME)),
+            // A saved private server keeps its folder; a new one goes in the
+            // library.
+            data_dir: match load_state(config_dir)? {
+                Some(saved) => saved.data_dir,
+                None => resolve_library(config_dir, args.library_dir.as_deref(), home)
+                    .map_err(|e| fail(e.to_string()))?
+                    .database_dir(),
+            },
             extension_dirs: args.extension_dirs.clone(),
         }),
         // A saved server is resumed; otherwise the bundled PostgreSQL.
-        None => DatabasePlan::Bundled {
-            data_dir: args.data_dir.clone(),
-        },
+        None => DatabasePlan::Bundled,
     }))
 }
 
@@ -228,12 +236,15 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
             )))
         }
     };
+    let home = std::env::home_dir();
     let plan = SetupPlan {
         config_dir: config_dir.to_path_buf(),
-        database: database_plan(&args, config_dir)?,
+        database: database_plan(&args, config_dir, home.clone())?,
         ollama_host: parse_ollama_host(args.ollama_host.as_deref().or(host.as_deref()))
             .map_err(|e| fail(e.to_string()))?,
         skip: args.skip.iter().map(|s| s.id()).collect::<BTreeSet<_>>(),
+        library_dir: args.library_dir.clone(),
+        home,
     };
     let results = run_setup(&plan, &pull_http_client(), &mut make_reporter());
     say!("\nSummary");

@@ -24,10 +24,11 @@ guide: `doc/users/bml_setup_guide.md`.
 
 ## Steps, events, dependencies
 
-Order: Hardware, Database, Autostart, Ollama, Models, EmbeddingModel.
+Order: Hardware, Database, Library, Autostart, Ollama, Models,
+EmbeddingModel.
 `run_setup` carries on past failures; a step is skipped when it is in
 `SetupPlan::skip` or when a dependency failed or was skipped
-(Autostart needs Database; Models needs Ollama). Steps report through a
+(Library and Autostart need Database; Models needs Ollama). Steps report through a
 `FnMut(StepEvent)` callback (`Started`, `Progress`, `Notice`, `Warning`, and
 `Finished`, which `run_setup` sends for every step, skipped ones included;
 `run_step` sends no `Finished`) and end in a `StepOutcome` (`AlreadyPresent`,
@@ -110,15 +111,30 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   no server is saved; once one is, the step resumes it and never looks);
   before downloading (not when resuming a saved server),
   `pgdist::system_too_old` fails the step on a macOS or glibc older than the
-  release's `requires`. Then `init` runs with `pg/bin` and `ext/` and the data
-  folder (`Bundled { data_dir: None }` means `<config>/pgdata`). A `data_dir`
-  the person gave must equal a saved private server's (else `StateMismatch`)
-  and is refused when an existing server is saved. Warnings gathered before
+  release's `requires`. Then `init` runs with `pg/bin` and `ext/` and the
+  library's `database/` folder. Warnings gathered before
   `init` are reported even when `init` fails. A bundled server without
   pg_search gets the "no build for this computer" reason only when the
   bundle's `pgdist.json` says `"pg_search": false`; otherwise the
   `--extension-dir` advice. Building and bumping the bundle:
   `doc/developers/pgdist.md`.
+
+- **Library folder and schema** (`bml-db`, schema in
+  `doc/developers/rust_db_schema.md`): `SetupPlan.library_dir`
+  (`--library-dir`) and `SetupPlan.home` feed
+  `bml_db::library::resolve_library` (saved `bml-library.json` wins; a
+  different requested folder is `LibraryError::Mismatch`; else requested,
+  else `home/BMLibrarian`; read-only). A **new** private server (bundled, or
+  `--pg-bindir` with no saved server, whose CLI-chosen data folder is the
+  library's `database/`) gets its library recorded by the Database step
+  once `init` succeeds (`record_library`), so a later run without
+  `--library-dir` keeps it. A resumed or existing server never consults the
+  library in the Database step; servers saved before the library existed
+  stay where they are (`<config>/pgdata`). The Library step runs
+  `ensure_library` (creates `documents/`, saves the record if none), then
+  connects with `bml.env` (as `bml_app`) and runs `bml_db::migrate`;
+  `Installed` when either changed something. No `bml.env` or a refused
+  connection is a `Failed` outcome naming `bml setup` / `bml server start`.
 
 ## Not verified
 

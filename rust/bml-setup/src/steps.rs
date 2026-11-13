@@ -2,10 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use bml_db::library::{ensure_library, resolve_library, Library};
 use bml_pgserver::envfile::{read_conn_info, ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME};
 use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{adopt, load_external_state, ExternalRequest};
-use bml_pgserver::init::{init, InitRequest};
+use bml_pgserver::init::{connect, init, InitRequest};
 use bml_pgserver::state::load_state;
 use bmlib::embed::{download_model, verify_model, ARCTIC_EMBED_L_V2_F16};
 use bmlib::publications::fetchers::registry::HttpClient;
@@ -18,7 +19,7 @@ use crate::pgdist::{
     built_without_pg_search, bundled_release, ensure_pgdist, host_target, no_bundle_message,
     system_too_old, PgdistRelease,
 };
-use crate::runner::{DatabasePlan, SetupPlan, DEFAULT_DATA_DIR_NAME};
+use crate::runner::{DatabasePlan, SetupPlan};
 use crate::{report_warnings, sweep_stale_parts};
 use crate::{SetupError, StepEvent, StepId, StepOutcome};
 
@@ -45,6 +46,7 @@ pub(crate) fn run(
     match step {
         StepId::Hardware => hardware(plan, http, report),
         StepId::Database => database(plan, report),
+        StepId::Library => library(plan),
         StepId::Autostart => autostart(plan),
         StepId::Ollama => ensure_ollama(http, &plan.ollama_host, &plan.config_dir, report),
         StepId::Models => models(plan, http, report),
@@ -291,47 +293,84 @@ fn database(
         }
     };
     match &plan.database {
-        Some(DatabasePlan::Private(req)) => private(req, report),
-        Some(DatabasePlan::Existing(req)) => existing(req, report),
-        Some(DatabasePlan::Bundled { data_dir }) => {
-            if let Some(wanted) = data_dir {
-                // A folder the person named must not be silently replaced by
-                // the saved server's.
-                if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-                    let requested =
-                        std::path::absolute(wanted).map_err(|source| SetupError::Io {
-                            path: wanted.clone(),
-                            source,
-                        })?;
-                    if requested != s.data_dir {
-                        return Err(PgServerError::StateMismatch {
-                            field: "data folder",
-                            saved: s.data_dir,
-                            requested,
-                        }
-                        .into());
-                    }
-                }
-                if load_external_state(dir)
-                    .map_err(PgServerError::from)?
-                    .is_some()
-                {
-                    return Ok(StepOutcome::Failed(
-                        "--data-dir does not apply: this setup uses an existing server. Run setup without --data-dir.".into(),
-                    ));
-                }
+        Some(DatabasePlan::Private(req)) => {
+            let outcome = private(req, report)?;
+            // The CLI puts a new private server in the library's database
+            // folder; record that library alongside it.
+            let library = plan_library(plan)?;
+            if req.data_dir == library.database_dir() {
+                record_library(dir, &library, outcome)
+            } else {
+                Ok(outcome)
             }
+        }
+        Some(DatabasePlan::Existing(req)) => existing(req, report),
+        Some(DatabasePlan::Bundled) => {
             if let Some(outcome) = resume_saved(report)? {
                 return Ok(outcome);
             }
-            let data_dir = data_dir
-                .clone()
-                .unwrap_or_else(|| dir.join(DEFAULT_DATA_DIR_NAME));
-            bundled_database(dir, &data_dir, &bundled_release()?, host_target(), report)
+            let library = plan_library(plan)?;
+            let outcome = bundled_database(
+                dir,
+                &library.database_dir(),
+                &bundled_release()?,
+                host_target(),
+                report,
+            )?;
+            record_library(dir, &library, outcome)
         }
         None => Ok(resume_saved(report)?.unwrap_or_else(|| {
             StepOutcome::Failed("no database chosen; pass --pg-bindir or --existing-server".into())
         })),
+    }
+}
+
+/// The library the plan asks for (see [`resolve_library`]).
+fn plan_library(plan: &SetupPlan) -> Result<Library, SetupError> {
+    Ok(resolve_library(
+        &plan.config_dir,
+        plan.library_dir.as_deref(),
+        plan.home.clone(),
+    )?)
+}
+
+/// After a new private server is set up in `library`, record the library
+/// (so a later run without `--library-dir` keeps it); a failed step is
+/// passed through untouched.
+fn record_library(
+    config_dir: &Path,
+    library: &Library,
+    outcome: StepOutcome,
+) -> Result<StepOutcome, SetupError> {
+    if !matches!(outcome, StepOutcome::Failed(_)) {
+        ensure_library(config_dir, library)?;
+    }
+    Ok(outcome)
+}
+
+/// Create the library folder and bring the database schema up to date.
+fn library(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
+    let dir = &plan.config_dir;
+    let folder_changed = ensure_library(dir, &plan_library(plan)?)?;
+    let Some(info) = read_conn_info(&dir.join(APP_ENV_FILE_NAME)).map_err(PgServerError::from)?
+    else {
+        return Ok(StepOutcome::Failed(
+            "no database is set up yet; run `bml setup` with the Database step first".into(),
+        ));
+    };
+    let mut client = match connect(&info) {
+        Ok(client) => client,
+        Err(e) => {
+            return Ok(StepOutcome::Failed(format!(
+                "{e}. Is the database running? Try `bml server start`, then `bml setup` again."
+            )))
+        }
+    };
+    match bml_db::migrate(&mut client) {
+        Ok(applied) => Ok(created(folder_changed || applied > 0)),
+        Err(e) => Ok(StepOutcome::Failed(format!(
+            "Updating the library's database failed: {e}. Run `bml setup` again; finished updates are kept."
+        ))),
     }
 }
 
@@ -340,7 +379,7 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
     let existing_server = matches!(plan.database, Some(DatabasePlan::Existing(_)))
         // No plan, or the bundled plan, resumes whatever was saved.
-        || (matches!(plan.database, None | Some(DatabasePlan::Bundled { .. }))
+        || (matches!(plan.database, None | Some(DatabasePlan::Bundled))
             && load_state(dir).map_err(PgServerError::from)?.is_none()
             && load_external_state(dir)
                 .map_err(PgServerError::from)?
@@ -475,6 +514,8 @@ mod tests {
             database: None,
             ollama_host: parse_ollama_host(Some("http://127.0.0.1:11434")).unwrap(),
             skip: BTreeSet::new(),
+            library_dir: None,
+            home: Some(dir.join("home")),
         }
     }
 
@@ -486,10 +527,10 @@ mod tests {
         (200, serde_json::json!({"models": models}).to_string())
     }
 
-    /// A plan for the bundled database, with `data_dir` if given.
-    fn bundled(dir: &Path, data_dir: Option<PathBuf>) -> SetupPlan {
+    /// A plan for the bundled database.
+    fn bundled(dir: &Path) -> SetupPlan {
         SetupPlan {
-            database: Some(DatabasePlan::Bundled { data_dir }),
+            database: Some(DatabasePlan::Bundled),
             ..plan(dir)
         }
     }
@@ -511,28 +552,37 @@ mod tests {
         save_fake_private_server(dir.path());
         // Resuming the saved (fake) server fails on its bin folder, which
         // proves the saved state was chosen over the bundle.
-        let err = database(&bundled(dir.path(), None), &mut |_| {}).unwrap_err();
+        let err = database(&bundled(dir.path()), &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("saved-fake-bin"), "{err}");
         assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
     }
 
     #[test]
-    fn bundled_plan_refuses_another_data_dir_than_the_saved_one() {
+    fn bundled_plan_refuses_a_library_other_than_the_saved_one() {
         let dir = tempfile::tempdir().unwrap();
-        save_fake_private_server(dir.path());
-        let other = dir.path().join("elsewhere");
-        let err = database(&bundled(dir.path(), Some(other)), &mut |_| {})
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("saved-data") && err.contains("elsewhere"),
-            "{err}"
-        );
+        let saved = Library {
+            dir: dir.path().join("saved-library"),
+        };
+        ensure_library(dir.path(), &saved).unwrap();
+        let p = SetupPlan {
+            library_dir: Some(dir.path().join("elsewhere")),
+            ..bundled(dir.path())
+        };
+        for step in [StepId::Database, StepId::Library] {
+            let text = match run(step, &p, &crate::test_support::Fake::new(), &mut |_| {}) {
+                Ok(outcome) => format!("{outcome:?}"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                text.contains("saved-library") && text.contains("elsewhere"),
+                "{step:?}: {text}"
+            );
+        }
         assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
     }
 
     #[test]
-    fn bundled_plan_refuses_data_dir_for_a_saved_existing_server() {
+    fn library_dir_is_used_with_a_saved_existing_server() {
         let dir = tempfile::tempdir().unwrap();
         let state = bml_pgserver::external::ExternalState {
             host: "127.0.0.1".into(),
@@ -540,13 +590,58 @@ mod tests {
             superuser: "postgres".into(),
         };
         bml_pgserver::external::save_external_state(dir.path(), &state).unwrap();
-        let outcome = database(
-            &bundled(dir.path(), Some(dir.path().join("pgdata"))),
-            &mut |_| {},
+        let wanted = dir.path().join("lib");
+        let p = SetupPlan {
+            library_dir: Some(wanted.clone()),
+            ..bundled(dir.path())
+        };
+        // No bml.env yet, so the step stops after the folder is in place.
+        let outcome = library(&p).unwrap();
+        assert!(matches!(outcome, StepOutcome::Failed(_)), "{outcome:?}");
+        assert!(wanted.join(bml_db::library::DOCUMENTS_DIR_NAME).is_dir());
+    }
+
+    #[test]
+    fn library_step_without_database_fails_plainly() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = library(&plan(dir.path())).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("bml setup")),
+            "{outcome:?}"
+        );
+        // The default library (under the plan's home) is set up regardless.
+        assert!(dir
+            .path()
+            .join("home")
+            .join(bml_db::library::DEFAULT_LIBRARY_DIR_NAME)
+            .join(bml_db::library::DOCUMENTS_DIR_NAME)
+            .is_dir());
+    }
+
+    #[test]
+    fn library_step_with_stopped_server_fails_plainly() {
+        let dir = tempfile::tempdir().unwrap();
+        // A loopback port nobody listens on.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let info = bml_pgserver::envfile::ConnInfo {
+            host: "127.0.0.1".into(),
+            port,
+            dbname: "bmlibrarian".into(),
+            user: "bml_app".into(),
+            password: "x".into(),
+        };
+        bml_pgserver::envfile::write_private_file(
+            &dir.path().join(APP_ENV_FILE_NAME),
+            &bml_pgserver::envfile::render_env(&info),
         )
         .unwrap();
+        let outcome = library(&plan(dir.path())).unwrap();
         assert!(
-            matches!(&outcome, StepOutcome::Failed(m) if m.contains("--data-dir")),
+            matches!(&outcome, StepOutcome::Failed(m) if m.contains("bml server start")),
             "{outcome:?}"
         );
     }
@@ -800,7 +895,7 @@ mod tests {
             },
         )
         .unwrap();
-        let outcome = autostart(&bundled(dir.path(), None)).unwrap();
+        let outcome = autostart(&bundled(dir.path())).unwrap();
         assert!(
             matches!(outcome, StepOutcome::Skipped { .. }),
             "{outcome:?}"

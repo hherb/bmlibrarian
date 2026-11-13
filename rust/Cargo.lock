@@ -148,6 +148,7 @@ dependencies = [
 name = "bml-cli"
 version = "0.1.0"
 dependencies = [
+ "bml-db",
  "bml-pgserver",
  "bml-setup",
  "clap",
@@ -185,6 +186,7 @@ dependencies = [
 name = "bml-setup"
 version = "0.1.0"
 dependencies = [
+ "bml-db",
  "bml-pgserver",
  "bmlib",
  "serde",
