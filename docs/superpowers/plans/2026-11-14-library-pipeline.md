@@ -12,8 +12,8 @@ scheduler entry that runs the same command.
 **Architecture:** A new UI-free crate `rust/bml-library` holds three
 resumable phases, each driven by database state alone:
 
-1. **Metadata**: bmlib `publications::sync_source` with the medRxiv fetcher
-   in its `/details/` mode (Task 0). The day ledger (`download_days`) is the
+1. **Metadata**: bmlib `publications::sync_source` with the `medrxiv`
+   fetcher, which reads `/details/` after Task 0. The day ledger (`download_days`) is the
    checkpoint.
 2. **Full text**: one paper at a time, politely spaced, through
    `FullTextService` restricted to Tier 0 (the record's own `jatsxml`/PDF
@@ -38,9 +38,10 @@ with features `embed-metal` (macOS; `embed` elsewhere) and `pdf` added.
 - **bmlib reads `/details/`.** bmlib's bioRxiv/medRxiv fetcher reads
   `/pubs/`, which lists only preprints that were later published in a
   journal, under the publication date (10 of 28 medRxiv records on
-  2024-01-15), and carries no `jatsxml` or `version`. bmlib gains a
-  `/details/` mode in Python and Rust together (bmlib #341). BMLibrarian then
-  bumps its pin.
+  2024-01-15), and carries no `jatsxml` or `version`. **`/details/`
+  replaces `/pubs/`** for bmlib's `biorxiv`/`medrxiv` sources (not opt-in;
+  the owner judged the benefits worth the downstream change), in Python and
+  Rust together (bmlib #341). BMLibrarian then bumps its pin.
 - **MECA bulk is the main full-text route for the backlog.** Piece 3c (MECA
   reader + requester-pays S3) moves up and follows piece 3 directly. Without
   AWS keys the backlog stays abstract-only, with full text trickled in slowly
@@ -155,16 +156,17 @@ Pieces 3b (medRxiv HTML page, bmlib) and 3c (MECA, bmlib + here) follow,
 
 ---
 
-### Task 0 (bmlib): bioRxiv/medRxiv `/details/` mode
+### Task 0 (bmlib): bioRxiv/medRxiv read `/details/` instead of `/pubs/`
 
 **Repo:** `hherb/bmlib`, Python `bmlib/publications/fetchers/biorxiv.py` and
 Rust `rust/bmlib/src/publications/fetchers/biorxiv.rs`, shared fixtures
 under bmlib's parity fixtures. Through bmlib's own review and release.
 
-- [ ] Add an endpoint choice to the fetcher (`pubs` stays the default for
-      existing callers; `details` is opt-in, e.g. a source config key or a
-      separate registry source `medrxiv-details`, whichever bmlib's registry
-      conventions prefer).
+- [ ] The `biorxiv`/`medrxiv` fetcher reads `/details/` (replacing
+      `/pubs/`). `/pubs/`-era day ledgers are reset or invalidated, as the
+      CHANGELOG states, with a downstream note for StudyAnalyzer and
+      BioMedicalNews. In progress in bmlib (branch
+      `feat/341-biorxiv-details`); decision comment on #341.
 - [ ] `/details/` records normalise with `jatsxml` (as an `xml` source),
       the record's own `version` in `FullTextSourceEntry.version` and the
       PDF URL, plus the posting date. A later version merges into the same

@@ -448,9 +448,10 @@ All of the 2026-11-07 spec's anti-goals, plus:
 
 ### Made by the owner (2026-11-14, after measuring)
 
-- bmlib's bioRxiv/medRxiv fetcher gains a `/details/` mode (Python + Rust,
-  bmlib #341). `/pubs/` lists only preprints later published in a journal and
-  carries no JATS link or version.
+- bmlib's bioRxiv/medRxiv fetcher reads `/details/` instead of `/pubs/`
+  (Python + Rust, bmlib #341; a replacement, not opt-in). `/pubs/` lists
+  only preprints later published in a journal and carries no JATS link or
+  version.
 - MECA bulk is the main full-text route for the backlog, and piece 3c
   follows piece 3. Measured: medRxiv answered 429 after about 10 requests
   at one request every 1.5 s, and blocked most PDFs with a Cloudflare 403.

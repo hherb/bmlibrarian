@@ -361,8 +361,9 @@ value — pick one, or pull an item from ROADMAP.md:
      "Measurements" section has the medRxiv probe results). Owner decisions
      2026-11-14: bmlib's fetcher reads `/pubs/`, which lists only preprints
      later published in a journal and has no JATS link or version, so
-     **Task 0 is bmlib work**: a `/details/` mode in Python + Rust (bmlib
-     #341, measurement in a comment there). After that, the pin bump (the
+     **Task 0 is bmlib work**: `/details/` **replaces** `/pubs/` in Python +
+     Rust (bmlib #341, in progress there; measurement and decision in
+     comments). After that, the pin bump (the
      pin `9670f4e` predates #607/#444) and Tasks 1–7 here. medRxiv answered
      429 after about 10 requests at 1.5 s spacing and blocked most PDFs with
      a Cloudflare 403; at 30 s spacing, 60 requests met no 429, 28 of 30
