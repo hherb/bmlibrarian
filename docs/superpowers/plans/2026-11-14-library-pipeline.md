@@ -12,8 +12,8 @@ scheduler entry that runs the same command.
 **Architecture:** A new UI-free crate `rust/bml-library` holds three
 resumable phases, each driven by database state alone:
 
-1. **Metadata**: bmlib `publications::sync_source` with the `medrxiv`
-   fetcher, which reads `/details/` after Task 0. The day ledger (`download_days`) is the
+1. **Metadata**: bmlib `publications::sync_source` with the
+   `medrxiv-details` source (Task 0), which reads `/details/`. The day ledger (`download_days`) is the
    checkpoint.
 2. **Full text**: one paper at a time, politely spaced, through
    `FullTextService` restricted to Tier 0 (the record's own `jatsxml`/PDF
@@ -38,10 +38,12 @@ with features `embed-metal` (macOS; `embed` elsewhere) and `pdf` added.
 - **bmlib reads `/details/`.** bmlib's bioRxiv/medRxiv fetcher reads
   `/pubs/`, which lists only preprints that were later published in a
   journal, under the publication date (10 of 28 medRxiv records on
-  2024-01-15), and carries no `jatsxml` or `version`. **`/details/`
-  replaces `/pubs/`** for bmlib's `biorxiv`/`medrxiv` sources (not opt-in;
-  the owner judged the benefits worth the downstream change), in Python and
-  Rust together (bmlib #341). BMLibrarian then bumps its pin.
+  2024-01-15), and carries no `jatsxml` or `version`. bmlib adds
+  **separate sources `biorxiv-details` and `medrxiv-details`** that read
+  `/details/`, in Python and Rust together (bmlib #341, PR #760). `biorxiv`
+  and `medrxiv` keep reading `/pubs/`. The owner first chose "replace", then
+  changed this to separate sources on 2026-11-14. BMLibrarian syncs
+  `medrxiv-details` and bumps its pin once #760 is merged and released.
 - **MECA bulk is the main full-text route for the backlog.** Piece 3c (MECA
   reader + requester-pays S3) moves up and follows piece 3 directly. Without
   AWS keys the backlog stays abstract-only, with full text trickled in slowly
@@ -52,7 +54,9 @@ with features `embed-metal` (macOS; `embed` elsewhere) and `pdf` added.
 ## Measurements (2026-11-14, owner's Mac, bmlib's `UreqClient`, UA `bmlib/<ver>`)
 
 - `api.biorxiv.org/details/medrxiv/<day>/<day>/0` answers in full today
-  (23–30 records per sampled day, `messages[0].total` present). It returns
+  (`messages[0].total` present). A page holds 30 records, so the "23–30 per
+  day" first seen here was page 0 only. Real days run 55–99 medRxiv postings
+  on weekdays (bmlib #760). It returns
   one record per posted **version**: 2024-01-15 had 21 new papers and 7 new
   versions. #341's note that `/details` answers with an empty body is out of
   date.
@@ -77,8 +81,8 @@ with features `embed-metal` (macOS; `embed` elsewhere) and `pdf` added.
     `fetch_pdf_with_jats` off). Most of those requests will get a 403, and
     the paper becomes abstract-only with a `lasting` reason.
   - At 30 s and one request per paper, about 2,900 papers a day. A weekly
-    update (roughly 1,000 postings, to be measured from `/details/` totals)
-    takes about 8 hours of mostly idle waiting. The backlog
+    update (roughly 300–500 postings, at 55–99 a weekday) takes about 3–4
+    hours of mostly idle waiting. The backlog
     (100k+ postings) takes weeks, which is why MECA (3c) follows.
 
 ## Global Constraints
@@ -156,28 +160,23 @@ Pieces 3b (medRxiv HTML page, bmlib) and 3c (MECA, bmlib + here) follow,
 
 ---
 
-### Task 0 (bmlib): bioRxiv/medRxiv read `/details/` instead of `/pubs/`
+### Task 0 (bmlib): `biorxiv-details` / `medrxiv-details` sources (PR #760)
 
-**Repo:** `hherb/bmlib`, Python `bmlib/publications/fetchers/biorxiv.py` and
-Rust `rust/bmlib/src/publications/fetchers/biorxiv.rs`, shared fixtures
-under bmlib's parity fixtures. Through bmlib's own review and release.
+**Repo:** `hherb/bmlib`, PR #760 (in review). What BMLibrarian relies on:
 
-- [ ] The `biorxiv`/`medrxiv` fetcher reads `/details/` (replacing
-      `/pubs/`). `/pubs/`-era day ledgers are reset or invalidated, as the
-      CHANGELOG states, with a downstream note for StudyAnalyzer and
-      BioMedicalNews. In progress in bmlib (branch
-      `feat/341-biorxiv-details`); decision comment on #341.
-- [ ] `/details/` records normalise with `jatsxml` (as an `xml` source),
-      the record's own `version` in `FullTextSourceEntry.version` and the
-      PDF URL, plus the posting date. A later version merges into the same
-      publication row and updates the sources' `version`.
-- [ ] Reconcile against `messages[0].total` (bmlib's `_reconcile`). The
-      quiet-day shape: `messages[0].status` other than `ok` with an empty
-      collection. `settle_days` for `/details/` is small (postings are filed
-      under their posting date), measured on live data.
-- [ ] Live test (gated, `BMLIB_LIVE_TESTS=1`): `/details/` declares more
-      records than `/pubs/` for 2024-01-15. Update #341 with the 2026-11-14
-      measurement.
+- [ ] Source `medrxiv-details` (its own `download_days` ledger). Its records
+      keep `source = "medrxiv"`, so they dedupe onto one publication row per
+      DOI.
+- [ ] One record per posted version. `fulltext_sources.version` holds
+      `"1"`, `"2"`, and so on, and a v2's sources are added beside v1's
+      because the URLs differ. **The current version is the highest
+      `version` among the paper's sources whose `source` is `medrxiv`.**
+- [ ] `jatsxml` is an `xml` source; the PDF URL uses the record's version.
+      `extras["published"]` is `""` where `/details/` sends `"NA"`.
+- [ ] `settle_days` = 7, a bound rather than a measurement (bmlib #759).
+- [ ] Polite spacing for `www.medrxiv.org` is **not** in bmlib. It is this
+      plan's `MEDRXIV_REQUEST_DELAY`.
+- [ ] After #760 merges and a release is cut: Task 1's pin bump.
 
 ### Task 1: Pin bump, features, `bml-library` skeleton
 
@@ -195,7 +194,8 @@ under bmlib's parity fixtures. Through bmlib's own review and release.
 
 ### Task 2: Metadata phase
 
-- [ ] `sync_source(db, "medrxiv", &fetcher_details, request, clock, report, settle_days)`
+- [ ] `sync_source(db, "medrxiv-details", &fetcher, request, clock, report, settle_days)`
+      with the registry's `medrxiv-details` fetcher and its settle days
       from `from` (default: medRxiv's first posting day, a named constant)
       to today. Report days fetched/failed and records added/merged.
 - [ ] Tests (live PG, `#[ignore]`): fake `HttpClient` serving `/details/`
@@ -205,8 +205,9 @@ under bmlib's parity fixtures. Through bmlib's own review and release.
 ### Task 3: Full-text phase
 
 - [ ] Work query: publications with an `xml`/`pdf` source and either no
-      `publication_fulltext` row, a `version_held` older than the source
-      version, or `form = 'abstract' AND retry_after <= now()`. Ordered
+      `publication_fulltext` row, a `version_held` older than the highest
+      source `version` (compared as integers; only that version's sources
+      go into the `FullTextRequest`), or `form = 'abstract' AND retry_after <= now()`. Ordered
       newest posting first, so updates are not starved by the backlog.
 - [ ] Per paper: `FullTextService` with `.with_cache(library cache)`,
       `.with_pdf_extractor(MupdfPdfExtractor)`, Tier 0 only. Map the result
