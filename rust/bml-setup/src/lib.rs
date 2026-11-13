@@ -1,6 +1,7 @@
 //! Guided first-run setup for BMLibrarian: the hardware check, database,
-//! library folder and schema, start at login, Ollama, the approved models and the embedding model, run
-//! in order by [`runner::run_setup`] (the engine behind `bml setup`).
+//! library folder and schema, start at login, Ollama, the approved models
+//! and the embedding model, run in order by [`runner::run_setup`] (the
+//! engine behind `bml setup`).
 
 pub mod hardware;
 pub mod models;

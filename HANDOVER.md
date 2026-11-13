@@ -30,10 +30,11 @@ off new work. Longer-term structural items live in
   folder (`<config>/pgdata`), also with `--pg-bindir`. Docs:
   `doc/developers/rust_db_schema.md`, `rust_setup.md`, `bml_setup_guide.md`.
   Verified: `cargo test -- --include-ignored` 234 passed with pg_search and
-  without; hand run on the owner's Mac with the real pgdist bundle (12 tables
+  without (236 after the review fixes); hand run on the owner's Mac with the real pgdist bundle (12 tables
   owned by `bml_app`, BM25 + HNSW indexes, second run "already in place").
   Not covered: pg_search installed after migration 1 keeps tsvector
-  (`shortcut:` in `schema.rs`); BM25 is never tested in CI (#399).
+  (`shortcut:` in `schema.rs`); BM25 is not tested in the `rust` CI workflow
+  (#399), only in the `pgdist` PR build. Review follow-ups: #424.
 
 - **pgdist: OS floor checked before download; #420 review follow-ups**
   (2026-11-13, closes #419, #421). `pgdist-release.json` gains `requires`
@@ -419,7 +420,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 234 passed on 2026-11-13.
+  `reference-local-pg18-bindir`): 236 passed on 2026-11-13.
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`

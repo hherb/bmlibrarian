@@ -582,6 +582,23 @@ mod tests {
     }
 
     #[test]
+    fn bundled_plan_refuses_a_file_as_library_before_downloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let p = SetupPlan {
+            library_dir: Some(file),
+            ..bundled(dir.path())
+        };
+        let err = database(&p, &mut |_| {}).unwrap_err().to_string();
+        assert!(
+            err.contains("a-file") && err.contains("not a folder"),
+            "{err}"
+        );
+        assert!(!dir.path().join(crate::pgdist::PGDIST_DIR_NAME).exists());
+    }
+
+    #[test]
     fn library_dir_is_used_with_a_saved_existing_server() {
         let dir = tempfile::tempdir().unwrap();
         let state = bml_pgserver::external::ExternalState {

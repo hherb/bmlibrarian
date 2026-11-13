@@ -84,7 +84,8 @@ fn library_tables(db: &mut dyn Db) -> bmlib::db::Result<()> {
              span_start INTEGER, \
              span_end INTEGER, \
              UNIQUE (publication_id, ordinal), \
-             CHECK (kind = 'abstract' OR (span_start IS NOT NULL AND span_end >= span_start)))"
+             CHECK (kind = 'abstract' OR (span_start IS NOT NULL AND span_end IS NOT NULL \
+               AND span_start >= 0 AND span_end >= span_start)))"
         ),
         vector_ddl(),
         format!(
@@ -174,26 +175,27 @@ pub fn migrate(db: &mut dyn Db) -> Result<usize, DbError> {
     Ok(applied)
 }
 
-/// Which lexical index the chunk text has.
+/// Which lexical index the chunk text has; `None` before migration 1 ran.
 ///
 /// # Errors
 ///
 /// Whatever the catalog query reports.
-pub fn lexical_index(db: &mut dyn Db) -> Result<LexicalIndex, DbError> {
-    let bm25 = fetch_one(
-        db,
-        "SELECT 1 AS present FROM pg_indexes WHERE schemaname = current_schema() \
-         AND tablename = ? AND indexname = ?",
-        &[
-            Value::Text(CHUNKS.into()),
-            Value::Text(CHUNKS_BM25_INDEX.into()),
-        ],
-    )?
-    .is_some();
-    Ok(if bm25 {
-        LexicalIndex::Bm25
+pub fn lexical_index(db: &mut dyn Db) -> Result<Option<LexicalIndex>, DbError> {
+    let mut has = |index: &str| -> Result<bool, DbError> {
+        Ok(fetch_one(
+            db,
+            "SELECT 1 AS present FROM pg_indexes WHERE schemaname = current_schema() \
+             AND tablename = ? AND indexname = ?",
+            &[Value::Text(CHUNKS.into()), Value::Text(index.into())],
+        )?
+        .is_some())
+    };
+    Ok(if has(CHUNKS_BM25_INDEX)? {
+        Some(LexicalIndex::Bm25)
+    } else if has(CHUNKS_TSV_INDEX)? {
+        Some(LexicalIndex::TsVector)
     } else {
-        LexicalIndex::TsVector
+        None
     })
 }
 

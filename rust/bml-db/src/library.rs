@@ -111,12 +111,13 @@ pub fn load_library(config_dir: &Path) -> Result<Option<Library>, LibraryError> 
 
 /// The library to use, without writing anything: the saved one (which a
 /// different `requested` folder may not replace), else `requested`, else
-/// `home/`[`DEFAULT_LIBRARY_DIR_NAME`]. The folder is always absolute.
+/// `home/`[`DEFAULT_LIBRARY_DIR_NAME`]. The folder is always absolute, and a
+/// path that exists as a file is refused here, before anything is set up.
 ///
 /// # Errors
 ///
-/// [`LibraryError::Mismatch`], [`LibraryError::NoHome`], or the record cannot
-/// be read.
+/// [`LibraryError::Mismatch`], [`LibraryError::NoHome`],
+/// [`LibraryError::NotAFolder`], or the record cannot be read.
 pub fn resolve_library(
     config_dir: &Path,
     requested: Option<&Path>,
@@ -125,11 +126,13 @@ pub fn resolve_library(
     let requested = requested.map(absolute).transpose()?;
     if let Some(saved) = load_library(config_dir)? {
         return match requested {
-            Some(requested) if requested != saved.dir => Err(LibraryError::Mismatch {
-                saved: saved.dir,
-                requested,
-            }),
-            _ => Ok(saved),
+            Some(requested) if !same_folder(&requested, &saved.dir) => {
+                Err(LibraryError::Mismatch {
+                    saved: saved.dir,
+                    requested,
+                })
+            }
+            _ => checked(saved),
         };
     }
     let dir = match requested {
@@ -140,7 +143,26 @@ pub fn resolve_library(
                 .join(DEFAULT_LIBRARY_DIR_NAME),
         )?,
     };
-    Ok(Library { dir })
+    checked(Library { dir })
+}
+
+/// Whether `a` and `b` name one folder: equal paths, or both existing and
+/// equal once symlinks and `..` are resolved (macOS's `/var` is
+/// `/private/var`).
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
+/// `library`, unless its folder exists as something other than a folder.
+fn checked(library: Library) -> Result<Library, LibraryError> {
+    if library.dir.exists() && !library.dir.is_dir() {
+        return Err(LibraryError::NotAFolder(library.dir));
+    }
+    Ok(library)
 }
 
 /// Create the library folder and its `documents/`, and record it when no
@@ -224,11 +246,14 @@ mod tests {
         let other = t.path().join("other");
         let err = resolve_library(&cfg, Some(&other), Some(home.clone())).unwrap_err();
         assert!(matches!(err, LibraryError::Mismatch { .. }), "{err}");
-        // The same folder, given relative to the current folder, is no mismatch.
+        // The same folder, given relative to the current folder, is no
+        // mismatch. Changing the current folder is safe here: no other test in
+        // this crate resolves a relative path.
         let cwd = std::env::current_dir().unwrap();
-        if let Ok(rel) = saved.dir.strip_prefix(&cwd) {
-            assert_eq!(resolve_library(&cfg, Some(rel), Some(home)).unwrap(), saved);
-        }
+        std::env::set_current_dir(t.path()).unwrap();
+        let relative = resolve_library(&cfg, Some(Path::new("saved")), Some(home));
+        std::env::set_current_dir(cwd).unwrap();
+        assert_eq!(relative.unwrap(), saved);
         assert_eq!(
             resolve_library(&cfg, Some(&saved.dir), None).unwrap(),
             saved
@@ -255,6 +280,19 @@ mod tests {
         let file = t.path().join("a-file");
         std::fs::write(&file, b"x").unwrap();
         let err = ensure_library(&cfg, &Library { dir: file.clone() }).unwrap_err();
+        assert!(
+            matches!(err, LibraryError::NotAFolder(ref p) if *p == file),
+            "{err}"
+        );
+        assert_eq!(load_library(&cfg).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_refuses_a_file_before_anything_is_set_up() {
+        let (t, cfg, home) = dirs();
+        let file = t.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let err = resolve_library(&cfg, Some(&file), Some(home)).unwrap_err();
         assert!(
             matches!(err, LibraryError::NotAFolder(ref p) if *p == file),
             "{err}"

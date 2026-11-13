@@ -15,9 +15,12 @@ plan: `docs/superpowers/plans/2026-11-13-bml-db-schema.md`.
 - The record is `bml-library.json` in the config folder, written with
   `bmlib::atomic::atomic_write`.
 - `resolve_library(config_dir, requested, home)` is read-only: the saved
-  record wins, a different `requested` folder (compared after
-  `std::path::absolute`, not canonicalised) is `LibraryError::Mismatch`,
-  otherwise `requested`, otherwise `home/BMLibrarian`.
+  record wins, a different `requested` folder is `LibraryError::Mismatch`
+  (paths are compared after `std::path::absolute`, and if both exist after
+  `canonicalize` as well, so a symlink such as macOS's `/var` →
+  `/private/var` or a `..` is no mismatch), otherwise `requested`, otherwise
+  `home/BMLibrarian`. A path that exists as a file is `NotAFolder` already
+  here, so setup fails before it downloads anything.
 - `ensure_library(config_dir, &library)` creates the folder and
   `documents/`, saves the record when none is saved, and returns whether it
   changed anything. A path that is a file is `NotAFolder`.
@@ -43,7 +46,12 @@ stay plain Rust. Every statement is `IF NOT EXISTS`, and none tracks itself.
 
 The Library step connects as **`bml_app`** (`bml.env`), not the admin role:
 `bml_app` owns the `bmlibrarian` database and so its `public` schema, the
-tables it creates are its own, and no GRANTs are needed.
+tables it creates are its own, and no GRANTs are needed. This holds because
+bml always creates the database itself (`CREATE DATABASE … OWNER bml_app`):
+`adopt` refuses an existing server that already has a `bmlibrarian`
+database or `bml_app` role (`NameTaken`). A database whose owner was changed
+by hand afterwards makes the Library step fail with "permission denied for
+schema public".
 
 ## Migration 1: `library_tables`
 
@@ -53,10 +61,10 @@ table; `id` is `SERIAL`, so `INTEGER`).
 | Table | Purpose and guards |
 |---|---|
 | `publication_fulltext` | One row per paper: `form` (`jats`/`pdf`/`html`/`abstract`), `version_held`, `cache_key`, `cache_path` (relative to `documents/`), `attempts`, `last_error`, `last_error_kind` (`lasting`/`passing`), `retry_after`. `CHECK (form = 'abstract' OR cache_path IS NOT NULL)`: a full-text form is never recorded without its file. Partial index on `retry_after` for abstract-only papers (the retry queue). |
-| `chunks` | `id BIGSERIAL`, `publication_id`, `ordinal`, `kind` (`abstract` for title + abstract, `fulltext` for canonical text), `text`, `span_start`/`span_end` (code points in the canonical text, required for `fulltext`). `UNIQUE (publication_id, ordinal)`. |
+| `chunks` | `id BIGSERIAL`, `publication_id`, `ordinal`, `kind` (`abstract` for title + abstract, `fulltext` for canonical text), `text`, `span_start`/`span_end` (code points in the canonical text; for `fulltext` both required, `span_start >= 0`, `span_end >= span_start`). `UNIQUE (publication_id, ordinal)`. |
 | `chunk_embeddings` | `chunk_id` → `chunks(id)`, `embedding halfvec(EMBEDDING_DIM)` (256, from bmlib). HNSW index `chunk_embeddings_hnsw` (`halfvec_cosine_ops`, `m = 16`, `ef_construction = 64`, Rust plan §3.3). A single table at medRxiv scale; the partition manager is Phase C. |
 | `publication_index` | Per-paper indexing state: `status` (`pending`/`complete`), the five `ChunkSetLabel` fields (`model_sha256`, `recipe_version`, `chunker_version`, `converter_version`, `text_sha256`), `chunk_count`. `CHECK`: `complete` needs every label field and the count, so a set is never marked current without its label. |
-| lexical index | If `pg_search` is installed in the database (`pg_extension`): BM25 index `chunks_text_bm25` on `(id, text::pdb.simple('stemmer=english', 'stopwords_language=English'))`; query `text ||| $1 ORDER BY pdb.score(id) DESC`. Otherwise a generated `text_tsv tsvector` (`to_tsvector('english', text)`) with GIN index `chunks_text_tsv_gin`; query `text_tsv @@ plainto_tsquery('english', $1)`. `lexical_index(db)` says which one a database has. |
+| lexical index | If `pg_search` is installed in the database (`pg_extension`): BM25 index `chunks_text_bm25` on `(id, text::pdb.simple('stemmer=english', 'stopwords_language=English'))`; query `text ||| $1 ORDER BY pdb.score(id) DESC`. Otherwise a generated `text_tsv tsvector` (`to_tsvector('english', text)`) with GIN index `chunks_text_tsv_gin`; query `text_tsv @@ plainto_tsquery('english', $1)`. `lexical_index(db)` says which one a database has (`None` before migration 1 ran). |
 
 The lexical choice is made once, when migration 1 runs. pg_search installed
 later is not picked up; switching needs a later migration (marked
@@ -69,5 +77,7 @@ later is not picked up; switching needs a later migration (marked
 - Real PG18 (`#[ignore]`d, each test on its own temp server):
   `BML_TEST_PG_BINDIR=<PG18 bin> [BML_TEST_PG_EXTENSION_DIRS=<pg_search dir>]
   cargo test -p bml-db -- --include-ignored`. Run it with and without the
-  pg_search folder to cover both lexical branches; CI has no pg_search
-  (#399), so only a local run covers BM25.
+  pg_search folder to cover both lexical branches. The `rust` CI workflow
+  has no pg_search (#399); the `pgdist` workflow's PR build runs
+  `--include-ignored` with the bundle's `ext/` folder, which has pg_search on
+  macOS arm64 and Linux.

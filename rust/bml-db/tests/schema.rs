@@ -211,12 +211,14 @@ fn lexical_index_matches_extension() {
     let tmp = tempfile::tempdir().unwrap();
     let Some(s) = server(tmp.path()) else { return };
     let mut c = app(&s);
+    // Before migration 1 there is no lexical index of either kind.
+    assert_eq!(lexical_index(&mut c).unwrap(), None);
     migrate(&mut c).unwrap();
     let ids = chunks(
         &mut c,
         &["myocardial infarction outcomes", "unrelated text"],
     );
-    let kind = lexical_index(&mut c).unwrap();
+    let kind = lexical_index(&mut c).unwrap().unwrap();
     let sql = if common::test_provides_pg_search() {
         assert_eq!(kind, LexicalIndex::Bm25);
         "SELECT id FROM chunks WHERE text ||| 'myocardial' ORDER BY pdb.score(id) DESC"
@@ -265,6 +267,16 @@ fn constraints_refuse_failures_stored_as_results() {
         &mut c,
         "INSERT INTO publication_index (publication_id, status) VALUES ($1, 'complete')",
     );
+    // A full-text chunk without a whole, non-negative span.
+    for span in ["0, NULL", "NULL, 3", "-1, 3", "5, 3"] {
+        refused(
+            &mut c,
+            &format!(
+                "INSERT INTO chunks (publication_id, ordinal, kind, text, span_start, span_end) \
+                 VALUES ($1, 0, 'fulltext', 'x', {span})"
+            ),
+        );
+    }
     // The same rows in the shapes that are allowed.
     c.execute(
         "INSERT INTO publication_fulltext (publication_id, form) VALUES ($1, 'abstract')",

@@ -27,8 +27,8 @@ guide: `doc/users/bml_setup_guide.md`.
 Order: Hardware, Database, Library, Autostart, Ollama, Models,
 EmbeddingModel.
 `run_setup` carries on past failures; a step is skipped when it is in
-`SetupPlan::skip` or when a dependency failed or was skipped
-(Library and Autostart need Database; Models needs Ollama). Steps report through a
+`SetupPlan::skip` or when a dependency failed or was skipped (Library and
+Autostart need Database; Models needs Ollama). Steps report through a
 `FnMut(StepEvent)` callback (`Started`, `Progress`, `Notice`, `Warning`, and
 `Finished`, which `run_setup` sends for every step, skipped ones included;
 `run_step` sends no `Finished`) and end in a `StepOutcome` (`AlreadyPresent`,
@@ -128,9 +128,10 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   `--pg-bindir` with no saved server, whose CLI-chosen data folder is the
   library's `database/`) gets its library recorded by the Database step
   once `init` succeeds (`record_library`), so a later run without
-  `--library-dir` keeps it. A resumed or existing server never consults the
-  library in the Database step; servers saved before the library existed
-  stay where they are (`<config>/pgdata`). The Library step runs
+  `--library-dir` keeps it. A resumed bundled or existing server never
+  consults the library in the Database step (a `--pg-bindir` run does, so a
+  mismatching `--library-dir` fails Database as well as Library); servers
+  saved before the library existed stay where they are (`<config>/pgdata`). The Library step runs
   `ensure_library` (creates `documents/`, saves the record if none), then
   connects with `bml.env` (as `bml_app`) and runs `bml_db::migrate`;
   `Installed` when either changed something. No `bml.env` or a refused

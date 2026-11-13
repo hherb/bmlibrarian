@@ -127,8 +127,7 @@ stopped (Ollama keeps the partial data); an interrupted embedding-model or
 Ollama-installer download starts again from the beginning on the next run.
 Later steps still run when an earlier one failed, except those that depend on
 it (the library and start at login need the database; the models need
-Ollama). If one
-language model fails, setup still tries the other one.
+Ollama). If one language model fails, setup still tries the other one.
 
 An `--existing-server` on another computer, or a password or superuser name
 that cannot be used (empty, or starting or ending with a space), stops setup

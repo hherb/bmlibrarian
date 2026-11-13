@@ -474,7 +474,11 @@ Each piece gets its own implementation plan (`docs/superpowers/plans/`).
    2026-11-13 (plan `2026-11-13-bml-db-schema.md`): migrations are Rust
    closures in `rust/bml-db/src/schema.rs`, not SQL files (bmlib's splitter
    has no `$$` support, and the BM25/tsvector choice is plain Rust); they run
-   as `bml_app`; `--library-dir` replaced `bml setup --data-dir`.*
+   as `bml_app`; `--library-dir` replaced `bml setup --data-dir`; the
+   lexical index is chosen from `pg_extension` (pg_search installed in the
+   database), not `pg_available_extensions`, because `bml_app` cannot
+   `CREATE EXTENSION` and setup creates pg_search only when it is
+   preloaded.*
 3. **Library pipeline**: medRxiv metadata, full text (JATS, PDF), version
    replacement, chunking, embedding, checkpoints, the scheduler entry, and
    the `bml` commands. Measure the Cloudflare risk first.
