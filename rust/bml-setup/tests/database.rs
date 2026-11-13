@@ -7,7 +7,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use bml_db::library::{load_library, resolve_library};
+use bml_db::library::{load_library, resolve_library, LIBRARY_FILE_NAME};
 use bml_pgserver::control::stop;
 use bml_pgserver::envfile::{read_conn_info, ADMIN_ENV_FILE_NAME};
 use bml_pgserver::external::ExternalRequest;
@@ -115,8 +115,12 @@ fn setup_database_private_then_resume() {
     );
     assert_eq!(step_library(&new), StepOutcome::Installed);
     assert!(library.documents_dir().is_dir());
-    let resume = plan(cfg, None);
+    // A first run that failed after `init` saved the server left no record;
+    // resuming the server records its library again.
+    std::fs::remove_file(cfg.join(LIBRARY_FILE_NAME)).unwrap();
+    let resume = plan(cfg.clone(), None);
     assert_database(step_database(&resume), StepOutcome::AlreadyPresent);
+    assert_eq!(load_library(&cfg).unwrap(), Some(library));
     assert_eq!(step_library(&resume), StepOutcome::AlreadyPresent);
 }
 

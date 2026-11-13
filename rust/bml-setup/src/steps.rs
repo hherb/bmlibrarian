@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bml_db::library::{ensure_library, resolve_library, Library};
+use bml_db::library::{ensure_library, resolve_library, Library, DATABASE_DIR_NAME};
 use bml_pgserver::envfile::{read_conn_info, ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME};
 use bml_pgserver::error::PgServerError;
 use bml_pgserver::external::{adopt, load_external_state, ExternalRequest};
@@ -263,8 +263,15 @@ fn database(
     report: &mut dyn FnMut(StepEvent),
 ) -> Result<StepOutcome, SetupError> {
     let dir = &plan.config_dir;
+    // A private server in a library's `database/` folder records that
+    // library, also when it is resumed: `init` saves the server before
+    // `initdb`, so a first run can fail before the library is recorded.
     let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
-        private_database(req, dir, Vec::new(), report)
+        let outcome = private_database(req, dir, Vec::new(), report)?;
+        match server_library(&req.data_dir) {
+            Some(library) => record_library(dir, &library, outcome),
+            None => Ok(outcome),
+        }
     };
     let existing = |req: &ExternalRequest, report: &mut dyn FnMut(StepEvent)| {
         let o = adopt(req, dir)?;
@@ -294,15 +301,9 @@ fn database(
     };
     match &plan.database {
         Some(DatabasePlan::Private(req)) => {
-            let outcome = private(req, report)?;
-            // The CLI puts a new private server in the library's database
-            // folder; record that library alongside it.
-            let library = plan_library(plan)?;
-            if req.data_dir == library.database_dir() {
-                record_library(dir, &library, outcome)
-            } else {
-                Ok(outcome)
-            }
+            // Refuse a mismatching --library-dir before the server is touched.
+            plan_library(plan)?;
+            private(req, report)
         }
         Some(DatabasePlan::Existing(req)) => existing(req, report),
         Some(DatabasePlan::Bundled) => {
@@ -334,7 +335,16 @@ fn plan_library(plan: &SetupPlan) -> Result<Library, SetupError> {
     )?)
 }
 
-/// After a new private server is set up in `library`, record the library
+/// The library whose `database/` folder is `data_dir`, if it is one.
+fn server_library(data_dir: &Path) -> Option<Library> {
+    let parent = data_dir.parent()?;
+    (data_dir.file_name()? == DATABASE_DIR_NAME).then(|| Library {
+        dir: parent.to_path_buf(),
+    })
+}
+
+/// After the Database step succeeds for a private server in `library`'s
+/// `database/` folder, create the library and record it if none is recorded
 /// (so a later run without `--library-dir` keeps it); a failed step is
 /// passed through untouched.
 fn record_library(
@@ -361,9 +371,12 @@ fn library(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
     let mut client = match connect(&info) {
         Ok(client) => client,
         Err(e) => {
-            return Ok(StepOutcome::Failed(format!(
-                "{e}. Is the database running? Try `bml server start`, then `bml setup` again."
-            )))
+            let hint = if load_state(dir).map_err(PgServerError::from)?.is_some() {
+                "Is the database running? Try `bml server start`, then `bml setup` again."
+            } else {
+                "Is your PostgreSQL server running? Start it, then run `bml setup` again."
+            };
+            return Ok(StepOutcome::Failed(format!("{e}. {hint}")));
         }
     };
     match bml_db::migrate(&mut client) {
@@ -656,10 +669,54 @@ mod tests {
             &bml_pgserver::envfile::render_env(&info),
         )
         .unwrap();
+        // An existing server: bml cannot start it.
+        let outcome = library(&plan(dir.path())).unwrap();
+        assert!(
+            matches!(&outcome, StepOutcome::Failed(m)
+                if m.contains("Is your PostgreSQL server running") && !m.contains("bml server start")),
+            "{outcome:?}"
+        );
+        save_fake_private_server(dir.path());
         let outcome = library(&plan(dir.path())).unwrap();
         assert!(
             matches!(&outcome, StepOutcome::Failed(m) if m.contains("bml server start")),
             "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn server_library_is_the_parent_of_a_database_folder() {
+        let lib = Path::new("/x/My Library");
+        assert_eq!(
+            server_library(&lib.join(DATABASE_DIR_NAME)),
+            Some(Library {
+                dir: lib.to_path_buf()
+            })
+        );
+        assert_eq!(server_library(Path::new("/x/pgdata")), None);
+        assert_eq!(server_library(Path::new("/")), None);
+    }
+
+    #[test]
+    fn record_library_passes_a_failure_through_unrecorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library {
+            dir: dir.path().join("lib"),
+        };
+        let failed = StepOutcome::Failed("x".into());
+        assert_eq!(
+            record_library(dir.path(), &lib, failed.clone()).unwrap(),
+            failed
+        );
+        assert_eq!(bml_db::library::load_library(dir.path()).unwrap(), None);
+        assert!(!lib.dir.exists());
+        assert_eq!(
+            record_library(dir.path(), &lib, StepOutcome::Installed).unwrap(),
+            StepOutcome::Installed
+        );
+        assert_eq!(
+            bml_db::library::load_library(dir.path()).unwrap(),
+            Some(lib)
         );
     }
 

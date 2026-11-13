@@ -55,8 +55,9 @@ schema public".
 
 ## Migration 1: `library_tables`
 
-All foreign keys reference `publications(id) ON DELETE CASCADE` (bmlib's
-table; `id` is `SERIAL`, so `INTEGER`).
+Every foreign key is `ON DELETE CASCADE`. All reference `publications(id)`
+(bmlib's table; `id` is `SERIAL`, so `INTEGER`) except
+`chunk_embeddings.chunk_id`, which references `chunks(id)`.
 
 | Table | Purpose and guards |
 |---|---|

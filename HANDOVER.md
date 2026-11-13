@@ -29,13 +29,14 @@ off new work. Longer-term structural items live in
   records its library once `init` succeeds; servers saved earlier keep their
   folder (`<config>/pgdata`), also with `--pg-bindir`. Docs:
   `doc/developers/rust_db_schema.md`, `rust_setup.md`, `bml_setup_guide.md`.
-  Verified: `cargo test -- --include-ignored` 236 passed with pg_search and
+  Verified: `cargo test -- --include-ignored` 245 passed with pg_search and
   without; hand run on the owner's Mac with the real pgdist bundle (12
   tables owned by `bml_app`, BM25 + HNSW indexes, second run "already in
   place").
   Not covered: pg_search installed after migration 1 keeps tsvector
   (`shortcut:` in `schema.rs`); BM25 is not tested in the `rust` CI workflow
-  (#399), only in the `pgdist` PR build. Review follow-ups: #424.
+  (#399), only in the `pgdist` PR build (its paths include `rust/bml-db/**`).
+  Review follow-ups: #424.
 
 - **pgdist: OS floor checked before download; #420 review follow-ups**
   (2026-11-13, closes #419, #421). `pgdist-release.json` gains `requires`
@@ -66,7 +67,8 @@ off new work. Longer-term structural items live in
   that every `inputs.json` target has an asset), so `bml setup` with no
   database options downloads and installs it into
   `<config>/pgdist/18.6-r1/` (a saved server always wins; an explicit
-  `--data-dir` must match a saved private server). Inputs: theseus-rs PG
+  `--data-dir` must match a saved private server; `--data-dir` was since
+  replaced by `--library-dir`, piece 2). Inputs: theseus-rs PG
   18.6.1, pgvector v0.8.7 from source (`OPTFLAGS=`, no `-march=native`;
   Linux built in pinned bookworm), ParadeDB pg_search 0.26.6 (macOS arm64,
   Linux only). Floors: macOS 15, glibc 2.36 (Ubuntu 22.04/RHEL 9 out);

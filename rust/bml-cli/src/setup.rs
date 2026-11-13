@@ -269,6 +269,83 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bml_db::library::{ensure_library, Library, DATABASE_DIR_NAME, DEFAULT_LIBRARY_DIR_NAME};
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        args: SetupArgs,
+    }
+
+    fn setup_args(args: &[&str]) -> SetupArgs {
+        Wrap::parse_from(std::iter::once("bml").chain(args.iter().copied())).args
+    }
+
+    fn private_data_dir(plan: Option<DatabasePlan>) -> PathBuf {
+        match plan {
+            Some(DatabasePlan::Private(req)) => req.data_dir,
+            _ => panic!("not a private plan"),
+        }
+    }
+
+    #[test]
+    fn new_private_server_goes_in_the_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, home) = (tmp.path().join("cfg"), tmp.path().join("home"));
+        let plan = database_plan(
+            &setup_args(&["--pg-bindir", "/b"]),
+            &cfg,
+            Some(home.clone()),
+        );
+        assert_eq!(
+            private_data_dir(plan.unwrap()),
+            home.join(DEFAULT_LIBRARY_DIR_NAME).join(DATABASE_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn saved_private_server_keeps_its_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let legacy = cfg.join("pgdata");
+        let saved = bml_pgserver::state::ServerState {
+            bindir: PathBuf::from("/b"),
+            data_dir: legacy.clone(),
+            port: 5418,
+            extension_dirs: vec![],
+        };
+        std::fs::create_dir_all(&cfg).unwrap();
+        bml_pgserver::state::save_state(&cfg, &saved).unwrap();
+        let plan = database_plan(
+            &setup_args(&["--pg-bindir", "/b"]),
+            &cfg,
+            Some(tmp.path().join("home")),
+        );
+        assert_eq!(private_data_dir(plan.unwrap()), legacy);
+    }
+
+    #[test]
+    fn mismatching_library_is_refused_before_any_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let saved = Library {
+            dir: tmp.path().join("saved"),
+        };
+        ensure_library(&cfg, &saved).unwrap();
+        let other = tmp.path().join("other");
+        let args = setup_args(&[
+            "--pg-bindir",
+            "/b",
+            "--library-dir",
+            other.to_str().unwrap(),
+        ]);
+        let err = database_plan(&args, &cfg, None)
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("saved") && err.contains("other"), "{err}");
+        assert!(!other.exists());
+    }
 
     #[test]
     fn host_port_forms() {

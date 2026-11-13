@@ -156,8 +156,9 @@ pub fn migrations() -> Vec<Migration> {
 ///
 /// # Errors
 ///
-/// Whatever the server reports; a failed migration leaves neither its tables
-/// nor its version row.
+/// Whatever the server reports. A failed BMLibrarian migration leaves neither
+/// its tables nor its version row; bmlib's `ensure_schema` runs statement by
+/// statement, so it can stop part way (re-running completes it).
 pub fn migrate(db: &mut dyn Db) -> Result<usize, DbError> {
     execute(
         db,

@@ -95,7 +95,7 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
 - **Embedding model**: `bmlib::embed::ARCTIC_EMBED_L_V2_F16` (pinned size and
   checksum live in bmlib).
 - **bmlib**: git dependency pinned by rev `9670f4e978d0b1d4e283b97458c4d177b1abfca3`
-  (workspace `Cargo.toml`, features `http-ureq`, `model-download`) because
+  (workspace `Cargo.toml`, features `http-ureq`, `model-download`, `postgres`) because
   the llama-free `model-download` feature is in bmlib PR hherb/bmlib#703. When
   bmlib 0.3.1 is on crates.io, switch to the version dependency and drop the rev.
 - Approved models are fixed by policy; never substitute.
@@ -124,18 +124,23 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   (`--library-dir`) and `SetupPlan.home` feed
   `bml_db::library::resolve_library` (saved `bml-library.json` wins; a
   different requested folder is `LibraryError::Mismatch`; else requested,
-  else `home/BMLibrarian`; read-only). A **new** private server (bundled, or
-  `--pg-bindir` with no saved server, whose CLI-chosen data folder is the
-  library's `database/`) gets its library recorded by the Database step
-  once `init` succeeds (`record_library`), so a later run without
-  `--library-dir` keeps it. A resumed bundled or existing server never
-  consults the library in the Database step (a `--pg-bindir` run does, so a
-  mismatching `--library-dir` fails Database as well as Library); servers
-  saved before the library existed stay where they are (`<config>/pgdata`). The Library step runs
-  `ensure_library` (creates `documents/`, saves the record if none), then
-  connects with `bml.env` (as `bml_app`) and runs `bml_db::migrate`;
-  `Installed` when either changed something. No `bml.env` or a refused
-  connection is a `Failed` outcome naming `bml setup` / `bml server start`.
+  else `home/BMLibrarian`; read-only; a saved record that is not an
+  absolute path is `Corrupt`). A private server whose data folder is a
+  library's `database/` (new or resumed) gets that library recorded by the
+  Database step once it succeeds (`record_library`), so a later run without
+  `--library-dir` keeps it, also after a first run that failed after `init`
+  saved the server. `ensure_library` refuses (`Mismatch`) a folder other
+  than the recorded one. A `--pg-bindir` run with no saved server resolves
+  the library in the CLI, so a mismatching `--library-dir` stops `bml setup`
+  before any step; with a saved server the Database step checks it before
+  touching the server. Servers saved before the library existed stay where
+  they are (`<config>/pgdata`). The Library step runs `ensure_library`
+  (creates `documents/`, saves the record if none), then connects with
+  `bml.env` (as `bml_app`) and runs `bml_db::migrate`; `Installed` when the
+  folder or record was created or a BMLibrarian migration was applied. No
+  `bml.env` or a refused connection is a `Failed` outcome naming `bml
+  setup`, plus `bml server start` for a private server (an existing server
+  is told to start its PostgreSQL).
 
 ## Not verified
 

@@ -6,7 +6,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use bml_db::{lexical_index, migrate, migrations, LexicalIndex, CHUNK_EMBEDDINGS_HNSW_INDEX};
+use bml_db::{
+    lexical_index, migrate, migrations, LexicalIndex, CHUNK_EMBEDDINGS_HNSW_INDEX,
+    MIGRATION_LOCK_KEY,
+};
 use bml_pgserver::control::stop;
 use bml_pgserver::envfile::{read_conn_info, APP_ENV_FILE_NAME};
 use bml_pgserver::init::{connect, init, InitRequest, APP_ROLE};
@@ -107,6 +110,41 @@ fn migrate_is_idempotent() {
             .get(0);
         assert_eq!(owner, APP_ROLE, "{table}");
     }
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn failed_migration_rolls_back_and_releases_the_lock() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(s) = server(tmp.path()) else { return };
+    let mut a = app(&s);
+    // A `chunks` table whose `text` is no text: migration 1 skips creating
+    // it, then its lexical index (BM25 or tsvector) fails.
+    a.batch_execute("CREATE TABLE chunks (id BIGSERIAL PRIMARY KEY, text INTEGER)")
+        .unwrap();
+    assert!(migrate(&mut a).is_err());
+    let rolled_back: bool = a
+        .query_one("SELECT to_regclass('publication_fulltext') IS NULL", &[])
+        .unwrap()
+        .get(0);
+    assert!(rolled_back);
+    let versions: i64 = a
+        .query_one("SELECT count(*) FROM schema_version WHERE version = 1", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(versions, 0);
+    // `a` is still open, yet another session can take the lock.
+    let mut b = app(&s);
+    let locked: bool = b
+        .query_one("SELECT pg_try_advisory_lock($1)", &[&MIGRATION_LOCK_KEY])
+        .unwrap()
+        .get(0);
+    assert!(locked);
+    b.query_one("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_KEY])
+        .unwrap();
+    a.batch_execute("DROP TABLE chunks").unwrap();
+    assert_eq!(migrate(&mut a).unwrap(), migrations().len());
 }
 
 #[test]

@@ -93,7 +93,8 @@ fn absolute(path: &Path) -> Result<PathBuf, LibraryError> {
 ///
 /// # Errors
 ///
-/// The record cannot be read, or is damaged.
+/// The record cannot be read, or is damaged ([`LibraryError::Corrupt`],
+/// including a folder that is not an absolute path).
 pub fn load_library(config_dir: &Path) -> Result<Option<Library>, LibraryError> {
     let path = config_dir.join(LIBRARY_FILE_NAME);
     let text = match std::fs::read_to_string(&path) {
@@ -101,12 +102,18 @@ pub fn load_library(config_dir: &Path) -> Result<Option<Library>, LibraryError> 
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(LibraryError::Io { path, source }),
     };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| LibraryError::Corrupt {
+    let library: Library = serde_json::from_str(&text).map_err(|e| LibraryError::Corrupt {
+        path: path.clone(),
+        message: e.to_string(),
+    })?;
+    // A relative folder would move with whatever folder bml is started from.
+    if !library.dir.is_absolute() {
+        return Err(LibraryError::Corrupt {
             path,
-            message: e.to_string(),
-        })
+            message: format!("{} is not an absolute path", library.dir.display()),
+        });
+    }
+    Ok(Some(library))
 }
 
 /// The library to use, without writing anything: the saved one (which a
@@ -170,11 +177,22 @@ fn checked(library: Library) -> Result<Library, LibraryError> {
 ///
 /// # Errors
 ///
-/// The folder is a file ([`LibraryError::NotAFolder`]), or it or the record
-/// cannot be written.
+/// The folder is a file ([`LibraryError::NotAFolder`]), a different library
+/// is recorded ([`LibraryError::Mismatch`], nothing is created), the record
+/// is damaged ([`LibraryError::Corrupt`]), or the folder or record cannot be
+/// written.
 pub fn ensure_library(config_dir: &Path, library: &Library) -> Result<bool, LibraryError> {
     if library.dir.exists() && !library.dir.is_dir() {
         return Err(LibraryError::NotAFolder(library.dir.clone()));
+    }
+    let saved = load_library(config_dir)?;
+    if let Some(saved) = &saved {
+        if !same_folder(&library.dir, &saved.dir) {
+            return Err(LibraryError::Mismatch {
+                saved: saved.dir.clone(),
+                requested: library.dir.clone(),
+            });
+        }
     }
     let documents = library.documents_dir();
     let mut changed = !documents.is_dir();
@@ -182,7 +200,7 @@ pub fn ensure_library(config_dir: &Path, library: &Library) -> Result<bool, Libr
         path: documents,
         source,
     })?;
-    if load_library(config_dir)?.is_none() {
+    if saved.is_none() {
         let io_err = |path: &Path| {
             let path = path.to_path_buf();
             move |source| LibraryError::Io { path, source }
@@ -321,6 +339,53 @@ mod tests {
             matches!(err, LibraryError::Corrupt { ref path, .. } if path.ends_with(LIBRARY_FILE_NAME)),
             "{err}"
         );
+    }
+
+    #[test]
+    fn relative_record_is_corrupt() {
+        let (_t, cfg, home) = dirs();
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join(LIBRARY_FILE_NAME), br#"{"dir": "BMLibrarian"}"#).unwrap();
+        let err = resolve_library(&cfg, None, Some(home)).unwrap_err();
+        assert!(matches!(err, LibraryError::Corrupt { .. }), "{err}");
+    }
+
+    #[test]
+    fn ensure_refuses_a_folder_other_than_the_recorded_one() {
+        let (t, cfg, _home) = dirs();
+        let saved = Library {
+            dir: t.path().join("saved"),
+        };
+        ensure_library(&cfg, &saved).unwrap();
+        let other = Library {
+            dir: t.path().join("other"),
+        };
+        let err = ensure_library(&cfg, &other).unwrap_err();
+        assert!(matches!(err, LibraryError::Mismatch { .. }), "{err}");
+        assert!(!other.dir.exists());
+        assert_eq!(load_library(&cfg).unwrap(), Some(saved));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_the_saved_folder_is_the_same_library() {
+        let (t, cfg, home) = dirs();
+        let saved = Library {
+            dir: t.path().join("real"),
+        };
+        ensure_library(&cfg, &saved).unwrap();
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&saved.dir, &link).unwrap();
+        assert_eq!(
+            resolve_library(&cfg, Some(&link), Some(home.clone())).unwrap(),
+            saved
+        );
+        let elsewhere = t.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let other_link = t.path().join("other-link");
+        std::os::unix::fs::symlink(&elsewhere, &other_link).unwrap();
+        let err = resolve_library(&cfg, Some(&other_link), Some(home)).unwrap_err();
+        assert!(matches!(err, LibraryError::Mismatch { .. }), "{err}");
     }
 
     #[test]
