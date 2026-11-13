@@ -10,6 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **`bml-db` + schema, piece 2 of the installer milestone** (2026-11-13,
+  plan `docs/superpowers/plans/2026-11-13-bml-db-schema.md`; owner
+  decisions: all Goal B tables now, `--library-dir` **replaces** `bml setup
+  --data-dir`, a new setup step `Library`). New crate `rust/bml-db`:
+  `library` (record `bml-library.json`; default `~/BMLibrarian` with
+  `documents/` = bmlib `FullTextCache` root and `database/` for a new private
+  server; a different `--library-dir` later is refused) and `migrate()`
+  (session advisory lock — two concurrent `CREATE TABLE IF NOT EXISTS`
+  collide in `pg_class` without it — then bmlib `ensure_schema` every run,
+  then `run_migrations`). Migration 1 creates `publication_fulltext`
+  (`form` + retry state; a full-text form needs `cache_path`), `chunks`,
+  `chunk_embeddings` (`halfvec(256)` + HNSW m 16 / ef 64),
+  `publication_index` (`ChunkSetLabel` fields; `complete` needs them all) and
+  a BM25 index (pg_search) or `text_tsv` + GIN; `lexical_index()` says which.
+  Migrations run as `bml_app` (owns the database, so no GRANTs). Setup order
+  is now Hardware, Database, Library, Autostart, …; a new private server
+  records its library once `init` succeeds; servers saved earlier keep their
+  folder (`<config>/pgdata`), also with `--pg-bindir`. Docs:
+  `doc/developers/rust_db_schema.md`, `rust_setup.md`, `bml_setup_guide.md`.
+  Verified: `cargo test -- --include-ignored` 234 passed with pg_search and
+  without; hand run on the owner's Mac with the real pgdist bundle (12 tables
+  owned by `bml_app`, BM25 + HNSW indexes, second run "already in place").
+  Not covered: pg_search installed after migration 1 keeps tsvector
+  (`shortcut:` in `schema.rs`); BM25 is never tested in CI (#399).
+
 - **pgdist: OS floor checked before download; #420 review follow-ups**
   (2026-11-13, closes #419, #421). `pgdist-release.json` gains `requires`
   (`macos` 15.0, `glibc` 2.36; the test `release_floors_match_the_build_inputs`
@@ -123,51 +148,6 @@ off new work. Longer-term structural items live in
   gets them on its next non-test connection; both are `CREATE OR REPLACE`
   only. Checklist for a new category: `db_settings_architecture.md`
   "Database Schema".
-- **Migrator `--dry-run` writes for real, then rolls back** (2026-11-09,
-  closes #410; owner decision over client-side checks). The dry run of
-  `scripts/migrate_factchecker_sqlite_to_postgres.py` runs every step inside
-  `dry_run_transaction()` (one `conn.transaction(force_rollback=True)`),
-  each row in a savepoint (`_row()`), so the rows a real run would refuse are
-  refused (CHECKs, evidence FK, JSON, TIMESTAMPTZ) and `--skip-existing`
-  applies; pending schema migrations are only listed
-  (`FactCheckerDB(DatabaseManager(dry_run_migrations=True))`); counts, errors and exit status match the real run, and nothing is
-  committed. A dry-run step called outside that transaction raises
-  `RuntimeError`. Trade-offs (documented in `MIGRATION_GUIDE.md`): needs
-  write permission, uses sequence ids, keeps the rows it writes locked until
-  it ends. `FactCheckerDB.store_verdicts`, `get_statement`,
-  `update_statement_review_status`, `get_latest_ai_evaluation`,
-  `insert_or_get_annotator`, `insert_human_annotation`,
-  `insert_processing_session` take an optional `conn`. Tests:
-  `test_migrate_factchecker_sqlite.py::test_dry_run_*`, opt-in
-  `test_factcheck_audit_transactions_db.py::test_dry_run_reports_refused_rows_and_keeps_nothing`.
-- **Migrated processing sessions written whole** (2026-11-09, closes
-  #408). `FactCheckerDB.insert_processing_session` also takes `end_time`,
-  `output_file`, `processed_statements`, `error_message` in its INSERT and
-  has `overwrite=` (`ON CONFLICT (session_id) DO UPDATE`).
-  `migrate_processing_metadata` makes one upsert per session instead of
-  insert + `update_processing_session`, so a malformed end field stores
-  nothing and a re-run repairs a session an older run left half-written
-  (re-runs no longer count present sessions as errors). Empty legacy end
-  fields become NULL, as before. Tests:
-  `test_migrate_factchecker_sqlite.py::test_processing_session_*`, opt-in
-  `test_factcheck_audit_transactions_db.py` (`*session*`).
-- **Migration row errors; queue reused-PID check** (2026-11-08, closes
-  #395, #388). `scripts/migrate_factchecker_sqlite_to_postgres.py` catches
-  only `ROW_ERRORS` (`IntegrityError`/`DataError`/`ValueError`) per row in
-  every step (statements, annotators, human annotations, processing
-  metadata, export history), so a lost connection stops the run as
-  `MIGRATION_GUIDE.md` says; `FactCheckerDB.update_statement_review_status`
-  raises `ValueError` when no row matched. Queue: `_process_alive(pid,
-  process_started)` also compares the process's start marker with the one
-  the claiming worker stored in the new `queue_tasks.process_started` column
-  (`_process_start_marker`: ticks since boot on Linux, so clock steps do not
-  make a live worker read as dead; added to old queue files on open), so a PID reused after a crash
-  or reboot no longer blocks `recover`/`cleanup-dead`; access denied or a
-  NULL `process_started` (claimed before the column) fall back to the PID check. `cleanup_dead_process_tasks`
-  and the `orphaned_tasks` count check per task (cleanup re-checks the claim
-  in its UPDATE). Tests:
-  `test_queue_ownership.py::TestReusedPid`, `test_migrate_factchecker_sqlite.py`
-  (`*another_step*`), opt-in `test_factcheck_audit_transactions_db.py`.
 - **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
   PR #396). First Rust code: `rust/` Cargo workspace + CI
   (`.github/workflows/rust.yml`), `bml-pgserver` library (private per-user
@@ -238,52 +218,6 @@ off new work. Longer-term structural items live in
   tests, CI `integration-macos`. Open: #397 (Windows), #399 (port-moved
   decision, Linux disable test, `pg_search` in CI).
 
-- **SQLite → PostgreSQL migration keeps statements' `review_status`**
-  (2026-11-06, closes #392). `insert_statement` never writes the status,
-  so every migrated statement used to become `pending`.
-  `migrate_statements` now calls `restore_review_status`: a legacy
-  `in_review`/`completed`/`flagged` (normalised) is set with
-  `update_statement_review_status` only while the PostgreSQL row is still
-  `pending` (`pending` counts as unset); any other value is a statement
-  error (exit 1) unless PostgreSQL already holds a reviewed status; the
-  statement still counts as migrated and its verdicts migrate;
-  `--dry-run` reports it too. Broad per-row `except` in the migration
-  (lost connection doesn't stop it): #395. Docs:
-  `scripts/MIGRATION_GUIDE.md`, `fact_checker_system.md`. Tests:
-  `tests/test_migrate_factchecker_sqlite.py` (`test_*status*`).
-
-- **SQLite → PostgreSQL fact-checker migration stores verdicts with their
-  evidence** (2026-11-06, closes #376).
-  `scripts/migrate_factchecker_sqlite_to_postgres.py` no longer migrates
-  `ai_evaluations` and `evidence` as separate passes: `migrate_verdicts()`
-  stores all evaluations of a statement with their evidence through the new
-  `FactCheckerDB.store_verdicts` (one transaction per statement;
-  `store_verdict` now wraps it). If any insert fails (e.g. a `document_id`
-  not in `public.document`), none of the statement's evaluations is stored,
-  so an older version is never left as the latest; they count as errors,
-  the summary lists the statement, and a statement not evaluated before
-  stays unevaluated, so `--incremental` re-checks it. Only
-  `IntegrityError`/`DataError`/`ValueError` count per statement; anything
-  else aborts the run. The script now exits 1 when any record failed.
-  Evidence without a usable `document_id` is dropped (own "Dropped"
-  count, as in `import_json_results`); `error` evaluations are skipped;
-  verdicts are normalised (`'Yes '` → `yes`). `--skip-existing` used to do
-  nothing (a re-run stored every verdict again as a new version); it now
-  skips statements that already had a verdict in PostgreSQL before the run.
-  The script imports `bmlibrarian.…` instead of `src.bmlibrarian.…`. Docs:
-  `scripts/MIGRATION_GUIDE.md`, `fact_checker_system.md`. Tests:
-  `tests/test_migrate_factchecker_sqlite.py` (fake `FactCheckerDB`),
-  `test_factcheck_audit_transactions_db.py` (real SQL, opt-in).
-
-- **Concurrent fact-check evaluations no longer collide** (2026-11-06,
-  closes #230). `FactCheckerDB.insert_ai_evaluation` locks the statement
-  row (`SELECT … FOR NO KEY UPDATE`) in its transaction before assigning
-  `MAX(version) + 1`, so a second writer for the same statement waits and
-  gets the next version instead of a `UniqueViolation` (the lock does not
-  block FK inserts referencing the statement). Test (opt-in dev DB):
-  `tests/test_factcheck_audit_transactions_db.py::test_concurrent_evaluations_get_consecutive_versions`
-  (fails on the old code). Also: `tests/test_toast.py` polls for the toast
-  timer instead of a fixed 200 ms wait, which flaked in the full suite.
 - **Research tab: toasts instead of modals; dead executor path removed**
   (2026-11-06, closes #332). New shared `gui/qt/widgets/toast.py`:
   `show_toast(widget, message, ToastLevel.INFO|SUCCESS|WARNING|ERROR)`
@@ -354,7 +288,13 @@ off new work. Longer-term structural items live in
   Qt `check_schema_current()`; no direct `DatabaseManager()` callers left.
   Tests `tests/test_auto_migration_failure.py`.
 - **Early November / October 2026 slices** (details in git history and the
-  linked docs): fact-check verdicts stored with their evidence in one
+  linked docs): fact-checker SQLite → PostgreSQL migrator hardened (verdicts
+  stored with their evidence per statement, `review_status` kept, whole
+  processing sessions, per-row `ROW_ERRORS` only, `--dry-run` writes inside a
+  forced-rollback transaction; #376, #392, #395, #408, #410;
+  `scripts/MIGRATION_GUIDE.md`); concurrent fact-check evaluations lock the
+  statement row (#230); queue reused-PID check via `process_started` (#388);
+  fact-check verdicts stored with their evidence in one
   transaction (`FactCheckerDB.store_verdict`), audit queries in
   `audit_cursor` (#340, #341, #376); PRISMA semantic-chunk
   consolidation calls `LLMClient.chat`, LLM boundary test also flags raw
@@ -411,11 +351,15 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
-  1. Piece 1 (pgdist) is done, with its follow-ups #419/#421.
-  2. Next: pieces 2–6 of the design, each with its own plan: `bml-db` + schema
-     (bmlib `publications` tables + halfvec/HNSW + BM25/tsvector), library
-     pipeline (medRxiv JATS → PDF; HTML tier and MECA bulk via AWS keys are
-     bmlib Python+Rust work), hybrid search, Tauri wizard, signed Mac `.dmg`.
+  1. Pieces 1 (pgdist) and 2 (`bml-db` + schema) are done.
+  2. Next: piece 3, the library pipeline (its own plan): medRxiv metadata via
+     bmlib `BiorxivFetcher` + `publications::sync`, full text JATS → PDF into
+     `Library::cache()`, version replacement, chunking + in-process
+     embedding into the piece-2 tables, checkpoints, the scheduler entry and
+     `bml` commands. Measure the Cloudflare refusal rate first. It will need
+     a bmlib pin bump (the pin `9670f4e` predates bmlib's #607/#444 sync
+     fixes). Then pieces 4–6: hybrid search, Tauri wizard, signed Mac `.dmg`.
+     HTML tier and MECA bulk are bmlib Python+Rust work (3b/3c).
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init).
 
@@ -461,8 +405,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-10
-  (#357/#358 branch): **4843 passed, 71 skipped** in about 2 min (hermetic since #334;
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-13
+  (bml-db branch): **4843 passed, 71 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
@@ -473,6 +417,9 @@ have drifted since the 2026-07-19 review. Full details, including the
   the gate is **no new errors**, not a clean baseline. Quick regression check:
   `git stash`, run `ruff check --select F401,F811,F821,F841 <touched files>`,
   compare to your tree (normalize away line numbers).
+- Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
+  branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
+  `reference-local-pg18-bindir`): 234 passed on 2026-11-13.
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`
