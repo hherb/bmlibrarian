@@ -129,7 +129,7 @@ now; `--library-dir` **replaces** `bml setup --data-dir` (`bml server init
 
 - [ ] **Step 2:** `cargo test -p bml-db` fails (no `migrate`). Then `BML_TEST_PG_BINDIR=<PG18 bin> cargo test -p bml-db -- --include-ignored` (bindir: memory `reference-local-pg18-bindir`; add `BML_TEST_PG_EXTENSION_DIRS` for the BM25 branch).
 
-- [ ] **Step 3: Implement** `schema.rs` as specified. Run statements one at a time with bmlib `execute`. Do not use `create_tables` for DDL containing `pdb.simple(...)`: it is safe, but stay consistent.
+- [ ] **Step 3: Implement** `schema.rs` as specified. One statement per bmlib `execute` call inside the migration closure (no multi-statement scripts, so bmlib's splitter never sees them).
 
 - [ ] **Step 4:** Both commands pass. Run the integration suite **twice**: once without and once with the pg_search extension dir, so that both lexical branches are exercised. Run clippy as well.
 
