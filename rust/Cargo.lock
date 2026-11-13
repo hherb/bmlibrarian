@@ -155,6 +155,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bml-db"
+version = "0.1.0"
+dependencies = [
+ "bmlib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "bml-pgserver"
 version = "0.1.0"
 dependencies = [
@@ -187,10 +198,12 @@ name = "bmlib"
 version = "0.3.0"
 source = "git+https://github.com/hherb/bmlib?rev=9670f4e978d0b1d4e283b97458c4d177b1abfca3#9670f4e978d0b1d4e283b97458c4d177b1abfca3"
 dependencies = [
+ "bytes",
  "chrono",
  "csv",
  "fancy-regex",
  "log",
+ "postgres",
  "regex",
  "roxmltree",
  "serde",
