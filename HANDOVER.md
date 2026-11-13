@@ -29,9 +29,10 @@ off new work. Longer-term structural items live in
   records its library once `init` succeeds; servers saved earlier keep their
   folder (`<config>/pgdata`), also with `--pg-bindir`. Docs:
   `doc/developers/rust_db_schema.md`, `rust_setup.md`, `bml_setup_guide.md`.
-  Verified: `cargo test -- --include-ignored` 234 passed with pg_search and
-  without (236 after the review fixes); hand run on the owner's Mac with the real pgdist bundle (12 tables
-  owned by `bml_app`, BM25 + HNSW indexes, second run "already in place").
+  Verified: `cargo test -- --include-ignored` 236 passed with pg_search and
+  without; hand run on the owner's Mac with the real pgdist bundle (12
+  tables owned by `bml_app`, BM25 + HNSW indexes, second run "already in
+  place").
   Not covered: pg_search installed after migration 1 keeps tsvector
   (`shortcut:` in `schema.rs`); BM25 is not tested in the `rust` CI workflow
   (#399), only in the `pgdist` PR build. Review follow-ups: #424.
