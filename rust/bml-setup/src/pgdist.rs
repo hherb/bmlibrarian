@@ -175,7 +175,7 @@ pub fn older_than(found: &str, floor: &str) -> Option<bool> {
 /// What to tell someone whose `system` (`macOS` or `glibc`) at version
 /// `found` is older than the bundle's `floor`; `None` when it is not, or
 /// when `found` is unknown or unreadable: then the download goes ahead and
-/// the server's own start-up error says what is missing.
+/// the error from running the bundled `postgres` says what is missing.
 #[must_use]
 pub fn too_old_message(system: &str, floor: &str, found: Option<&str>) -> Option<String> {
     let found = found?;
@@ -214,8 +214,8 @@ fn glibc_version() -> Option<String> {
 
 /// Why `target`'s bundle cannot run on this computer, when its macOS or
 /// glibc is older than `requires` says ([`too_old_message`]); checked before
-/// downloading, so an old system is told so instead of fetching ~100 MB
-/// that `initdb` then fails to start.
+/// downloading, so an old system is told so instead of downloading a
+/// bundle (31-115 MB) whose binaries then fail to load.
 #[must_use]
 pub fn system_too_old(target: &str, requires: &PgdistRequires) -> Option<String> {
     if target.ends_with("-apple-darwin") {
@@ -427,8 +427,9 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
 /// The bundle for `target`, downloaded and unpacked under `config_dir` unless
 /// it already is, with warnings about anything left over that did not stop
 /// the install (a downloaded archive that could not be deleted; an earlier
-/// run's leftover is deleted, or warned about, on every later run). `progress`
-/// gets bytes done and total while downloading.
+/// run's leftover is deleted, or warned about, by a later call that finds the
+/// bundle installed, which setup makes only while no server is saved).
+/// `progress` gets bytes done and total while downloading.
 ///
 /// # Errors
 ///

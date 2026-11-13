@@ -591,7 +591,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let release = PgdistRelease {
             version: "18.6-r1".into(),
-            // Any download attempt would fail with this host in the error.
+            // Without the check, the empty `assets` would give the "no
+            // bundle" message, which does not name 999.0.
             base_url: "http://127.0.0.1:1/".into(),
             requires: crate::pgdist::PgdistRequires {
                 macos: "999.0".into(),

@@ -106,17 +106,19 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   `<config>/pgdist/.<version>.partial`, renames the one bundle folder inside
   it to `<config>/pgdist/<version>` once its `pgdist.json` names that version
   and target, and deletes the archive (a leftover archive is deleted, or
-  warned about again, on every later run that finds the bundle installed);
-  before any of this, `pgdist::system_too_old` fails the step on a macOS or
-  glibc older than the release's `requires`. Then `init` runs with `pg/bin` and
-  `ext/` and the data folder (`Bundled { data_dir: None }` means
-  `<config>/pgdata`). A `data_dir` the person gave must equal a saved private
-  server's (else `StateMismatch`) and is refused when an existing server is
-  saved. Warnings gathered before `init` are reported even when `init`
-  fails. A bundled server without pg_search gets the "no build for this
-  computer" reason only when the bundle's `pgdist.json` says
-  `"pg_search": false`; otherwise the `--extension-dir` advice. Building and bumping the
-  bundle: `doc/developers/pgdist.md`.
+  warned about again, by a later run that finds the bundle installed while
+  no server is saved; once one is, the step resumes it and never looks);
+  before downloading (not when resuming a saved server),
+  `pgdist::system_too_old` fails the step on a macOS or glibc older than the
+  release's `requires`. Then `init` runs with `pg/bin` and `ext/` and the data
+  folder (`Bundled { data_dir: None }` means `<config>/pgdata`). A `data_dir`
+  the person gave must equal a saved private server's (else `StateMismatch`)
+  and is refused when an existing server is saved. Warnings gathered before
+  `init` are reported even when `init` fails. A bundled server without
+  pg_search gets the "no build for this computer" reason only when the
+  bundle's `pgdist.json` says `"pg_search": false`; otherwise the
+  `--extension-dir` advice. Building and bumping the bundle:
+  `doc/developers/pgdist.md`.
 
 ## Not verified
 

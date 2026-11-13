@@ -119,8 +119,9 @@ case "$TARGET" in
     # macOS the PostgreSQL binaries run on (else the runner's own).
     MIN_OS="$(macho_minos "$PG/bin/postgres")"
     [ -n "$MIN_OS" ] || die "cannot read the minimum macOS version of $PG/bin/postgres"
-    # bml refuses to install on an older macOS than inputs.json (and
-    # pgdist-release.json) say, so a new theseus floor must be written there.
+    # bml refuses to install on a macOS older than pgdist-release.json's
+    # requires.macos (kept equal to min_os here by a test), so a new theseus
+    # floor must be written in both.
     [ "$MIN_OS" = "$(jqr .macos_build.min_os "$INPUTS")" ] \
       || die "$PG/bin/postgres needs macOS $MIN_OS; set macos_build.min_os in inputs.json (and requires.macos in pgdist-release.json) to it"
     MACOSX_DEPLOYMENT_TARGET="$MIN_OS" \

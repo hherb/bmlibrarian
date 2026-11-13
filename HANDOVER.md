@@ -21,7 +21,8 @@ off new work. Longer-term structural items live in
   pg_search build for this computer" reason now comes from the bundle's
   `pgdist.json` `pg_search: false` (`built_without_pg_search`), not from
   "runs from a bundle". `ensure_pgdist` deletes (or warns again about) a
-  leftover archive whenever it finds the bundle installed, and
+  leftover archive whenever it finds the bundle installed (only reached
+  while no server is saved; a saved server is resumed first), and
   `private_database` reports earlier warnings even when `init` fails.
   `build.sh` saves a `make -n` dry run of pgvector and fails on
   `-march=native` (macOS/Linux). The macOS/Linux `build.sh` changes run
