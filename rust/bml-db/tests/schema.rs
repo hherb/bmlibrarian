@@ -100,6 +100,7 @@ fn migrate_is_idempotent() {
         "chunks",
         "chunk_embeddings",
         "publication_index",
+        "library_state",
     ] {
         let owner: String = c
             .query_one(

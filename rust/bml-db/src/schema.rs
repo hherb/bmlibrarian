@@ -24,6 +24,8 @@ pub const CHUNKS: &str = "chunks";
 pub const CHUNK_EMBEDDINGS: &str = "chunk_embeddings";
 /// Per-paper indexing state and the label of its chunk set.
 pub const PUBLICATION_INDEX: &str = "publication_index";
+/// One row of library-wide state: the medRxiv rate limit, the last update.
+pub const LIBRARY_STATE: &str = "library_state";
 /// The pg_search BM25 index on chunk text (where pg_search is installed).
 pub const CHUNKS_BM25_INDEX: &str = "chunks_text_bm25";
 /// The GIN index on the chunk text's tsvector (where pg_search is not).
@@ -144,10 +146,28 @@ fn library_tables(db: &mut dyn Db) -> bmlib::db::Result<()> {
     Ok(())
 }
 
+/// Migration 2: [`LIBRARY_STATE`], a single row (`id = 1`).
+fn library_state(db: &mut dyn Db) -> bmlib::db::Result<()> {
+    execute(
+        db,
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {LIBRARY_STATE} (\
+             id INTEGER PRIMARY KEY CHECK (id = 1), \
+             rate_limited_until TIMESTAMPTZ, \
+             last_update_at TIMESTAMPTZ)"
+        ),
+        &[],
+    )?;
+    Ok(())
+}
+
 /// BMLibrarian's migrations, in version order.
 #[must_use]
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration::new(1, "library_tables", library_tables)]
+    vec![
+        Migration::new(1, "library_tables", library_tables),
+        Migration::new(2, "library_state", library_state),
+    ]
 }
 
 /// Bring the database up to date (see the module docs); returns how many of
