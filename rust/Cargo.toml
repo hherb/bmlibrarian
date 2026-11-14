@@ -20,7 +20,7 @@ bml-setup = { path = "bml-setup" }
 bml-db = { path = "bml-db" }
 bml-library = { path = "bml-library" }
 # Switch to the crates.io release (0.3.1) once it is published.
-bmlib = { git = "https://github.com/hherb/bmlib", rev = "f13b60791b65f5870dc668e4585a3946bb5ec1c6", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
+bmlib = { git = "https://github.com/hherb/bmlib", rev = "c5f6236cc1f71ded9708422d4150d101b827643d", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
 postgres = "0.19"
 postgres-protocol = "0.6"
 clap = { version = "4.5", features = ["derive"] }

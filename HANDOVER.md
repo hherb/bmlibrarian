@@ -14,7 +14,7 @@ off new work. Longer-term structural items live in
   branch `feat/library-pipeline`; plan
   `docs/superpowers/plans/2026-11-14-library-pipeline.md`; owner decisions
   this session: bmlib pinned by **git rev**, without waiting for a release, to
-  `f13b607`: bmlib PR #770 (the Rust `pdf` feature did not compile on
+  `c5f6236`: bmlib PR #770 (the Rust `pdf` feature did not compile on
   Windows) on top of main with #760 `medrxiv-details` and #763 (**#770 must
   be merged into bmlib main**, or the pin points at an unmerged branch), and
   `<library>/documents` stays a `FullTextCache`). New crate
@@ -339,7 +339,7 @@ value — pick one, or pull an item from ROADMAP.md:
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
   1. Merge bmlib PR #770 (Windows `pdf` build fix) before merging #429; the
-     pin `f13b607` is that PR's commit. On #429 the `rust` CI built MuPDF and
+     pin `c5f6236` is that PR's commit. On #429 the `rust` CI built MuPDF and
      llama.cpp on all five runners; only Windows failed, on that bmlib bug.
   2. Measure how many medRxiv JATS files carry the article body (the hand
      run's two had only supplementary material), since that decides how

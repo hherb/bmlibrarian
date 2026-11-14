@@ -54,7 +54,7 @@ with features `embed` (Metal on macOS by default) and `pdf` added.
   (below).
 - **Pin by git rev, no release** (owner, 2026-11-14 session): bmlib pinned to
   main `02c7fad` (#760 and #763), not waiting for a release; then to
-  `f13b607`, bmlib PR #770 (the `pdf` feature did not build on Windows).
+  `c5f6236`, bmlib PR #770 (the `pdf` feature did not build on Windows).
 - **`<library>/documents` stays a `FullTextCache`** (owner, same session):
   the plan as written (`<doi>v<version>` keys, `FullTextCache::delete`), not
   bmlib #763's shared library.
