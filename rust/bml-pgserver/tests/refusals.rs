@@ -106,6 +106,33 @@ fn refusals_need_no_server() {
         "{err}"
     );
 
+    // The saved bin folder is gone (#447): the error says how to pass the new one.
+    let config = root.join("cfg-bin-gone");
+    let data = data_dir_with(root, "d-bin-gone", &[BML_CONF_NAME]);
+    std::fs::write(data.join("PG_VERSION"), "18\n").unwrap();
+    let gone = root.join("bin-gone");
+    save(&config, &gone, &data);
+    let err = init(&request(&gone, &data), &config).unwrap_err();
+    assert!(matches!(err, PgServerError::BinDirGone { .. }), "{err}");
+    assert!(err.to_string().contains("--pg-bindir"), "{err}");
+
+    // A moved PostgreSQL of the data folder's major version is accepted: the
+    // run gets as far as the (missing) admin credentials.
+    let moved = fake_bindir(root, "18.2");
+    let err = init(&request(&moved, &data), &config).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::AdminCredentialsLost { .. }),
+        "{err}"
+    );
+
+    // Another major version cannot run the data folder.
+    let bin19 = fake_bindir(root, "19.0");
+    let err = init(&request(&bin19, &data), &config).unwrap_err();
+    assert!(
+        matches!(err, PgServerError::DataDirVersion { found: 19, ref needed, .. } if needed == "18"),
+        "{err}"
+    );
+
     // Set up by us, but the admin credentials are gone.
     let config = root.join("cfg-admin-lost");
     let data = data_dir_with(root, "d-admin-lost", &["PG_VERSION", BML_CONF_NAME]);

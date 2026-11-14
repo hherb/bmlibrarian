@@ -108,6 +108,25 @@ pub enum PgServerError {
         /// The extension.
         name: &'static str,
     },
+    /// The bin folder saved for the server no longer exists (PostgreSQL was
+    /// moved, renamed or removed by an upgrade).
+    #[error("the PostgreSQL bin folder {bindir} saved for this server is gone (moved, renamed or removed by an upgrade); pass the new one with `bml setup --pg-bindir` or `bml server init --bindir` (the same major version is needed), and the server keeps its data")]
+    BinDirGone {
+        /// The saved bin folder.
+        bindir: PathBuf,
+    },
+    /// A new bin folder's PostgreSQL cannot run the existing data folder.
+    #[error("{data_dir} holds PostgreSQL {needed} data, but {bindir} is PostgreSQL {found}; pass a PostgreSQL {needed} bin folder")]
+    DataDirVersion {
+        /// The data folder.
+        data_dir: PathBuf,
+        /// The major version its `PG_VERSION` names.
+        needed: String,
+        /// The bin folder requested.
+        bindir: PathBuf,
+        /// That bin folder's major version.
+        found: u32,
+    },
     /// The state file describes a different server than the one requested.
     #[error("this configuration folder already manages a server with {field} {saved}, not {requested}; use that path, or a different --config-dir")]
     StateMismatch {

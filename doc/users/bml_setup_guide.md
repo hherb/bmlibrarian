@@ -113,7 +113,9 @@ BML_PG_SUPERUSER_PASSWORD=... bml setup --existing-server 127.0.0.1:5432 --pg-su
   `BML_PG_SUPERUSER_PASSWORD` without echoing it
   (`read -s BML_PG_SUPERUSER_PASSWORD && export BML_PG_SUPERUSER_PASSWORD`),
   or add `--password-stdin` and pipe the password in from a password manager.
-  Do not type it at a prompt that shows it.
+  `--password-stdin` refuses a password typed at the terminal, which would
+  show on screen. Setup removes the variable from its own environment once
+  it has read it, so the programs it starts never see the password.
 - Setup only adds a role `bml_app` and a database `bmlibrarian`. It
   refuses if those names already exist and are not BMLibrarian's, and never
   touches your other data. `bml server start/stop/autostart` do not manage an
@@ -125,6 +127,9 @@ The summary says which step failed and what to do. Fix the cause (network,
 disk space, a missing program) and run `bml setup` again. An interrupted language-model pull resumes where it
 stopped (Ollama keeps the partial data); an interrupted embedding-model or
 Ollama-installer download starts again from the beginning on the next run.
+If the bundled PostgreSQL's folder (`<config folder>/pgdist/<version>`) was
+deleted, for example by a disk clean-up, the next run downloads it again and
+your database is kept.
 Later steps still run when an earlier one failed, except those that depend on
 it (the library and start at login need the database; the models need
 Ollama). If one language model fails, setup still tries the other one.

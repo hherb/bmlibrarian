@@ -17,7 +17,7 @@ use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEv
 use crate::ollama_install::ensure_ollama;
 use crate::pgdist::{
     built_without_pg_search, bundled_release, ensure_pgdist, host_target, no_bundle_message,
-    system_too_old, PgdistRelease,
+    system_too_old, InstalledPgdist, PgdistRelease,
 };
 use crate::runner::{DatabasePlan, SetupPlan};
 use crate::{report_warnings, sweep_stale_parts};
@@ -224,6 +224,52 @@ fn private_database(
     ))
 }
 
+/// [`ensure_pgdist`], reporting download progress for the Database step.
+fn ensure_bundle(
+    config_dir: &Path,
+    release: &PgdistRelease,
+    target: &str,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<(InstalledPgdist, Vec<String>), SetupError> {
+    ensure_pgdist(config_dir, release, target, &mut |done, total| {
+        report(StepEvent::Progress {
+            step: StepId::Database,
+            detail: "Downloading the database".into(),
+            done,
+            total,
+        });
+    })
+}
+
+/// Whether the saved server's `bindir` is the bin folder of the bundle
+/// `version` under `config_dir` and that bundle's folder is gone (deleted by
+/// a clean-up, or quarantined by a virus scanner), so downloading the same
+/// bundle again repairs it. A bundle of another version is not replaced.
+fn pinned_bundle_missing(bindir: &Path, config_dir: &Path, version: &str) -> bool {
+    std::path::absolute(config_dir).is_ok_and(|dir| {
+        let pinned = InstalledPgdist {
+            root: dir.join(crate::pgdist::PGDIST_DIR_NAME).join(version),
+        };
+        bindir == pinned.bindir() && !pinned.root.exists()
+    })
+}
+
+/// Download the pinned bundle again when the saved server ran from it and
+/// its folder is gone (see [`pinned_bundle_missing`]); warnings for the step.
+fn restore_missing_bundle(
+    config_dir: &Path,
+    bindir: &Path,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<Vec<String>, SetupError> {
+    let release = bundled_release()?;
+    match host_target() {
+        Some(target) if pinned_bundle_missing(bindir, config_dir, &release.version) => {
+            Ok(ensure_bundle(config_dir, &release, target, report)?.1)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// A new private server from `release`'s bundle for `target` (`None`: this
 /// computer has no bundle target), with its data in `data_dir`.
 fn bundled_database(
@@ -241,14 +287,7 @@ fn bundled_database(
     }
     // An already unpacked bundle is used even if the release has no asset
     // for it; `ensure_pgdist` says when one is needed and missing.
-    let (pg, warnings) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
-        report(StepEvent::Progress {
-            step: StepId::Database,
-            detail: "Downloading the database".into(),
-            done,
-            total,
-        });
-    })?;
+    let (pg, warnings) = ensure_bundle(config_dir, release, target, report)?;
     let req = InitRequest {
         bindir: pg.bindir(),
         data_dir: data_dir.to_path_buf(),
@@ -266,8 +305,8 @@ fn database(
     // A private server in a library's `database/` folder records that
     // library, also when it is resumed: `init` saves the server before
     // `initdb`, so a first run can fail before the library is recorded.
-    let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
-        let outcome = private_database(req, dir, Vec::new(), report)?;
+    let private = |req: &InitRequest, warnings: Vec<String>, report: &mut dyn FnMut(StepEvent)| {
+        let outcome = private_database(req, dir, warnings, report)?;
         match server_library(&req.data_dir) {
             Some(library) => record_library(dir, &library, outcome),
             None => Ok(outcome),
@@ -287,12 +326,13 @@ fn database(
     // The saved private server, else the saved existing one, else `None`.
     let resume_saved = |report: &mut dyn FnMut(StepEvent)| {
         if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
+            let warnings = restore_missing_bundle(dir, &s.bindir, report)?;
             let req = InitRequest {
                 bindir: s.bindir,
                 data_dir: s.data_dir,
                 extension_dirs: s.extension_dirs,
             };
-            return private(&req, report).map(Some);
+            return private(&req, warnings, report).map(Some);
         }
         match saved_external_request(dir)? {
             Some(req) => existing(&req, report).map(Some),
@@ -303,7 +343,7 @@ fn database(
         Some(DatabasePlan::Private(req)) => {
             // Refuse a mismatching --library-dir before the server is touched.
             plan_library(plan)?;
-            private(req, report)
+            private(req, Vec::new(), report)
         }
         Some(DatabasePlan::Existing(req)) => existing(req, report),
         Some(DatabasePlan::Bundled) => {
@@ -842,6 +882,26 @@ mod tests {
         ));
         assert!(!runs_from_bundle(&cfg.join("pgdist-old/pg/bin"), &cfg));
         assert!(!runs_from_bundle(&cfg.join("elsewhere/bin"), &cfg));
+    }
+
+    #[test]
+    fn only_a_missing_pinned_bundle_is_downloaded_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = std::path::absolute(tmp.path()).unwrap();
+        let pinned = InstalledPgdist {
+            root: cfg.join(crate::pgdist::PGDIST_DIR_NAME).join("18.6-r1"),
+        };
+        assert!(pinned_bundle_missing(&pinned.bindir(), &cfg, "18.6-r1"));
+        // Another version, or a bin folder outside the bundles, is left alone.
+        assert!(!pinned_bundle_missing(&pinned.bindir(), &cfg, "18.7-r1"));
+        assert!(!pinned_bundle_missing(
+            Path::new("/opt/pg/bin"),
+            &cfg,
+            "18.6-r1"
+        ));
+        // A bundle folder still present is not replaced (init reports what is wrong).
+        std::fs::create_dir_all(&pinned.root).unwrap();
+        assert!(!pinned_bundle_missing(&pinned.bindir(), &cfg, "18.6-r1"));
     }
 
     #[test]

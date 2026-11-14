@@ -1,7 +1,7 @@
 //! `bml setup`: check this computer and install what BMLibrarian needs.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -112,18 +112,30 @@ fn parse_host_port(raw: &str) -> Result<(String, u16), PgServerError> {
     Ok((host.to_string(), port))
 }
 
-/// The password from the environment or one line of standard input.
+/// The password from the environment or one line of standard input (never
+/// typed at a terminal, which would show it). The variable is removed from
+/// bml's environment either way.
 fn read_password(from_stdin: bool) -> Result<String, PgServerError> {
+    // Children (tar, installers, the Ollama app) must not inherit it; no
+    // other thread runs yet, so removing it is safe.
+    let from_env = std::env::var(PASSWORD_ENV);
+    std::env::remove_var(PASSWORD_ENV);
     if from_stdin {
+        let stdin = std::io::stdin();
+        if stdin.is_terminal() {
+            return Err(fail(format!(
+                "--password-stdin reads a piped password, not a typed one (it would show on screen): pipe it in from a password manager, or set {PASSWORD_ENV}"
+            )));
+        }
         let mut line = String::new();
-        std::io::stdin()
+        stdin
             .lock()
             .read_line(&mut line)
             .map_err(PgServerError::Io)?;
         let line = line.strip_suffix('\n').unwrap_or(&line);
         return Ok(line.strip_suffix('\r').unwrap_or(line).to_string());
     }
-    match std::env::var(PASSWORD_ENV) {
+    match from_env {
         Ok(p) if !p.is_empty() => Ok(p),
         _ => Err(fail(format!(
             "the existing server's password is needed: set {PASSWORD_ENV}, or pass --password-stdin and pipe it in from a password manager"
@@ -345,6 +357,15 @@ mod tests {
             .to_string();
         assert!(err.contains("saved") && err.contains("other"), "{err}");
         assert!(!other.exists());
+    }
+
+    /// #452: children spawned later (tar, installers, the Ollama app) must
+    /// not inherit the superuser password.
+    #[test]
+    fn password_leaves_the_environment_once_read() {
+        std::env::set_var(PASSWORD_ENV, "s3cret");
+        assert_eq!(read_password(false).unwrap(), "s3cret");
+        assert!(std::env::var_os(PASSWORD_ENV).is_none());
     }
 
     #[test]
