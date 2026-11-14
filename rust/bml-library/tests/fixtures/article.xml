@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE article PUBLIC "-//NLM//DTD JATS (Z39.96) Journal Archiving and Interchange DTD v1.2 20190208//EN" "JATS-archivearticle1-mathml3.dtd">
+<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">
+  <front>
+    <journal-meta>
+      <journal-title>Journal of Biomedical Research</journal-title>
+    </journal-meta>
+    <article-meta>
+      <article-id pub-id-type="doi">10.1234/jbr.2024.001</article-id>
+      <article-id pub-id-type="pmc">PMC7614751</article-id>
+      <article-id pub-id-type="pmid">34567890</article-id>
+      <!-- SAGE and others stamp a filename-form copy of the DOI here, after
+           the real one.  Kept in the shared fixture so the whole retrieval
+           chain, not just the parser's own tests, carries the shape. -->
+      <article-id pub-id-type="publisher-id">10.1234_jbr.2024.001</article-id>
+      <article-title>Effects of Novel Compound X on Cellular Apoptosis in Human Cancer Cell Lines</article-title>
+      <contrib-group>
+        <contrib contrib-type="author">
+          <name>
+            <surname>Smith</surname>
+            <given-names>John A</given-names>
+          </name>
+        </contrib>
+        <contrib contrib-type="author">
+          <name>
+            <surname>Doe</surname>
+            <given-names>Jane B</given-names>
+          </name>
+        </contrib>
+        <contrib contrib-type="author">
+          <name>
+            <surname>Chen</surname>
+            <given-names>Wei</given-names>
+          </name>
+        </contrib>
+      </contrib-group>
+      <volume>42</volume>
+      <issue>3</issue>
+      <fpage>215</fpage>
+      <lpage>228</lpage>
+      <pub-date pub-type="epub">
+        <year>2024</year>
+      </pub-date>
+      <abstract>
+        <sec>
+          <title>Background</title>
+          <p>Cancer remains a leading cause of death worldwide. Novel therapeutic compounds are urgently needed.</p>
+        </sec>
+        <sec>
+          <title>Methods</title>
+          <p>We treated three human cancer cell lines with Compound X at varying concentrations and measured apoptosis using flow cytometry.</p>
+        </sec>
+        <sec>
+          <title>Results</title>
+          <p>Compound X induced dose-dependent apoptosis in all cell lines tested, with IC50 values ranging from 2.5 to 8.3 μM.</p>
+        </sec>
+        <sec>
+          <title>Conclusions</title>
+          <p>Compound X shows promising anti-cancer activity and warrants further investigation in animal models.</p>
+        </sec>
+      </abstract>
+    </article-meta>
+  </front>
+  <body>
+    <sec>
+      <title>Introduction</title>
+      <p>Cancer is a complex disease characterized by uncontrolled cell growth. Despite advances in treatment, many cancers remain difficult to treat effectively.</p>
+      <p>In this study, we investigated the effects of a novel compound on cellular apoptosis.</p>
+    </sec>
+    <sec>
+      <title>Materials and Methods</title>
+      <sec>
+        <title>Cell Culture</title>
+        <p>Human cancer cell lines HeLa, MCF-7, and A549 were obtained from ATCC and maintained in DMEM supplemented with 10% FBS.</p>
+      </sec>
+      <sec>
+        <title>Treatment Protocol</title>
+        <p>Cells were treated with Compound X at concentrations ranging from 0.1 to 100 μM for 24, 48, and 72 hours.</p>
+      </sec>
+    </sec>
+    <sec>
+      <title>Results</title>
+      <p>Our analysis revealed significant dose-dependent effects of Compound X on all three cell lines (see <xref ref-type="fig" rid="fig1">Figure 1</xref> and <xref ref-type="table" rid="tbl1">Table 1</xref>).</p>
+    </sec>
+    <sec>
+      <title>Discussion</title>
+      <p>The results demonstrate that Compound X has potent <bold>anti-cancer</bold> activity <italic>in vitro</italic>. The IC<sub>50</sub> values observed are comparable to established chemotherapeutic agents.</p>
+    </sec>
+  </body>
+  <back>
+    <sec>
+      <title>Supplementary Materials</title>
+      <p>Additional data are available in the online supplement.</p>
+    </sec>
+    <fig id="fig1">
+      <label>Figure 1</label>
+      <caption>
+        <p>Dose-response curves for Compound X in three cancer cell lines.</p>
+      </caption>
+      <graphic xlink:href="jbr_2024_001_fig1"/>
+    </fig>
+    <table-wrap id="tbl1">
+      <label>Table 1</label>
+      <caption>
+        <p>IC50 values for Compound X across cell lines.</p>
+      </caption>
+      <table>
+        <thead>
+          <tr>
+            <th>Cell Line</th>
+            <th>IC50 (μM)</th>
+            <th>95% CI</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>HeLa</td>
+            <td>2.5</td>
+            <td>1.8-3.2</td>
+          </tr>
+          <tr>
+            <td>MCF-7</td>
+            <td>5.1</td>
+            <td>4.2-6.0</td>
+          </tr>
+          <tr>
+            <td>A549</td>
+            <td>8.3</td>
+            <td>7.1-9.5</td>
+          </tr>
+        </tbody>
+      </table>
+    </table-wrap>
+    <ref-list>
+      <ref id="r1">
+        <label>1</label>
+        <element-citation>
+          <person-group>
+            <name>
+              <surname>Johnson</surname>
+              <given-names>R K</given-names>
+            </name>
+            <name>
+              <surname>Williams</surname>
+              <given-names>S L</given-names>
+            </name>
+          </person-group>
+          <article-title>Mechanisms of drug-induced apoptosis in cancer cells</article-title>
+          <source>Nature Reviews Cancer</source>
+          <year>2023</year>
+          <volume>23</volume>
+          <issue>4</issue>
+          <fpage>201</fpage>
+          <lpage>215</lpage>
+          <pub-id pub-id-type="doi">10.1038/nrc.2023.001</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="r2">
+        <label>2</label>
+        <mixed-citation>Zhang L, et al. Novel approaches to cancer therapy. Science. 2022;375:100-105.</mixed-citation>
+      </ref>
+    </ref-list>
+  </back>
+</article>

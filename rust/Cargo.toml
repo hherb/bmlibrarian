@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db"]
+members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,16 +18,30 @@ all = "warn"
 bml-pgserver = { path = "bml-pgserver" }
 bml-setup = { path = "bml-setup" }
 bml-db = { path = "bml-db" }
+bml-library = { path = "bml-library" }
 # Switch to the crates.io release (0.3.1) once it is published.
-bmlib = { git = "https://github.com/hherb/bmlib", rev = "9670f4e978d0b1d4e283b97458c4d177b1abfca3", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
+bmlib = { git = "https://github.com/hherb/bmlib", rev = "c5f6236cc1f71ded9708422d4150d101b827643d", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
 postgres = "0.19"
 postgres-protocol = "0.6"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
+# Ctrl-C stops `bml library update` after the paper in flight.
+# termination: SIGTERM (logout, `launchctl bootout`, a systemd stop) also
+# stops an update after the paper in flight, as Ctrl-C does.
+ctrlc = { version = "3.4", features = ["termination"] }
 getrandom = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system", "disk"] }
 tempfile = "3"
-# Tests only (hashing a fixture); the same version bmlib already pulls in.
+# Hashing (chunk-set labels, test fixtures); the same version bmlib already pulls in.
 sha2 = "0.10"
+
+# mupdf-sys builds MuPDF's Debug configuration (MSVC runtime MDd) when it
+# sees a debug profile below opt-level 2, while llama.cpp (bmlib `embed`)
+# always uses the release runtime (MD); MSVC will not link the two into one
+# binary (LNK2038/LNK1319 on the Windows CI). opt-level 2 makes mupdf-sys
+# build its Release configuration in dev builds, on every platform.
+[profile.dev.package.mupdf-sys]
+opt-level = 2

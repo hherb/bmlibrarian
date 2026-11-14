@@ -145,6 +145,12 @@ acceptable, install Ollama yourself and run setup again: it will find it.
 The macOS and Windows installers are checked against pinned checksums.
 Installing on Windows and Linux has not yet been tried on real machines.
 
+## Next: download medRxiv
+
+With setup done, `bml library update` downloads medRxiv into your library
+and indexes it for search, and `bml library schedule weekly` keeps it up to
+date: see `doc/users/library_updates_guide.md`.
+
 ## Where to find things
 
 - Database settings for BMLibrarian: `bml.env` (and `bml-admin.env`) in the

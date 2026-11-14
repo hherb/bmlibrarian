@@ -1,5 +1,6 @@
 //! `bml`: the BMLibrarian command-line tool.
 
+mod library;
 mod server;
 mod setup;
 
@@ -29,6 +30,9 @@ enum Command {
     Server(server::ServerCommand),
     /// Check this computer and install what BMLibrarian needs (safe to run again).
     Setup(setup::SetupArgs),
+    /// Download, update and index the medRxiv library.
+    #[command(subcommand)]
+    Library(library::LibraryCommand),
 }
 
 /// Parse the command line, run the command and map errors to exit code 1.
@@ -43,9 +47,41 @@ fn main() -> ExitCode {
     .and_then(|config_dir| match cli.command {
         Command::Server(command) => server::run(command, &config_dir),
         Command::Setup(args) => setup::run(args, &config_dir),
+        Command::Library(command) => Ok(library::run(command, &config_dir).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            ExitCode::from(server::EXIT_FAILED)
+        })),
     });
     result.unwrap_or_else(|e| {
         eprintln!("error: {e}");
         ExitCode::from(server::EXIT_FAILED)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// The command lines the schedulers store must still parse, or every
+    /// scheduled run would fail with a usage error into a log nobody reads.
+    #[test]
+    fn the_scheduled_command_lines_parse() {
+        let (exe, cfg) = (Path::new("/opt/bml"), Path::new("/home/u/.bmlibrarian"));
+        let cli = Cli::try_parse_from(bml_pgserver::schedule::update_args(exe, cfg, 7)).unwrap();
+        assert_eq!(cli.config_dir.as_deref(), Some(cfg));
+        assert!(matches!(
+            cli.command,
+            Command::Library(library::LibraryCommand::Update {
+                if_older_than: Some(7),
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(bml_pgserver::autostart::start_args(exe, cfg)).unwrap();
+        assert_eq!(cli.config_dir.as_deref(), Some(cfg));
+        assert!(matches!(
+            cli.command,
+            Command::Server(server::ServerCommand::Start)
+        ));
+    }
 }

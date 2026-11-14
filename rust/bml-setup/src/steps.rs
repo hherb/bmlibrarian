@@ -64,7 +64,7 @@ fn created(created: bool) -> StepOutcome {
 }
 
 /// Where the embedding model's GGUF file lives in `config_dir`.
-fn gguf_path(config_dir: &Path) -> PathBuf {
+pub fn gguf_path(config_dir: &Path) -> PathBuf {
     config_dir
         .join(MODELS_DIR_NAME)
         .join(ARCTIC_EMBED_L_V2_F16.file)

@@ -1,0 +1,24 @@
+[package]
+name = "bml-library"
+description = "The BMLibrarian library pipeline: medRxiv metadata, full text and the search index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bml-db.workspace = true
+# MuPDF (`pdf`) reads PDFs; llama.cpp (`embed`, Metal on macOS) embeds chunks.
+bmlib = { workspace = true, features = ["pdf", "embed"] }
+chrono.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bml-pgserver.workspace = true
+postgres.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
