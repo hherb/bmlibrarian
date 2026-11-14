@@ -339,8 +339,10 @@ value — pick one, or pull an item from ROADMAP.md:
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
   1. Merge bmlib PR #770 (Windows `pdf` build fix) before merging #429; the
-     pin `c5f6236` is that PR's commit. On #429 the `rust` CI built MuPDF and
-     llama.cpp on all five runners; only Windows failed, on that bmlib bug.
+     pin `c5f6236` is that PR's head. With it and the workspace's
+     `[profile.dev.package.mupdf-sys] opt-level = 2` (MSVC would not link
+     MuPDF's Debug runtime beside llama.cpp's Release one), the `rust` CI is
+     green on all five runners.
   2. Measure how many medRxiv JATS files carry the article body (the hand
      run's two had only supplementary material), since that decides how
      often the Cloudflare-blocked PDF is needed. Rates between 1.5 s and 30 s

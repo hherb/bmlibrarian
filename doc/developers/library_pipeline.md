@@ -185,6 +185,15 @@ older library gains migration 2.
   (2 of 2). **The measurement counted JATS downloads, not JATS with a body**;
   how many medRxiv JATS files carry the article text is not yet measured.
 
+## Build
+
+bmlib features `pdf` (MuPDF, needs libclang) and `embed` (llama.cpp, needs
+cmake and a C++ compiler); the first build takes about 1.5 min on the
+owner's Mac. `rust/Cargo.toml` sets `[profile.dev.package.mupdf-sys]
+opt-level = 2`: below that, mupdf-sys builds MuPDF's Debug configuration,
+whose MSVC runtime (`MDd`) will not link beside llama.cpp's (`MD`) on
+Windows. The Windows `pdf` build itself needed bmlib #770.
+
 ## Tests
 
 - Unit: `cargo test -p bml-library` (PoliteClient spacing and 429,
