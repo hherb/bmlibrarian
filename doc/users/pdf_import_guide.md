@@ -190,7 +190,7 @@ The CLI reports various status codes for each PDF:
 | `no_match` | ❌ | No matching document found in database |
 | `already_exists` | 📋 | PDF already exists at correct location |
 | `duplicate` | 📋 | PDF exists with same file size |
-| `skipped` | ⏭️ | Skipped (e.g., existing PDF is newer) |
+| `skipped` | ⏭️ | A different PDF is already stored for the document; it is never replaced |
 | `failed` | ⚠️ | Import failed due to error |
 | `extraction_failed` | 📄 | Could not extract text from PDF |
 | `no_metadata` | 📝 | Could not extract metadata from PDF |

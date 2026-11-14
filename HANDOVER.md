@@ -10,6 +10,17 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **pdf_matcher fixes #443, #436** (2026-11-15). `import_pdf_for_document`
+  never replaces a different PDF already at the target (status `skipped`,
+  reason names the stored file; it used to keep the newer file by mtime, so
+  supplementary material carrying the article's DOI could replace the
+  article). The copy goes to `<name>.partial` and is renamed into place, and
+  a failure removes only our own copy. `check_document_status` no longer
+  selects the nonexistent `document.pmid` column, so the regex DOI/PMID fast
+  path works instead of failing silently. Tests in
+  `tests/test_pdf_matcher_agent.py`. Not run against a live database; the
+  missing `lower(doi)` index is still #333.
+
 - **Installer audit fixes #447, #448, #452** (2026-11-15). `bml server init`
   / `bml setup --pg-bindir` accept a moved PostgreSQL bin folder whose major
   version equals the data folder's `PG_VERSION` and save it (another major
@@ -298,15 +309,14 @@ value — pick one, or pull an item from ROADMAP.md:
   port taken after init); bml-db review follow-ups: #424;
   bml-library: #430, #433.
 
-- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #447, #448,
-  #452 fixed). Installer: #451 (setup replaces another config folder's
-  login entry), #453 (rust.yml permissions, SHA-pinned checkout). Data loss:
-  #435 (chunk embedder deletes old chunks before embedding), #437 (failed
-  settings load + Save overwrites settings), #443 (pdf_matcher overwrites or
-  deletes PDFs), #439 (MigrationManager commit/lock). Security: #434
-  (session cookies sent to any host), #450 (token files restricted after
-  writing), #449 (PBKDF2 iteration count). Broken: #436 (pdf_matcher reads a
-  nonexistent `document.pmid`), #441, #445, #446, #438, #440, #442, #444.
+- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #436, #443,
+  #447, #448, #452 fixed). Installer: #451 (setup replaces another config
+  folder's login entry), #453 (rust.yml permissions, SHA-pinned checkout).
+  Data loss: #435 (chunk embedder deletes old chunks before embedding), #437
+  (failed settings load + Save overwrites settings), #439 (MigrationManager
+  commit/lock). Security: #434 (session cookies sent to any host), #450
+  (token files restricted after writing), #449 (PBKDF2 iteration count).
+  Broken: #441, #445, #446, #438, #440, #442, #444.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -351,7 +361,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-15:
-  **4843 passed, 71 skipped** in about 2 min (hermetic since #334;
+  **4847 passed, 71 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

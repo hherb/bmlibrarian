@@ -18,6 +18,7 @@ import sys
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
@@ -59,14 +60,17 @@ MIN_EXTRACTED_TEXT_LENGTH = 50
 # First 3000 chars typically contain all metadata (title, authors, DOI, PMID)
 MAX_LLM_TEXT_LENGTH = 3000
 
+# Suffix of the temp file a PDF is copied to before it is moved into place.
+PARTIAL_COPY_SUFFIX = ".partial"
+
 # Low temperature so metadata is transcribed from the page, not invented.
 METADATA_EXTRACTION_TEMPERATURE = 0.1
 METADATA_EXTRACTION_TOP_P = 0.9
 
 # Column index for has_full_text in check_document_status query result
-# Query returns: id, title, abstract, authors, doi, pmid, external_id,
+# Query returns: id, title, abstract, authors, doi, external_id,
 #                publication_date, journal, source_id, pdf_filename, pdf_url, has_full_text
-_HAS_FULL_TEXT_COLUMN_INDEX = 12
+_HAS_FULL_TEXT_COLUMN_INDEX = 11
 
 
 @dataclass
@@ -353,7 +357,7 @@ class PDFMatcher(BaseAgent):
                     if validated_doi:
                         cur.execute(
                             """
-                            SELECT id, title, abstract, authors, doi, pmid, external_id,
+                            SELECT id, title, abstract, authors, doi, external_id,
                                    publication_date, publication as journal, source_id,
                                    pdf_filename, pdf_url,
                                    (full_text IS NOT NULL AND full_text != '') as has_full_text
@@ -386,19 +390,19 @@ class PDFMatcher(BaseAgent):
                                 document=doc
                             )
 
-                    # Try PMID (check both pmid and external_id)
+                    # Try PMID (stored in external_id column)
                     if validated_pmid:
                         cur.execute(
                             """
-                            SELECT id, title, abstract, authors, doi, pmid, external_id,
+                            SELECT id, title, abstract, authors, doi, external_id,
                                    publication_date, publication as journal, source_id,
                                    pdf_filename, pdf_url,
                                    (full_text IS NOT NULL AND full_text != '') as has_full_text
                             FROM document
-                            WHERE pmid = %s OR external_id = %s
+                            WHERE external_id = %s
                             LIMIT 1
                             """,
-                            (validated_pmid, validated_pmid)
+                            (validated_pmid,)
                         )
                         row = cur.fetchone()
                         if row:
@@ -434,15 +438,15 @@ class PDFMatcher(BaseAgent):
         Convert database row to full document dictionary.
 
         Used by check_document_status() which queries:
-        SELECT id, title, abstract, authors, doi, pmid, external_id,
+        SELECT id, title, abstract, authors, doi, external_id,
                publication_date, publication as journal, source_id,
                pdf_filename, pdf_url, (full_text IS NOT NULL...) as has_full_text
 
         Args:
-            row: Database row tuple with 12+ columns in order:
-                 id, title, abstract, authors, doi, pmid, external_id,
+            row: Database row tuple with 11+ columns in order:
+                 id, title, abstract, authors, doi, external_id,
                  publication_date, journal, source_id, pdf_filename, pdf_url
-                 (Note: has_full_text at index 12 is handled separately)
+                 (Note: has_full_text at index 11 is handled separately)
 
         Returns:
             Document dictionary with all relevant fields for status checking
@@ -453,13 +457,12 @@ class PDFMatcher(BaseAgent):
             'abstract': row[2],
             'authors': row[3] or [],
             'doi': row[4],
-            'pmid': row[5],
-            'external_id': row[6],
-            'publication_date': row[7],
-            'journal': row[8],
-            'source_id': row[9],
-            'pdf_filename': row[10],
-            'pdf_url': row[11],
+            'external_id': row[5],
+            'publication_date': row[6],
+            'journal': row[7],
+            'source_id': row[8],
+            'pdf_filename': row[9],
+            'pdf_url': row[10],
         }
 
     def extract_metadata_with_llm(self, text: str) -> Dict[str, Any]:
@@ -852,11 +855,8 @@ Text to analyze:
 
         # Check if PDF already exists at target
         if target_path.exists():
-            # Compare file sizes and dates
             source_size = pdf_path.stat().st_size
             target_size = target_path.stat().st_size
-            source_mtime = pdf_path.stat().st_mtime
-            target_mtime = target_path.stat().st_mtime
 
             if pdf_path.resolve() == target_path.resolve():
                 return {
@@ -874,18 +874,17 @@ Text to analyze:
                     'existing_path': str(target_path)
                 }
 
-            # Different files - prefer newer one
-            if source_mtime > target_mtime:
-                logger.warning(f"Source PDF is newer than existing - will replace")
-                if not dry_run:
-                    target_path.unlink()
-            else:
-                return {
-                    'status': 'skipped',
-                    'reason': 'Existing PDF is newer',
-                    'doc_id': doc_id,
-                    'existing_path': str(target_path)
-                }
+            # A different PDF is already there. Never replace it: the incoming
+            # file may be supplementary material that carries the article's DOI.
+            logger.warning(
+                f"Different PDF already at {target_path}; leaving it, not importing {pdf_path}"
+            )
+            return {
+                'status': 'skipped',
+                'reason': f'A different PDF is already stored for this document: {target_path}',
+                'doc_id': doc_id,
+                'existing_path': str(target_path)
+            }
 
         if dry_run:
             return {
@@ -896,15 +895,24 @@ Text to analyze:
                 'filename': new_filename
             }
 
-        # Actually perform import
+        # Actually perform import. The copy goes to a temp name first, so a
+        # failed copy never leaves a partial PDF at the target path.
+        temp_path = target_path.with_name(target_path.name + PARTIAL_COPY_SUFFIX)
+        placed = False
         try:
-            import shutil
-
-            # Ensure target directory exists
             target_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Copy file (don't move in case of errors)
-            shutil.copy2(str(pdf_path), str(target_path))
+            shutil.copy2(str(pdf_path), str(temp_path))
+            if target_path.exists():
+                # Another import placed a file here since the check above.
+                temp_path.unlink()
+                return {
+                    'status': 'skipped',
+                    'reason': f'A different PDF is already stored for this document: {target_path}',
+                    'doc_id': doc_id,
+                    'existing_path': str(target_path)
+                }
+            os.replace(temp_path, target_path)
+            placed = True
             logger.info(f"Copied PDF: {pdf_path} -> {target_path}")
 
             # Update database
@@ -914,7 +922,8 @@ Text to analyze:
                 success = pdf_manager_with_conn.update_database_pdf_path(doc_id, relative_path)
 
             if not success:
-                # Rollback - delete copied file
+                # The target did not exist before this import, so removing
+                # our copy loses nothing.
                 target_path.unlink()
                 return {
                     'status': 'failed',
@@ -934,6 +943,11 @@ Text to analyze:
 
         except Exception as e:
             logger.error(f"Error importing PDF: {e}")
+            temp_path.unlink(missing_ok=True)
+            if placed:
+                # Only our own copy is here (the target did not exist before);
+                # the database was not pointed at it.
+                target_path.unlink(missing_ok=True)
             return {
                 'status': 'failed',
                 'reason': str(e),
