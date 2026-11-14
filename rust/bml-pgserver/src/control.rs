@@ -124,8 +124,20 @@ fn pg_ctl(state: &ServerState) -> Command {
     Command::new(tool(&state.bindir, "pg_ctl"))
 }
 
+/// Refuse a saved bin folder that no longer exists with
+/// [`PgServerError::BinDirGone`], which says how to pass the new one.
+pub(crate) fn require_bindir(bindir: &Path) -> Result<(), PgServerError> {
+    if bindir.try_exists().map_err(file_error(bindir))? {
+        return Ok(());
+    }
+    Err(PgServerError::BinDirGone {
+        bindir: bindir.to_owned(),
+    })
+}
+
 /// Whether the server of `state` is running.
 pub fn status(state: &ServerState) -> Result<ServerStatus, PgServerError> {
+    require_bindir(&state.bindir)?;
     let mut command = pg_ctl(state);
     command.arg("status").arg("-D").arg(&state.data_dir);
     let output = command.output().map_err(|source| PgServerError::Spawn {

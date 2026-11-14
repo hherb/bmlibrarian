@@ -17,7 +17,7 @@ use crate::ollama::{copy_model, installed_models, pull_model, OllamaHost, PullEv
 use crate::ollama_install::ensure_ollama;
 use crate::pgdist::{
     built_without_pg_search, bundled_release, ensure_pgdist, host_target, no_bundle_message,
-    system_too_old, PgdistRelease,
+    system_too_old, InstalledPgdist, PgdistRelease,
 };
 use crate::runner::{DatabasePlan, SetupPlan};
 use crate::{report_warnings, sweep_stale_parts};
@@ -224,6 +224,61 @@ fn private_database(
     ))
 }
 
+/// [`ensure_pgdist`], reporting download progress for the Database step.
+fn ensure_bundle(
+    config_dir: &Path,
+    release: &PgdistRelease,
+    target: &str,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<(InstalledPgdist, Vec<String>), SetupError> {
+    ensure_pgdist(config_dir, release, target, &mut |done, total| {
+        report(StepEvent::Progress {
+            step: StepId::Database,
+            detail: "Downloading the database".into(),
+            done,
+            total,
+        });
+    })
+}
+
+/// Whether the saved server's `bindir` lies in a bundle under `config_dir`
+/// whose whole version folder is gone (deleted by a clean-up), so this
+/// build's bundle can replace it. A bundle folder that is still there is
+/// left alone: `init` then reports what is wrong with it.
+fn bundle_missing(bindir: &Path, config_dir: &Path) -> bool {
+    std::path::absolute(config_dir).is_ok_and(|dir| {
+        let bundles = dir.join(crate::pgdist::PGDIST_DIR_NAME);
+        bindir
+            .strip_prefix(&bundles)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .is_some_and(|version| !bundles.join(version).exists())
+    })
+}
+
+/// The saved server's request, moved onto this build's bundle (downloaded
+/// again if needed) when the bundle it ran from is gone (see
+/// [`bundle_missing`]); `init` refuses the new one if its major version
+/// cannot run the data folder. Warnings for the step.
+fn restore_missing_bundle(
+    config_dir: &Path,
+    req: InitRequest,
+    report: &mut dyn FnMut(StepEvent),
+) -> Result<(InitRequest, Vec<String>), SetupError> {
+    match host_target() {
+        Some(target) if bundle_missing(&req.bindir, config_dir) => {
+            let (pg, warnings) = ensure_bundle(config_dir, &bundled_release()?, target, report)?;
+            let req = InitRequest {
+                bindir: pg.bindir(),
+                extension_dirs: vec![pg.extension_dir()],
+                ..req
+            };
+            Ok((req, warnings))
+        }
+        _ => Ok((req, Vec::new())),
+    }
+}
+
 /// A new private server from `release`'s bundle for `target` (`None`: this
 /// computer has no bundle target), with its data in `data_dir`.
 fn bundled_database(
@@ -241,14 +296,7 @@ fn bundled_database(
     }
     // An already unpacked bundle is used even if the release has no asset
     // for it; `ensure_pgdist` says when one is needed and missing.
-    let (pg, warnings) = ensure_pgdist(config_dir, release, target, &mut |done, total| {
-        report(StepEvent::Progress {
-            step: StepId::Database,
-            detail: "Downloading the database".into(),
-            done,
-            total,
-        });
-    })?;
+    let (pg, warnings) = ensure_bundle(config_dir, release, target, report)?;
     let req = InitRequest {
         bindir: pg.bindir(),
         data_dir: data_dir.to_path_buf(),
@@ -266,8 +314,8 @@ fn database(
     // A private server in a library's `database/` folder records that
     // library, also when it is resumed: `init` saves the server before
     // `initdb`, so a first run can fail before the library is recorded.
-    let private = |req: &InitRequest, report: &mut dyn FnMut(StepEvent)| {
-        let outcome = private_database(req, dir, Vec::new(), report)?;
+    let private = |req: &InitRequest, warnings: Vec<String>, report: &mut dyn FnMut(StepEvent)| {
+        let outcome = private_database(req, dir, warnings, report)?;
         match server_library(&req.data_dir) {
             Some(library) => record_library(dir, &library, outcome),
             None => Ok(outcome),
@@ -287,12 +335,13 @@ fn database(
     // The saved private server, else the saved existing one, else `None`.
     let resume_saved = |report: &mut dyn FnMut(StepEvent)| {
         if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-            let req = InitRequest {
+            let saved = InitRequest {
                 bindir: s.bindir,
                 data_dir: s.data_dir,
                 extension_dirs: s.extension_dirs,
             };
-            return private(&req, report).map(Some);
+            let (req, warnings) = restore_missing_bundle(dir, saved, report)?;
+            return private(&req, warnings, report).map(Some);
         }
         match saved_external_request(dir)? {
             Some(req) => existing(&req, report).map(Some),
@@ -303,7 +352,7 @@ fn database(
         Some(DatabasePlan::Private(req)) => {
             // Refuse a mismatching --library-dir before the server is touched.
             plan_library(plan)?;
-            private(req, report)
+            private(req, Vec::new(), report)
         }
         Some(DatabasePlan::Existing(req)) => existing(req, report),
         Some(DatabasePlan::Bundled) => {
@@ -842,6 +891,22 @@ mod tests {
         ));
         assert!(!runs_from_bundle(&cfg.join("pgdist-old/pg/bin"), &cfg));
         assert!(!runs_from_bundle(&cfg.join("elsewhere/bin"), &cfg));
+    }
+
+    #[test]
+    fn only_a_missing_bundle_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = std::path::absolute(tmp.path()).unwrap();
+        let old = InstalledPgdist {
+            root: cfg.join(crate::pgdist::PGDIST_DIR_NAME).join("18.6-r1"),
+        };
+        // Whatever its version (#448: a bml upgrade may pin a newer one).
+        assert!(bundle_missing(&old.bindir(), &cfg));
+        // A bin folder outside the bundles is left to init.
+        assert!(!bundle_missing(Path::new("/opt/pg/bin"), &cfg));
+        // A bundle folder still present is not replaced (init reports what is wrong).
+        std::fs::create_dir_all(&old.root).unwrap();
+        assert!(!bundle_missing(&old.bindir(), &cfg));
     }
 
     #[test]

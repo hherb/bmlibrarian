@@ -79,7 +79,10 @@ summary (stdout) lists every step and each step's warnings. Before any step
 runs it calls `bml_pgserver::external::check_request`, so a remote
 `--existing-server` or an unusable password (an empty `--password-stdin` line)
 exits 1 at once; the Tauri screen should call it too. The superuser password comes from `BML_PG_SUPERUSER_PASSWORD` or
-`--password-stdin`, never argv. `--existing-server [::1]:5432` has its
+`--password-stdin`, never argv. `read_password` removes the variable from
+bml's environment once read (still single-threaded), so tar, installers and
+the Ollama app never inherit it, and refuses `--password-stdin` when stdin
+is a terminal (a typed password would show on screen). `--existing-server [::1]:5432` has its
 brackets stripped before reaching `ExternalRequest`, and `adopt` strips them
 too, for library callers (the postgres crate cannot resolve them). `needs_pg_search` is `!cfg!(windows)`.
 
@@ -108,7 +111,13 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   it to `<config>/pgdist/<version>` once its `pgdist.json` names that version
   and target, and deletes the archive (a leftover archive is deleted, or
   warned about again, by a later run that finds the bundle installed while
-  no server is saved; once one is, the step resumes it and never looks);
+  no server is saved; once one is, the step resumes it and never looks).
+  A resumed server whose saved bin folder lies in a bundle whose version
+  folder is gone (`bundle_missing`, e.g. deleted by a clean-up) is moved
+  onto this build's pinned bundle, downloaded if needed, with its `ext/` as
+  the only extension folder; `init` accepts it when its major version
+  matches the data folder's `PG_VERSION`. A bundle folder still present
+  (also one missing single files) is left to `init`;
   before downloading (not when resuming a saved server),
   `pgdist::system_too_old` fails the step on a macOS or glibc older than the
   release's `requires`. Then `init` runs with `pg/bin` and `ext/` and the

@@ -38,7 +38,10 @@ wrong. `start`, `stop`, `restart` and
 The first time, the data folder must be new or empty. `init` refuses a folder
 that already holds other files, or another PostgreSQL server's data, and
 leaves those files untouched. Later runs of `init` must name the same data
-folder and PostgreSQL bin folder.
+folder. The PostgreSQL bin folder may change, for example after Postgres.app
+was moved or `brew upgrade` removed the old folder, as long as the new one
+has the same major version as the data folder (its `PG_VERSION`); `init`
+then saves the new folder.
 
 On macOS and Linux the bin and data folder names may not contain `"`, `$`, a
 backtick or `\` (PostgreSQL's own tools cannot handle them). Spaces, accents
@@ -131,3 +134,11 @@ because the entry remembers where that program is.
   keeps the port it was set up with. Free that port.
 - **"PostgreSQL 16 found; version 18 or newer is required"**: point
   `--bindir` at a PostgreSQL 18 installation.
+- **"the PostgreSQL bin folder … saved for this server is gone"**: PostgreSQL
+  moved. Run `bml server init --bindir <new bin folder> --data-dir <same data
+  folder>` (or `bml setup --pg-bindir <new bin folder>`), adding
+  `--extension-dir` again for each extension folder the server had (such as
+  pg_search's), or the server stops loading it; the data is kept.
+- **"… holds PostgreSQL 18 data, but … is PostgreSQL 19"**: the new bin
+  folder is another major version. Point `--bindir` at a PostgreSQL of the
+  version the message names.

@@ -76,8 +76,16 @@ resumed.
      `BadExtensionDir`.
 1. **Version check.** `postgres --version` must report ≥ 18.
 2. **Port.** Take it from the state file. If there is no state file, use
-   `choose_port`. A state file naming a different data or bin folder is
-   `StateMismatch`, which shows both paths.
+   `choose_port`. A state file naming a different data folder is
+   `StateMismatch`, which shows both paths. A different bin folder is
+   accepted when its major version equals the data folder's `PG_VERSION`
+   (or there is no `PG_VERSION` yet), and the state is saved with it;
+   otherwise `DataDirVersion`. A saved bin folder that no longer exists,
+   requested again (a plain re-run), is `BinDirGone` (checked before step
+   1, which could only say it cannot run `postgres`); its message says how
+   to pass the new one, and to repeat `--extension-dir`. `control::status`
+   (so also `start`, `stop`, `restart` and autostart) checks the saved bin
+   folder the same way (`require_bindir`).
 3. **Data folder.** "Finished" below means `bml.env` exists: it is written
    last, so a setup once completed.
    - `PG_VERSION` present: it's ours if it holds our `bml.conf`, or if our
@@ -229,7 +237,9 @@ The integration tests (`#[ignore]`) use temporary folders only, never
 `bml-pgserver/tests/refusals.rs` (Unix, no server needed, runs in plain
 `cargo test`) uses a fake bin folder whose `postgres` prints a version and
 whose `initdb` fails. It covers `UnsupportedVersion`, `ForeignDataDir`,
-`StateMismatch`, `AdminCredentialsLost`, `IncompleteDataDir`, and the removal
+`StateMismatch`, `BinDirGone`, a moved bin folder of the same major version
+(accepted), `DataDirVersion`, `AdminCredentialsLost`, `IncompleteDataDir`,
+and the removal
 of `.pwfile.tmp` after a failed `initdb` and of one left by an interrupted run.
 `bml-cli/tests/status_exit_codes.rs` does the same with a fake `pg_ctl` for
 `bml server status` (exit 3 stopped, 1 data folder missing or unexpected

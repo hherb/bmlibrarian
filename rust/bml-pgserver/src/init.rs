@@ -19,7 +19,9 @@ use crate::conf::{
     ensure_include, extension_control_dir, provides_pg_search, render_bml_conf, render_pg_hba,
     ServerConfig, BML_CONF_NAME, PATH_LIST_SEPARATOR,
 };
-use crate::control::{pg_major_version, restart, start, status, tool, ServerStatus};
+use crate::control::{
+    pg_major_version, require_bindir, restart, start, status, tool, ServerStatus,
+};
 use crate::envfile::{
     generate_password, read_conn_info, render_env, write_private_file, ConnInfo,
     ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
@@ -131,22 +133,27 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
     }
     // A password file left by an earlier run killed during initdb.
     remove_if_present(&config_dir.join(PWFILE_NAME))?;
-    pg_major_version(&req.bindir)?;
     let saved = load_state(config_dir)?;
+    if let Some(saved) = &saved {
+        if saved.bindir == req.bindir {
+            require_bindir(&req.bindir)?;
+        }
+    }
+    let major = pg_major_version(&req.bindir)?;
     let managed_by_us = saved.is_some();
     let port = match saved {
         Some(saved) => {
-            for (field, saved, requested) in [
-                ("data folder", saved.data_dir, &req.data_dir),
-                ("PostgreSQL bin folder", saved.bindir, &req.bindir),
-            ] {
-                if &saved != requested {
-                    return Err(PgServerError::StateMismatch {
-                        field,
-                        saved,
-                        requested: requested.clone(),
-                    });
-                }
+            if saved.data_dir != req.data_dir {
+                return Err(PgServerError::StateMismatch {
+                    field: "data folder",
+                    saved: saved.data_dir,
+                    requested: req.data_dir.clone(),
+                });
+            }
+            // A moved or upgraded PostgreSQL of the same major version can
+            // run the data folder; the state saved below records it.
+            if saved.bindir != req.bindir {
+                check_data_dir_version(&req.data_dir, major, &req.bindir)?;
             }
             saved.port
         }
@@ -338,6 +345,26 @@ fn validated_request(req: &InitRequest) -> Result<InitRequest, PgServerError> {
         bindir,
         data_dir,
         extension_dirs,
+    })
+}
+
+/// Refuse a bin folder of another major version than the data folder's
+/// `PG_VERSION` (no `PG_VERSION` yet: `initdb` has not run, any will do).
+fn check_data_dir_version(data_dir: &Path, major: u32, bindir: &Path) -> Result<(), PgServerError> {
+    let file = data_dir.join(PG_VERSION_FILE);
+    let needed = match fs::read_to_string(&file) {
+        Ok(text) => text.trim().to_owned(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(PgServerError::File { path: file, source }),
+    };
+    if needed == major.to_string() {
+        return Ok(());
+    }
+    Err(PgServerError::DataDirVersion {
+        data_dir: data_dir.to_owned(),
+        needed,
+        bindir: bindir.to_owned(),
+        found: major,
     })
 }
 
