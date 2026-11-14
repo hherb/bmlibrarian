@@ -234,9 +234,11 @@ on, all delivered by #760:
       keys, `FullTextCache::delete`), or it becomes a bmlib library, which
       rules out deleting an old version's file and changes the version
       replacement rule and the orphan-file check. Record the answer here.
-- [ ] Add features `pdf` and `embed` (Metal on macOS by default, so no
+- [x] Add features `pdf` and `embed` (Metal on macOS by default, so no
       target-specific entry). Check CI build time on all three OSes. MuPDF
-      needs libclang.
+      needs libclang. *Green on all five `rust` runners after bmlib #770
+      (Windows `pdf` build) and `[profile.dev.package.mupdf-sys] opt-level
+      = 2` (MSVC refused MuPDF's Debug runtime beside llama.cpp's Release).*
 - [x] `bml-library` exposes `pub struct Pipeline { db, client, cache, embedder_path }`
       and `pub fn update(&self, opts: &UpdateOptions, progress: &dyn Fn(Progress)) -> Result<UpdateReport, LibraryError>`.
       `UpdateOptions { from: Option<NaiveDate>, phases: PhaseSet, stop: &AtomicBool }`.
