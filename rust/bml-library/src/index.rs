@@ -28,13 +28,16 @@ use bmlib::fulltext::segmenter::SectionSegmenter;
 use bmlib::fulltext::MupdfExtractor;
 use sha2::{Digest, Sha256};
 
-use crate::fulltext::LASTING_RETRY;
+use crate::fulltext::{finish_cache_deletions, queue_cache_deletion, LASTING_RETRY};
 use crate::{Phase, PipelineError, Progress};
 
 /// How many chunks are embedded per call.
 pub const EMBED_BATCH_SIZE: usize = 16;
 /// The converter label of a chunk set made from the title + abstract alone.
 pub const ABSTRACT_CONVERTER: &str = "abstract";
+/// After this many papers in a row fail to index, the phase stops: the
+/// cause is then likely the model or the database, not the papers.
+pub const MAX_FAILURES_IN_A_ROW: usize = 3;
 
 /// Turns chunk texts into vectors (bmlib's [`Embedder`]; a stub in tests).
 pub trait ChunkEmbedder {
@@ -110,6 +113,21 @@ pub struct IndexReport {
     pub chunks: u64,
     /// `stop` was set before every paper was indexed.
     pub stopped: bool,
+    /// Papers that could not be indexed this run, one line each (they stay
+    /// due and are tried again next run).
+    pub failed: Vec<String>,
+}
+
+impl IndexReport {
+    /// Add `other`'s counts to these (two index runs in one update).
+    pub fn add(&mut self, other: IndexReport) {
+        self.indexed += other.indexed;
+        self.fulltext += other.fulltext;
+        self.unreadable += other.unreadable;
+        self.chunks += other.chunks;
+        self.stopped |= other.stopped;
+        self.failed.extend(other.failed);
+    }
 }
 
 /// One paper due for indexing.
@@ -126,24 +144,32 @@ fn opt_text(row: &Row, name: &str) -> Result<Option<String>, PipelineError> {
     Ok(row.get(name)?.as_str().map(str::to_string))
 }
 
-fn next_due(db: &mut dyn Db, model_sha256: &str) -> Result<Option<Due>, PipelineError> {
+/// The first paper after `after_id` (a cursor, so a paper that fails does
+/// not block the ones after it, and the query does not walk the papers
+/// already done) whose index is missing, pending or stale.
+fn next_due(
+    db: &mut dyn Db,
+    model_sha256: &str,
+    after_id: i64,
+) -> Result<Option<Due>, PipelineError> {
     let sql = format!(
         "SELECT p.id AS id, p.title AS title, p.abstract AS abstract, f.form AS form, \
                 f.cache_key AS cache_key \
          FROM publications p \
          LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
          LEFT JOIN {PUBLICATION_INDEX} i ON i.publication_id = p.id \
-         WHERE i.publication_id IS NULL OR i.status = 'pending' \
+         WHERE p.id > ? AND (i.publication_id IS NULL OR i.status = 'pending' \
             OR i.model_sha256 IS DISTINCT FROM ? OR i.recipe_version IS DISTINCT FROM ? \
             OR i.chunker_version IS DISTINCT FROM ? \
             OR i.converter_version IS DISTINCT FROM \
-               (CASE f.form WHEN 'jats' THEN ? WHEN 'pdf' THEN ? ELSE ? END) \
+               (CASE f.form WHEN 'jats' THEN ? WHEN 'pdf' THEN ? ELSE ? END)) \
          ORDER BY p.id LIMIT 1"
     );
     let row = fetch_one(
         db,
         &sql,
         &[
+            Value::Int(after_id),
             Value::Text(model_sha256.into()),
             Value::Int(EMBEDDING_RECIPE_VERSION.into()),
             Value::Int(CHUNKER_VERSION.into()),
@@ -200,6 +226,9 @@ fn canonical(
     }
 }
 
+/// PostgreSQL text cannot hold it; extracted text (a PDF's) may.
+const NUL: char = '\0';
+
 /// One chunk to store: `None` span for the abstract chunk.
 struct Piece {
     text: String,
@@ -217,7 +246,10 @@ fn fulltext_pieces(canonical: &CanonicalText) -> Result<Vec<Piece>, String> {
     Ok(chunks
         .iter()
         .map(|c| Piece {
-            text: chars[c.span.start..c.span.end].iter().collect(),
+            text: chars[c.span.start..c.span.end]
+                .iter()
+                .filter(|&&ch| ch != NUL)
+                .collect(),
             span: Some((c.span.start, c.span.end)),
         })
         .collect())
@@ -251,7 +283,8 @@ fn index_paper(
         .filter(|s| !s.is_empty())
         .copied()
         .collect::<Vec<_>>()
-        .join("\n\n");
+        .join("\n\n")
+        .replace(NUL, "");
     let fulltext = match (due.form.as_deref(), due.cache_key.as_deref()) {
         (Some(form @ ("jats" | "pdf")), Some(key)) => Some(
             canonical(cache, form, key, &due.title)
@@ -379,11 +412,14 @@ fn index_paper(
             int(pieces.len()),
         ],
     )?;
-    tx.commit()?;
     if unreadable.is_some() {
         if let Some(key) = &due.cache_key {
-            cache.delete(key);
+            queue_cache_deletion(&mut *tx, key)?;
         }
+    }
+    tx.commit()?;
+    if unreadable.is_some() {
+        finish_cache_deletions(db, cache)?;
     }
     Ok((pieces.len(), has_fulltext, unreadable.is_some()))
 }
@@ -402,26 +438,48 @@ pub fn run(
 ) -> Result<IndexReport, PipelineError> {
     let mut report = IndexReport::default();
     let model = embedder.model_sha256().to_string();
-    while let Some(due) = next_due(db, &model)? {
+    let mut after_id = 0;
+    let mut in_a_row = 0;
+    while let Some(due) = next_due(db, &model, after_id)? {
+        after_id = due.id;
         if stop.load(Ordering::Relaxed) {
             report.stopped = true;
             break;
         }
-        let (chunks, fulltext, unreadable) = index_paper(db, cache, embedder, &due)?;
-        report.indexed += 1;
-        report.chunks += chunks as u64;
-        if fulltext {
-            report.fulltext += 1;
-        }
-        if unreadable {
-            report.unreadable += 1;
-            progress(Progress {
-                phase: Phase::Index,
-                message: format!(
-                    "paper {}: its full text could not be read; indexed its abstract",
-                    due.id
-                ),
-            });
+        match index_paper(db, cache, embedder, &due) {
+            Ok((chunks, fulltext, unreadable)) => {
+                in_a_row = 0;
+                report.indexed += 1;
+                report.chunks += chunks as u64;
+                if fulltext {
+                    report.fulltext += 1;
+                }
+                if unreadable {
+                    report.unreadable += 1;
+                    progress(Progress {
+                        phase: Phase::Index,
+                        message: format!(
+                            "paper {}: its full text could not be read; indexed its abstract",
+                            due.id
+                        ),
+                    });
+                }
+            }
+            Err(error) => {
+                in_a_row += 1;
+                let line = format!("paper {} could not be indexed: {error}", due.id);
+                progress(Progress {
+                    phase: Phase::Index,
+                    message: line.clone(),
+                });
+                report.failed.push(line);
+                if in_a_row >= MAX_FAILURES_IN_A_ROW {
+                    return Err(PipelineError::Other(format!(
+                        "{in_a_row} papers in a row could not be indexed, so indexing stopped; \
+                         the last: {error}"
+                    )));
+                }
+            }
         }
     }
     Ok(report)

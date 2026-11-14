@@ -1,12 +1,17 @@
 //! Running `bml library update` every few days, per user, without admin
 //! rights, beside the login entry of [`crate::autostart`].
 //!
-//! macOS: a LaunchAgent with `StartInterval` (launchd runs a missed interval
-//! when the Mac wakes). Linux: a `systemd --user` timer with `Persistent`
-//! (a missed run happens at the next login). Windows: a per-user Scheduled
-//! Task (unverified, #397). There is one entry per user; scheduling again
-//! replaces it. Like the login entry it records the running `bml`, so
-//! schedule from an installed `bml`, not a `cargo run` build.
+//! Every scheduler starts `bml library update --if-older-than <days>` once a
+//! day (at [`DAILY_RUN_HOUR`]); the command itself does nothing until the
+//! last complete update is that old, so an interval survives restarts and
+//! an unfinished update is carried on the next day. macOS: a LaunchAgent with
+//! `StartCalendarInterval` and `RunAtLoad` (a day missed while asleep runs on
+//! wake, one missed while off at the next login). Linux: a `systemd --user`
+//! timer with `Persistent` (a missed run happens at the next login).
+//! Windows: a per-user Scheduled Task (unverified, #397). There is one entry
+//! per user; scheduling again replaces it. Like the login entry it records
+//! the running `bml`, so schedule from an installed `bml`, not a `cargo run`
+//! build.
 
 use std::ffi::OsString;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -40,28 +45,34 @@ pub const UPDATE_TASK_NAME: &str = "BMLibrarian Library Update";
 pub const UPDATE_LOG_NAME: &str = "bml-library-update.log";
 /// The default schedule: once a week.
 pub const WEEKLY_DAYS: u32 = 7;
-/// Seconds in a day (launchd counts intervals in seconds).
-const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+/// The hour of the day (local time) the daily trigger fires.
+pub const DAILY_RUN_HOUR: u32 = 12;
 
-/// The scheduled command: `bml --config-dir <dir> library update`.
-pub fn update_args(exe: &Path, config_dir: &Path) -> Vec<OsString> {
+/// The scheduled command:
+/// `bml --config-dir <dir> library update --if-older-than <days>`.
+pub fn update_args(exe: &Path, config_dir: &Path, days: u32) -> Vec<OsString> {
     vec![
         exe.as_os_str().to_owned(),
         "--config-dir".into(),
         config_dir.as_os_str().to_owned(),
         "library".into(),
         "update".into(),
+        "--if-older-than".into(),
+        days.to_string().into(),
     ]
 }
 
-/// The LaunchAgent plist: runs the update every `days` days, logging to
-/// [`UPDATE_LOG_NAME`] in `config_dir`.
-// shortcut: launchd's interval restarts when the agent loads (each login),
-// so a Mac restarted more often than every `days` days never runs it; use
-// StartCalendarInterval (weekday/hour) if that turns out to matter.
+/// Where a scheduled update's output goes, if the scheduler keeps it (not
+/// on Windows, where a Scheduled Task's output is discarded).
+pub fn update_log_path(config_dir: &Path) -> Option<std::path::PathBuf> {
+    (!cfg!(windows)).then(|| config_dir.join(UPDATE_LOG_NAME))
+}
+
+/// The LaunchAgent plist: every day at [`DAILY_RUN_HOUR`] and at login,
+/// logging to [`UPDATE_LOG_NAME`] in `config_dir`.
 pub fn render_update_agent(exe: &Path, config_dir: &Path, days: u32) -> String {
     let log = xml_escape(&config_dir.join(UPDATE_LOG_NAME).to_string_lossy());
-    let args: String = update_args(exe, config_dir)
+    let args: String = update_args(exe, config_dir, days)
         .iter()
         .map(|a| {
             format!(
@@ -70,7 +81,6 @@ pub fn render_update_agent(exe: &Path, config_dir: &Path, days: u32) -> String {
             )
         })
         .collect();
-    let interval = u64::from(days) * SECONDS_PER_DAY;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,8 +91,15 @@ pub fn render_update_agent(exe: &Path, config_dir: &Path, days: u32) -> String {
     <key>ProgramArguments</key>
     <array>
 {args}    </array>
-    <key>StartInterval</key>
-    <integer>{interval}</integer>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>{DAILY_RUN_HOUR}</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>{log}</string>
     <key>StandardErrorPath</key>
@@ -93,40 +110,39 @@ pub fn render_update_agent(exe: &Path, config_dir: &Path, days: u32) -> String {
     )
 }
 
-/// The `systemd --user` service the timer starts.
-pub fn render_update_service(exe: &Path, config_dir: &Path) -> String {
-    let line = update_args(exe, config_dir)
+/// The `systemd --user` service the timer starts, appending its output to
+/// [`UPDATE_LOG_NAME`] in `config_dir`.
+pub fn render_update_service(exe: &Path, config_dir: &Path, days: u32) -> String {
+    let line = update_args(exe, config_dir, days)
         .iter()
         .map(systemd_quote)
         .collect::<Vec<_>>()
         .join(" ");
+    // A path setting is not quoted; only specifiers (`%`) need escaping.
+    let log = config_dir
+        .join(UPDATE_LOG_NAME)
+        .to_string_lossy()
+        .replace('%', "%%");
     format!(
         "[Unit]\nDescription=Update the BMLibrarian library\n\n\
-         [Service]\nType=oneshot\nExecStart={line}\n"
+         [Service]\nType=oneshot\nExecStart={line}\n\
+         StandardOutput=append:{log}\nStandardError=append:{log}\n"
     )
 }
 
-/// The `systemd --user` timer: weekly, daily, or every `days` days.
-// shortcut: other intervals step through the days of each month
-// (`*-*-01/<days>`), so the gap at a month's end is shorter; a calendar
-// expression has no "every n days", and a monotonic timer forgets its
-// last run at logout.
+/// The `systemd --user` timer: every day at [`DAILY_RUN_HOUR`], and at the
+/// next login when that was missed.
 pub fn render_update_timer(days: u32) -> String {
-    let calendar = match days {
-        1 => "daily".to_string(),
-        WEEKLY_DAYS => "weekly".to_string(),
-        n => format!("*-*-01/{n} 00:00:00"),
-    };
     format!(
         "[Unit]\nDescription=Update the BMLibrarian library every {days} day(s)\n\n\
-         [Timer]\nOnCalendar={calendar}\nPersistent=true\n\n\
+         [Timer]\nOnCalendar=*-*-* {DAILY_RUN_HOUR:02}:00:00\nPersistent=true\n\n\
          [Install]\nWantedBy=timers.target\n"
     )
 }
 
 /// The command the Windows Scheduled Task runs, every argument quoted.
-pub fn windows_task_command(exe: &Path, config_dir: &Path) -> String {
-    update_args(exe, config_dir)
+pub fn windows_task_command(exe: &Path, config_dir: &Path, days: u32) -> String {
+    update_args(exe, config_dir, days)
         .iter()
         .map(windows_quote)
         .collect::<Vec<_>>()
@@ -170,7 +186,7 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
         let service = unit_dir.join(UPDATE_SERVICE_NAME);
         let timer = unit_dir.join(UPDATE_TIMER_NAME);
         let (old_service, old_timer) = (read_previous(&service)?, read_previous(&timer)?);
-        fs::write(&service, render_update_service(exe, config_dir))
+        fs::write(&service, render_update_service(exe, config_dir, days))
             .map_err(file_error(&service))?;
         fs::write(&timer, render_update_timer(days)).map_err(file_error(&timer))?;
         let enabled = (|| {
@@ -187,12 +203,14 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
     }
     #[cfg(windows)]
     {
+        // shortcut: a day missed while the computer is off is not caught up
+        // (schtasks has no "run when available" flag); the next day's run is.
         let mut schtasks = Command::new("schtasks");
         schtasks
-            .args(["/Create", "/SC", "DAILY", "/MO"])
-            .arg(days.to_string())
+            .args(["/Create", "/SC", "DAILY", "/ST"])
+            .arg(format!("{DAILY_RUN_HOUR:02}:00"))
             .args(["/TN", UPDATE_TASK_NAME, "/TR"])
-            .arg(windows_task_command(exe, config_dir))
+            .arg(windows_task_command(exe, config_dir, days))
             .arg("/F");
         run(schtasks).map(drop)
     }
@@ -274,38 +292,48 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_runs_the_update_every_n_days() {
+    fn the_agent_runs_daily_and_at_login_with_the_interval_in_the_command() {
         let plist = render_update_agent(&exe(), Path::new("/cfg & co"), WEEKLY_DAYS);
-        assert!(plist.contains("<integer>604800</integer>"), "{plist}");
-        assert!(plist.contains("<string>library</string>\n        <string>update</string>"));
+        assert!(
+            plist.contains("<key>StartCalendarInterval</key>"),
+            "{plist}"
+        );
+        assert!(plist.contains(&format!("<integer>{DAILY_RUN_HOUR}</integer>")));
+        assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
+        assert!(plist.contains(
+            "<string>update</string>\n        <string>--if-older-than</string>\n        <string>7</string>"
+        ));
         assert!(plist.contains("/cfg &amp; co"), "escaped");
-        assert!(!plist.contains("RunAtLoad"), "not run when scheduled");
     }
 
     #[test]
-    fn the_timer_names_weekly_daily_and_other_intervals() {
-        assert!(render_update_timer(WEEKLY_DAYS).contains("OnCalendar=weekly\n"));
-        assert!(render_update_timer(1).contains("OnCalendar=daily\n"));
-        assert!(render_update_timer(3).contains("OnCalendar=*-*-01/3 00:00:00\n"));
-        assert!(render_update_timer(3).contains("Persistent=true"));
+    fn the_timer_fires_daily_and_catches_up() {
+        let timer = render_update_timer(3);
+        assert!(timer.contains("OnCalendar=*-*-* 12:00:00\n"), "{timer}");
+        assert!(timer.contains("Persistent=true"));
     }
 
     #[test]
-    fn the_service_quotes_its_arguments() {
-        let unit = render_update_service(&exe(), Path::new("/cfg"));
+    fn the_service_quotes_its_arguments_and_logs_to_the_file() {
+        let unit = render_update_service(&exe(), Path::new("/cfg 100%"), 3);
         assert!(
             unit.contains(
-                r#"ExecStart="/Apps/My bml/bml" "--config-dir" "/cfg" "library" "update""#
+                r#"ExecStart="/Apps/My bml/bml" "--config-dir" "/cfg 100%%" "library" "update" "--if-older-than" "3""#
             ),
             "{unit}"
         );
+        assert!(
+            unit.contains("StandardOutput=append:/cfg 100%%/bml-library-update.log\n"),
+            "{unit}"
+        );
+        assert!(unit.contains("StandardError=append:/cfg 100%%/bml-library-update.log\n"));
     }
 
     #[test]
     fn the_task_command_quotes_every_argument() {
         assert_eq!(
-            windows_task_command(Path::new(r"C:\bml.exe"), Path::new(r"D:\")),
-            r#""C:\bml.exe" "--config-dir" "D:\\" "library" "update""#
+            windows_task_command(Path::new(r"C:\bml.exe"), Path::new(r"D:\"), 7),
+            r#""C:\bml.exe" "--config-dir" "D:\\" "library" "update" "--if-older-than" "7""#
         );
     }
 

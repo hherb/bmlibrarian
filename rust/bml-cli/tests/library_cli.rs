@@ -81,3 +81,11 @@ fn schedule_every_needs_a_number_of_days_in_range() {
         assert_eq!(out.status.code(), Some(2), "{days}: clap usage error");
     }
 }
+
+#[test]
+fn if_older_than_needs_days_in_range() {
+    let cfg = tempfile::tempdir().unwrap();
+    with_library(cfg.path());
+    let out = bml(cfg.path(), &["library", "update", "--if-older-than", "0"]);
+    assert_eq!(out.status.code(), Some(2), "clap usage error");
+}

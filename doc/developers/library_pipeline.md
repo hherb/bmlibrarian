@@ -7,10 +7,15 @@ spec: `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
 
 ## Shape
 
-`Pipeline::update(db, options, progress)` runs three phases in order. Each
-picks its next piece of work from table state alone, so `kill -9` at any
-point loses at most the paper (or day window) in flight. A phase that fails
-lands in `UpdateReport::failures`; the phases after it still run.
+`Pipeline::update(db, options, progress)` runs metadata, index, full text,
+then index again. The first index run makes new abstracts searchable within
+the hour instead of after a full-text backlog that takes weeks at 30 s per
+request; the second indexes the new full texts. The embedder is loaded once.
+Each phase picks its next piece of work from table state alone, so `kill -9`
+at any point loses at most the paper (or day window) in flight. A phase that
+fails lands in `UpdateReport::failures`; the phases after it still run.
+`library_state.last_update_at` is stamped only by a complete update (nothing
+failed, nothing stopped early), which is what `--if-older-than` reads.
 
 | Phase | Module | Checkpoint | Unit of work |
 |---|---|---|---|
@@ -30,8 +35,11 @@ replace each one (`bml_library::testing::FakeHttp`, a stub `ChunkEmbedder`).
 ## Metadata
 
 bmlib `publications::sync` with the `medrxiv-details` source (`/details/`,
-every posted version, bmlib PR #760) from `--from` (default
-`MEDRXIV_FIRST_DAY`, 2019-06-06) to today. Records keep `source =
+every posted version, bmlib PR #760) from the start day to today. The start
+day (`start_day`) is `--from` when given, which is then remembered in
+`library_state.from_day`, else the remembered day, else
+`MEDRXIV_FIRST_DAY` (2019-06-06). So a library begun "from date X" is not
+widened to all of medRxiv by a later or scheduled run. Records keep `source =
 "medrxiv"`, so versions dedupe onto one publication per DOI; each version's
 `jatsxml` and PDF land in `fulltext_sources` with `version` set. Requests
 to `api.biorxiv.org` go through a `PoliteClient` spaced by bmlib's
@@ -87,15 +95,19 @@ cache (else a passing failure). Success, in one transaction: upsert the row
 (`version_held`, `cache_key`, `cache_path` relative to `documents/`,
 attempts and errors cleared), delete the paper's chunks (embeddings cascade),
 set `publication_index.status = 'pending'`. After the commit the old
-version's cache entry is deleted (`FullTextCache::delete`). A failure on a
+version's cache entry is deleted (`FullTextCache::delete`): its key is
+queued in `cache_deletions` inside the transaction, and the file and the
+queue row are removed after the commit. A failure on a
 paper that already holds full text (a new version failing) updates only
 `attempts`, `last_error`, `last_error_kind` and `retry_after`: the old
 version's row, file and chunks stay.
 
-**Orphans**: cache entries (`html/`, `abstracts/`, `jats/`, `pdfs/`) whose key
-no row names are deleted at the start of each full-text phase. They come
-from a crash between commit and delete, or between the cache write and the
-commit (costing one re-download). `bml library status` counts them.
+**Old files**: queued deletions a crash interrupted are finished at the
+start of each full-text phase (`finish_cache_deletions`; a key a row uses
+again is not deleted). A file is never deleted only because no row names it:
+the database may have been recreated, and a fetch whose commit a crash
+prevented is served from the cache on the next try. `bml library status`
+counts queued deletions and unreferenced files (kept).
 
 ## Index
 
@@ -113,36 +125,50 @@ ordinal 0) always, plus, for a full text, bmlib's canonical text (JATS via
 chunked). Embedded in batches of `EMBED_BATCH_SIZE` before the transaction;
 then, in one transaction: delete the paper's chunks, insert chunks and
 `halfvec` embeddings, mark the row `complete` with its label and
-`chunk_count`. A full text that cannot be read or chunked turns the paper
-abstract-only (lasting, cache entry deleted) instead of being picked again
-forever. The model is checked with `verify_model` (sha256) before loading;
+`chunk_count`. NUL characters are dropped from chunk text (PostgreSQL text
+cannot hold them). A full text that cannot be read or chunked turns the
+paper abstract-only (lasting, cache entry queued for deletion) instead of
+being picked again forever. The work query walks papers by id with a cursor
+(`p.id > last`), so it does not rescan finished papers and a paper whose
+indexing fails (a model or database error on its text) is reported in
+`IndexReport::failed`, left due for the next run, and passed over; after
+`MAX_FAILURES_IN_A_ROW` (3) failures in a row the phase stops, since the
+cause is then likely the model or the database. The model is checked with `verify_model` (sha256) before loading;
 a missing or damaged file fails the index phase with the `bml setup` hint,
 after the metadata and full-text phases ran.
 
 ## Schema
 
 bml-db migration 2 adds `library_state` (one row, `id = 1`:
-`rate_limited_until`, `last_update_at`). See `rust_db_schema.md`. bmlib's
+`rate_limited_until`, `last_update_at`, `from_day`) and `cache_deletions`.
+See `rust_db_schema.md`. bmlib's
 `Db` over PostgreSQL binds only text, integers and booleans, so timestamps
 and vectors are passed as text and cast in SQL.
 
 ## Schedule
 
 `bml_pgserver::schedule` (beside `autostart`, sharing its helpers):
-`schedule_updates(exe, config_dir, days)` / `unschedule_updates()`. macOS: a
-LaunchAgent `org.bmlibrarian.library-update` with `StartInterval` (a failed
-re-schedule restores the old entry, as #405); Linux: `bml-library-update.
-{service,timer}` with `OnCalendar` + `Persistent`; Windows: a Scheduled Task
-`/SC DAILY /MO <days>` (unverified, #397). Output goes to
-`bml-library-update.log` in the configuration folder. Known limits are
-marked `shortcut:` in `schedule.rs` (macOS interval restarts at each login;
-Linux intervals other than 1 and 7 days step through each month).
+`schedule_updates(exe, config_dir, days)` / `unschedule_updates()`. Every
+scheduler fires **daily** at `DAILY_RUN_HOUR` (12:00) and runs `bml library
+update --if-older-than <days>`, which does nothing while the last complete
+update is younger than `days` (less `SCHEDULE_SLACK_HOURS`, 2, for a trigger
+firing a little early). So the interval survives restarts, and an
+unfinished update (backlog, rate limit, failure) carries on the next day.
+macOS: a LaunchAgent `org.bmlibrarian.library-update` with
+`StartCalendarInterval` and `RunAtLoad` (so it also runs at login and when
+scheduled; a failed re-schedule restores the old entry, as #405). Linux:
+`bml-library-update.{service,timer}`, `OnCalendar=*-*-* 12:00:00` +
+`Persistent`, output appended to the log. Windows: a Scheduled Task `/SC
+DAILY /ST 12:00` (unverified, #397; a day missed while off is not caught up,
+marked `shortcut:`; no log). Output goes to `bml-library-update.log` in the
+configuration folder (`update_log_path`).
 
 ## CLI
 
 `bml library update [--from YYYY-MM-DD] [--skip metadata|fulltext|index]...`
 (exit 0 done, 1 failed, 2 not set up, 4 stopped early: Ctrl-C or rate
-limited); `bml library status`; `bml library schedule weekly|every
+limited; `--if-older-than <days>` exits 0 at once while the last complete
+update is younger); `bml library status`; `bml library schedule weekly|every
 <days>|manual` (days 1–365). The update runs `bml_db::migrate` first, so an
 older library gains migration 2.
 
@@ -168,7 +194,9 @@ older library gains migration 2.
   (`tests/pipeline.rs`: resume after a day commit, a v2 record, JATS, JATS
   404 then PDF, refused PDF, timeout, 429 uncharged, version replacement,
   failed new version, orphan cleanup, abstract-only then full text, changed
-  label, index crash, missing model).
+  label, index crash, missing model, remembered start day, abstracts
+  indexed before full text, a failing paper not blocking the others,
+  failures in a row ending the phase, only complete updates stamped).
 - CLI: `cargo test -p bml-cli --test library_cli` (exit codes, lock, argument
   checks); `bml-pgserver` `schedule` unit tests (plist lint on macOS).
 - Not covered by tests: the real GGUF (hand run only), the Linux and Windows

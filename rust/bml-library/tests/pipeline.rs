@@ -6,7 +6,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bml_db::migrate;
@@ -19,6 +19,7 @@ use bml_pgserver::init::{connect, init, InitRequest};
 use bml_pgserver::state::load_state;
 use bmlib::embed::EMBEDDING_DIM;
 use bmlib::fulltext::cache::FullTextCache;
+use bmlib::publications::fetchers::{FetchError, HttpClient, HttpResponse};
 use chrono::{DateTime, NaiveDate, Utc};
 use postgres::Client;
 
@@ -59,11 +60,22 @@ fn server(tmp: &Path) -> Option<(StopOnDrop, Client)> {
     Some((guard, client))
 }
 
-/// One vector per text; fails on call number `fail_on` (1-based) if set.
+/// One vector per text; fails on call number `fail_on` (1-based) if set,
+/// and on any text containing `fail_on_text`.
 struct StubEmbedder {
     sha: String,
     calls: usize,
     fail_on: Option<usize>,
+    fail_on_text: Option<&'static str>,
+}
+
+fn stub(sha: &str, fail_on_text: Option<&'static str>) -> StubEmbedder {
+    StubEmbedder {
+        sha: sha.into(),
+        calls: 0,
+        fail_on: None,
+        fail_on_text,
+    }
 }
 
 impl ChunkEmbedder for StubEmbedder {
@@ -72,7 +84,10 @@ impl ChunkEmbedder for StubEmbedder {
     }
     fn embed(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
         self.calls += 1;
-        if self.fail_on == Some(self.calls) {
+        let poisoned = self
+            .fail_on_text
+            .is_some_and(|bad| texts.iter().any(|t| t.contains(bad)));
+        if self.fail_on == Some(self.calls) || poisoned {
             return Err("the stub model failed".into());
         }
         Ok(texts
@@ -104,21 +119,19 @@ fn pipeline(tmp: &Path, api: &FakeHttp, web: &FakeHttp, sha: &str) -> Pipeline {
         api_delay: Duration::ZERO,
         web: Arc::new(web.clone()),
         web_delay: Duration::ZERO,
-        embedder: Box::new(move || {
-            Ok(Box::new(StubEmbedder {
-                sha: sha.clone(),
-                calls: 0,
-                fail_on: None,
-            }))
-        }),
+        embedder: Box::new(move || Ok(Box::new(stub(&sha, None)))),
         clock: Box::new(|| instant("2024-01-17T13:00:00Z")),
     }
 }
 
 fn run(p: &Pipeline, db: &mut Client, phases: PhaseSet, from: &str) -> UpdateReport {
+    run_from(p, db, phases, Some(from))
+}
+
+fn run_from(p: &Pipeline, db: &mut Client, phases: PhaseSet, from: Option<&str>) -> UpdateReport {
     let stop = AtomicBool::new(false);
     let options = UpdateOptions {
-        from: Some(NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap()),
+        from: from.map(|f| NaiveDate::parse_from_str(f, "%Y-%m-%d").unwrap()),
         phases,
         stop: &stop,
     };
@@ -576,19 +589,206 @@ fn resume_after_fulltext_commit_before_cache_delete() {
     paper(&mut db, &[1]);
     let web = FakeHttp::new().route(&jats_url(1), 200, JATS);
     let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
-    // The old version's file, left behind by a crash after the commit.
-    p.cache
-        .save_jats(JATS.as_bytes(), "10.1101_old_v1")
-        .unwrap();
+    // A crash after the commit: the old file is queued for deletion, still there.
+    p.cache.save_jats(JATS.as_bytes(), "old_v1").unwrap();
+    db.execute(
+        "INSERT INTO cache_deletions (cache_key) VALUES ('old_v1')",
+        &[],
+    )
+    .unwrap();
+    // A file no row names (another database's, say): never deleted for that.
+    p.cache.save_jats(JATS.as_bytes(), "unknown_v1").unwrap();
     let status = bml_library::status::library_status(&mut db, &p.cache).unwrap();
-    assert_eq!(status.orphan_files, 1);
+    assert_eq!(
+        (status.pending_deletions, status.unreferenced_files),
+        (1, 2)
+    );
     let r = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15")
         .fulltext
         .unwrap();
-    assert_eq!(r.orphans_removed, 1);
-    assert_eq!(r.jats, 1);
+    assert_eq!((r.old_files_removed, r.jats), (1, 1));
+    assert!(
+        p.cache.get_jats("old_v1").unwrap().is_none(),
+        "the queued file is gone"
+    );
+    assert!(
+        p.cache.get_jats("unknown_v1").unwrap().is_some(),
+        "the unknown file stays"
+    );
     let status = bml_library::status::library_status(&mut db, &p.cache).unwrap();
-    assert_eq!((status.orphan_files, status.jats), (0, 1));
+    assert_eq!(
+        (
+            status.pending_deletions,
+            status.unreferenced_files,
+            status.jats
+        ),
+        (0, 1, 1)
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn the_from_day_is_remembered() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let api = FakeHttp::new()
+        .route(&details_url("2024-01-16"), 200, details_page(&[]))
+        .route(&details_url("2024-01-17"), 200, details_page(&[]));
+    let p = pipeline(tmp.path(), &api, &FakeHttp::new(), "sha");
+    run(&p, &mut db, only(Phase::Metadata), "2024-01-16");
+    api.seen().lock().unwrap().clear();
+    // No --from now: the library keeps the day chosen first, not 2019.
+    let again = run_from(&p, &mut db, only(Phase::Metadata), None);
+    assert!(again.metadata.unwrap().errors.is_empty());
+    let seen = api.seen().lock().unwrap().clone();
+    assert!(seen.iter().all(|u| !u.contains("2024-01-15")), "{seen:?}");
+}
+
+/// Every GET and every embedding call, in order.
+type Events = Arc<Mutex<Vec<&'static str>>>;
+
+struct LoggingHttp(FakeHttp, Events);
+impl HttpClient for LoggingHttp {
+    fn get(&self, url: &str) -> Result<HttpResponse, FetchError> {
+        self.1.lock().unwrap().push("get");
+        self.0.get(url)
+    }
+}
+
+struct LoggingEmbedder(StubEmbedder, Events);
+impl ChunkEmbedder for LoggingEmbedder {
+    fn model_sha256(&self) -> &str {
+        self.0.model_sha256()
+    }
+    fn embed(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        self.1.lock().unwrap().push("embed");
+        self.0.embed(texts)
+    }
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn abstracts_are_indexed_before_full_text_is_fetched() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    paper(&mut db, &[1]);
+    let events: Events = Arc::new(Mutex::new(Vec::new()));
+    let web = FakeHttp::new().route(&jats_url(1), 200, JATS);
+    let mut p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    p.web = Arc::new(LoggingHttp(web, events.clone()));
+    let log = events.clone();
+    p.embedder = Box::new(move || Ok(Box::new(LoggingEmbedder(stub("sha", None), log.clone()))));
+    let report = run(
+        &p,
+        &mut db,
+        PhaseSet::all().without(Phase::Metadata),
+        "2024-01-15",
+    );
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let events = events.lock().unwrap().clone();
+    assert_eq!(events.first(), Some(&"embed"), "{events:?}");
+    assert_eq!(
+        events.last(),
+        Some(&"embed"),
+        "full text indexed after: {events:?}"
+    );
+    assert!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM chunks WHERE kind = 'fulltext'"
+        ) > 0
+    );
+}
+
+/// A second paper (another DOI) with `title`; returns its id.
+fn other_paper(db: &mut Client, doi: &str, title: &str) -> i32 {
+    db.query_one(
+        "INSERT INTO publications (title, doi, abstract, publication_date, first_seen_source, \
+         created_at, updated_at) VALUES ($1, $2, 'An abstract.', '2024-01-15', 'medrxiv', \
+         'now', 'now') RETURNING id",
+        &[&title, &doi],
+    )
+    .unwrap()
+    .get(0)
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_paper_that_fails_to_index_does_not_block_the_others() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let bad = other_paper(&mut db, "10.1101/bad", "poison");
+    let good = other_paper(&mut db, "10.1101/good", "Fine");
+    let mut p = pipeline(tmp.path(), &FakeHttp::new(), &FakeHttp::new(), "sha");
+    p.embedder = Box::new(|| Ok(Box::new(stub("sha", Some("poison")))));
+    let report = run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert!(
+        report.failures.is_empty(),
+        "no phase failure: {:?}",
+        report.failures
+    );
+    assert!(report.failed(), "a paper failure is still a failure");
+    let index = report.index.unwrap();
+    assert_eq!((index.indexed, index.failed.len()), (1, 1), "{index:?}");
+    let complete = |db: &mut Client, id: i32| {
+        db.query_opt(
+            "SELECT 1 FROM publication_index WHERE publication_id = $1 AND status = 'complete'",
+            &[&id],
+        )
+        .unwrap()
+        .is_some()
+    };
+    assert!(complete(&mut db, good));
+    assert!(!complete(&mut db, bad));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn failures_in_a_row_end_the_index_phase() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    for i in 0..=bml_library::index::MAX_FAILURES_IN_A_ROW {
+        other_paper(&mut db, &format!("10.1101/p{i}"), "poison");
+    }
+    let mut p = pipeline(tmp.path(), &FakeHttp::new(), &FakeHttp::new(), "sha");
+    p.embedder = Box::new(|| Ok(Box::new(stub("sha", Some("poison")))));
+    let report = run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(
+        report.failures[0].1.contains("stub"),
+        "{:?}",
+        report.failures
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn only_a_complete_update_counts_as_the_last_update() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    paper(&mut db, &[1]);
+    let mut p = pipeline(tmp.path(), &FakeHttp::new(), &FakeHttp::new(), "sha");
+    p.embedder = Box::new(|| Err("no model".into()));
+    run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert!(!bml_library::updated_within(&mut db, 1).unwrap());
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &FakeHttp::new(), "sha");
+    run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert!(bml_library::updated_within(&mut db, 1).unwrap());
 }
 
 // ---- index ---------------------------------------------------------------
@@ -712,13 +912,16 @@ fn resume_after_index_crash() {
     // The model fails while the paper is being embedded.
     p.embedder = Box::new(|| {
         Ok(Box::new(StubEmbedder {
-            sha: "sha".into(),
-            calls: 0,
             fail_on: Some(1),
+            ..stub("sha", None)
         }))
     });
     let failed = run(&p, &mut db, only(Phase::Index), "2024-01-15");
-    assert_eq!(failed.failures.len(), 1, "{:?}", failed.failures);
+    assert_eq!(
+        failed.index.unwrap().failed.len(),
+        1,
+        "a paper failure, not the phase's"
+    );
     assert_eq!(scalar_i64(&mut db, "SELECT count(*) FROM chunks"), 0);
     let status: String = db
         .query_one("SELECT status FROM publication_index", &[])

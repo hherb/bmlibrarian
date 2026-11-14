@@ -26,10 +26,16 @@ off new work. Longer-term structural items live in
   in one transaction per paper). bml-db migration 2: `library_state`. CLI:
   `bml library update [--from] [--skip]` (worker lock, Ctrl-C, exit 0/1/2/4),
   `status`, `schedule weekly|every <days>|manual` (`bml_pgserver::schedule`:
-  LaunchAgent `StartInterval` / systemd timer / Scheduled Task).
+  a daily LaunchAgent / systemd timer / Scheduled Task running `update
+  --if-older-than <days>`; only a complete update stamps `last_update_at`).
+  Final-review fixes: the index runs before and after full text (abstracts
+  searchable within the hour), `--from` is remembered (`from_day`), replaced
+  files go through a `cache_deletions` queue (no sweep of unreferenced
+  files), a paper failing to index no longer blocks the others (cursor; 3 in
+  a row stop the phase), Linux logs to the file.
   `bml_setup::gguf_path` is public. Docs: `doc/developers/library_pipeline.md`,
   `doc/users/library_updates_guide.md`, `rust_db_schema.md` (migration 2).
-  Verified: `cargo test -- --include-ignored` 284 passed with and without
+  Verified: `cargo test -- --include-ignored` 290 passed with and without
   pg_search; macOS schedule hand-checked with `launchctl print` (interval
   259200 s, removed by `manual`); hand run against the real API and model on
   a temp server: 3 days, 153 papers indexed in 88 s, two papers' full text
@@ -404,7 +410,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 284 passed on 2026-11-14 (with and
+  `reference-local-pg18-bindir`): 290 passed on 2026-11-14 (with and
   without pg_search). The first build compiles llama.cpp and MuPDF
   (about 1.5 min on the owner's Mac).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a

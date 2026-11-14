@@ -6,13 +6,16 @@
 //! carries no DOI, PMID or PMC ID, so no Europe PMC, PMC, Unpaywall or DOI
 //! tier runs. Every request goes through a [`PoliteClient`], so requests are
 //! spaced, and the first 429 ends the phase without charging the paper.
+//! A replaced version's files are queued in `cache_deletions` in the same
+//! transaction and deleted after it commits; no file is deleted only
+//! because no row names it.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bml_db::{LIBRARY_STATE, PUBLICATION_FULLTEXT, PUBLICATION_INDEX};
+use bml_db::{CACHE_DELETIONS, LIBRARY_STATE, PUBLICATION_FULLTEXT, PUBLICATION_INDEX};
 use bmlib::db::{execute, fetch_all, fetch_one, Db, Row, Value};
 use bmlib::fulltext::cache::{safe_filename, sanitize_identifier, FullTextCache};
 use bmlib::fulltext::service::{FullTextError, FullTextRequest, FullTextService};
@@ -243,8 +246,8 @@ pub struct FulltextReport {
     pub lasting: u64,
     /// Papers left abstract-only by a passing failure.
     pub passing: u64,
-    /// Cache entries no paper refers to, removed before starting.
-    pub orphans_removed: u64,
+    /// Old cache entries a crash left queued for deletion, deleted first.
+    pub old_files_removed: u64,
     /// How the phase ended.
     pub end: FulltextEnd,
 }
@@ -394,10 +397,13 @@ fn secs(d: Duration) -> i64 {
     i64::try_from(d.as_secs()).unwrap_or(i64::MAX)
 }
 
-/// Cache keys of entries in `cache` that are not in `known`. Only regular
-/// entries (`<key>.html`, `<key>.xml`, `<key>.pdf`) are looked at.
+/// Cache keys of entries in `cache` that are not in `known` (for `status`;
+/// nothing is deleted for this alone: the database may be another one, or
+/// the entry a fetch whose commit a crash prevented, which the cache
+/// serves on the next try). Only regular entries (`<key>.html`, `<key>.xml`,
+/// `<key>.pdf`) are looked at.
 #[must_use]
-pub fn orphan_cache_keys(cache: &FullTextCache, known: &HashSet<String>) -> Vec<String> {
+pub fn unreferenced_cache_keys(cache: &FullTextCache, known: &HashSet<String>) -> Vec<String> {
     let mut orphans = std::collections::BTreeSet::new();
     for (dir, ext) in [
         (cache.html_dir(), "html"),
@@ -562,16 +568,66 @@ pub fn record(
         ),
         &[Value::Int(paper.id)],
     )?;
+    let replaced = old.filter(|old| *old != key);
+    if let Some(old) = &replaced {
+        queue_cache_deletion(&mut *tx, old)?;
+    }
     tx.commit()?;
-    // After the commit: a crash here leaves an orphan, removed by a later run.
-    let replaced = old.is_some_and(|old| {
-        let replaced = old != key;
-        if replaced {
-            cache.delete(&old);
+    // After the commit; a crash here is finished by the next run.
+    finish_cache_deletions(db, cache)?;
+    Ok(replaced.is_some())
+}
+
+/// Queue `key`'s cache entry for deletion, inside the caller's transaction.
+///
+/// # Errors
+///
+/// The insert fails.
+pub fn queue_cache_deletion(db: &mut dyn Db, key: &str) -> Result<(), PipelineError> {
+    execute(
+        db,
+        &format!(
+            "INSERT INTO {CACHE_DELETIONS} (cache_key) VALUES (?) \
+             ON CONFLICT (cache_key) DO NOTHING"
+        ),
+        &[Value::Text(key.into())],
+    )?;
+    Ok(())
+}
+
+/// Delete the files of every queued cache entry no paper uses any more,
+/// then the queue rows; returns how many entries were deleted.
+///
+/// # Errors
+///
+/// A query fails (files already deleted stay deleted; their rows are
+/// removed by the next call).
+pub fn finish_cache_deletions(
+    db: &mut dyn Db,
+    cache: &FullTextCache,
+) -> Result<u64, PipelineError> {
+    let queued = fetch_all(
+        db,
+        &format!(
+            "SELECT d.cache_key AS cache_key, EXISTS (SELECT 1 FROM {PUBLICATION_FULLTEXT} f \
+             WHERE f.cache_key = d.cache_key) AS in_use FROM {CACHE_DELETIONS} d"
+        ),
+        &[],
+    )?;
+    let mut deleted = 0;
+    for row in &queued {
+        let key = row.get_str("cache_key")?.to_string();
+        if row.get_i64("in_use")? == 0 {
+            cache.delete(&key);
+            deleted += 1;
         }
-        replaced
-    });
-    Ok(replaced)
+        execute(
+            db,
+            &format!("DELETE FROM {CACHE_DELETIONS} WHERE cache_key = ?"),
+            &[Value::Text(key)],
+        )?;
+    }
+    Ok(deleted)
 }
 
 /// Run the full-text phase (see the module docs).
@@ -592,10 +648,7 @@ pub fn run(
         report.end = FulltextEnd::RateLimited { until };
         return Ok(report);
     }
-    for orphan in orphan_cache_keys(cache, &known_cache_keys(db)?) {
-        cache.delete(&orphan);
-        report.orphans_removed += 1;
-    }
+    report.old_files_removed = finish_cache_deletions(db, cache)?;
     let polite = Arc::new(PoliteClient::new(web, delay));
     let service = FullTextService::new(polite.clone(), "")
         .with_cache(Some(cache.clone()))
@@ -791,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn orphans_are_cache_entries_no_row_names() {
+    fn unreferenced_entries_are_those_no_row_names() {
         let dir = tempfile::tempdir().unwrap();
         let cache = FullTextCache {
             cache_dir: dir.path().to_path_buf(),
@@ -800,6 +853,9 @@ mod tests {
         cache.save_jats(b"<a/>", "orphan").unwrap();
         cache.save_pdf(b"%PDF-1.4\n", "orphan2").unwrap();
         let known: HashSet<String> = ["kept".to_string()].into();
-        assert_eq!(orphan_cache_keys(&cache, &known), vec!["orphan", "orphan2"]);
+        assert_eq!(
+            unreferenced_cache_keys(&cache, &known),
+            vec!["orphan", "orphan2"]
+        );
     }
 }

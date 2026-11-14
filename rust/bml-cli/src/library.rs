@@ -9,10 +9,14 @@ use std::sync::Arc;
 use bml_db::library::{load_library, Library};
 use bml_library::fulltext::FulltextEnd;
 use bml_library::status::library_status;
-use bml_library::{try_lock_worker, Phase, PhaseSet, Pipeline, UpdateOptions, UpdateReport};
+use bml_library::{
+    try_lock_worker, updated_within, Phase, PhaseSet, Pipeline, UpdateOptions, UpdateReport,
+};
 use bml_pgserver::envfile::{read_conn_info, APP_ENV_FILE_NAME};
 use bml_pgserver::init::connect;
-use bml_pgserver::schedule::{schedule_updates, unschedule_updates, UPDATE_LOG_NAME, WEEKLY_DAYS};
+use bml_pgserver::schedule::{
+    schedule_updates, unschedule_updates, update_log_path, DAILY_RUN_HOUR, WEEKLY_DAYS,
+};
 use chrono::NaiveDate;
 use clap::{Subcommand, ValueEnum};
 use postgres::Client;
@@ -34,6 +38,11 @@ pub enum LibraryCommand {
         /// Leave out a phase; repeatable.
         #[arg(long = "skip", value_enum, value_name = "PHASE")]
         skip: Vec<SkipPhase>,
+        /// Do nothing if the last complete update is younger than DAYS days
+        /// (what a scheduled run passes).
+        #[arg(long, value_name = "DAYS",
+              value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SCHEDULE_DAYS)))]
+        if_older_than: Option<u32>,
     },
     /// Show what the library holds and how the last update went.
     Status,
@@ -108,11 +117,15 @@ pub fn run(command: LibraryCommand, config_dir: &Path) -> Result<ExitCode, Libra
         return Ok(ExitCode::from(EXIT_NOT_SET_UP));
     };
     match command {
-        LibraryCommand::Update { from, skip } => {
+        LibraryCommand::Update {
+            from,
+            skip,
+            if_older_than,
+        } => {
             let phases = skip
                 .iter()
                 .fold(PhaseSet::all(), |set, s| set.without(s.phase()));
-            update(&library, config_dir, from, phases)
+            update(&library, config_dir, from, phases, if_older_than)
         }
         LibraryCommand::Status => status(&library, config_dir),
         LibraryCommand::Schedule(when) => schedule(when, config_dir),
@@ -132,10 +145,14 @@ fn schedule(when: ScheduleWhen, config_dir: &Path) -> Result<ExitCode, LibraryCl
     let exe = std::env::current_exe().map_err(bml_pgserver::error::PgServerError::Io)?;
     schedule_updates(&exe, config_dir, days)?;
     say!(
-        "The library will be updated every {days} day(s) by {}; output goes to {}.",
-        exe.display(),
-        config_dir.join(UPDATE_LOG_NAME).display()
+        "The library will be brought up to date every {days} day(s) by {} (checked daily at \
+         {DAILY_RUN_HOUR}:00 and at login; an unfinished update carries on the next day).",
+        exe.display()
     );
+    match update_log_path(config_dir) {
+        Some(log) => say!("Output goes to {}.", log.display()),
+        None => say!("Scheduled runs keep no log here; `bml library status` shows how they went."),
+    }
     Ok(ExitCode::from(EXIT_HEALTHY))
 }
 
@@ -161,6 +178,7 @@ fn update(
     config_dir: &Path,
     from: Option<NaiveDate>,
     phases: PhaseSet,
+    if_older_than: Option<u32>,
 ) -> Result<ExitCode, LibraryCliError> {
     let Some(_lock) = try_lock_worker(&library.dir).map_err(LibraryCliError::Lock)? else {
         say!("An update is already running; this one has nothing to do.");
@@ -171,6 +189,12 @@ fn update(
         Err(code) => return Ok(code),
     };
     bml_db::migrate(&mut db).map_err(LibraryCliError::Migrate)?;
+    if let Some(days) = if_older_than {
+        if updated_within(&mut db, days)? {
+            say!("The library was brought up to date less than {days} day(s) ago; nothing to do.");
+            return Ok(ExitCode::from(EXIT_HEALTHY));
+        }
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
@@ -239,6 +263,9 @@ fn summarise(report: &UpdateReport) {
             i.chunks,
             if i.stopped { " (stopped)" } else { "" }
         );
+        for line in &i.failed {
+            eprintln!("  {line} (tried again next time)");
+        }
     }
     for (phase, message) in &report.failures {
         eprintln!("error: {} phase: {message}", phase.as_str());
@@ -276,16 +303,22 @@ fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliEr
         s.days_failed
     );
     say!(
-        "Last update: {}",
+        "Last complete update: {}",
         s.last_update.as_deref().unwrap_or("never")
     );
     if let Some(until) = &s.rate_limited_until {
         say!("Full text paused after a rate limit until {until}");
     }
-    if s.orphan_files > 0 {
+    if s.pending_deletions > 0 {
         say!(
-            "{} leftover file(s) in the documents folder (removed by the next update)",
-            s.orphan_files
+            "{} old file(s) waiting to be deleted (the next update does it)",
+            s.pending_deletions
+        );
+    }
+    if s.unreferenced_files > 0 {
+        say!(
+            "{} file(s) in the documents folder belong to no paper (kept)",
+            s.unreferenced_files
         );
     }
     Ok(ExitCode::from(EXIT_HEALTHY))

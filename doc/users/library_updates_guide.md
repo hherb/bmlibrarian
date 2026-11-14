@@ -19,6 +19,12 @@ bml library update --from 2026-01-01   # paper details from this day on
 bml library update --skip fulltext     # details and index only
 ```
 
+The day you give with `--from` is remembered: later updates, scheduled ones
+too, start from it. Give an earlier `--from` to widen the library.
+
+New papers become searchable by their title and abstract first, within the
+hour; their full text is added to the search as it arrives.
+
 You can stop an update at any time with Ctrl-C. It finishes the paper it is
 working on and stops. Running it again carries on where it left off: nothing
 already downloaded or indexed is done twice. A crash or a power cut loses at
@@ -30,7 +36,9 @@ example a scheduled one, a second `bml library update` says so and stops.
 Exit codes, for scripts: `0` done, `1` something failed (the messages say
 what; running again retries it), `2` no library or database is set up yet
 (run `bml setup`), `4` stopped early (Ctrl-C, or medRxiv asked us to slow
-down).
+down). `bml library update --if-older-than 7` does nothing (exit 0) if the
+library was brought fully up to date less than 7 days ago; this is what a
+scheduled update runs.
 
 ## Why full text is slow
 
@@ -68,8 +76,9 @@ bml library status
 
 shows how many papers there are, how many have JATS or PDF full text, how
 many are abstract only (with the most common reasons), how many are indexed,
-when the last update finished, and whether full text is paused after
-medRxiv asked us to slow down.
+when the last complete update finished, and whether full text is paused
+after medRxiv asked us to slow down. Files in the documents folder that no
+paper uses are only counted, never deleted for that alone.
 
 ## Updating automatically
 
@@ -82,19 +91,23 @@ bml library schedule manual     # only when you run `bml library update`
 This adds an entry to your computer's own scheduler, for your user only and
 without administrator rights: a launch agent on macOS, a `systemd --user`
 timer on Linux, a scheduled task on Windows. Running the command again with
-another choice replaces it. The output of each scheduled update goes to
-`bml-library-update.log` in your BMLibrarian configuration folder.
+another choice replaces it. The entry checks once a day, at noon, and
+updates when the last complete update is as old as your choice. An update
+that did not finish (the backlog, a pause after medRxiv asked us to slow
+down, an error) carries on the next day. On macOS and Linux the output of
+each scheduled update goes to `bml-library-update.log` in your BMLibrarian
+configuration folder; Windows keeps no log, so use `bml library status`.
 
 Notes:
 
 - The entry runs the `bml` program you scheduled it with, so schedule from
   the installed `bml`, not from a development build that may move.
-- macOS counts the interval from when you log in, and runs a missed update
-  when the Mac wakes from sleep.
-- On Linux the timer runs while you are logged in. A missed update runs at
-  your next login. Intervals other than daily or weekly restart at the start
-  of each month, so the last gap of a month can be shorter.
-- Windows scheduling has not been tried on a real machine yet.
+- macOS also checks when you log in (and right after you schedule), and
+  runs a missed check when the Mac wakes from sleep.
+- On Linux the timer runs while you are logged in; a missed check runs at
+  your next login.
+- On Windows a check missed while the computer is off waits for the next
+  day. Windows scheduling has not been tried on a real machine yet.
 
 ## Where things are
 

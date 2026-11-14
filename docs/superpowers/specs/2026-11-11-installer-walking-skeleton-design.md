@@ -501,8 +501,8 @@ Each piece gets its own implementation plan (`docs/superpowers/plans/`).
    plan's "Measurements" section). *Done 2026-11-14 (plan
    `2026-11-14-library-pipeline.md`, crate `rust/bml-library`, `bml library
    update|status|schedule`; doc `doc/developers/library_pipeline.md`). The
-   schedule is weekly or every n days as here; the Linux timer approximates
-   n other than 1 and 7. Many medRxiv JATS files hold no article body (only
+   schedule is weekly or every n days as here, through a daily trigger and
+   `bml library update --if-older-than <n>`. Many medRxiv JATS files hold no article body (only
    supplementary material), so the PDF is fetched for those.*
    - **3b, in bmlib (Python + Rust):** fetch the medRxiv HTML full-text page
      as the third tier. It can land after 3; until it does, papers without

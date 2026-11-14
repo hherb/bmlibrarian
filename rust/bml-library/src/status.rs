@@ -1,11 +1,11 @@
 //! What the library holds: papers, full-text forms, abstract-only papers by
 //! reason, the index, and the state of the last update.
 
-use bml_db::{CHUNKS, LIBRARY_STATE, PUBLICATION_FULLTEXT, PUBLICATION_INDEX};
+use bml_db::{CACHE_DELETIONS, CHUNKS, LIBRARY_STATE, PUBLICATION_FULLTEXT, PUBLICATION_INDEX};
 use bmlib::db::{fetch_all, fetch_one, fetch_scalar, Db, Value};
 use bmlib::fulltext::cache::FullTextCache;
 
-use crate::fulltext::{known_cache_keys, orphan_cache_keys, rate_limited_until};
+use crate::fulltext::{known_cache_keys, rate_limited_until, unreferenced_cache_keys};
 use crate::PipelineError;
 
 /// How many abstract-only reasons [`library_status`] lists.
@@ -47,12 +47,15 @@ pub struct LibraryStatus {
     pub days_complete: i64,
     /// Days of metadata recorded failed (fetched again next run).
     pub days_failed: i64,
-    /// When the last update finished (database time, as text).
+    /// When the last complete update finished (database time, as text).
     pub last_update: Option<String>,
     /// When the full-text phase may run again after a 429.
     pub rate_limited_until: Option<String>,
-    /// Cache entries no paper refers to (removed by the next update).
-    pub orphan_files: usize,
+    /// Old cache entries queued for deletion (a crash interrupted it; the
+    /// next update finishes it).
+    pub pending_deletions: i64,
+    /// Cache entries no paper refers to (kept; listed for information).
+    pub unreferenced_files: usize,
 }
 
 fn count(db: &mut dyn Db, sql: &str) -> Result<i64, PipelineError> {
@@ -125,6 +128,7 @@ pub fn library_status(
         days_failed: count(db, &days("failed"))?,
         last_update,
         rate_limited_until: rate_limited_until(db)?,
-        orphan_files: orphan_cache_keys(cache, &known_cache_keys(db)?).len(),
+        pending_deletions: count(db, &format!("SELECT count(*) FROM {CACHE_DELETIONS}"))?,
+        unreferenced_files: unreferenced_cache_keys(cache, &known_cache_keys(db)?).len(),
     })
 }

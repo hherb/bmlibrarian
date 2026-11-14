@@ -75,9 +75,12 @@ later is not picked up; switching needs a later migration (marked
 
 One row (`id INTEGER PRIMARY KEY CHECK (id = 1)`) of library-wide state for
 the pipeline (`doc/developers/library_pipeline.md`): `rate_limited_until`
-(the full-text phase is skipped until then after medRxiv answered 429) and
-`last_update_at` (when `bml library update` last finished). Both
-`TIMESTAMPTZ`; the pipeline reads them cast to text.
+(the full-text phase is skipped until then after medRxiv answered 429),
+`last_update_at` (when a complete `bml library update` last finished; both
+`TIMESTAMPTZ`, read cast to text) and `from_day` (`YYYY-MM-DD`, the first
+posting day the library covers). Also `cache_deletions (cache_key TEXT
+PRIMARY KEY)`: cache entries queued for deletion in the transaction that
+stops using them, removed once their files are gone.
 
 ## Tests
 

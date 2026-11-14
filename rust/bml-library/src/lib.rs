@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bml_db::LIBRARY_STATE;
-use bmlib::db::{execute, Db, DbError};
+use bmlib::db::{execute, fetch_one, Db, DbError, Value};
 use bmlib::fulltext::cache::FullTextCache;
 use bmlib::http::UreqClient;
 use bmlib::publications::fetchers::biorxiv::RATE_LIMIT_SECONDS;
@@ -169,10 +169,13 @@ pub struct UpdateReport {
 }
 
 impl UpdateReport {
-    /// Whether a phase failed or a day of metadata could not be fetched.
+    /// Whether a phase failed, a day of metadata could not be fetched or a
+    /// paper could not be indexed.
     #[must_use]
     pub fn failed(&self) -> bool {
-        !self.failures.is_empty() || self.metadata.as_ref().is_some_and(|m| !m.errors.is_empty())
+        !self.failures.is_empty()
+            || self.metadata.as_ref().is_some_and(|m| !m.errors.is_empty())
+            || self.index.as_ref().is_some_and(|i| !i.failed.is_empty())
     }
 
     /// Whether a phase stopped before its work was done (`stop`, or medRxiv
@@ -238,11 +241,42 @@ impl Pipeline {
         let phases = options.phases;
         if phases.metadata {
             let api = Arc::new(PoliteClient::new(self.api.clone(), self.api_delay));
-            let from = options.from.unwrap_or_else(medrxiv_first_day);
-            match metadata::run(db, api, from, options.stop, &*self.clock, progress) {
+            let synced = start_day(db, options.from).and_then(|from| {
+                metadata::run(db, api, from, options.stop, &*self.clock, progress)
+            });
+            match synced {
                 Ok(r) => report.metadata = Some(r),
                 Err(e) => report.failures.push((Phase::Metadata, e.to_string())),
             }
+        }
+        // Loaded once, when the index phase first runs; it runs before full
+        // text (new abstracts are searchable within the hour, not after a
+        // full-text backlog of weeks) and again after it (the new full texts).
+        let mut embedder: Option<Box<dyn ChunkEmbedder>> = None;
+        let mut index =
+            |db: &mut dyn Db, report: &mut UpdateReport, progress: &mut dyn FnMut(Progress)| {
+                if report.failures.iter().any(|(p, _)| *p == Phase::Index) {
+                    return;
+                }
+                if embedder.is_none() {
+                    match (self.embedder)() {
+                        Ok(e) => embedder = Some(e),
+                        Err(e) => {
+                            report.failures.push((Phase::Index, e));
+                            return;
+                        }
+                    }
+                }
+                let Some(model) = embedder.as_mut() else {
+                    return;
+                };
+                match index::run(db, &self.cache, model.as_mut(), options.stop, progress) {
+                    Ok(r) => report.index.get_or_insert_with(IndexReport::default).add(r),
+                    Err(e) => report.failures.push((Phase::Index, e.to_string())),
+                }
+            };
+        if phases.index {
+            index(db, &mut report, progress);
         }
         if phases.fulltext {
             match fulltext::run(
@@ -256,34 +290,87 @@ impl Pipeline {
                 Ok(r) => report.fulltext = Some(r),
                 Err(e) => report.failures.push((Phase::Fulltext, e.to_string())),
             }
-        }
-        if phases.index {
-            let indexed =
-                (self.embedder)()
-                    .map_err(PipelineError::Embed)
-                    .and_then(|mut embedder| {
-                        index::run(db, &self.cache, embedder.as_mut(), options.stop, progress)
-                    });
-            match indexed {
-                Ok(r) => report.index = Some(r),
-                Err(e) => report.failures.push((Phase::Index, e.to_string())),
+            if phases.index {
+                index(db, &mut report, progress);
             }
         }
-        if let Err(e) = execute(
-            db,
-            &format!(
-                "INSERT INTO {LIBRARY_STATE} (id, last_update_at) VALUES (1, now()) \
-                 ON CONFLICT (id) DO UPDATE SET last_update_at = excluded.last_update_at"
-            ),
-            &[],
-        ) {
-            report.failures.push((
-                Phase::Index,
-                format!("recording the update's time failed: {e}"),
-            ));
+        // Only a complete update counts, so a scheduled `--if-older-than` run
+        // carries on an unfinished one (a backlog, a rate limit, a failure).
+        if !report.failed() && !report.stopped_early() {
+            if let Err(e) = execute(
+                db,
+                &format!(
+                    "INSERT INTO {LIBRARY_STATE} (id, last_update_at) VALUES (1, now()) \
+                     ON CONFLICT (id) DO UPDATE SET last_update_at = excluded.last_update_at"
+                ),
+                &[],
+            ) {
+                report.failures.push((
+                    Phase::Index,
+                    format!("recording the update's time failed: {e}"),
+                ));
+            }
         }
         report
     }
+}
+
+/// The first posting day to sync: `from` when given (and remembered as the
+/// library's start), else the one remembered, else [`MEDRXIV_FIRST_DAY`].
+///
+/// # Errors
+///
+/// The database fails, or the remembered day cannot be read.
+pub fn start_day(db: &mut dyn Db, from: Option<NaiveDate>) -> Result<NaiveDate, PipelineError> {
+    if let Some(day) = from {
+        execute(
+            db,
+            &format!(
+                "INSERT INTO {LIBRARY_STATE} (id, from_day) VALUES (1, ?) \
+                 ON CONFLICT (id) DO UPDATE SET from_day = excluded.from_day"
+            ),
+            &[Value::Text(day.to_string())],
+        )?;
+        return Ok(day);
+    }
+    let saved = fetch_one(
+        db,
+        &format!("SELECT from_day FROM {LIBRARY_STATE} WHERE id = 1 AND from_day IS NOT NULL"),
+        &[],
+    )?;
+    match saved {
+        Some(row) => {
+            let text = row.get_str("from_day")?;
+            NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|e| {
+                PipelineError::Other(format!(
+                    "the library's start day {text:?} cannot be read ({e}); pass --from"
+                ))
+            })
+        }
+        None => Ok(medrxiv_first_day()),
+    }
+}
+
+/// How much earlier than a whole number of days a daily trigger may fire and
+/// still count (it fires at the same hour, a little before or after).
+pub const SCHEDULE_SLACK_HOURS: i64 = 2;
+
+/// Whether the last complete update finished less than `days` days ago
+/// (less [`SCHEDULE_SLACK_HOURS`]), for a scheduled `--if-older-than` run.
+///
+/// # Errors
+///
+/// The query fails.
+pub fn updated_within(db: &mut dyn Db, days: u32) -> Result<bool, PipelineError> {
+    Ok(fetch_one(
+        db,
+        &format!(
+            "SELECT 1 AS recent FROM {LIBRARY_STATE} WHERE id = 1 AND last_update_at > \
+             now() - (make_interval(days => ?) - make_interval(hours => ?))"
+        ),
+        &[Value::Int(days.into()), Value::Int(SCHEDULE_SLACK_HOURS)],
+    )?
+    .is_some())
 }
 
 /// Take the library's worker lock (`<library>/`[`WORKER_LOCK_FILE`]); `None`
