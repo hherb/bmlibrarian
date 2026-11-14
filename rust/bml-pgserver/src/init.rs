@@ -19,7 +19,9 @@ use crate::conf::{
     ensure_include, extension_control_dir, provides_pg_search, render_bml_conf, render_pg_hba,
     ServerConfig, BML_CONF_NAME, PATH_LIST_SEPARATOR,
 };
-use crate::control::{pg_major_version, restart, start, status, tool, ServerStatus};
+use crate::control::{
+    pg_major_version, require_bindir, restart, start, status, tool, ServerStatus,
+};
 use crate::envfile::{
     generate_password, read_conn_info, render_env, write_private_file, ConnInfo,
     ADMIN_ENV_FILE_NAME, APP_ENV_FILE_NAME,
@@ -133,10 +135,8 @@ pub fn init(req: &InitRequest, config_dir: &Path) -> Result<InitOutcome, PgServe
     remove_if_present(&config_dir.join(PWFILE_NAME))?;
     let saved = load_state(config_dir)?;
     if let Some(saved) = &saved {
-        if saved.bindir == req.bindir && !req.bindir.exists() {
-            return Err(PgServerError::BinDirGone {
-                bindir: req.bindir.clone(),
-            });
+        if saved.bindir == req.bindir {
+            require_bindir(&req.bindir)?;
         }
     }
     let major = pg_major_version(&req.bindir)?;

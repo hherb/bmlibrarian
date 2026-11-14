@@ -128,8 +128,8 @@ disk space, a missing program) and run `bml setup` again. An interrupted languag
 stopped (Ollama keeps the partial data); an interrupted embedding-model or
 Ollama-installer download starts again from the beginning on the next run.
 If the bundled PostgreSQL's folder (`<config folder>/pgdist/<version>`) was
-deleted, for example by a disk clean-up, the next run downloads it again and
-your database is kept.
+deleted, for example by a disk clean-up, the next run downloads this
+version of bml's bundle and your database is kept.
 Later steps still run when an earlier one failed, except those that depend on
 it (the library and start at login need the database; the models need
 Ollama). If one language model fails, setup still tries the other one.

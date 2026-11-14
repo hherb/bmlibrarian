@@ -83,7 +83,9 @@ resumed.
    otherwise `DataDirVersion`. A saved bin folder that no longer exists,
    requested again (a plain re-run), is `BinDirGone` (checked before step
    1, which could only say it cannot run `postgres`); its message says how
-   to pass the new one.
+   to pass the new one, and to repeat `--extension-dir`. `control::status`
+   (so also `start`, `stop`, `restart` and autostart) checks the saved bin
+   folder the same way (`require_bindir`).
 3. **Data folder.** "Finished" below means `bml.env` exists: it is written
    last, so a setup once completed.
    - `PG_VERSION` present: it's ours if it holds our `bml.conf`, or if our

@@ -110,7 +110,7 @@ pub enum PgServerError {
     },
     /// The bin folder saved for the server no longer exists (PostgreSQL was
     /// moved, renamed or removed by an upgrade).
-    #[error("the PostgreSQL bin folder {bindir} saved for this server is gone (moved, renamed or removed by an upgrade); pass the new one with `bml setup --pg-bindir` or `bml server init --bindir` (the same major version is needed), and the server keeps its data")]
+    #[error("the PostgreSQL bin folder {bindir} saved for this server is gone (moved, renamed or removed by an upgrade); pass the new one with `bml setup --pg-bindir` or `bml server init --bindir` (the same major version is needed; repeat `--extension-dir` for each extension folder, such as pg_search's, or the server stops loading it), and the server keeps its data")]
     BinDirGone {
         /// The saved bin folder.
         bindir: PathBuf,

@@ -137,6 +137,9 @@ fn read_password(from_stdin: bool) -> Result<String, PgServerError> {
     }
     match from_env {
         Ok(p) if !p.is_empty() => Ok(p),
+        Err(std::env::VarError::NotUnicode(_)) => Err(fail(format!(
+            "{PASSWORD_ENV} is set but is not valid text (UTF-8); set it again, or pass --password-stdin and pipe the password in"
+        ))),
         _ => Err(fail(format!(
             "the existing server's password is needed: set {PASSWORD_ENV}, or pass --password-stdin and pipe it in from a password manager"
         ))),

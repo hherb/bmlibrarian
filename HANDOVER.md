@@ -14,12 +14,14 @@ off new work. Longer-term structural items live in
   / `bml setup --pg-bindir` accept a moved PostgreSQL bin folder whose major
   version equals the data folder's `PG_VERSION` and save it (another major
   is `DataDirVersion`); re-running with a saved bin folder that is gone is
-  `BinDirGone`, whose message says to pass the new one (#447). The Database
-  step downloads the pinned bundle again when a resumed server's bin folder
-  is that bundle's and its folder is gone (`pinned_bundle_missing`; another
-  version or a folder still present is left to `init`) (#448). `bml setup`
-  removes `BML_PG_SUPERUSER_PASSWORD` from its environment once read and
-  refuses `--password-stdin` from a terminal (#452). Verified: `cargo test
+  `BinDirGone`, whose message says to pass the new one and repeat
+  `--extension-dir`; `server start/stop/status` report it too (#447). The
+  Database step moves a resumed server onto the pinned bundle (downloading
+  it) when the bundle folder it ran from is gone, whatever its version
+  (`bundle_missing`; a folder still present is left to `init`) (#448).
+  `bml setup` removes `BML_PG_SUPERUSER_PASSWORD` from its environment once
+  read, refuses `--password-stdin` from a terminal and says when the
+  variable is not UTF-8 (#452). Verified: `cargo test
   -- --include-ignored` 307 passed with pg_search; by hand with the real
   bundle in a temp config folder: deleted `pgdist/18.6-r1` → setup
   downloaded it again and resumed (status exit 0, vector + pg_search);

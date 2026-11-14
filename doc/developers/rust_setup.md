@@ -112,10 +112,12 @@ too, for library callers (the postgres crate cannot resolve them). `needs_pg_sea
   and target, and deletes the archive (a leftover archive is deleted, or
   warned about again, by a later run that finds the bundle installed while
   no server is saved; once one is, the step resumes it and never looks).
-  A resumed server whose saved bin folder is the pinned version's bundle
-  (`pinned_bundle_missing`) gets that bundle downloaded again when its
-  folder is gone (deleted by a clean-up, quarantined by a virus scanner); a
-  bundle of another version, or a folder still present, is left to `init`;
+  A resumed server whose saved bin folder lies in a bundle whose version
+  folder is gone (`bundle_missing`, e.g. deleted by a clean-up) is moved
+  onto this build's pinned bundle, downloaded if needed, with its `ext/` as
+  the only extension folder; `init` accepts it when its major version
+  matches the data folder's `PG_VERSION`. A bundle folder still present
+  (also one missing single files) is left to `init`;
   before downloading (not when resuming a saved server),
   `pgdist::system_too_old` fails the step on a macOS or glibc older than the
   release's `requires`. Then `init` runs with `pg/bin` and `ext/` and the

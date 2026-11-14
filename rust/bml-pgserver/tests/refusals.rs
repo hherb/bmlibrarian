@@ -7,10 +7,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use bml_pgserver::conf::BML_CONF_NAME;
-use bml_pgserver::envfile::ADMIN_ENV_FILE_NAME;
+use bml_pgserver::control::status;
+use bml_pgserver::envfile::{render_env, ConnInfo, ADMIN_ENV_FILE_NAME};
 use bml_pgserver::error::PgServerError;
-use bml_pgserver::init::{init, InitRequest};
-use bml_pgserver::state::{save_state, ServerState};
+use bml_pgserver::init::{init, InitRequest, ADMIN_ROLE, HOST};
+use bml_pgserver::state::{load_state, save_state, ServerState};
 
 /// Write an executable shell script `name` into `bindir`.
 fn script(bindir: &Path, name: &str, body: &str) {
@@ -124,6 +125,26 @@ fn refusals_need_no_server() {
         matches!(err, PgServerError::AdminCredentialsLost { .. }),
         "{err}"
     );
+    // With the credentials in place the new bin folder is saved before the
+    // server is touched (the fake bin folder has no pg_ctl, so it stops there).
+    let admin = ConnInfo {
+        host: HOST.to_owned(),
+        port: 5418,
+        dbname: "postgres".to_owned(),
+        user: ADMIN_ROLE.to_owned(),
+        password: "pw".to_owned(),
+    };
+    std::fs::write(config.join(ADMIN_ENV_FILE_NAME), render_env(&admin)).unwrap();
+    init(&request(&moved, &data), &config).unwrap_err();
+    let state = load_state(&config).unwrap().unwrap();
+    assert_eq!(state.bindir, moved);
+    // `bml server start/status` on a bin folder that is gone say how to fix it.
+    let err = status(&ServerState {
+        bindir: gone.clone(),
+        ..state
+    })
+    .unwrap_err();
+    assert!(matches!(err, PgServerError::BinDirGone { .. }), "{err}");
 
     // Another major version cannot run the data folder.
     let bin19 = fake_bindir(root, "19.0");

@@ -136,7 +136,9 @@ because the entry remembers where that program is.
   `--bindir` at a PostgreSQL 18 installation.
 - **"the PostgreSQL bin folder … saved for this server is gone"**: PostgreSQL
   moved. Run `bml server init --bindir <new bin folder> --data-dir <same data
-  folder>` (or `bml setup --pg-bindir <new bin folder>`); the data is kept.
+  folder>` (or `bml setup --pg-bindir <new bin folder>`), adding
+  `--extension-dir` again for each extension folder the server had (such as
+  pg_search's), or the server stops loading it; the data is kept.
 - **"… holds PostgreSQL 18 data, but … is PostgreSQL 19"**: the new bin
   folder is another major version. Point `--bindir` at a PostgreSQL of the
   version the message names.

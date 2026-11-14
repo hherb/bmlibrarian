@@ -241,32 +241,41 @@ fn ensure_bundle(
     })
 }
 
-/// Whether the saved server's `bindir` is the bin folder of the bundle
-/// `version` under `config_dir` and that bundle's folder is gone (deleted by
-/// a clean-up, or quarantined by a virus scanner), so downloading the same
-/// bundle again repairs it. A bundle of another version is not replaced.
-fn pinned_bundle_missing(bindir: &Path, config_dir: &Path, version: &str) -> bool {
+/// Whether the saved server's `bindir` lies in a bundle under `config_dir`
+/// whose whole version folder is gone (deleted by a clean-up), so this
+/// build's bundle can replace it. A bundle folder that is still there is
+/// left alone: `init` then reports what is wrong with it.
+fn bundle_missing(bindir: &Path, config_dir: &Path) -> bool {
     std::path::absolute(config_dir).is_ok_and(|dir| {
-        let pinned = InstalledPgdist {
-            root: dir.join(crate::pgdist::PGDIST_DIR_NAME).join(version),
-        };
-        bindir == pinned.bindir() && !pinned.root.exists()
+        let bundles = dir.join(crate::pgdist::PGDIST_DIR_NAME);
+        bindir
+            .strip_prefix(&bundles)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .is_some_and(|version| !bundles.join(version).exists())
     })
 }
 
-/// Download the pinned bundle again when the saved server ran from it and
-/// its folder is gone (see [`pinned_bundle_missing`]); warnings for the step.
+/// The saved server's request, moved onto this build's bundle (downloaded
+/// again if needed) when the bundle it ran from is gone (see
+/// [`bundle_missing`]); `init` refuses the new one if its major version
+/// cannot run the data folder. Warnings for the step.
 fn restore_missing_bundle(
     config_dir: &Path,
-    bindir: &Path,
+    req: InitRequest,
     report: &mut dyn FnMut(StepEvent),
-) -> Result<Vec<String>, SetupError> {
-    let release = bundled_release()?;
+) -> Result<(InitRequest, Vec<String>), SetupError> {
     match host_target() {
-        Some(target) if pinned_bundle_missing(bindir, config_dir, &release.version) => {
-            Ok(ensure_bundle(config_dir, &release, target, report)?.1)
+        Some(target) if bundle_missing(&req.bindir, config_dir) => {
+            let (pg, warnings) = ensure_bundle(config_dir, &bundled_release()?, target, report)?;
+            let req = InitRequest {
+                bindir: pg.bindir(),
+                extension_dirs: vec![pg.extension_dir()],
+                ..req
+            };
+            Ok((req, warnings))
         }
-        _ => Ok(Vec::new()),
+        _ => Ok((req, Vec::new())),
     }
 }
 
@@ -326,12 +335,12 @@ fn database(
     // The saved private server, else the saved existing one, else `None`.
     let resume_saved = |report: &mut dyn FnMut(StepEvent)| {
         if let Some(s) = load_state(dir).map_err(PgServerError::from)? {
-            let warnings = restore_missing_bundle(dir, &s.bindir, report)?;
-            let req = InitRequest {
+            let saved = InitRequest {
                 bindir: s.bindir,
                 data_dir: s.data_dir,
                 extension_dirs: s.extension_dirs,
             };
+            let (req, warnings) = restore_missing_bundle(dir, saved, report)?;
             return private(&req, warnings, report).map(Some);
         }
         match saved_external_request(dir)? {
@@ -885,23 +894,19 @@ mod tests {
     }
 
     #[test]
-    fn only_a_missing_pinned_bundle_is_downloaded_again() {
+    fn only_a_missing_bundle_is_replaced() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = std::path::absolute(tmp.path()).unwrap();
-        let pinned = InstalledPgdist {
+        let old = InstalledPgdist {
             root: cfg.join(crate::pgdist::PGDIST_DIR_NAME).join("18.6-r1"),
         };
-        assert!(pinned_bundle_missing(&pinned.bindir(), &cfg, "18.6-r1"));
-        // Another version, or a bin folder outside the bundles, is left alone.
-        assert!(!pinned_bundle_missing(&pinned.bindir(), &cfg, "18.7-r1"));
-        assert!(!pinned_bundle_missing(
-            Path::new("/opt/pg/bin"),
-            &cfg,
-            "18.6-r1"
-        ));
+        // Whatever its version (#448: a bml upgrade may pin a newer one).
+        assert!(bundle_missing(&old.bindir(), &cfg));
+        // A bin folder outside the bundles is left to init.
+        assert!(!bundle_missing(Path::new("/opt/pg/bin"), &cfg));
         // A bundle folder still present is not replaced (init reports what is wrong).
-        std::fs::create_dir_all(&pinned.root).unwrap();
-        assert!(!pinned_bundle_missing(&pinned.bindir(), &cfg, "18.6-r1"));
+        std::fs::create_dir_all(&old.root).unwrap();
+        assert!(!bundle_missing(&old.bindir(), &cfg));
     }
 
     #[test]
