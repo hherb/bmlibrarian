@@ -35,3 +35,11 @@ sysinfo = { version = "0.35", default-features = false, features = ["system", "d
 tempfile = "3"
 # Hashing (chunk-set labels, test fixtures); the same version bmlib already pulls in.
 sha2 = "0.10"
+
+# mupdf-sys builds MuPDF's Debug configuration (MSVC runtime MDd) when it
+# sees a debug profile below opt-level 2, while llama.cpp (bmlib `embed`)
+# always uses the release runtime (MD); MSVC will not link the two into one
+# binary (LNK2038/LNK1319 on the Windows CI). opt-level 2 makes mupdf-sys
+# build its Release configuration in dev builds, on every platform.
+[profile.dev.package.mupdf-sys]
+opt-level = 2
