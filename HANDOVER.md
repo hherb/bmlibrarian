@@ -348,22 +348,38 @@ value — pick one, or pull an item from ROADMAP.md:
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
-  1. Merge bmlib PR #770 (Windows `pdf` build fix) before merging #429; the
-     pin `c5f6236` is that PR's head. With it and the workspace's
-     `[profile.dev.package.mupdf-sys] opt-level = 2` (MSVC would not link
-     MuPDF's Debug runtime beside llama.cpp's Release one), the `rust` CI is
-     green on all five runners.
+  1. Done: #429 and bmlib #770 are merged (2026-11-14); the pin `c5f6236` is
+     on bmlib main. The workspace's `[profile.dev.package.mupdf-sys]
+     opt-level = 2` stays (MSVC would not link MuPDF's Debug runtime beside
+     llama.cpp's Release one).
   2. Measure how many medRxiv JATS files carry the article body (the hand
      run's two had only supplementary material), since that decides how
      often the Cloudflare-blocked PDF is needed. Rates between 1.5 s and 30 s
      are still unmeasured too.
-  3. Next piece: **3c, MECA bulk** (bmlib, Python + Rust: MECA reader and
-     requester-pays S3), the main full-text route for the backlog (owner
-     2026-11-14); then the bulk route in `bml-library`. Then 3b (medRxiv HTML
-     page, bmlib), piece 4 (hybrid search, `bml search`), 5 (Tauri wizard),
-     6 (signed Mac `.dmg`).
+  3. In progress: **3c, MECA bulk**, the main full-text route for the
+     backlog (plan `docs/superpowers/plans/2026-11-14-meca-bulk.md`; owner
+     decisions 2026-11-14: hand-written SigV4, small paid measurement
+     requests allowed).
+     - **bmlib Tasks B1–B3 are in bmlib PR #775** (`bmlib.fulltext.meca` /
+       `bmlib::fulltext::meca`, feature `meca`). It provides SigV4 (AWS's
+       published examples pass), ListObjectsV2 and error replies with
+       plain-language reasons, and a verified download published atomically.
+       Rust `HttpClient::get_with_headers_stream` comes with it, and ureq
+       goes to ≥ 3.5. Merge it before pinning.
+     - **Blocked on the owner, Task M0:** the `medrxiv` AWS profile (IAM user
+       `bmlib`) gets `AccessDenied` listing `medrxiv-src-monthly` (and
+       bioRxiv's). It needs a policy granting `s3:ListBucket` on the bucket
+       and `s3:GetObject` on `.../*`. Then measure: count, size, manifest
+       shape, JATS body rate (this also answers item 2) and licensed fixture
+       packages. B4 (the package reader) waits for M0. The owner's untracked
+       `scripts/download_medrxiv_meca_sample.py` is the owner's own; leave
+       it alone.
+     - Then L1–L5: the bulk route in `bml-library` (pin past B4, migration 3
+       `meca_packages`, AWS keys file, bulk phase, CLI).
+     After 3c: 3b (medRxiv HTML page, bmlib), piece 4 (hybrid search, `bml
+     search`), 5 (Tauri wizard), 6 (signed Mac `.dmg`).
   4. bmlib is pinned by git rev; move to a tagged release (or crates.io,
-     #401) once one contains #760.
+     #401) once one contains #760 and #770 (v0.13.0 has neither).
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init); bml-db review follow-ups: #424;
   bml-library review minors: #428.
