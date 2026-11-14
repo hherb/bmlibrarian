@@ -11,6 +11,8 @@ pub mod pgdist;
 pub mod runner;
 mod steps;
 
+pub use steps::gguf_path;
+
 use std::path::{Path, PathBuf};
 
 /// The lock file setup holds in the configuration folder while it downloads.

@@ -12,9 +12,15 @@ path = "src/main.rs"
 
 [dependencies]
 bml-db.workspace = true
+bml-library.workspace = true
 bml-pgserver.workspace = true
 bml-setup.workspace = true
+bmlib.workspace = true
+chrono.workspace = true
 clap.workspace = true
+ctrlc.workspace = true
+postgres.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
