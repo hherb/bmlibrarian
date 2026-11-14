@@ -118,8 +118,9 @@ pub enum PgServerError {
         /// The value requested.
         requested: PathBuf,
     },
-    /// Start at login failed, and its file could not be put back as it was.
-    #[error("{error}. Also, {} could not be put back as it was ({source}); check or delete it by hand, or the next setup may think start at login is set up", path.display())]
+    /// Start at login or the update schedule failed, and its file could not
+    /// be put back as it was.
+    #[error("{error}. Also, {} could not be put back as it was ({source}); check or delete it by hand, or the next run may think it is set up", path.display())]
     AutostartLeftover {
         /// Why start at login failed.
         error: Box<PgServerError>,
@@ -128,9 +129,9 @@ pub enum PgServerError {
         /// Why it could not be removed or restored.
         source: io::Error,
     },
-    /// Start at login failed; the previous login entry was put back on disk
-    /// but could not be loaded again now.
-    #[error("{error}. The previous start-at-login entry {} was put back but could not be loaded again now ({source}); it will start the server at the next login, or run `bml server autostart enable` again", path.display())]
+    /// Start at login or the update schedule failed; its file was put back
+    /// on disk as it was but could not be loaded again now.
+    #[error("{error}. {} was put back as it was, but could not be loaded again now ({source}); that happens at the next login, or run the command again", path.display())]
     AutostartNotReloaded {
         /// Why start at login failed.
         error: Box<PgServerError>,

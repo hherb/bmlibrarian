@@ -127,9 +127,9 @@ fn jats_failure(
             };
             (status_reason(*status), kind)
         }
-        RequestOutcome::NoResponse(message) => {
-            (format!("no answer ({message})"), FailureKind::Passing)
-        }
+        // The message (with the URL) goes to the progress line only, so
+        // `status` can group the stored reasons.
+        RequestOutcome::NoResponse(_) => ("no answer".into(), FailureKind::Passing),
         RequestOutcome::NotSent => ("not sent (rate limited)".into(), FailureKind::Passing),
     }
 }
@@ -222,6 +222,23 @@ pub fn classify(
     }
 }
 
+/// The messages of `records` that got no answer, as ` (message; …)`, or
+/// nothing.
+fn transport_details(records: &[RequestRecord]) -> String {
+    let messages: Vec<&str> = records
+        .iter()
+        .filter_map(|r| match &r.outcome {
+            RequestOutcome::NoResponse(message) => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    if messages.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", messages.join("; "))
+    }
+}
+
 /// How the full-text phase ended.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum FulltextEnd {
@@ -301,8 +318,10 @@ fn text(row: &Row, name: &str) -> Result<Option<String>, PipelineError> {
     Ok(row.get(name)?.as_str().map(str::to_string))
 }
 
-/// The next paper due: no full-text row yet; or its retry time has passed and
-/// it is abstract-only or a newer version than the one held is posted.
+/// The next paper due: no full-text row yet; or a newer version than the one
+/// last tried is posted (its URLs are new, so the old retry time does not
+/// apply and the attempts count starts again); or its retry time has passed
+/// and it is abstract-only or a newer version than the one held is posted.
 /// Newest posting first, so updates are not starved by the backlog.
 ///
 /// # Errors
@@ -314,12 +333,14 @@ pub fn next_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
            SELECT publication_id, max({VERSION_INT}) AS version FROM fulltext_sources \
            WHERE source = ? AND format IN ('xml', 'pdf') GROUP BY publication_id) \
          SELECT p.id AS id, p.doi AS doi, c.version AS version, f.form AS form, \
-                f.cache_key AS cache_key, COALESCE(f.attempts, 0) AS attempts \
+                f.cache_key AS cache_key, \
+                CASE WHEN f.version_tried < c.version THEN 0 \
+                     ELSE COALESCE(f.attempts, 0) END AS attempts \
          FROM current c \
          JOIN publications p ON p.id = c.publication_id \
          LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
          WHERE c.version IS NOT NULL AND p.doi IS NOT NULL AND p.doi <> '' \
-           AND (f.publication_id IS NULL \
+           AND (f.publication_id IS NULL OR f.version_tried < c.version \
                 OR ((f.retry_after IS NULL OR f.retry_after <= now()) \
                     AND (f.form = 'abstract' OR f.version_held IS NULL \
                          OR CAST(f.version_held AS INTEGER) < c.version))) \
@@ -500,6 +521,7 @@ pub fn record(
                 Value::Int(secs(wait)),
             ];
             let id = Value::Int(paper.id);
+            let tried = Value::Int(paper.version);
             if paper.holds_fulltext() {
                 // A new version failed: the old version's row, file and chunks stay.
                 execute(
@@ -507,24 +529,25 @@ pub fn record(
                     &format!(
                         "UPDATE {PUBLICATION_FULLTEXT} SET attempts = ?, last_error = ?, \
                          last_error_kind = ?, retry_after = now() + make_interval(secs => ?), \
-                         updated_at = now() WHERE publication_id = ?"
+                         version_tried = ?, updated_at = now() WHERE publication_id = ?"
                     ),
-                    &[failure.as_slice(), &[id]].concat(),
+                    &[failure.as_slice(), &[tried, id]].concat(),
                 )?;
             } else {
                 execute(
                     db,
                     &format!(
                         "INSERT INTO {PUBLICATION_FULLTEXT} (publication_id, form, attempts, \
-                         last_error, last_error_kind, retry_after) \
-                         VALUES (?, 'abstract', ?, ?, ?, now() + make_interval(secs => ?)) \
+                         last_error, last_error_kind, retry_after, version_tried) \
+                         VALUES (?, 'abstract', ?, ?, ?, now() + make_interval(secs => ?), ?) \
                          ON CONFLICT (publication_id) DO UPDATE SET form = 'abstract', \
                          version_held = NULL, cache_key = NULL, cache_path = NULL, \
                          attempts = excluded.attempts, last_error = excluded.last_error, \
                          last_error_kind = excluded.last_error_kind, \
-                         retry_after = excluded.retry_after, updated_at = now()"
+                         retry_after = excluded.retry_after, \
+                         version_tried = excluded.version_tried, updated_at = now()"
                     ),
-                    &[&[id][..], failure.as_slice()].concat(),
+                    &[&[id][..], failure.as_slice(), &[tried]].concat(),
                 )?;
             }
             return Ok(false);
@@ -546,10 +569,11 @@ pub fn record(
         &mut *tx,
         &format!(
             "INSERT INTO {PUBLICATION_FULLTEXT} (publication_id, form, version_held, cache_key, \
-             cache_path, attempts, last_error, last_error_kind, retry_after) \
-             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL) \
+             cache_path, attempts, last_error, last_error_kind, retry_after, version_tried) \
+             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?) \
              ON CONFLICT (publication_id) DO UPDATE SET form = excluded.form, \
-             version_held = excluded.version_held, cache_key = excluded.cache_key, \
+             version_held = excluded.version_held, version_tried = excluded.version_tried, \
+             cache_key = excluded.cache_key, \
              cache_path = excluded.cache_path, attempts = 0, last_error = NULL, \
              last_error_kind = NULL, retry_after = NULL, updated_at = now()"
         ),
@@ -559,6 +583,7 @@ pub fn record(
             Value::Text(paper.version.to_string()),
             Value::Text(key.clone()),
             Value::Text(path),
+            Value::Int(paper.version),
         ],
     )?;
     execute(
@@ -702,7 +727,7 @@ pub fn run(
                     FailureKind::Lasting => report.lasting += 1,
                     FailureKind::Passing => report.passing += 1,
                 }
-                format!("abstract only: {reason}")
+                format!("abstract only: {reason}{}", transport_details(&records))
             }
         };
         if replaced {
@@ -861,6 +886,26 @@ mod tests {
                 "{outcome:?} gave {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn no_answer_is_stored_without_the_message() {
+        let failed = |message: &str| {
+            let records = [rec(
+                "https://m/j.xml",
+                RequestOutcome::NoResponse(message.into()),
+            )];
+            (
+                classify(&ok(empty()), &records, &[]),
+                transport_details(&records),
+            )
+        };
+        let (a, a_detail) = failed("timed out (GET https://m/a.xml)");
+        let (b, _) = failed("timed out (GET https://m/b.xml)");
+        assert_eq!(a, b);
+        assert!(matches!(&a, Classified::Failed { reason, .. } if reason == "JATS: no answer"));
+        assert_eq!(a_detail, " (timed out (GET https://m/a.xml))");
+        assert_eq!(transport_details(&[]), "");
     }
 
     #[test]

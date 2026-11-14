@@ -199,6 +199,7 @@ name = "bml-library"
 version = "0.1.0"
 dependencies = [
  "bml-db",
+ "bml-library",
  "bml-pgserver",
  "bmlib",
  "chrono",

@@ -66,7 +66,9 @@ still searchable by its title and abstract. This is never final. The paper is
 tried again later: after an hour (doubling each time, up to a week) for
 problems that may pass, such as a timeout or a server error; after 30 days
 for refusals that usually last, such as a PDF blocked by medRxiv's firewall
-or a file that does not exist. `bml library status` lists the reasons.
+or a file that does not exist. A newly posted version is tried at the next
+update, whatever the wait, as its files are new. `bml library status` lists
+the reasons.
 
 When a paper gets its full text later, or medRxiv posts a new version, the
 paper is indexed again. A new version replaces the old one, its file and its

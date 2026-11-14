@@ -12,6 +12,7 @@ pub mod index;
 pub mod metadata;
 pub mod polite_client;
 pub mod status;
+#[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
 use std::fs::{File, OpenOptions};
