@@ -13,8 +13,10 @@ off new work. Longer-term structural items live in
 - **Library pipeline, piece 3 of the installer milestone** (2026-11-14,
   branch `feat/library-pipeline`; plan
   `docs/superpowers/plans/2026-11-14-library-pipeline.md`; owner decisions
-  this session: bmlib pinned by **git rev** to main `02c7fad` (#760
-  `medrxiv-details`, #763) without waiting for a release, and
+  this session: bmlib pinned by **git rev**, without waiting for a release, to
+  `f13b607`: bmlib PR #770 (the Rust `pdf` feature did not compile on
+  Windows) on top of main with #760 `medrxiv-details` and #763 (**#770 must
+  be merged into bmlib main**, or the pin points at an unmerged branch), and
   `<library>/documents` stays a `FullTextCache`). New crate
   `rust/bml-library` (bmlib features `pdf` + `embed`): metadata (bmlib sync
   of `medrxiv-details`, 30-day windows), full text (Tier 0 only through
@@ -336,10 +338,9 @@ value — pick one, or pull an item from ROADMAP.md:
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
-  1. On the piece 3 PR: check the `rust` CI build time and success with
-     bmlib's `pdf` (MuPDF, needs libclang) and `embed` (llama.cpp, cmake) on
-     all five runners; bmlib's own CI builds them on Linux only, so
-     `macos-15-intel` and `windows-latest` are the risk.
+  1. Merge bmlib PR #770 (Windows `pdf` build fix) before merging #429; the
+     pin `f13b607` is that PR's commit. On #429 the `rust` CI built MuPDF and
+     llama.cpp on all five runners; only Windows failed, on that bmlib bug.
   2. Measure how many medRxiv JATS files carry the article body (the hand
      run's two had only supplementary material), since that decides how
      often the Cloudflare-blocked PDF is needed. Rates between 1.5 s and 30 s
