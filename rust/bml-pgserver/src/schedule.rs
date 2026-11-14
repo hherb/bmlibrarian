@@ -25,7 +25,7 @@ use crate::autostart::{
     bootout, bootstrap, launch_agent_path, launchd_domain, read_previous, restore_launch_agent,
 };
 #[cfg(target_os = "linux")]
-use crate::autostart::{home, read_previous, restore_file, undo_on_failure, SYSTEMD_USER_DIR};
+use crate::autostart::{home, read_previous, SYSTEMD_USER_DIR};
 use crate::autostart::{systemd_quote, windows_quote, xml_escape, SYSTEMD_UNIT_NAME};
 #[cfg(any(target_os = "linux", windows))]
 use crate::control::run;
@@ -191,19 +191,26 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
         let service = unit_dir.join(UPDATE_SERVICE_NAME);
         let timer = unit_dir.join(UPDATE_TIMER_NAME);
         let (old_service, old_timer) = (read_previous(&service)?, read_previous(&timer)?);
-        fs::write(&service, render_update_service(exe, config_dir, days))
-            .map_err(file_error(&service))?;
-        fs::write(&timer, render_update_timer(days)).map_err(file_error(&timer))?;
+        // The writes are undone too: a failed timer write must not leave the
+        // service file replaced.
+        let mut reloaded = false;
         let enabled = (|| {
-            let mut reload = Command::new("systemctl");
-            reload.args(["--user", "daemon-reload"]);
-            run(reload)?;
+            fs::write(&service, render_update_service(exe, config_dir, days))
+                .map_err(file_error(&service))?;
+            fs::write(&timer, render_update_timer(days)).map_err(file_error(&timer))?;
+            daemon_reload()?;
+            reloaded = true;
             let mut enable = Command::new("systemctl");
             enable.args(["--user", "enable", "--now", UPDATE_TIMER_NAME]);
             run(enable).map(drop)
         })();
-        undo_on_failure(enabled, &timer, || {
-            restore_file(&service, old_service).and(restore_file(&timer, old_timer))
+        enabled.map_err(|error| {
+            restore_update_units(
+                [(&service, old_service), (&timer, old_timer)],
+                error,
+                reloaded,
+                daemon_reload,
+            )
         })
     }
     #[cfg(windows)]
@@ -226,6 +233,53 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
             "scheduled updates are not supported on this platform",
         )))
     }
+}
+
+/// Undo a Linux schedule that failed with `error`: put each unit file back as
+/// it was (`None`: no file), then, when systemd had read the new ones
+/// (`reloaded`), `reload` so it reads the old ones again. Returns the error
+/// to report: `error` itself when undone; a file not put back is a leftover
+/// (each one named); a failed reload only is reported as not loaded again.
+#[cfg(any(target_os = "linux", test))]
+fn restore_update_units(
+    units: [(&Path, Option<Vec<u8>>); 2],
+    error: PgServerError,
+    reloaded: bool,
+    reload: impl FnOnce() -> Result<(), PgServerError>,
+) -> PgServerError {
+    // The timer is what systemd schedules, so a reload failure names it.
+    let timer = units[1].0.to_owned();
+    let mut error = error;
+    let mut restored = true;
+    for (path, previous) in units {
+        if let Err(source) = crate::autostart::restore_file(path, previous) {
+            restored = false;
+            error = PgServerError::AutostartLeftover {
+                error: Box::new(error),
+                path: path.to_owned(),
+                source,
+            };
+        }
+    }
+    if !restored || !reloaded {
+        return error;
+    }
+    match reload() {
+        Ok(()) => error,
+        Err(source) => PgServerError::AutostartNotReloaded {
+            error: Box::new(error),
+            path: timer,
+            source: Box::new(source),
+        },
+    }
+}
+
+/// Make `systemd --user` read the unit files again.
+#[cfg(target_os = "linux")]
+fn daemon_reload() -> Result<(), PgServerError> {
+    let mut reload = Command::new("systemctl");
+    reload.args(["--user", "daemon-reload"]);
+    run(reload).map(drop)
 }
 
 /// Stop scheduled updates. An update running now is left alone, except a
@@ -251,16 +305,24 @@ pub fn unschedule_updates() -> Result<(), PgServerError> {
     {
         let unit_dir = home()?.join(SYSTEMD_USER_DIR);
         let timer = unit_dir.join(UPDATE_TIMER_NAME);
-        if timer.try_exists().map_err(file_error(&timer))? {
+        let had_timer = timer.try_exists().map_err(file_error(&timer))?;
+        if had_timer {
             let mut disable = Command::new("systemctl");
             disable.args(["--user", "disable", "--now", UPDATE_TIMER_NAME]);
             run(disable)?;
             fs::remove_file(&timer).map_err(file_error(&timer))?;
         }
         let service = unit_dir.join(UPDATE_SERVICE_NAME);
-        match fs::remove_file(&service) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(file_error(&service)(e)),
-            _ => Ok(()),
+        let had_service = match fs::remove_file(&service) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(file_error(&service)(e)),
+        };
+        // Without units to forget, `manual` needs no systemd at all.
+        if had_timer || had_service {
+            daemon_reload()
+        } else {
+            Ok(())
         }
     }
     #[cfg(windows)]
@@ -372,6 +434,105 @@ mod tests {
             out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    fn systemctl_failed(status: i32) -> PgServerError {
+        PgServerError::Command {
+            program: "systemctl".to_owned(),
+            status: Some(status),
+            stderr: format!("attempt failed with {status}"),
+        }
+    }
+
+    #[test]
+    fn failed_linux_schedule_restores_both_units_and_reloads_only_if_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, timer) = (dir.path().join("s.service"), dir.path().join("t.timer"));
+        let write_new = || {
+            std::fs::write(&service, "new").unwrap();
+            std::fs::write(&timer, "new").unwrap();
+        };
+
+        // Not read by systemd yet (no bus, a failed write): no reload, the
+        // original error unchanged.
+        write_new();
+        let e = restore_update_units(
+            [(&service, Some(b"old".to_vec())), (&timer, None)],
+            systemctl_failed(1),
+            false,
+            || panic!("nothing to reload"),
+        );
+        assert!(
+            matches!(
+                e,
+                PgServerError::Command {
+                    status: Some(1),
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert_eq!(std::fs::read(&service).unwrap(), b"old");
+        assert!(!timer.exists());
+
+        // Read: reloaded after the restore.
+        write_new();
+        let mut reloads = 0;
+        let e = restore_update_units(
+            [(&service, None), (&timer, None)],
+            systemctl_failed(1),
+            true,
+            || {
+                assert!(!service.exists() && !timer.exists(), "restored first");
+                reloads += 1;
+                Ok(())
+            },
+        );
+        assert!(matches!(e, PgServerError::Command { .. }), "{e}");
+        assert_eq!(reloads, 1);
+
+        // A failed reload after a good restore is not a leftover to delete.
+        write_new();
+        let e = restore_update_units(
+            [(&service, None), (&timer, None)],
+            systemctl_failed(1),
+            true,
+            || Err(systemctl_failed(5)),
+        );
+        let text = e.to_string();
+        assert!(
+            matches!(e, PgServerError::AutostartNotReloaded { .. })
+                && text.contains("attempt failed with 5")
+                && !text.contains("delete"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn units_not_put_back_are_each_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = dir.path().join("gone/s.service");
+        let timer = dir.path().join("gone/t.timer");
+        let e = restore_update_units(
+            [
+                (&service, Some(b"old".to_vec())),
+                (&timer, Some(b"old".to_vec())),
+            ],
+            systemctl_failed(1),
+            true,
+            || panic!("not restored, so not reloaded"),
+        );
+        let text = e.to_string();
+        assert!(
+            matches!(e, PgServerError::AutostartLeftover { .. }),
+            "{text}"
+        );
+        assert!(
+            text.contains("s.service")
+                && text.contains("t.timer")
+                && text.contains("attempt failed with 1"),
+            "{text}"
         );
     }
 }

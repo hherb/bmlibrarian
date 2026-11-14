@@ -61,7 +61,7 @@ Every foreign key is `ON DELETE CASCADE`. All reference `publications(id)`
 
 | Table | Purpose and guards |
 |---|---|
-| `publication_fulltext` | One row per paper: `form` (`jats`/`pdf`/`html`/`abstract`), `version_held`, `cache_key`, `cache_path` (relative to `documents/`), `attempts`, `last_error`, `last_error_kind` (`lasting`/`passing`), `retry_after`. `CHECK (form = 'abstract' OR cache_path IS NOT NULL)`: a full-text form is never recorded without its file. Partial index on `retry_after` for abstract-only papers (the retry queue). |
+| `publication_fulltext` | One row per paper: `form` (`jats`/`pdf`/`html`/`abstract`), `version_held`, `cache_key`, `cache_path` (relative to `documents/`), `attempts`, `last_error`, `last_error_kind` (`lasting`/`passing`), `retry_after`, `version_tried` (migration 3). `CHECK (form = 'abstract' OR cache_path IS NOT NULL)`: a full-text form is never recorded without its file. Partial index on `retry_after` for abstract-only papers (the retry queue). |
 | `chunks` | `id BIGSERIAL`, `publication_id`, `ordinal`, `kind` (`abstract` for title + abstract, `fulltext` for canonical text), `text`, `span_start`/`span_end` (code points in the canonical text; for `fulltext` both required, `span_start >= 0`, `span_end >= span_start`). `UNIQUE (publication_id, ordinal)`. |
 | `chunk_embeddings` | `chunk_id` → `chunks(id)`, `embedding halfvec(EMBEDDING_DIM)` (256, from bmlib). HNSW index `chunk_embeddings_hnsw` (`halfvec_cosine_ops`, `m = 16`, `ef_construction = 64`, Rust plan §3.3). A single table at medRxiv scale; the partition manager is Phase C. |
 | `publication_index` | Per-paper indexing state: `status` (`pending`/`complete`), the five `ChunkSetLabel` fields (`model_sha256`, `recipe_version`, `chunker_version`, `converter_version`, `text_sha256`), `chunk_count`. `CHECK`: `complete` needs every label field and the count, so a set is never marked current without its label. |
@@ -81,6 +81,14 @@ the pipeline (`doc/developers/library_pipeline.md`): `rate_limited_until`
 posting day the library covers). Also `cache_deletions (cache_key TEXT
 PRIMARY KEY)`: cache entries queued for deletion in the transaction that
 stops using them, removed once their files are gone.
+
+## Migration 3: `version_tried`
+
+`publication_fulltext.version_tried INTEGER` (`ADD COLUMN IF NOT EXISTS`):
+the version the last full-text try fetched, set on success and on failure.
+A paper whose newest posted version is newer than it is tried at once, its
+attempts counted from 0, whatever `retry_after` says (#428). Rows written
+before the migration have it null and wait for `retry_after` as before.
 
 ## Tests
 

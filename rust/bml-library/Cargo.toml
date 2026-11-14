@@ -15,7 +15,12 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
+[features]
+# `bml_library::testing` (an in-memory `HttpClient`) for this crate's tests.
+test-support = []
+
 [dev-dependencies]
+bml-library = { path = ".", features = ["test-support"] }
 bml-pgserver.workspace = true
 postgres.workspace = true
 tempfile.workspace = true
