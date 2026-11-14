@@ -32,7 +32,9 @@ run it again later). SIGTERM stops a run as Ctrl-C does (ctrlc's
 
 `Pipeline` holds the outside world as public fields (HTTP clients and their
 spacing, the documents cache, the embedder loader, the clock), so the tests
-replace each one (`bml_library::testing::FakeHttp`, a stub `ChunkEmbedder`).
+replace each one (`bml_library::testing::FakeHttp`, behind the crate's
+`test-support` feature, which its own dev-dependency turns on; a stub
+`ChunkEmbedder`).
 
 ## Metadata
 
@@ -56,7 +58,9 @@ come again next run, and their errors are not listed.
 
 Work query (`next_paper`): the newest medRxiv version among a paper's
 `xml`/`pdf` sources (`version` compared as an integer, guarded by a regex so
-no cast can fail), and either no `publication_fulltext` row, or a passed (or
+no cast can fail), and either no `publication_fulltext` row, or a version
+newer than `version_tried` (the version the last try fetched; its URLs are
+new, so it is tried at once with `attempts` counted from 0), or a passed (or
 null) `retry_after` with the row abstract-only or holding an older version.
 Newest posting first, so updates are not starved by the backlog.
 
@@ -86,7 +90,10 @@ unsent.
 | JATS only: no answer, 408, 5xx | abstract | passing |
 
 The paper's kind is the PDF's when a PDF was requested. The reason names
-both requests ("JATS: not found (HTTP 404); PDF: refused (HTTP 403)").
+both requests ("JATS: not found (HTTP 404); PDF: refused (HTTP 403)"). A
+request with no answer is stored as "no answer" only; the transport message
+(which names the URL) goes to the progress line, so `bml library status`
+groups the papers under one reason.
 Back-off (`retry_delay`): passing doubles from `RETRY_BASE` (1 h) to
 `RETRY_MAX` (7 days); lasting waits `LASTING_RETRY` (30 days). Abstract-only
 is never final.
@@ -96,7 +103,8 @@ RATE_LIMIT_BACKOFF` (1 h), the paper's row is left as it was, and later runs
 skip the phase until then.
 
 **Recording** (`record`): a full text is recorded only if its file is in the
-cache (else a passing failure). Success, in one transaction: upsert the row
+cache (else a passing failure). Every outcome sets `version_tried`.
+Success, in one transaction: upsert the row
 (`version_held`, `cache_key`, `cache_path` relative to `documents/`,
 attempts and errors cleared) and set `publication_index.status = 'pending'`;
 the paper's old chunks stay searchable until the index phase replaces them. After the commit the old
@@ -149,8 +157,9 @@ still runs and the second pass is skipped.
 ## Schema
 
 bml-db migration 2 adds `library_state` (one row, `id = 1`:
-`rate_limited_until`, `last_update_at`, `from_day`) and `cache_deletions`.
-See `rust_db_schema.md`. bmlib's
+`rate_limited_until`, `last_update_at`, `from_day`) and `cache_deletions`;
+migration 3 adds `publication_fulltext.version_tried`. See
+`rust_db_schema.md`. bmlib's
 `Db` over PostgreSQL binds only text, integers and booleans, so timestamps
 and vectors are passed as text and cast in SQL.
 
@@ -167,7 +176,8 @@ macOS: a LaunchAgent `org.bmlibrarian.library-update` with
 `StartCalendarInterval` and `RunAtLoad` (so it also runs at login and when
 scheduled; a failed re-schedule restores the old entry, as #405). Linux:
 `bml-library-update.{service,timer}`, `OnCalendar=*-*-* 12:00:00` +
-`Persistent`, output appended to the log. Windows: a Scheduled Task `/SC
+`Persistent`, output appended to the log; a failed schedule puts back both
+unit files and reloads systemd, and `manual` reloads it after removing them. Windows: a Scheduled Task `/SC
 DAILY /ST 12:00` (unverified, #397; a day missed while off is not caught up,
 marked `shortcut:`; no log). Output goes to `bml-library-update.log` in the
 configuration folder (`update_log_path`).
@@ -180,7 +190,7 @@ rate limited, or another update running; `--if-older-than <days>` exits 0
 at once while the last complete update is younger; a run with `--skip` is
 never a complete update); `bml library status`; `bml library schedule weekly|every
 <days>|manual` (days 1–365). The update runs `bml_db::migrate` first, so an
-older library gains migration 2.
+older library gains migrations 2 and 3.
 
 ## Measurements and findings
 

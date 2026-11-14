@@ -170,12 +170,27 @@ fn library_state(db: &mut dyn Db) -> bmlib::db::Result<()> {
     Ok(())
 }
 
+/// Migration 3: `publication_fulltext.version_tried`, the version the last
+/// try fetched (null on rows from before it), so a newly posted version is
+/// tried without waiting for the old version's retry time.
+fn version_tried(db: &mut dyn Db) -> bmlib::db::Result<()> {
+    execute(
+        db,
+        &format!(
+            "ALTER TABLE {PUBLICATION_FULLTEXT} ADD COLUMN IF NOT EXISTS version_tried INTEGER"
+        ),
+        &[],
+    )?;
+    Ok(())
+}
+
 /// BMLibrarian's migrations, in version order.
 #[must_use]
 pub fn migrations() -> Vec<Migration> {
     vec![
         Migration::new(1, "library_tables", library_tables),
         Migration::new(2, "library_state", library_state),
+        Migration::new(3, "version_tried", version_tried),
     ]
 }
 

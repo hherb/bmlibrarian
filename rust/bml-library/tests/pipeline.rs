@@ -592,6 +592,47 @@ fn failed_new_version_keeps_old() {
             .is_none(),
         "waits for retry_after"
     );
+    add_version(&mut db, id, 3);
+    let due = bml_library::fulltext::next_paper(&mut db)
+        .unwrap()
+        .expect("a newer version than the one that failed is due at once");
+    assert_eq!((due.version, due.attempts), (3, 0));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = paper(&mut db, &[1]);
+    let web = FakeHttp::new()
+        .route(&jats_url(1), 404, "")
+        .route(&pdf_url(1), 403, "");
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    run(&p, &mut db, only(Phase::Fulltext), "2024-01-15");
+    let (form, _, attempts, kind) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(
+        (form.as_str(), attempts, kind.as_deref()),
+        ("abstract", 1, Some("lasting"))
+    );
+    assert!(bml_library::fulltext::next_paper(&mut db)
+        .unwrap()
+        .is_none());
+
+    add_version(&mut db, id, 2);
+    web.set(&jats_url(2), 200, JATS);
+    let r = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15")
+        .fulltext
+        .unwrap();
+    assert_eq!((r.tried, r.jats), (1, 1));
+    let (form, held, attempts, _) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(
+        (form.as_str(), held.as_deref(), attempts),
+        ("jats", Some("2"), 0)
+    );
 }
 
 #[test]

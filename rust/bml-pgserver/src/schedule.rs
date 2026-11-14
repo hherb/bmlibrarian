@@ -191,19 +191,20 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
         let service = unit_dir.join(UPDATE_SERVICE_NAME);
         let timer = unit_dir.join(UPDATE_TIMER_NAME);
         let (old_service, old_timer) = (read_previous(&service)?, read_previous(&timer)?);
-        fs::write(&service, render_update_service(exe, config_dir, days))
-            .map_err(file_error(&service))?;
-        fs::write(&timer, render_update_timer(days)).map_err(file_error(&timer))?;
+        // The writes are undone too: a failed timer write must not leave the
+        // service file replaced.
         let enabled = (|| {
-            let mut reload = Command::new("systemctl");
-            reload.args(["--user", "daemon-reload"]);
-            run(reload)?;
+            fs::write(&service, render_update_service(exe, config_dir, days))
+                .map_err(file_error(&service))?;
+            fs::write(&timer, render_update_timer(days)).map_err(file_error(&timer))?;
+            daemon_reload()?;
             let mut enable = Command::new("systemctl");
             enable.args(["--user", "enable", "--now", UPDATE_TIMER_NAME]);
             run(enable).map(drop)
         })();
         undo_on_failure(enabled, &timer, || {
-            restore_file(&service, old_service).and(restore_file(&timer, old_timer))
+            restore_file(&service, old_service).and(restore_file(&timer, old_timer))?;
+            daemon_reload().map_err(|e| std::io::Error::other(e.to_string()))
         })
     }
     #[cfg(windows)]
@@ -226,6 +227,14 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
             "scheduled updates are not supported on this platform",
         )))
     }
+}
+
+/// Make `systemd --user` read the unit files again.
+#[cfg(target_os = "linux")]
+fn daemon_reload() -> Result<(), PgServerError> {
+    let mut reload = Command::new("systemctl");
+    reload.args(["--user", "daemon-reload"]);
+    run(reload).map(drop)
 }
 
 /// Stop scheduled updates. An update running now is left alone, except a
@@ -251,16 +260,24 @@ pub fn unschedule_updates() -> Result<(), PgServerError> {
     {
         let unit_dir = home()?.join(SYSTEMD_USER_DIR);
         let timer = unit_dir.join(UPDATE_TIMER_NAME);
-        if timer.try_exists().map_err(file_error(&timer))? {
+        let had_timer = timer.try_exists().map_err(file_error(&timer))?;
+        if had_timer {
             let mut disable = Command::new("systemctl");
             disable.args(["--user", "disable", "--now", UPDATE_TIMER_NAME]);
             run(disable)?;
             fs::remove_file(&timer).map_err(file_error(&timer))?;
         }
         let service = unit_dir.join(UPDATE_SERVICE_NAME);
-        match fs::remove_file(&service) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(file_error(&service)(e)),
-            _ => Ok(()),
+        let had_service = match fs::remove_file(&service) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(file_error(&service)(e)),
+        };
+        // Without units to forget, `manual` needs no systemd at all.
+        if had_timer || had_service {
+            daemon_reload()
+        } else {
+            Ok(())
         }
     }
     #[cfg(windows)]

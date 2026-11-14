@@ -10,6 +10,19 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **bml-library minors from the piece 3 review** (2026-11-14, #428). bml-db
+  **migration 3** adds `publication_fulltext.version_tried`: a newly posted
+  version is tried at once with its attempts counted from 0, not after the
+  old version's `retry_after` (up to 30 days). A request with no answer is
+  stored as "no answer" (the transport message goes to the progress line),
+  so `bml library status` groups the papers under one reason. Linux
+  `schedule`: a failed unit write puts both files back, and undo and
+  `manual` run `daemon-reload`. `bml_library::testing` sits behind a
+  `test-support` feature. Items 3, 4, 5, 7 and 9 had already landed with
+  #429. Verified: `cargo test -- --include-ignored` 302 passed with
+  pg_search; Linux clippy passes for `bml-pgserver` (a cross-target check;
+  it was not run on Linux).
+
 - **Library pipeline, piece 3 of the installer milestone** (2026-11-14,
   branch `feat/library-pipeline`; plan
   `docs/superpowers/plans/2026-11-14-library-pipeline.md`; owner decisions
@@ -373,7 +386,7 @@ value — pick one, or pull an item from ROADMAP.md:
        licensed fixture packages. B4 (the package reader) waits for M0.
        `scripts/download_medrxiv_meca_sample.py` (untracked) is the owner's;
        leave it alone.
-     - Then L1–L5: the bulk route in `bml-library` (pin past B4, migration 3
+     - Then L1–L5: the bulk route in `bml-library` (pin past B4, migration 4
        `meca_packages`, AWS keys file, bulk phase only for an "All of
        medRxiv" library, CLI).
      After 3c: 3b (medRxiv HTML page, bmlib), piece 4 (hybrid search,
@@ -382,7 +395,7 @@ value — pick one, or pull an item from ROADMAP.md:
      #401) once one contains #760 and #770 (v0.13.0 has neither).
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init); bml-db review follow-ups: #424;
-  bml-library review minors: #428.
+  bml-library: #430.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -440,9 +453,9 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 300 passed on 2026-11-14 (with and
-  without pg_search). The first build compiles llama.cpp and MuPDF
-  (about 1.5 min on the owner's Mac).
+  `reference-local-pg18-bindir`): 302 passed on 2026-11-14 with pg_search
+  (#428; 300 before it, with and without pg_search). The first build
+  compiles llama.cpp and MuPDF (about 1.5 min on the owner's Mac).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`
