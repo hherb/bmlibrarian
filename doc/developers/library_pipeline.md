@@ -103,16 +103,16 @@ RATE_LIMIT_BACKOFF` (1 h), the paper's row is left as it was, and later runs
 skip the phase until then.
 
 **Recording** (`record`): a full text is recorded only if its file is in the
-cache (else a passing failure). Every outcome sets `version_tried`.
-Success, in one transaction: upsert the row
-(`version_held`, `cache_key`, `cache_path` relative to `documents/`,
-attempts and errors cleared) and set `publication_index.status = 'pending'`;
-the paper's old chunks stay searchable until the index phase replaces them. After the commit the old
+cache (else a passing failure). Every outcome sets `version_tried`. Success,
+in one transaction: upsert the row (`version_held`, `cache_key`,
+`cache_path` relative to `documents/`, attempts and errors cleared) and set
+`publication_index.status = 'pending'`; the paper's old chunks stay
+searchable until the index phase replaces them. After the commit the old
 version's cache entry is deleted (`FullTextCache::delete`): its key is
 queued in `cache_deletions` inside the transaction, and the file and the
-queue row are removed after the commit. A failure on a
-paper that already holds full text (a new version failing) updates only
-`attempts`, `last_error`, `last_error_kind` and `retry_after`: the old
+queue row are removed after the commit. A failure on a paper that already
+holds full text (a new version failing) updates only `attempts`,
+`last_error`, `last_error_kind`, `retry_after` and `version_tried`: the old
 version's row, file and chunks stay.
 
 **Old files**: queued deletions a crash interrupted are finished at the
@@ -159,9 +159,8 @@ still runs and the second pass is skipped.
 bml-db migration 2 adds `library_state` (one row, `id = 1`:
 `rate_limited_until`, `last_update_at`, `from_day`) and `cache_deletions`;
 migration 3 adds `publication_fulltext.version_tried`. See
-`rust_db_schema.md`. bmlib's
-`Db` over PostgreSQL binds only text, integers and booleans, so timestamps
-and vectors are passed as text and cast in SQL.
+`rust_db_schema.md`. bmlib's `Db` over PostgreSQL binds only text, integers
+and booleans, so timestamps and vectors are passed as text and cast in SQL.
 
 ## Schedule
 
@@ -177,10 +176,13 @@ macOS: a LaunchAgent `org.bmlibrarian.library-update` with
 scheduled; a failed re-schedule restores the old entry, as #405). Linux:
 `bml-library-update.{service,timer}`, `OnCalendar=*-*-* 12:00:00` +
 `Persistent`, output appended to the log; a failed schedule puts back both
-unit files and reloads systemd, and `manual` reloads it after removing them. Windows: a Scheduled Task `/SC
-DAILY /ST 12:00` (unverified, #397; a day missed while off is not caught up,
-marked `shortcut:`; no log). Output goes to `bml-library-update.log` in the
-configuration folder (`update_log_path`).
+unit files (`restore_update_units`, each file not put back named) and, if
+systemd had read the new ones, reloads it (a failed reload only is reported
+as not loaded again, not as a file to delete); `manual` reloads it after
+removing them. Windows: a Scheduled Task `/SC DAILY /ST 12:00` (unverified,
+#397; a day missed while off is not caught up, marked `shortcut:`; no log,
+so a scheduled run's "no answer" causes are lost there too). Output goes to
+`bml-library-update.log` in the configuration folder (`update_log_path`).
 
 ## CLI
 

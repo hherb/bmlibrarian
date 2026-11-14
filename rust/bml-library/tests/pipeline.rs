@@ -240,6 +240,16 @@ fn fulltext_row(db: &mut Client, id: i32) -> Option<(String, Option<String>, i32
     .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
 }
 
+/// The paper's `version_tried`.
+fn version_tried(db: &mut Client, id: i32) -> Option<i32> {
+    db.query_one(
+        "SELECT version_tried FROM publication_fulltext WHERE publication_id = $1",
+        &[&id],
+    )
+    .unwrap()
+    .get(0)
+}
+
 // ---- metadata ------------------------------------------------------------
 
 #[test]
@@ -622,8 +632,24 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
         .unwrap()
         .is_none());
 
+    // A new version that fails too counts its attempts from 0 and then
+    // waits like any other: it is not picked again and again.
     add_version(&mut db, id, 2);
-    web.set(&jats_url(2), 200, JATS);
+    web.set(&jats_url(2), 404, "");
+    web.set(&pdf_url(2), 403, "");
+    let r = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15")
+        .fulltext
+        .unwrap();
+    assert_eq!(r.tried, 1);
+    let (form, _, attempts, _) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!((form.as_str(), attempts), ("abstract", 1));
+    assert_eq!(version_tried(&mut db, id), Some(2));
+    assert!(bml_library::fulltext::next_paper(&mut db)
+        .unwrap()
+        .is_none());
+
+    add_version(&mut db, id, 3);
+    web.set(&jats_url(3), 200, JATS);
     let r = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15")
         .fulltext
         .unwrap();
@@ -631,8 +657,47 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
     let (form, held, attempts, _) = fulltext_row(&mut db, id).unwrap();
     assert_eq!(
         (form.as_str(), held.as_deref(), attempts),
-        ("jats", Some("2"), 0)
+        ("jats", Some("3"), 0)
     );
+    assert_eq!(version_tried(&mut db, id), Some(3));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_row_from_before_version_tried_waits_for_its_retry_time() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = paper(&mut db, &[1]);
+    let web = FakeHttp::new()
+        .route(&jats_url(1), 404, "")
+        .route(&pdf_url(1), 403, "");
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    run(&p, &mut db, only(Phase::Fulltext), "2024-01-15");
+    // As written before migration 3: no version_tried.
+    db.execute(
+        "UPDATE publication_fulltext SET version_tried = NULL, attempts = 4 \
+         WHERE publication_id = $1",
+        &[&id],
+    )
+    .unwrap();
+    assert!(
+        bml_library::fulltext::next_paper(&mut db)
+            .unwrap()
+            .is_none(),
+        "waits for retry_after"
+    );
+    db.execute(
+        "UPDATE publication_fulltext SET retry_after = now() - interval '1 second'",
+        &[],
+    )
+    .unwrap();
+    let due = bml_library::fulltext::next_paper(&mut db)
+        .unwrap()
+        .expect("due once its retry time has passed");
+    assert_eq!((due.version, due.attempts), (1, 4), "attempts kept");
 }
 
 #[test]

@@ -16,12 +16,17 @@ off new work. Longer-term structural items live in
   old version's `retry_after` (up to 30 days). A request with no answer is
   stored as "no answer" (the transport message goes to the progress line),
   so `bml library status` groups the papers under one reason. Linux
-  `schedule`: a failed unit write puts both files back, and undo and
-  `manual` run `daemon-reload`. `bml_library::testing` sits behind a
-  `test-support` feature. Items 3, 4, 5, 7 and 9 had already landed with
-  #429. Verified: `cargo test -- --include-ignored` 302 passed with
-  pg_search; Linux clippy passes for `bml-pgserver` (a cross-target check;
-  it was not run on Linux).
+  `schedule`: a failed unit write puts both files back
+  (`restore_update_units`, each file not put back named), the undo reloads
+  systemd only if it had read the new units (a failed reload only is "not
+  loaded again", not a leftover), and `manual` runs `daemon-reload`; the
+  leftover / not-reloaded error texts no longer say "start at login".
+  `bml_library::testing` sits behind a `test-support` feature. Items 3, 4,
+  5, 7 and 9 had already landed with #429. Review follow-ups: #433 (a
+  half-done `enable --now` symlink), Windows schedule log on #397.
+  Verified: `cargo test -- --include-ignored` 305 passed with pg_search;
+  Linux and Windows clippy pass for `bml-pgserver` (cross-target checks,
+  not run there).
 
 - **Library pipeline, piece 3 of the installer milestone** (2026-11-14,
   branch `feat/library-pipeline`; plan
@@ -395,7 +400,7 @@ value — pick one, or pull an item from ROADMAP.md:
      #401) once one contains #760 and #770 (v0.13.0 has neither).
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init); bml-db review follow-ups: #424;
-  bml-library: #430.
+  bml-library: #430, #433.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -453,7 +458,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 302 passed on 2026-11-14 with pg_search
+  `reference-local-pg18-bindir`): 305 passed on 2026-11-14 with pg_search
   (#428; 300 before it, with and without pg_search). The first build
   compiles llama.cpp and MuPDF (about 1.5 min on the owner's Mac).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
