@@ -322,7 +322,7 @@ mod tests {
             ),
             "{unit}"
         );
-        // Built as the renderer builds it (`\\` before the name on Windows).
+        // Built as the renderer builds it (`\` before the name on Windows).
         let log = Path::new("/cfg 100%")
             .join(UPDATE_LOG_NAME)
             .to_string_lossy()
