@@ -14,12 +14,16 @@ off new work. Longer-term structural items live in
   never replaces a different PDF already at the target (status `skipped`,
   reason names the stored file; it used to keep the newer file by mtime, so
   supplementary material carrying the article's DOI could replace the
-  article). The copy goes to `<name>.partial` and is renamed into place, and
-  a failure removes only our own copy. `check_document_status` no longer
-  selects the nonexistent `document.pmid` column, so the regex DOI/PMID fast
-  path works instead of failing silently. Tests in
-  `tests/test_pdf_matcher_agent.py`. Not run against a live database; the
-  missing `lower(doi)` index is still #333.
+  article). The same holds when the document's recorded `pdf_filename` is a
+  different file at another path. The copy goes to `<name>.partial` and is
+  renamed into place. A failure removes only our own copy, never one the
+  database already points at, and a failed delete is logged, not raised.
+  `check_document_status` no longer selects the nonexistent `document.pmid`
+  column, so the regex DOI/PMID fast path works instead of failing silently.
+  Tests are in `tests/test_pdf_matcher_agent.py`. Not run against a live
+  database. The missing `lower(doi)` index is still #333. Follow-ups from
+  the review (an orphan file reads as `duplicate`, the status lookup
+  swallows SQL errors) are in #456.
 
 - **Installer audit fixes #447, #448, #452** (2026-11-15). `bml server init`
   / `bml setup --pg-bindir` accept a moved PostgreSQL bin folder whose major
@@ -361,7 +365,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-15:
-  **4847 passed, 71 skipped** in about 3 min (hermetic since #334;
+  **4854 passed, 71 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

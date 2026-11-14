@@ -73,6 +73,18 @@ METADATA_EXTRACTION_TOP_P = 0.9
 _HAS_FULL_TEXT_COLUMN_INDEX = 11
 
 
+def _discard_file(path: Path) -> None:
+    """Delete a file this import created, logging (not raising) if that fails.
+
+    Args:
+        path: File to remove; a missing file is not an error.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:
+        logger.error(f"Could not remove {path}; delete it by hand: {e}")
+
+
 @dataclass
 class ExtractedIdentifiers:
     """
@@ -834,7 +846,8 @@ Text to analyze:
 
         logger.debug(f"import_pdf_for_document: new_filename={new_filename}")
 
-        # Update document dict with new filename
+        # Remember the PDF the database already records before renaming it.
+        stored_filename = document.get('pdf_filename')
         document['pdf_filename'] = new_filename
 
         # Get target path (year-based organization)
@@ -853,37 +866,40 @@ Text to analyze:
                 'doc_id': doc_id
             }
 
-        # Check if PDF already exists at target
-        if target_path.exists():
-            source_size = pdf_path.stat().st_size
-            target_size = target_path.stat().st_size
+        # The document's stored PDF (wherever it is) or a file at the target.
+        existing_path = (
+            pdf_manager._find_current_pdf_path(stored_filename) if stored_filename else None
+        )
+        if existing_path is None and target_path.exists():
+            existing_path = target_path
 
-            if pdf_path.resolve() == target_path.resolve():
+        if existing_path is not None:
+            if pdf_path.resolve() == existing_path.resolve():
                 return {
                     'status': 'already_exists',
                     'message': 'PDF already at correct location',
                     'doc_id': doc_id,
-                    'path': str(target_path)
+                    'path': str(existing_path)
                 }
 
-            if source_size == target_size:
+            if pdf_path.stat().st_size == existing_path.stat().st_size:
                 return {
                     'status': 'duplicate',
                     'message': 'PDF already exists with same size',
                     'doc_id': doc_id,
-                    'existing_path': str(target_path)
+                    'existing_path': str(existing_path)
                 }
 
-            # A different PDF is already there. Never replace it: the incoming
+            # A different PDF is already stored. Never replace it: the incoming
             # file may be supplementary material that carries the article's DOI.
             logger.warning(
-                f"Different PDF already at {target_path}; leaving it, not importing {pdf_path}"
+                f"Different PDF already at {existing_path}; leaving it, not importing {pdf_path}"
             )
             return {
                 'status': 'skipped',
-                'reason': f'A different PDF is already stored for this document: {target_path}',
+                'reason': f'A different PDF is already stored for this document: {existing_path}',
                 'doc_id': doc_id,
-                'existing_path': str(target_path)
+                'existing_path': str(existing_path)
             }
 
         if dry_run:
@@ -904,7 +920,10 @@ Text to analyze:
             shutil.copy2(str(pdf_path), str(temp_path))
             if target_path.exists():
                 # Another import placed a file here since the check above.
-                temp_path.unlink()
+                # shortcut: exists() then os.replace() still leaves a tiny race
+                # window; fine while imports run one at a time, use os.link()
+                # (no-replace) if imports ever run in parallel.
+                _discard_file(temp_path)
                 return {
                     'status': 'skipped',
                     'reason': f'A different PDF is already stored for this document: {target_path}',
@@ -924,12 +943,15 @@ Text to analyze:
             if not success:
                 # The target did not exist before this import, so removing
                 # our copy loses nothing.
-                target_path.unlink()
+                placed = False
+                _discard_file(target_path)
                 return {
                     'status': 'failed',
                     'reason': 'Database update failed',
                     'doc_id': doc_id
                 }
+            # The database now points at the file: it must never be removed.
+            placed = False
 
             return {
                 'status': 'imported',
@@ -938,16 +960,19 @@ Text to analyze:
                 'target': str(target_path),
                 'filename': new_filename,
                 'doi': document.get('doi'),
-                'title': document.get('title', '')[:100]
+                'title': (document.get('title') or '')[:100]
             }
 
         except Exception as e:
-            logger.error(f"Error importing PDF: {e}")
-            temp_path.unlink(missing_ok=True)
+            logger.error(
+                f"Error importing PDF {pdf_path} for document {doc_id} to {target_path}: {e}",
+                exc_info=True
+            )
+            _discard_file(temp_path)
             if placed:
                 # Only our own copy is here (the target did not exist before);
                 # the database was not pointed at it.
-                target_path.unlink(missing_ok=True)
+                _discard_file(target_path)
             return {
                 'status': 'failed',
                 'reason': str(e),
@@ -1091,7 +1116,7 @@ Text to analyze:
             'id': document['id'],
             'doi': document.get('doi'),
             'pmid': document.get('pmid') or document.get('external_id'),
-            'title': document.get('title', '')[:100],
+            'title': (document.get('title') or '')[:100],
             'has_full_text': result['has_full_text'],
             'has_chunks': result['has_chunks'],
         }
