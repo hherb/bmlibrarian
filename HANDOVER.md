@@ -352,7 +352,8 @@ value — pick one, or pull an item from ROADMAP.md:
   4. bmlib is pinned by git rev; move to a tagged release (or crates.io,
      #401) once one contains #760.
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
-  port taken after init); bml-db review follow-ups: #424.
+  port taken after init); bml-db review follow-ups: #424;
+  bml-library review minors: #428.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
