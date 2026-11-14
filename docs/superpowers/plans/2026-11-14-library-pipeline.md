@@ -52,6 +52,16 @@ with features `embed` (Metal on macOS by default) and `pdf` added.
   in the background. Paper by paper is the route for updates.
 - **Measure a polite request rate** before fixing the delay constant
   (below).
+- **Pin by git rev, no release** (owner, 2026-11-14 session): bmlib pinned to
+  main `02c7fad` (#760 and #763), not waiting for a release.
+- **`<library>/documents` stays a `FullTextCache`** (owner, same session):
+  the plan as written (`<doi>v<version>` keys, `FullTextCache::delete`), not
+  bmlib #763's shared library.
+
+**Done 2026-11-14** (branch `feat/library-pipeline`). Rulings and findings:
+`doc/developers/library_pipeline.md`; notably the hand run found medRxiv
+JATS files whose body holds only supplementary material, so the
+"28 of 30 JATS" measurement counted downloads, not article text.
 
 ## Measurements (2026-11-14, owner's Mac, bmlib's `UreqClient`, UA `bmlib/<ver>`)
 
@@ -206,16 +216,16 @@ on, all delivered by #760:
 - [x] `settle_days` = 7, a bound rather than a measurement (bmlib #759).
 - [x] Polite spacing for `www.medrxiv.org` is **not** in bmlib. It is this
       plan's `MEDRXIV_REQUEST_DELAY`.
-- [ ] A bmlib release containing #760 is cut: then Task 1's pin bump.
+- [x] ~~A bmlib release containing #760 is cut~~: pinned by git rev instead (owner).
 
 ### Task 1: Pin bump, features, `bml-library` skeleton
 
 **Files:** `rust/Cargo.toml`, `rust/bml-library/{Cargo.toml,src/lib.rs}`.
 
-- [ ] Bump the bmlib rev past Task 0. `sync()`/`sync_source()` now return
+- [x] Bump the bmlib rev past Task 0. `sync()`/`sync_source()` now return
       `SyncError` (not used by bml-db/bml-setup). Rebuild and run
       `cargo test -- --include-ignored`.
-- [ ] **Owner decision before Task 3:** the bump also brings bmlib #763
+- [x] **Owner decision before Task 3** (answered: `FullTextCache`): the bump also brings bmlib #763
       (merged 2026-11-14): `FullTextService::with_library` and the shared
       `bmlib::library`, where downloads go into write-once per-paper
       folders instead of the cache. Either `<library>/documents` stays a
@@ -226,17 +236,17 @@ on, all delivered by #760:
 - [ ] Add features `pdf` and `embed` (Metal on macOS by default, so no
       target-specific entry). Check CI build time on all three OSes. MuPDF
       needs libclang.
-- [ ] `bml-library` exposes `pub struct Pipeline { db, client, cache, embedder_path }`
+- [x] `bml-library` exposes `pub struct Pipeline { db, client, cache, embedder_path }`
       and `pub fn update(&self, opts: &UpdateOptions, progress: &dyn Fn(Progress)) -> Result<UpdateReport, LibraryError>`.
       `UpdateOptions { from: Option<NaiveDate>, phases: PhaseSet, stop: &AtomicBool }`.
 
 ### Task 2: Metadata phase
 
-- [ ] `sync_source(db, "medrxiv-details", &fetcher, request, clock, report, settle_days)`
+- [x] `sync_source(db, "medrxiv-details", &fetcher, request, clock, report, settle_days)`
       with the registry's `medrxiv-details` fetcher and its settle days
       from `from` (default: medRxiv's first posting day, a named constant)
       to today. Report days fetched/failed and records added/merged.
-- [ ] Tests (live PG, `#[ignore]`): fake `HttpClient` serving `/details/`
+- [x] Tests (live PG, `#[ignore]`): fake `HttpClient` serving `/details/`
       fixture pages; resume after a failed day; a v2 record updates the
       source version. `resume_after_day_commit`.
 
@@ -245,27 +255,27 @@ on, all delivered by #760:
 **Files:** `rust/bml-library/src/{fulltext.rs,polite_client.rs}`,
 `rust/bml-db/src/schema.rs` (migration 2).
 
-- [ ] bml-db migration 2: `CREATE TABLE IF NOT EXISTS library_state` (one
+- [x] bml-db migration 2: `CREATE TABLE IF NOT EXISTS library_state` (one
       row, `rate_limited_until TIMESTAMPTZ`), idempotent like migration 1.
-- [ ] Work query: publications with an `xml`/`pdf` source and either no
+- [x] Work query: publications with an `xml`/`pdf` source and either no
       `publication_fulltext` row, or a `version_held` older than the
       highest source `version` (compared as integers; only that version's
       sources go into the `FullTextRequest`) with `retry_after` null or
       passed, or `form = 'abstract'` with `retry_after <= now()`. Ordered
       newest posting first, so updates are not starved by the backlog.
-- [ ] `PoliteClient` (Global Constraints): wraps bmlib's `UreqClient`,
+- [x] `PoliteClient` (Global Constraints): wraps bmlib's `UreqClient`,
       sleeps out `MEDRXIV_REQUEST_DELAY` since the last request, records
       URL and status per request, and fails fast after a 429.
-- [ ] Per paper: `FullTextService::new(PoliteClient, …)` with
+- [x] Per paper: `FullTextService::new(PoliteClient, …)` with
       `.with_cache(library cache)`, `.with_pdf_extractor(MupdfPdfExtractor)`,
       Tier 0 only. Map the result and the recorded statuses to `form`
       (`jats` / `pdf` / `abstract`) plus `last_error`, `last_error_kind`,
       `attempts` and `retry_after`.
-- [ ] Version replacement transaction, and a failed new version keeping
+- [x] Version replacement transaction, and a failed new version keeping
       the old one (Global Constraints).
-- [ ] The rate limit and the blocked share, as in Global Constraints. `stop`
+- [x] The rate limit and the blocked share, as in Global Constraints. `stop`
       checked between papers.
-- [ ] Tests: fake client for JATS 200, JATS 404 then PDF 200, PDF 403,
+- [x] Tests: fake client for JATS 200, JATS 404 then PDF 200, PDF 403,
       timeout, 429 on JATS (no PDF request sent); requests spaced by the
       delay within one paper; `new_version_replaces_old`;
       `failed_new_version_keeps_old`;
@@ -274,7 +284,7 @@ on, all delivered by #760:
 
 ### Task 4: Index phase
 
-- [ ] Work query, in SQL only (no text is canonicalised to decide):
+- [x] Work query, in SQL only (no text is canonicalised to decide):
       publications whose `publication_index` row is missing, `pending`, or
       whose `model_sha256`, `recipe_version` or `chunker_version` differs
       from the running embedder and chunker, or whose `converter_version`
@@ -282,45 +292,45 @@ on, all delivered by #760:
       `text_sha256` is not compared: a new form or version already sets
       `status = 'pending'` (Global Constraints), and the hash is written
       when the paper is indexed.
-- [ ] Canonical text: JATS via `jats_reader::parse` + `canonical_from_jats`;
+- [x] Canonical text: JATS via `jats_reader::parse` + `canonical_from_jats`;
       PDF via `MupdfExtractor` + `SectionSegmenter` + `canonical_from_segmented`.
-- [ ] Chunks + embeddings + `publication_index` complete, in one transaction
+- [x] Chunks + embeddings + `publication_index` complete, in one transaction
       per paper (delete old chunks first). Embed in batches
       (`EMBED_BATCH_SIZE`).
-- [ ] Chunk text goes into `chunks.text`, so BM25/tsvector index it with no
+- [x] Chunk text goes into `chunks.text`, so BM25/tsvector index it with no
       extra step.
-- [ ] Tests: a stub `ChunkEmbedder` for unit tests (no model);
+- [x] Tests: a stub `ChunkEmbedder` for unit tests (no model);
       `resume_after_index_crash` (rolled-back transaction leaves `pending`);
       `changed_label_reindexes`; one gated test with the real GGUF.
 
 ### Task 5: Worker lock and `bml library update|status`
 
-- [ ] `<library>/.bml-library.lock` via `File::try_lock`, as `bml-setup`'s
+- [x] `<library>/.bml-library.lock` via `File::try_lock`, as `bml-setup`'s
       download lock does. A second run prints "an update is already running"
       and exits 0.
-- [ ] `bml library update [--from DATE] [--skip metadata|fulltext|index]`:
+- [x] `bml library update [--from DATE] [--skip metadata|fulltext|index]`:
       progress lines, Ctrl-C sets `stop` (finish the paper in flight; needs
       a signal-handling crate such as `ctrlc`, new to the workspace), exit
       codes 0 done / 1 failed / 2 library not set up (as `bml server`) /
       4 stopped early (rate limited or Ctrl-C).
-- [ ] `bml library status`: papers, full-text forms, abstract-only by reason,
+- [x] `bml library status`: papers, full-text forms, abstract-only by reason,
       indexed/pending, last update, `rate_limited_until`, orphan cache files.
 
 ### Task 6: `bml library schedule weekly|every <n>|manual`
 
 `<n>` is a number of hours (`every 24` is daily).
 
-- [ ] Extend `bml-pgserver`'s autostart module with an interval entry: a
+- [x] Extend `bml-pgserver`'s autostart module with an interval entry: a
       LaunchAgent with `StartInterval` (macOS), a `systemd --user` timer
       (Linux), and a per-user Scheduled Task (Windows, unverified, #397). It
       runs `bml library update` from the installed executable.
-- [ ] `manual` removes the entry. Re-running with a new interval rewrites it.
+- [x] `manual` removes the entry. Re-running with a new interval rewrites it.
       The macOS restore-on-failure path is reused (#405).
 
 ### Task 7: Docs and handover
 
-- [ ] `doc/users/library_updates_guide.md` (update, status, schedule, what
+- [x] `doc/users/library_updates_guide.md` (update, status, schedule, what
       abstract-only means, why medRxiv full text is slow without AWS keys).
-- [ ] `doc/developers/library_pipeline.md` (phases, tables, failure kinds,
+- [x] `doc/developers/library_pipeline.md` (phases, tables, failure kinds,
       version replacement, the rate-limit rule, measurements).
-- [ ] CLAUDE.md commands, HANDOVER, spec piece 3 marked done.
+- [x] CLAUDE.md commands, HANDOVER, spec piece 3 marked done.

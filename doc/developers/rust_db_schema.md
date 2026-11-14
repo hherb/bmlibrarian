@@ -71,6 +71,14 @@ The lexical choice is made once, when migration 1 runs. pg_search installed
 later is not picked up; switching needs a later migration (marked
 `shortcut:` in `schema.rs`).
 
+## Migration 2: `library_state`
+
+One row (`id INTEGER PRIMARY KEY CHECK (id = 1)`) of library-wide state for
+the pipeline (`doc/developers/library_pipeline.md`): `rate_limited_until`
+(the full-text phase is skipped until then after medRxiv answered 429) and
+`last_update_at` (when `bml library update` last finished). Both
+`TIMESTAMPTZ`; the pipeline reads them cast to text.
+
 ## Tests
 
 - Unit: `cargo test -p bml-db` (library record, migration list, DDL uses

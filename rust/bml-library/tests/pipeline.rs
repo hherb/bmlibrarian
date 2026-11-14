@@ -321,7 +321,8 @@ fn jats_is_stored_and_the_pdf_never_asked() {
         .query_one("SELECT cache_path FROM publication_fulltext", &[])
         .unwrap()
         .get(0);
-    assert!(Path::new(&path).is_file(), "{path}");
+    assert!(Path::new(&path).is_relative(), "{path}");
+    assert!(p.cache.cache_dir.join(&path).is_file(), "{path}");
 }
 
 #[test]
@@ -493,8 +494,11 @@ fn new_version_replaces_old() {
         .query_one("SELECT cache_path FROM publication_fulltext", &[])
         .unwrap()
         .get(0);
-    assert!(Path::new(&v2_path).is_file());
-    assert!(!Path::new(&v1_path).exists(), "v1's file is gone");
+    assert!(p.cache.cache_dir.join(&v2_path).is_file());
+    assert!(
+        !p.cache.cache_dir.join(&v1_path).exists(),
+        "v1's file is gone"
+    );
     let v2_text = scalar_i64(
         &mut db,
         "SELECT count(*) FROM chunks WHERE text LIKE '%Tumours are a complex disease%'",
@@ -547,7 +551,7 @@ fn failed_new_version_keeps_old() {
         .query_one("SELECT cache_path FROM publication_fulltext", &[])
         .unwrap()
         .get(0);
-    assert!(Path::new(&path).is_file(), "v1's file stays");
+    assert!(p.cache.cache_dir.join(&path).is_file(), "v1's file stays");
     assert_eq!(
         scalar_i64(&mut db, "SELECT count(*) FROM chunks"),
         chunks,

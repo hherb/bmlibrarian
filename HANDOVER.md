@@ -10,6 +10,35 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Library pipeline, piece 3 of the installer milestone** (2026-11-14,
+  branch `feat/library-pipeline`; plan
+  `docs/superpowers/plans/2026-11-14-library-pipeline.md`; owner decisions
+  this session: bmlib pinned by **git rev** to main `02c7fad` (#760
+  `medrxiv-details`, #763) without waiting for a release, and
+  `<library>/documents` stays a `FullTextCache`). New crate
+  `rust/bml-library` (bmlib features `pdf` + `embed`): metadata (bmlib sync
+  of `medrxiv-details`, 30-day windows), full text (Tier 0 only through
+  `PoliteClient`: 30 s spacing, the first 429 ends the phase uncharged and
+  sets `library_state.rate_limited_until`; lasting/passing back-off; a new
+  version replaces the old in one transaction, a failed new version keeps
+  the old; orphan cache entries removed), index (abstract chunk always plus
+  canonical JATS/PDF chunks, `halfvec` embeddings and the `ChunkSetLabel`
+  in one transaction per paper). bml-db migration 2: `library_state`. CLI:
+  `bml library update [--from] [--skip]` (worker lock, Ctrl-C, exit 0/1/2/4),
+  `status`, `schedule weekly|every <days>|manual` (`bml_pgserver::schedule`:
+  LaunchAgent `StartInterval` / systemd timer / Scheduled Task).
+  `bml_setup::gguf_path` is public. Docs: `doc/developers/library_pipeline.md`,
+  `doc/users/library_updates_guide.md`, `rust_db_schema.md` (migration 2).
+  Verified: `cargo test -- --include-ignored` 284 passed with and without
+  pg_search; macOS schedule hand-checked with `launchctl print` (interval
+  259200 s, removed by `manual`); hand run against the real API and model on
+  a temp server: 3 days, 153 papers indexed in 88 s, two papers' full text
+  (both PDFs), Ctrl-C stopped after the paper in flight with exit 4.
+  **Finding:** those papers' medRxiv JATS `<body>` held only
+  `<supplementary-material>`, so bmlib reports no body and the PDF is
+  fetched; the plan's "28 of 30 JATS" counted downloads, not article text.
+  Not run: Linux/Windows schedulers (cross-target clippy only).
+
 - **`bml-db` + schema, piece 2 of the installer milestone** (2026-11-13,
   plan `docs/superpowers/plans/2026-11-13-bml-db-schema.md`; owner
   decisions: all Goal B tables now, `--library-dir` **replaces** `bml setup
@@ -152,75 +181,20 @@ off new work. Longer-term structural items live in
   gets them on its next non-test connection; both are `CREATE OR REPLACE`
   only. Checklist for a new category: `db_settings_architecture.md`
   "Database Schema".
-- **Rust one-click installer, part 1: `bml-pgserver`** (2026-11-07,
-  PR #396). First Rust code: `rust/` Cargo workspace + CI
-  (`.github/workflows/rust.yml`), `bml-pgserver` library (private per-user
-  PG18 on 127.0.0.1, default port 5418, scram, resumable `init`, owner-only
-  `bml.env`/`bml-admin.env`/`bml-pgserver.json`, autostart at login) and
-  `bml server init|start|stop|restart|status|autostart` CLI. Design:
-  `docs/superpowers/specs/2026-11-07-one-click-installer-design.md`
-  ("Pieces of work, in order": 1–2 done). Docs:
-  `doc/users/private_postgres_server.md`, `doc/developers/rust_pgserver.md`.
-  Portable PG18/pgvector/pg_search binaries are not yet sourced (`--bindir`
-  points at an existing install).
-- **Rust one-click installer, part 3: `bml-setup` + `bml setup`**
-  (2026-11-07, PR #402). New `rust/bml-setup` crate (hardware
-  check, database, autostart, Ollama, models, embedding GGUF; resumable,
-  failures don't stop independent steps) and `bml setup` front end; plan
-  `docs/superpowers/plans/2026-11-07-bml-setup.md`, docs
-  `doc/users/bml_setup_guide.md`, `doc/developers/rust_setup.md`. Owner
-  decisions: Ollama pinned to v0.40.10 with checksum-verified installers
-  (Linux `install.sh` pulls its tarball unchecked, documented);
-  `medgemma4B_it_q8:latest` is not in Ollama's registry, so setup pulls
-  `medgemma1.5:4b-it-q8_0` and `/api/copy`s it; `bml-pgserver` can adopt an
-  existing loopback PG18 (`--existing-server`, password via
-  `BML_PG_SUPERUSER_PASSWORD`/`--password-stdin`, only role `bml_app` + db
-  `bmlibrarian`); the GGUF download uses bmlib's llama-free `model-download`
-  feature, a git dependency pinned at rev 9670f4e (bmlib PR hherb/bmlib#703;
-  switch to crates.io 0.3.1 once published). Verified by hand on macOS
-  only (private server + Ollama present + GGUF twice); the Windows/Linux
-  Ollama installs and Windows Inno flags are unverified (#397). The Phase B
-  import profile and any server restart must refuse when `bml-external.json`
-  exists (an existing server is never restarted by bml). Portable
-  PG18 binaries remain a separate future plan (`--pg-bindir` meanwhile).
-- **`bml setup` review follow-ups** (2026-11-08, PR #404, closes #403,
-  most of #401). Library API changes ahead of piece 4:
-  `bml_pgserver::external::check_request` (loopback host, storable
-  password/superuser; the CLI calls it before any step, so a remote
-  `--existing-server` or empty `--password-stdin` line exits 1 at once);
-  `adopt` drops `[::1]` brackets itself; new errors `ExistingServerMismatch`
-  and `AutostartLeftover` (a login entry that could not be removed or put
-  back after a failed enable is reported, not left silently); new
-  `StepOutcome::Warnings(Vec<String>)` (Hardware, Database, Ollama via
-  `report_warnings`; the CLI summary repeats them). The Models step tries both models and joins their
-  errors. Hardware: "unknown free space" warning for a disk not in the mount
-  list, no Ollama-disk check for a remote `OLLAMA_HOST`, Linux checks
-  `/usr/share/ollama/.ollama/models`. Ollama detection: `app_candidates`
-  (macOS user/system `Applications`; Windows `%LOCALAPPDATA%` then
-  `%ProgramFiles%`, unverified, #397) then `ollama` on `PATH` (Homebrew); a
-  found command is not started, setup says how. macOS unpacks into
-  `~/Applications/.bml-ollama-extract` and renames, so no partial app.
-  Downloads run under an OS file lock (`.bml-setup-download.lock`,
-  `File::try_lock`; workspace MSRV now 1.89); after taking it the Ollama and
-  Embedding steps re-check, so a second setup never downloads twice. macOS
-  deletes the installer only after the app is moved into place. `parse_ollama_host` refuses
-  userinfo, port 0, text after `]`, `?`/`#`. CLI failures and warnings go to
-  stderr; a remote `--existing-server` is refused before the password is read. Still open on #401: bmlib-side items (README count, tests, CI
-  guard, crates.io 0.3.1 — only 0.3.0 is published), an existing-server
-  `bml server status` exit-0 test and `pg_search` adopt in CI (#399),
-  Windows drive-letter case (#397), installed-Ollama version never checked.
-- **macOS autostart re-enable keeps the old login entry** (2026-11-08,
-  closes #405). `autostart::enable` reads the old plist before `bootout`;
-  a failed write or `bootstrap` writes it back and `bootstrap`s it again
-  (`restore_launch_agent`, unit-tested with a fake reload), or removes the
-  new plist when there was none; a failed reload is `AutostartNotReloaded`
-  (entry intact, loads at next login), a failed restore `AutostartLeftover`.
-  Not exercised against a real failing `launchctl`.
-- **`bml-pgserver` follow-ups** (2026-11-07, closes #398): app-role login
-  check and password reset on `28P01`, richer connect/DB errors, `bml server
-  status` exits 3 when stopped, stricter launchctl error handling, fake-bin
-  tests, CI `integration-macos`. Open: #397 (Windows), #399 (port-moved
-  decision, Linux disable test, `pg_search` in CI).
+- **Installer pieces before 2026-11-11** (PRs #396, #402, #404, #407;
+  closes #398, #403, #405, most of #401): `bml-pgserver` (private per-user
+  PG18 on 127.0.0.1:5418, `bml server init|start|stop|restart|status|
+  autostart`; docs `doc/users/private_postgres_server.md`,
+  `doc/developers/rust_pgserver.md`) and `bml-setup` + `bml setup`
+  (hardware, database, autostart, Ollama pinned v0.40.10 with
+  checksum-verified installers, models — `medgemma1.5:4b-it-q8_0` pulled and
+  `/api/copy`'d to `medgemma4B_it_q8:latest` — and the embedding GGUF; docs
+  `doc/users/bml_setup_guide.md`, `doc/developers/rust_setup.md`). An
+  existing server is never restarted by bml (`bml-external.json`). Still
+  open on #401: bmlib-side items and crates.io 0.3.1, an existing-server
+  `status` test, installed-Ollama version never checked; Windows/Linux
+  installs unverified (#397); #399 (port moved after init, `pg_search` in
+  CI).
 
 - **Research tab: toasts instead of modals; dead executor path removed**
   (2026-11-06, closes #332). New shared `gui/qt/widgets/toast.py`:
@@ -355,26 +329,24 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
-  1. Pieces 1 (pgdist) and 2 (`bml-db` + schema) are done.
-  2. Next: piece 3, the library pipeline. Plan:
-     `docs/superpowers/plans/2026-11-14-library-pipeline.md` (its
-     "Measurements" section has the medRxiv probe results). Owner decisions
-     2026-11-14: bmlib's `biorxiv`/`medrxiv` sources read `/pubs/`, which
-     lists only preprints later published in a journal and has no JATS link
-     or version, so **Task 0 was bmlib work**: new sources
-     `medrxiv-details` / `biorxiv-details` read `/details/` (bmlib PR #760,
-     #341, merged 2026-11-14, not yet in a release). Once a release has it,
-     bump the pin (`9670f4e` also predates #607/#444) and do Tasks 1–7
-     here; the bump also brings bmlib #763 (shared library), an owner
-     decision recorded in Task 1. medRxiv answered 429 after the first 7
-     papers at 1.5 s spacing and blocked most PDFs with a Cloudflare 403;
-     at 30 s spacing, 60 requests met no 429, 28 of 30 JATS downloaded and
-     26 of 30 PDFs got a 403. So **MECA bulk (3c) is the main full-text
-     route for the backlog** and follows piece 3. Then pieces 4–6: hybrid
-     search, Tauri wizard, signed Mac `.dmg`. The HTML tier (3b) is bmlib
-     work.
+  pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
+  1. On the piece 3 PR: check the `rust` CI build time and success with
+     bmlib's `pdf` (MuPDF, needs libclang) and `embed` (llama.cpp, cmake) on
+     all five runners; bmlib's own CI builds them on Linux only, so
+     `macos-15-intel` and `windows-latest` are the risk.
+  2. Measure how many medRxiv JATS files carry the article body (the hand
+     run's two had only supplementary material), since that decides how
+     often the Cloudflare-blocked PDF is needed. Rates between 1.5 s and 30 s
+     are still unmeasured too.
+  3. Next piece: **3c, MECA bulk** (bmlib, Python + Rust: MECA reader and
+     requester-pays S3), the main full-text route for the backlog (owner
+     2026-11-14); then the bulk route in `bml-library`. Then 3b (medRxiv HTML
+     page, bmlib), piece 4 (hybrid search, `bml search`), 5 (Tauri wizard),
+     6 (signed Mac `.dmg`).
+  4. bmlib is pinned by git rev; move to a tagged release (or crates.io,
+     #401) once one contains #760.
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
-  port taken after init).
+  port taken after init); bml-db review follow-ups: #424.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -432,7 +404,9 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 245 passed on 2026-11-13.
+  `reference-local-pg18-bindir`): 284 passed on 2026-11-14 (with and
+  without pg_search). The first build compiles llama.cpp and MuPDF
+  (about 1.5 min on the owner's Mac).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`

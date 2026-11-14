@@ -440,14 +440,16 @@ pub fn known_cache_keys(db: &mut dyn Db) -> Result<HashSet<String>, PipelineErro
         .collect()
 }
 
-/// Where the stored full text for `key` is, if the cache holds it.
+/// Where the stored full text for `key` is, relative to the cache folder
+/// (so the record survives the library folder moving), if the cache holds it.
 fn cached_path(cache: &FullTextCache, key: &str, classified: &Classified) -> Option<String> {
     let path = match classified {
         Classified::Jats => cache.jats_dir().join(format!("{}.xml", safe_filename(key))),
         Classified::Pdf => cache.pdf_dir().join(format!("{}.pdf", safe_filename(key))),
         Classified::Failed { .. } => return None,
     };
-    path.is_file().then(|| path.display().to_string())
+    let relative = path.strip_prefix(&cache.cache_dir).ok()?;
+    path.is_file().then(|| relative.display().to_string())
 }
 
 /// Record `classified` for `paper` (see the module docs for the rules).
