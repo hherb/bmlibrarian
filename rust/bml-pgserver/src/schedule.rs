@@ -322,11 +322,16 @@ mod tests {
             ),
             "{unit}"
         );
+        // Built as the renderer builds it (`\\` before the name on Windows).
+        let log = Path::new("/cfg 100%")
+            .join(UPDATE_LOG_NAME)
+            .to_string_lossy()
+            .replace('%', "%%");
         assert!(
-            unit.contains("StandardOutput=append:/cfg 100%%/bml-library-update.log\n"),
+            unit.contains(&format!("StandardOutput=append:{log}\n")),
             "{unit}"
         );
-        assert!(unit.contains("StandardError=append:/cfg 100%%/bml-library-update.log\n"));
+        assert!(unit.contains(&format!("StandardError=append:{log}\n")));
     }
 
     #[test]
