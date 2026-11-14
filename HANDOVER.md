@@ -356,14 +356,23 @@ value — pick one, or pull an item from ROADMAP.md:
 - **Rust installer (current focus)**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   1. Pieces 1 (pgdist) and 2 (`bml-db` + schema) are done.
-  2. Next: piece 3, the library pipeline (its own plan): medRxiv metadata via
-     bmlib `BiorxivFetcher` + `publications::sync`, full text JATS → PDF into
-     `Library::cache()`, version replacement, chunking + in-process
-     embedding into the piece-2 tables, checkpoints, the scheduler entry and
-     `bml` commands. Measure the Cloudflare refusal rate first. It will need
-     a bmlib pin bump (the pin `9670f4e` predates bmlib's #607/#444 sync
-     fixes). Then pieces 4–6: hybrid search, Tauri wizard, signed Mac `.dmg`.
-     HTML tier and MECA bulk are bmlib Python+Rust work (3b/3c).
+  2. Next: piece 3, the library pipeline. Plan:
+     `docs/superpowers/plans/2026-11-14-library-pipeline.md` (its
+     "Measurements" section has the medRxiv probe results). Owner decisions
+     2026-11-14: bmlib's `biorxiv`/`medrxiv` sources read `/pubs/`, which
+     lists only preprints later published in a journal and has no JATS link
+     or version, so **Task 0 was bmlib work**: new sources
+     `medrxiv-details` / `biorxiv-details` read `/details/` (bmlib PR #760,
+     #341, merged 2026-11-14, not yet in a release). Once a release has it,
+     bump the pin (`9670f4e` also predates #607/#444) and do Tasks 1–7
+     here; the bump also brings bmlib #763 (shared library), an owner
+     decision recorded in Task 1. medRxiv answered 429 after the first 7
+     papers at 1.5 s spacing and blocked most PDFs with a Cloudflare 403;
+     at 30 s spacing, 60 requests met no 429, 28 of 30 JATS downloaded and
+     26 of 30 PDFs got a 403. So **MECA bulk (3c) is the main full-text
+     route for the backlog** and follows piece 3. Then pieces 4–6: hybrid
+     search, Tauri wizard, signed Mac `.dmg`. The HTML tier (3b) is bmlib
+     work.
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init).
 
@@ -423,7 +432,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 236 passed on 2026-11-13.
+  `reference-local-pg18-bindir`): 245 passed on 2026-11-13.
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`
