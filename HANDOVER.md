@@ -359,17 +359,20 @@ value — pick one, or pull an item from ROADMAP.md:
   2. Next: piece 3, the library pipeline. Plan:
      `docs/superpowers/plans/2026-11-14-library-pipeline.md` (its
      "Measurements" section has the medRxiv probe results). Owner decisions
-     2026-11-14: bmlib's fetcher reads `/pubs/`, which lists only preprints
-     later published in a journal and has no JATS link or version, so
-     **Task 0 is bmlib work**: new sources `medrxiv-details` /
-     `biorxiv-details` read `/details/` (bmlib PR #760, #341); bump the pin
-     once it is merged and released. After that, the pin bump (the
-     pin `9670f4e` predates #607/#444) and Tasks 1–7 here. medRxiv answered
-     429 after about 10 requests at 1.5 s spacing and blocked most PDFs with
-     a Cloudflare 403; at 30 s spacing, 60 requests met no 429, 28 of 30
-     JATS downloaded and 26 of 30 PDFs got a 403. So **MECA bulk (3c) is the main full-text route for
-     the backlog** and follows piece 3. Then pieces 4–6: hybrid search,
-     Tauri wizard, signed Mac `.dmg`. The HTML tier (3b) is bmlib work.
+     2026-11-14: bmlib's `biorxiv`/`medrxiv` sources read `/pubs/`, which
+     lists only preprints later published in a journal and has no JATS link
+     or version, so **Task 0 was bmlib work**: new sources
+     `medrxiv-details` / `biorxiv-details` read `/details/` (bmlib PR #760,
+     #341, merged 2026-11-14, not yet in a release). Once a release has it,
+     bump the pin (`9670f4e` also predates #607/#444) and do Tasks 1–7
+     here; the bump also brings bmlib #763 (shared library), an owner
+     decision recorded in Task 1. medRxiv answered 429 after the first 7
+     papers at 1.5 s spacing and blocked most PDFs with a Cloudflare 403;
+     at 30 s spacing, 60 requests met no 429, 28 of 30 JATS downloaded and
+     26 of 30 PDFs got a 403. So **MECA bulk (3c) is the main full-text
+     route for the backlog** and follows piece 3. Then pieces 4–6: hybrid
+     search, Tauri wizard, signed Mac `.dmg`. The HTML tier (3b) is bmlib
+     work.
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init).
 

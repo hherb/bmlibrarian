@@ -185,7 +185,7 @@ paths), repackaging Postgres.app.
   (`bmlib::publications::schema`: `publications`, `fulltext_sources`,
   `download_days`, `download_day_parts`, and the rest). Papers are stored with
   bmlib's `store_publication`, and the resumable day ledger is bmlib's
-  `publications::sync`.
+  `publications::sync_source`.
   - This is Claude's call, following "lean on bmlib". It means fresh installs
     store papers in bmlib's `publications` table rather than the Rust plan's
     `public.document`, which existed for parity with the Python database. The
@@ -229,10 +229,11 @@ paths), repackaging Postgres.app.
     - Bad keys or a refused request get a plain-language reason and an offer
       to continue paper by paper instead.
   - **Paper by paper:** "from date X onwards", "All of medRxiv" without
-    keys, and every update. Metadata comes from bmlib's bioRxiv/medRxiv
-    fetcher (`BiorxivFetcher` with server `medrxiv`), walking day by day
-    through bmlib's `publications::sync` ledger, so it resumes per day for
-    free. The full text for each paper is then fetched as below.
+    keys, and every update. Metadata comes from bmlib's `medrxiv-details`
+    source (`/details/`, owner decision 2026-11-14 below), walking day by
+    day through bmlib's `publications::sync_source` ledger, so it resumes
+    per day for free. The full text for each paper is then fetched as
+    below.
 - **MECA support is new code in bmlib** (Python + Rust, shared fixtures).
   bmlib has no MECA reader or requester-pays S3 download. Only BMLibrarian's
   Python `importers/medrxiv_meca_importer.py` does, through boto3, and it is
@@ -286,17 +287,19 @@ paths), repackaging Postgres.app.
 - Requests to medRxiv/bioRxiv are polite: one at a time, with a delay set by a
   named constant (golden rule 2).
 - **Risk:** medRxiv's website sits behind Cloudflare. The JATS/PDF links may
-  be refused to non-browser clients. The builder must measure this early on
-  a real sample (bmlib's service docs report ~0.7 % failures on bioRxiv). If
-  refusals are common, the fallback is abstract-only plus retry, not
-  browser automation, which is out of scope here. The bulk route (above)
-  avoids the problem for users who enter AWS keys.
+  be refused to non-browser clients. *Measured 2026-11-14 (plan
+  `2026-11-14-library-pipeline.md`, "Measurements"): at one request every
+  30 s, JATS came through for 28 of 30 papers, but 26 of 30 PDFs were
+  refused with a Cloudflare 403; at 1.5 s, medRxiv answered 429.* So the
+  fallback is abstract-only plus retry, not browser automation, which is
+  out of scope here. The bulk route (above) avoids the problem for users
+  who enter AWS keys.
 
 **Embedding (owner: full-text chunk embedding is necessary).**
 - Every paper gets its title + abstract embedded. When full text is held, the
   canonical text is chunked (bmlib's chunker) and every chunk is embedded.
 - Embedding runs in-process with bmlib's `Embedder` (llama.cpp, Metal on Apple
-  silicon; feature `embed-metal`), using the GGUF that setup already
+  silicon; feature `embed`, Metal by default), using the GGUF setup already
   downloaded and verified. Vectors are 256-d, truncated and normalised by
   bmlib (`EMBEDDING_DIM`, `truncate_and_normalize`).
 - Chunk text is also written to the lexical index.
@@ -453,11 +456,11 @@ All of the 2026-11-07 spec's anti-goals, plus:
   `medrxiv-details`. `/pubs/` lists only preprints later published in a
   journal and carries no JATS link or version.
 - MECA bulk is the main full-text route for the backlog, and piece 3c
-  follows piece 3. Measured: medRxiv answered 429 after about 10 requests
+  follows piece 3. Measured: medRxiv answered 429 after the first 7 papers
   at one request every 1.5 s, and blocked most PDFs with a Cloudflare 403.
   At one request every 30 s there was no 429, and JATS came through for 28
-  of 30 papers.
-  Details are in `docs/superpowers/plans/2026-11-14-library-pipeline.md`.
+  of 30 papers, but PDFs were still refused for 26 of 30. Details are in
+  `docs/superpowers/plans/2026-11-14-library-pipeline.md`.
 
 ### Made by Claude (open to correction)
 
@@ -494,7 +497,8 @@ Each piece gets its own implementation plan (`docs/superpowers/plans/`).
    preloaded.*
 3. **Library pipeline**: medRxiv metadata, full text (JATS, PDF), version
    replacement, chunking, embedding, checkpoints, the scheduler entry, and
-   the `bml` commands. Measure the Cloudflare risk first.
+   the `bml` commands. The Cloudflare risk was measured on 2026-11-14 (the
+   plan's "Measurements" section).
    - **3b, in bmlib (Python + Rust):** fetch the medRxiv HTML full-text page
      as the third tier. It can land after 3; until it does, papers without
      JATS or PDF are stored abstract-only and retried.
@@ -517,8 +521,8 @@ Pieces 1–4 are testable from the command line before the app exists.
 - The chunk size, overlap and chunking label, within bmlib's chunker, and
   the HNSW build parameters. The Rust plan's measured settings are a
   starting point.
-- The retry back-off schedule for abstract-only papers, and the request
-  delay value.
+- The retry back-off schedule for abstract-only papers. (The request delay
+  is decided: 30 s, the measured safe rate, in the piece 3 plan.)
 - The disk-space estimate shown on screen 2. The wireframe's "~150 GB" was a
   guess; measure it on a sample.
 - The time-left estimate on screen 5.
