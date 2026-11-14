@@ -459,6 +459,21 @@ fn rate_limit_ends_phase_without_charging_paper() {
         .unwrap();
     assert!(matches!(again.end, FulltextEnd::RateLimited { .. }));
     assert!(web.seen().lock().unwrap().is_empty());
+    // Once the pause is over, the paper is fetched.
+    db.execute(
+        "UPDATE library_state SET rate_limited_until = now() - interval '1 second'",
+        &[],
+    )
+    .unwrap();
+    web.set(&jats_url(1), 200, JATS);
+    let after = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15")
+        .fulltext
+        .unwrap();
+    assert_eq!(
+        (after.jats, &after.end),
+        (1, &FulltextEnd::Done),
+        "{after:?}"
+    );
 }
 
 #[test]
@@ -494,13 +509,14 @@ fn new_version_replaces_old() {
             "Tumours are a complex disease",
         ),
     );
-    let report = run(
-        &p,
-        &mut db,
-        PhaseSet::all().without(Phase::Metadata),
-        "2024-01-15",
-    );
+    let report = run(&p, &mut db, only(Phase::Fulltext), "2024-01-15");
     assert_eq!(report.fulltext.unwrap().replaced, 1);
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM chunks"),
+        v1_chunks,
+        "v1's chunks stay searchable until v2 is indexed"
+    );
+    run(&p, &mut db, only(Phase::Index), "2024-01-15");
     let (form, held, _, _) = fulltext_row(&mut db, id).unwrap();
     assert_eq!((form.as_str(), held.as_deref()), ("jats", Some("2")));
     let v2_path: String = db
@@ -787,11 +803,268 @@ fn only_a_complete_update_counts_as_the_last_update() {
     run(&p, &mut db, only(Phase::Index), "2024-01-15");
     assert!(!bml_library::updated_within(&mut db, 1).unwrap());
     let p = pipeline(tmp.path(), &FakeHttp::new(), &FakeHttp::new(), "sha");
-    run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    let partial = run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert!(!partial.failed() && !partial.stopped_early(), "{partial:?}");
+    assert!(
+        !bml_library::updated_within(&mut db, 1).unwrap(),
+        "a run with skipped phases is not a complete update"
+    );
+    let api = FakeHttp::new();
+    for day in ["2024-01-15", "2024-01-16", "2024-01-17"] {
+        api.set(&details_url(day), 200, details_page(&[]));
+    }
+    let web = FakeHttp::new().route(&jats_url(1), 200, JATS);
+    let p = pipeline(tmp.path(), &api, &web, "sha");
+    let full = run(&p, &mut db, PhaseSet::all(), "2024-01-15");
+    assert!(!full.failed() && !full.stopped_early(), "{full:?}");
     assert!(bml_library::updated_within(&mut db, 1).unwrap());
 }
 
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_scheduled_run_allows_the_slack_but_no_more() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let finished_ago = |db: &mut Client, ago: &str| {
+        db.execute(
+            &format!(
+                "INSERT INTO library_state (id, last_update_at) VALUES (1, now() - interval '{ago}') \
+                 ON CONFLICT (id) DO UPDATE SET last_update_at = excluded.last_update_at"
+            ),
+            &[],
+        )
+        .unwrap();
+    };
+    // SCHEDULE_SLACK_HOURS is 2: a trigger a little early still waits...
+    finished_ago(&mut db, "6 days 21 hours");
+    assert!(bml_library::updated_within(&mut db, 7).unwrap());
+    // ...but one within the slack of the interval runs.
+    finished_ago(&mut db, "6 days 23 hours");
+    assert!(!bml_library::updated_within(&mut db, 7).unwrap());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn metadata_crossing_windows_asks_every_day_once() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let from = NaiveDate::from_ymd_opt(2023, 12, 13).unwrap();
+    let today = NaiveDate::from_ymd_opt(2024, 1, 17).unwrap();
+    let days: Vec<String> = from
+        .iter_days()
+        .take_while(|d| *d <= today)
+        .map(|d| d.to_string())
+        .collect();
+    assert!(days.len() as u64 > bml_library::metadata::METADATA_WINDOW_DAYS);
+    let api = FakeHttp::new();
+    for day in &days {
+        api.set(&details_url(day), 200, details_page(&[]));
+    }
+    let p = pipeline(tmp.path(), &api, &FakeHttp::new(), "sha");
+    let report = run(&p, &mut db, only(Phase::Metadata), "2023-12-13");
+    assert!(!report.failed(), "{report:?}");
+    let seen = api.seen().lock().unwrap().clone();
+    // bmlib asks the last week's unsettled days again (its settle rule), so
+    // only settled days must be asked exactly once; none may be missed.
+    let settled = (today - chrono::Days::new(7)).to_string();
+    for day in &days {
+        let asked = seen.iter().filter(|u| **u == details_url(day)).count();
+        if *day < settled {
+            assert_eq!(asked, 1, "{day}: {seen:?}");
+        } else {
+            assert!(asked >= 1, "{day}: {seen:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_metadata_429_stops_the_run_early_and_sends_nothing_more() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let api = FakeHttp::new().route(&details_url("2024-01-15"), 429, "");
+    let p = pipeline(tmp.path(), &api, &FakeHttp::new(), "sha");
+    let report = run(&p, &mut db, only(Phase::Metadata), "2024-01-15");
+    let m = report.metadata.as_ref().unwrap();
+    assert!(m.stopped && m.rate_limited, "{m:?}");
+    assert!(
+        !report.failed(),
+        "a rate limit is not a failure: {report:?}"
+    );
+    assert!(report.stopped_early());
+    assert_eq!(
+        api.seen().lock().unwrap().as_slice(),
+        [details_url("2024-01-15")]
+    );
+    assert!(!bml_library::updated_within(&mut db, 1).unwrap());
+    // The refused day is fetched again next run.
+    for day in ["2024-01-15", "2024-01-16", "2024-01-17"] {
+        api.set(&details_url(day), 200, details_page(&[]));
+    }
+    api.seen().lock().unwrap().clear();
+    let again = run(&p, &mut db, only(Phase::Metadata), "2024-01-15");
+    assert!(!again.failed() && !again.stopped_early(), "{again:?}");
+    assert!(api
+        .seen()
+        .lock()
+        .unwrap()
+        .contains(&details_url("2024-01-15")));
+}
+
+/// Run every phase, stopping as `stop` says.
+fn run_stopping(
+    p: &Pipeline,
+    db: &mut Client,
+    stop: &AtomicBool,
+    progress: &mut dyn FnMut(bml_library::Progress),
+) -> UpdateReport {
+    let options = UpdateOptions {
+        from: Some(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()),
+        phases: PhaseSet::all().without(Phase::Metadata),
+        stop,
+    };
+    p.update(db, &options, progress)
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn stop_ends_the_run_after_the_paper_in_flight() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    paper(&mut db, &[1]);
+    let second = other_paper(&mut db, "10.1101/second", "Second");
+    db.execute(
+        "INSERT INTO fulltext_sources (publication_id, source, url, format, version, created_at) \
+         VALUES ($1, 'medrxiv', 'https://www.medrxiv.org/second.source.xml', 'xml', '1', 'now')",
+        &[&second],
+    )
+    .unwrap();
+    // Either paper may be fetched first; each one's JATS is there.
+    let web = FakeHttp::new().route(&jats_url(1), 200, JATS).route(
+        "https://www.medrxiv.org/second.source.xml",
+        200,
+        JATS,
+    );
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    let stop = AtomicBool::new(false);
+    let report = run_stopping(&p, &mut db, &stop, &mut |progress| {
+        if progress.phase == Phase::Fulltext {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let f = report.fulltext.as_ref().unwrap();
+    assert_eq!((f.tried, &f.end), (1, &FulltextEnd::Stopped), "{f:?}");
+    assert!(report.index.as_ref().unwrap().stopped, "{report:?}");
+    assert!(report.stopped_early() && !report.failed());
+    assert_eq!(web.seen().lock().unwrap().len(), 1, "one paper fetched");
+    assert!(!bml_library::updated_within(&mut db, 1).unwrap());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn stop_set_before_the_run_sends_nothing() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    paper(&mut db, &[1]);
+    let api = FakeHttp::new();
+    let web = FakeHttp::new();
+    let p = pipeline(tmp.path(), &api, &web, "sha");
+    let stop = AtomicBool::new(true);
+    let options = UpdateOptions {
+        from: Some(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()),
+        phases: PhaseSet::all(),
+        stop: &stop,
+    };
+    let report = p.update(&mut db, &options, &mut |_| {});
+    assert!(report.stopped_early() && !report.failed(), "{report:?}");
+    assert!(api.seen().lock().unwrap().is_empty());
+    assert!(web.seen().lock().unwrap().is_empty());
+}
+
 // ---- index ---------------------------------------------------------------
+
+/// The cached file of the paper's held full text.
+fn cached_file(p: &Pipeline, db: &mut Client) -> PathBuf {
+    let path: String = db
+        .query_one("SELECT cache_path FROM publication_fulltext", &[])
+        .unwrap()
+        .get(0);
+    p.cache.cache_dir.join(path)
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_full_text_that_cannot_be_read_now_is_kept_and_tried_again() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = paper(&mut db, &[1]);
+    let web = FakeHttp::new().route(&jats_url(1), 200, JATS);
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    run(&p, &mut db, only(Phase::Fulltext), "2024-01-15");
+    let file = cached_file(&p, &mut db);
+    // A directory in the file's place: reading it is an I/O error, as a
+    // busy or unmounted disk would give.
+    std::fs::rename(&file, tmp.path().join("aside.xml")).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let report = run(&p, &mut db, only(Phase::Index), "2024-01-15");
+    assert!(report.failed(), "{report:?}");
+    assert_eq!(report.index.as_ref().unwrap().failed.len(), 1, "{report:?}");
+    assert_eq!(fulltext_row(&mut db, id).unwrap().0, "jats");
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM cache_deletions"),
+        0
+    );
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::rename(tmp.path().join("aside.xml"), &file).unwrap();
+    let index = run(&p, &mut db, only(Phase::Index), "2024-01-15")
+        .index
+        .unwrap();
+    assert_eq!((index.indexed, index.fulltext), (1, 1), "{index:?}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_full_text_that_does_not_parse_leaves_the_abstract() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = paper(&mut db, &[1]);
+    let web = FakeHttp::new().route(&jats_url(1), 200, JATS);
+    let p = pipeline(tmp.path(), &FakeHttp::new(), &web, "sha");
+    run(&p, &mut db, only(Phase::Fulltext), "2024-01-15");
+    let file = cached_file(&p, &mut db);
+    std::fs::write(&file, "<article><unclosed>").unwrap();
+    let index = run(&p, &mut db, only(Phase::Index), "2024-01-15")
+        .index
+        .unwrap();
+    assert_eq!((index.indexed, index.unreadable), (1, 1), "{index:?}");
+    let row = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(
+        (row.0.as_str(), row.3.as_deref()),
+        ("abstract", Some("lasting"))
+    );
+    assert!(!file.exists());
+}
 
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]

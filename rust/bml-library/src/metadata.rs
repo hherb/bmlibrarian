@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use bmlib::db::Db;
 use bmlib::publications::fetchers::registry::builtin_registry;
-use bmlib::publications::fetchers::HttpClient;
 use bmlib::publications::sync::{sync, SyncRequest};
 use chrono::{DateTime, Days, NaiveDate, Utc};
 
+use crate::polite_client::PoliteClient;
 use crate::{Phase, PipelineError, Progress, MEDRXIV_SOURCE};
 
 /// How many days one `sync` call covers; `stop` is checked between calls.
@@ -30,8 +30,12 @@ pub struct MetadataReport {
     pub failed: i64,
     /// One line per failed day; a failed day is fetched again next run.
     pub errors: Vec<String>,
-    /// `stop` was set before every window was synced.
+    /// `stop` was set, or the API rate-limited us, before every window was
+    /// synced.
     pub stopped: bool,
+    /// The API answered 429: the phase stopped, and the days of that window
+    /// are fetched again next run (their errors are not listed).
+    pub rate_limited: bool,
 }
 
 /// Sync `medrxiv-details` from `from` to `clock()`'s date, one window at a time.
@@ -41,13 +45,14 @@ pub struct MetadataReport {
 /// A database failure outside one day, or a window bmlib refuses.
 pub fn run(
     db: &mut dyn Db,
-    client: Arc<dyn HttpClient + Send + Sync>,
+    client: Arc<PoliteClient>,
     from: NaiveDate,
     stop: &AtomicBool,
     clock: &dyn Fn() -> DateTime<Utc>,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<MetadataReport, PipelineError> {
-    let registry = builtin_registry(client).map_err(|e| PipelineError::Other(e.to_string()))?;
+    let registry =
+        builtin_registry(client.clone()).map_err(|e| PipelineError::Other(e.to_string()))?;
     let configs = BTreeMap::new();
     let today = clock().date_naive();
     let mut report = MetadataReport::default();
@@ -68,6 +73,18 @@ pub fn run(
             configs: &configs,
         };
         let synced = sync(db, &registry, &request, clock)?;
+        if client.rate_limited() {
+            // bmlib recorded the window's days failed, so they come again.
+            progress(Progress {
+                phase: Phase::Metadata,
+                message: format!(
+                    "medRxiv asked us to slow down at {start} to {end}; the metadata carries on next run"
+                ),
+            });
+            report.stopped = true;
+            report.rate_limited = true;
+            break;
+        }
         if synced.days_processed > 0 {
             progress(Progress {
                 phase: Phase::Metadata,

@@ -23,22 +23,27 @@ The day you give with `--from` is remembered: later updates, scheduled ones
 too, start from it. Give an earlier `--from` to widen the library.
 
 New papers become searchable by their title and abstract first, within the
-hour; their full text is added to the search as it arrives.
+hour; full text fetched during an update is added to the search when the
+full-text downloads of that update end. Until then a paper stays
+searchable by its abstract (or its older version's full text).
 
 You can stop an update at any time with Ctrl-C. It finishes the paper it is
 working on and stops. Running it again carries on where it left off: nothing
-already downloaded or indexed is done twice. A crash or a power cut loses at
-most the paper in flight.
+already finished is done again, except that the last week's paper details
+are checked again until medRxiv has settled them. A crash or a power cut
+loses at most the paper in flight.
 
 Only one update runs at a time. If another one is already running, for
-example a scheduled one, a second `bml library update` says so and stops.
+example a scheduled one, a second `bml library update` says so and stops
+(exit `4`).
 
 Exit codes, for scripts: `0` done, `1` something failed (the messages say
 what; running again retries it), `2` no library or database is set up yet
-(run `bml setup`), `4` stopped early (Ctrl-C, or medRxiv asked us to slow
-down). `bml library update --if-older-than 7` does nothing (exit 0) if the
-library was brought fully up to date less than 7 days ago; this is what a
-scheduled update runs.
+(run `bml setup`), `4` stopped early (Ctrl-C, medRxiv asked us to slow
+down, or another update is running). `bml library update --if-older-than 7`
+does nothing (exit 0) if the library was brought fully up to date less than
+7 days ago; this is what a scheduled update runs. An update with `--skip`
+does not count as bringing it fully up to date.
 
 ## Why full text is slow
 
@@ -104,6 +109,8 @@ Notes:
   the installed `bml`, not from a development build that may move.
 - macOS also checks when you log in (and right after you schedule), and
   runs a missed check when the Mac wakes from sleep.
+- On macOS, changing or removing the schedule stops a scheduled update that
+  is running; the next check carries on where it left off.
 - On Linux the timer runs while you are logged in; a missed check runs at
   your next login.
 - On Windows a check missed while the computer is off waits for the next

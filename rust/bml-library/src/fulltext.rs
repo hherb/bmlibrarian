@@ -36,6 +36,10 @@ pub const LASTING_RETRY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// 2026-11-14 measurement: refusals lasted minutes; an hour's rest worked).
 pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60 * 60);
 
+/// bmlib's `pdf_download_failure` for a PDF that arrived but could not be
+/// saved in the library folder (a full or read-only disk).
+pub const PDF_WRITE_FAILED: &str = "write-failed";
+
 /// Whether a failure may pass on its own (try again soon) or not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
@@ -139,7 +143,7 @@ fn pdf_cause_reason(cause: &str) -> String {
         None => match cause {
             "not-a-pdf" => "the answer was not a PDF".into(),
             "request-failed" => "no answer".into(),
-            "write-failed" => "could not be saved in the library folder".into(),
+            PDF_WRITE_FAILED => "could not be saved in the library folder".into(),
             other => other.into(),
         },
     }
@@ -190,7 +194,9 @@ pub fn classify(
         let (reason, k) = match ok.and_then(|r| r.pdf_download_failure.as_deref().map(|c| (r, c))) {
             Some((r, cause)) => (
                 pdf_cause_reason(cause),
-                if r.pdf_failure_may_pass() {
+                // A full disk is ours to fix, not the paper's: bmlib counts
+                // it final, the library tries again.
+                if r.pdf_failure_may_pass() || cause == PDF_WRITE_FAILED {
                     FailureKind::Passing
                 } else {
                     FailureKind::Lasting
@@ -463,7 +469,9 @@ fn cached_path(cache: &FullTextCache, key: &str, classified: &Classified) -> Opt
 ///
 /// # Errors
 ///
-/// A database failure; nothing of the paper's state has changed then.
+/// A database failure. Before the commit nothing of the paper's state has
+/// changed; after it (finishing the queued deletions) the paper stays
+/// recorded and the next run finishes the deletions.
 pub fn record(
     db: &mut dyn Db,
     cache: &FullTextCache,
@@ -531,11 +539,9 @@ pub fn record(
         ),
         &[Value::Int(paper.id)],
     )?
-    .and_then(|row| {
-        row.get("cache_key")
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-    });
+    .map(|row| row.get("cache_key").map(|v| v.as_str().map(str::to_string)))
+    .transpose()?
+    .flatten();
     execute(
         &mut *tx,
         &format!(
@@ -554,11 +560,6 @@ pub fn record(
             Value::Text(key.clone()),
             Value::Text(path),
         ],
-    )?;
-    execute(
-        &mut *tx,
-        "DELETE FROM chunks WHERE publication_id = ?",
-        &[Value::Int(paper.id)],
     )?;
     execute(
         &mut *tx,
@@ -811,6 +812,25 @@ mod tests {
         let records = [
             rec("https://m/j.xml", RequestOutcome::Status(404)),
             rec("https://m/p.pdf", RequestOutcome::Status(503)),
+        ];
+        assert!(matches!(
+            classify(&ok(r), &records, &pdf_urls()),
+            Classified::Failed {
+                kind: FailureKind::Passing,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_pdf_that_could_not_be_saved_is_passing() {
+        let r = FullTextResult {
+            pdf_download_failure: Some(PDF_WRITE_FAILED.into()),
+            ..empty()
+        };
+        let records = [
+            rec("https://m/j.xml", RequestOutcome::Status(404)),
+            rec("https://m/p.pdf", RequestOutcome::Status(200)),
         ];
         assert!(matches!(
             classify(&ok(r), &records, &pdf_urls()),

@@ -109,11 +109,9 @@ pub fn library_status(
         &format!("SELECT CAST(last_update_at AS TEXT) AS at FROM {LIBRARY_STATE} WHERE id = 1"),
         &[],
     )?
-    .and_then(|r| {
-        r.get("at")
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-    });
+    .map(|r| r.get("at").map(|v| v.as_str().map(str::to_string)))
+    .transpose()?
+    .flatten();
     Ok(LibraryStatus {
         papers,
         jats: count(db, &form("jats"))?,

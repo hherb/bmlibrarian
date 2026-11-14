@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use bml_db::{CHUNKS, CHUNK_EMBEDDINGS, PUBLICATION_FULLTEXT, PUBLICATION_INDEX};
 use bmlib::db::{execute, fetch_one, Db, Row, Value};
@@ -23,7 +24,7 @@ use bmlib::fulltext::canonical::{
     PDF_CANONICAL_VERSION,
 };
 use bmlib::fulltext::jats_reader;
-use bmlib::fulltext::pdf_text::{PdfLimit, PdfTextExtractor};
+use bmlib::fulltext::pdf_text::{PdfErrorKind, PdfLimit, PdfTextExtractor};
 use bmlib::fulltext::segmenter::SectionSegmenter;
 use bmlib::fulltext::MupdfExtractor;
 use sha2::{Digest, Sha256};
@@ -35,6 +36,9 @@ use crate::{Phase, PipelineError, Progress};
 pub const EMBED_BATCH_SIZE: usize = 16;
 /// The converter label of a chunk set made from the title + abstract alone.
 pub const ABSTRACT_CONVERTER: &str = "abstract";
+/// How long reading one cached PDF may take before it is given up for this
+/// run (a pathological page must not hold the worker lock for good).
+pub const PDF_READ_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// After this many papers in a row fail to index, the phase stops: the
 /// cause is then likely the model or the database, not the papers.
 pub const MAX_FAILURES_IN_A_ROW: usize = 3;
@@ -194,26 +198,37 @@ fn canonical(
     form: &str,
     key: &str,
     title: &str,
-) -> Result<CanonicalText, String> {
+) -> Result<CanonicalText, ReadFailure> {
+    use ReadFailure::{Lasting, Passing};
     match form {
         "jats" => {
             let bytes = cache
                 .get_jats(key)
-                .map_err(|e| format!("the JATS XML could not be read ({e})"))?
-                .ok_or("the JATS XML is missing from the library folder")?;
+                .map_err(|e| Passing(format!("the JATS XML could not be read ({e})")))?
+                .ok_or_else(|| Lasting("the JATS XML is missing from the library folder".into()))?;
             let xml = std::str::from_utf8(&bytes)
-                .map_err(|e| format!("the JATS XML is not UTF-8 ({e})"))?;
+                .map_err(|e| Lasting(format!("the JATS XML is not UTF-8 ({e})")))?;
             let article = jats_reader::parse(xml)
-                .map_err(|e| format!("the JATS XML does not parse ({e})"))?;
+                .map_err(|e| Lasting(format!("the JATS XML does not parse ({e})")))?;
             Ok(canonical_from_jats(&article))
         }
         "pdf" => {
             let path = cache
                 .get_pdf(key)
-                .ok_or("the PDF is missing from the library folder")?;
+                .ok_or_else(|| Lasting("the PDF is missing from the library folder".into()))?;
+            let limit = PdfLimit {
+                cancel: None,
+                deadline: Some(Instant::now() + PDF_READ_DEADLINE),
+            };
             let blocks = MupdfExtractor::new()
-                .extract_blocks_with_warnings(&path, &PdfLimit::default())
-                .map_err(|e| format!("the PDF could not be read ({e})"))?;
+                .extract_blocks_with_warnings(&path, &limit)
+                .map_err(|e| {
+                    let reason = format!("the PDF could not be read ({e})");
+                    match e.kind {
+                        PdfErrorKind::Encrypted | PdfErrorKind::Unreadable => Lasting(reason),
+                        _ => Passing(reason),
+                    }
+                })?;
             let document = SectionSegmenter::default().segment_document(
                 &blocks.blocks,
                 &path.display().to_string(),
@@ -222,8 +237,18 @@ fn canonical(
             );
             Ok(canonical_from_segmented(&document))
         }
-        other => Err(format!("unknown full-text form {other}")),
+        other => Err(Lasting(format!("unknown full-text form {other}"))),
     }
+}
+
+/// Why a held full text could not be read in the index phase.
+enum ReadFailure {
+    /// The file's own fault (missing, not UTF-8, does not parse, no text):
+    /// the paper falls back to its abstract and the file is deleted.
+    Lasting(String),
+    /// Not the file's (an I/O error, the PDF engine, a time-out): the file
+    /// and its row are kept and the paper is tried again next run.
+    Passing(String),
 }
 
 /// PostgreSQL text cannot hold it; extracted text (a PDF's) may.
@@ -236,11 +261,14 @@ struct Piece {
 }
 
 /// The full-text chunks of `canonical`, or why there are none.
-fn fulltext_pieces(canonical: &CanonicalText) -> Result<Vec<Piece>, String> {
+fn fulltext_pieces(canonical: &CanonicalText) -> Result<Vec<Piece>, ReadFailure> {
+    // A chunker error is ours (a bug, a version bump), not the file's.
     let chunks = chunk_canonical(canonical, DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS)
-        .map_err(|e| format!("the full text could not be chunked ({e})"))?;
+        .map_err(|e| ReadFailure::Passing(format!("the full text could not be chunked ({e})")))?;
     if chunks.is_empty() {
-        return Err("the full text holds no text to index".into());
+        return Err(ReadFailure::Lasting(
+            "the full text holds no text to index".into(),
+        ));
     }
     let chars: Vec<char> = canonical.text.chars().collect();
     Ok(chunks
@@ -299,7 +327,13 @@ fn index_paper(
             pieces,
             None,
         ),
-        Some(Err(reason)) => (
+        // Not the file's fault: keep it and its row, and try again next run.
+        Some(Err(ReadFailure::Passing(reason))) => {
+            return Err(PipelineError::Other(format!(
+                "its full text could not be read now ({reason})"
+            )));
+        }
+        Some(Err(ReadFailure::Lasting(reason))) => (
             ABSTRACT_CONVERTER.to_string(),
             sha256_hex(&abstract_chunk),
             Vec::new(),

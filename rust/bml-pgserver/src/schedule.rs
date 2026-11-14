@@ -26,7 +26,7 @@ use crate::autostart::{
 };
 #[cfg(target_os = "linux")]
 use crate::autostart::{home, read_previous, restore_file, undo_on_failure, SYSTEMD_USER_DIR};
-use crate::autostart::{systemd_quote, windows_quote, xml_escape};
+use crate::autostart::{systemd_quote, windows_quote, xml_escape, SYSTEMD_UNIT_NAME};
 #[cfg(any(target_os = "linux", windows))]
 use crate::control::run;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -111,7 +111,8 @@ pub fn render_update_agent(exe: &Path, config_dir: &Path, days: u32) -> String {
 }
 
 /// The `systemd --user` service the timer starts, appending its output to
-/// [`UPDATE_LOG_NAME`] in `config_dir`.
+/// [`UPDATE_LOG_NAME`] in `config_dir`; ordered after the server's login
+/// entry, so a run caught up at login waits for the database.
 pub fn render_update_service(exe: &Path, config_dir: &Path, days: u32) -> String {
     let line = update_args(exe, config_dir, days)
         .iter()
@@ -124,7 +125,8 @@ pub fn render_update_service(exe: &Path, config_dir: &Path, days: u32) -> String
         .to_string_lossy()
         .replace('%', "%%");
     format!(
-        "[Unit]\nDescription=Update the BMLibrarian library\n\n\
+        "[Unit]\nDescription=Update the BMLibrarian library\n\
+         After={SYSTEMD_UNIT_NAME}\n\n\
          [Service]\nType=oneshot\nExecStart={line}\n\
          StandardOutput=append:{log}\nStandardError=append:{log}\n"
     )
@@ -150,6 +152,9 @@ pub fn windows_task_command(exe: &Path, config_dir: &Path, days: u32) -> String 
 }
 
 /// Run `bml library update` every `days` days (replacing an earlier schedule).
+/// On macOS replacing the entry stops a scheduled update running now (launchd
+/// ends its job, at worst losing the paper in flight); the next trigger
+/// carries on.
 ///
 /// # Errors
 ///
@@ -223,7 +228,9 @@ pub fn schedule_updates(exe: &Path, config_dir: &Path, days: u32) -> Result<(), 
     }
 }
 
-/// Stop scheduled updates (an update running now is left alone).
+/// Stop scheduled updates. An update running now is left alone, except a
+/// scheduled one on macOS, which launchd ends (at worst losing the paper in
+/// flight).
 ///
 /// # Errors
 ///
@@ -316,6 +323,9 @@ mod tests {
     #[test]
     fn the_service_quotes_its_arguments_and_logs_to_the_file() {
         let unit = render_update_service(&exe(), Path::new("/cfg 100%"), 3);
+        assert!(unit.contains("After=bml-pgserver.service\n"), "{unit}");
+        assert_ne!(UPDATE_SERVICE_NAME, SYSTEMD_UNIT_NAME);
+        assert_ne!(UPDATE_AGENT_LABEL, crate::autostart::LAUNCH_AGENT_LABEL);
         assert!(
             unit.contains(
                 r#"ExecStart="/Apps/My bml/bml" "--config-dir" "/cfg 100%%" "library" "update" "--if-older-than" "3""#

@@ -52,12 +52,12 @@ fn update_without_a_database_exits_2() {
 }
 
 #[test]
-fn a_second_update_exits_quietly_while_one_runs() {
+fn a_second_update_stops_early_while_one_runs() {
     let cfg = tempfile::tempdir().unwrap();
     let library = with_library(cfg.path());
     let _held = try_lock_worker(&library.dir).unwrap().unwrap();
     let out = bml(cfg.path(), &["library", "update"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out.stderr));
     assert!(
         text(&out.stdout).contains("already running"),
         "{}",

@@ -23,8 +23,9 @@ use postgres::Client;
 
 use crate::server::{say, EXIT_FAILED, EXIT_HEALTHY, EXIT_NOT_SET_UP};
 
-/// Exit code of `update`: it stopped before its work was done (Ctrl-C, or
-/// medRxiv asked us to slow down); running it again carries on.
+/// Exit code of `update`: it stopped before its work was done (Ctrl-C,
+/// medRxiv asked us to slow down, or another update holds the lock); running
+/// it again carries on.
 pub const EXIT_STOPPED_EARLY: u8 = 4;
 
 /// `bml library …` subcommands.
@@ -32,7 +33,8 @@ pub const EXIT_STOPPED_EARLY: u8 = 4;
 pub enum LibraryCommand {
     /// Bring the library up to date with medRxiv (safe to stop and run again).
     Update {
-        /// The first posting day to download (default: medRxiv's first day).
+        /// The first posting day to download (default: the day last given
+        /// with --from, else medRxiv's first day).
         #[arg(long, value_name = "YYYY-MM-DD")]
         from: Option<NaiveDate>,
         /// Leave out a phase; repeatable.
@@ -146,8 +148,13 @@ fn schedule(when: ScheduleWhen, config_dir: &Path) -> Result<ExitCode, LibraryCl
     schedule_updates(&exe, config_dir, days)?;
     say!(
         "The library will be brought up to date every {days} day(s) by {} (checked daily at \
-         {DAILY_RUN_HOUR}:00 and at login; an unfinished update carries on the next day).",
-        exe.display()
+         {DAILY_RUN_HOUR}:00{}; an unfinished update carries on the next day).",
+        exe.display(),
+        if cfg!(target_os = "macos") {
+            " and at login"
+        } else {
+            ""
+        }
     );
     match update_log_path(config_dir) {
         Some(log) => say!("Output goes to {}.", log.display()),
@@ -181,8 +188,8 @@ fn update(
     if_older_than: Option<u32>,
 ) -> Result<ExitCode, LibraryCliError> {
     let Some(_lock) = try_lock_worker(&library.dir).map_err(LibraryCliError::Lock)? else {
-        say!("An update is already running; this one has nothing to do.");
-        return Ok(ExitCode::from(EXIT_HEALTHY));
+        say!("An update is already running; this one stops (run it again later).");
+        return Ok(ExitCode::from(EXIT_STOPPED_EARLY));
     };
     let mut db = match database(config_dir)? {
         Ok(db) => db,
@@ -198,6 +205,7 @@ fn update(
 
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    // Ctrl-C, and (the `termination` feature) SIGTERM from a scheduler.
     if let Err(e) = ctrlc::set_handler(move || {
         flag.store(true, Ordering::Relaxed);
         eprintln!("Stopping after the paper in flight…");
@@ -214,13 +222,18 @@ fn update(
         say!("[{}] {}", p.phase.as_str(), p.message);
     });
     summarise(&report);
-    Ok(ExitCode::from(if report.failed() {
+    Ok(ExitCode::from(exit_code(&report)))
+}
+
+/// `update`'s exit code: a failure outranks stopping early.
+fn exit_code(report: &UpdateReport) -> u8 {
+    if report.failed() {
         EXIT_FAILED
     } else if report.stopped_early() {
         EXIT_STOPPED_EARLY
     } else {
         EXIT_HEALTHY
-    }))
+    }
 }
 
 fn summarise(report: &UpdateReport) {
@@ -234,6 +247,9 @@ fn summarise(report: &UpdateReport) {
         );
         for line in &m.errors {
             eprintln!("  {line} (fetched again next time)");
+        }
+        if m.rate_limited {
+            say!("  medRxiv asked us to slow down; the metadata carries on next run.");
         }
     }
     if let Some(f) = &report.fulltext {
@@ -257,9 +273,10 @@ fn summarise(report: &UpdateReport) {
     }
     if let Some(i) = &report.index {
         say!(
-            "Index: {} paper(s) indexed ({} with full text), {} chunks{}",
+            "Index: {} paper(s) indexed ({} with full text, {} whose full text could not be read), {} chunks{}",
             i.indexed,
             i.fulltext,
+            i.unreadable,
             i.chunks,
             if i.stopped { " (stopped)" } else { "" }
         );
@@ -269,6 +286,9 @@ fn summarise(report: &UpdateReport) {
     }
     for (phase, message) in &report.failures {
         eprintln!("error: {} phase: {message}", phase.as_str());
+    }
+    if let Some(message) = &report.last_update_error {
+        eprintln!("error: {message}");
     }
 }
 
@@ -322,4 +342,55 @@ fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliEr
         );
     }
     Ok(ExitCode::from(EXIT_HEALTHY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bml_library::fulltext::FulltextReport;
+    use bml_library::index::IndexReport;
+    use bml_library::metadata::MetadataReport;
+
+    #[test]
+    fn a_failure_outranks_stopping_early() {
+        let stopped = || FulltextReport {
+            end: FulltextEnd::Stopped,
+            ..FulltextReport::default()
+        };
+        assert_eq!(exit_code(&UpdateReport::default()), EXIT_HEALTHY);
+        let early = UpdateReport {
+            fulltext: Some(FulltextReport {
+                end: FulltextEnd::RateLimited { until: "t".into() },
+                ..FulltextReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        assert_eq!(exit_code(&early), EXIT_STOPPED_EARLY);
+        let both = UpdateReport {
+            fulltext: Some(stopped()),
+            index: Some(IndexReport {
+                failed: vec!["paper 1".into()],
+                ..IndexReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        assert_eq!(exit_code(&both), EXIT_FAILED);
+        let lasting = UpdateReport {
+            fulltext: Some(FulltextReport {
+                lasting: 3,
+                ..FulltextReport::default()
+            }),
+            metadata: Some(MetadataReport {
+                rate_limited: true,
+                stopped: true,
+                ..MetadataReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        assert_eq!(
+            exit_code(&lasting),
+            EXIT_STOPPED_EARLY,
+            "abstract-only is not a failure"
+        );
+    }
 }

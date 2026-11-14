@@ -29,7 +29,9 @@ serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
 # Ctrl-C stops `bml library update` after the paper in flight.
-ctrlc = "3.4"
+# termination: SIGTERM (logout, `launchctl bootout`, a systemd stop) also
+# stops an update after the paper in flight, as Ctrl-C does.
+ctrlc = { version = "3.4", features = ["termination"] }
 getrandom = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system", "disk"] }
 tempfile = "3"

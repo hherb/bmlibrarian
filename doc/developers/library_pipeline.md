@@ -26,7 +26,9 @@ failed, nothing stopped early), which is what `--if-older-than` reads.
 `stop` (an `AtomicBool`, set by Ctrl-C in the CLI) is checked between day
 windows and between papers. One worker at a time: `try_lock_worker` takes
 `<library>/.bml-library.lock` with `File::try_lock`; a second
-`bml library update` prints that one is running and exits 0.
+`bml library update` prints that one is running and exits 4 (stopped early:
+run it again later). SIGTERM stops a run as Ctrl-C does (ctrlc's
+`termination` feature).
 
 `Pipeline` holds the outside world as public fields (HTTP clients and their
 spacing, the documents cache, the embedder loader, the clock), so the tests
@@ -45,7 +47,10 @@ widened to all of medRxiv by a later or scheduled run. Records keep `source =
 to `api.biorxiv.org` go through a `PoliteClient` spaced by bmlib's
 `RATE_LIMIT_SECONDS` (bmlib defines it but does not sleep). A failed day is
 recorded `failed` by bmlib and fetched again next run; days within
-`DETAILS_SETTLE_DAYS` (7) are re-fetched until settled.
+`DETAILS_SETTLE_DAYS` (7) are re-fetched until settled. A 429 from the API
+ends the phase after its window (`MetadataReport::rate_limited`, stopped
+early, exit 4); bmlib has recorded that window's days `failed`, so they
+come again next run, and their errors are not listed.
 
 ## Full text
 
@@ -93,8 +98,8 @@ skip the phase until then.
 **Recording** (`record`): a full text is recorded only if its file is in the
 cache (else a passing failure). Success, in one transaction: upsert the row
 (`version_held`, `cache_key`, `cache_path` relative to `documents/`,
-attempts and errors cleared), delete the paper's chunks (embeddings cascade),
-set `publication_index.status = 'pending'`. After the commit the old
+attempts and errors cleared) and set `publication_index.status = 'pending'`;
+the paper's old chunks stay searchable until the index phase replaces them. After the commit the old
 version's cache entry is deleted (`FullTextCache::delete`): its key is
 queued in `cache_deletions` inside the transaction, and the file and the
 queue row are removed after the commit. A failure on a
@@ -126,16 +131,20 @@ chunked). Embedded in batches of `EMBED_BATCH_SIZE` before the transaction;
 then, in one transaction: delete the paper's chunks, insert chunks and
 `halfvec` embeddings, mark the row `complete` with its label and
 `chunk_count`. NUL characters are dropped from chunk text (PostgreSQL text
-cannot hold them). A full text that cannot be read or chunked turns the
+cannot hold them). A full text that is the file's fault (missing, not
+UTF-8, does not parse, an encrypted or unreadable PDF, no text) turns the
 paper abstract-only (lasting, cache entry queued for deletion) instead of
-being picked again forever. The work query walks papers by id with a cursor
+being picked again forever. One that is not (an I/O error, the PDF engine,
+`PDF_READ_DEADLINE` (10 min) passing, a chunker error) keeps the file and
+its row and is an index failure: the paper is tried again next run. The work query walks papers by id with a cursor
 (`p.id > last`), so it does not rescan finished papers and a paper whose
 indexing fails (a model or database error on its text) is reported in
 `IndexReport::failed`, left due for the next run, and passed over; after
 `MAX_FAILURES_IN_A_ROW` (3) failures in a row the phase stops, since the
-cause is then likely the model or the database. The model is checked with `verify_model` (sha256) before loading;
-a missing or damaged file fails the index phase with the `bml setup` hint,
-after the metadata and full-text phases ran.
+cause is then likely the model or the database. The model is checked with `verify_model` (sha256)
+before loading; a missing or damaged file fails the index phase in its
+first pass (right after metadata) with the `bml setup` hint; full text
+still runs and the second pass is skipped.
 
 ## Schema
 
@@ -166,9 +175,10 @@ configuration folder (`update_log_path`).
 ## CLI
 
 `bml library update [--from YYYY-MM-DD] [--skip metadata|fulltext|index]...`
-(exit 0 done, 1 failed, 2 not set up, 4 stopped early: Ctrl-C or rate
-limited; `--if-older-than <days>` exits 0 at once while the last complete
-update is younger); `bml library status`; `bml library schedule weekly|every
+(exit 0 done, 1 failed, 2 not set up, 4 stopped early: Ctrl-C, SIGTERM,
+rate limited, or another update running; `--if-older-than <days>` exits 0
+at once while the last complete update is younger; a run with `--skip` is
+never a complete update); `bml library status`; `bml library schedule weekly|every
 <days>|manual` (days 1–365). The update runs `bml_db::migrate` first, so an
 older library gains migration 2.
 

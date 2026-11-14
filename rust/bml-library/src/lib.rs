@@ -2,9 +2,10 @@
 //! search index, each a resumable phase driven by database state alone, so a
 //! killed run loses at most the paper in flight.
 //!
-//! [`Pipeline::update`] runs the phases in order: [`metadata`], [`fulltext`],
-//! [`index`]. A phase that fails is reported and the next still runs. One
-//! worker at a time holds [`try_lock_worker`].
+//! [`Pipeline::update`] runs the phases in order: [`metadata`], [`index`]
+//! (new abstracts), [`fulltext`], then [`index`] again (the new full texts).
+//! A phase that fails is reported and the next still runs. One worker at a
+//! time holds [`try_lock_worker`].
 
 pub mod fulltext;
 pub mod index;
@@ -138,7 +139,8 @@ impl PhaseSet {
 
 /// What [`Pipeline::update`] is asked to do.
 pub struct UpdateOptions<'a> {
-    /// The first posting day to sync (default [`MEDRXIV_FIRST_DAY`]).
+    /// The first posting day to sync (default: the day last given, else
+    /// [`MEDRXIV_FIRST_DAY`]; see [`start_day`]).
     pub from: Option<NaiveDate>,
     /// The phases to run.
     pub phases: PhaseSet,
@@ -166,6 +168,8 @@ pub struct UpdateReport {
     pub index: Option<IndexReport>,
     /// Phases that could not finish, and why.
     pub failures: Vec<(Phase, String)>,
+    /// Recording the complete update's time failed, and why.
+    pub last_update_error: Option<String>,
 }
 
 impl UpdateReport {
@@ -174,12 +178,13 @@ impl UpdateReport {
     #[must_use]
     pub fn failed(&self) -> bool {
         !self.failures.is_empty()
+            || self.last_update_error.is_some()
             || self.metadata.as_ref().is_some_and(|m| !m.errors.is_empty())
             || self.index.as_ref().is_some_and(|i| !i.failed.is_empty())
     }
 
     /// Whether a phase stopped before its work was done (`stop`, or medRxiv
-    /// rate-limiting the full-text phase).
+    /// rate-limiting the metadata or full-text phase).
     #[must_use]
     pub fn stopped_early(&self) -> bool {
         self.metadata.as_ref().is_some_and(|m| m.stopped)
@@ -295,8 +300,9 @@ impl Pipeline {
             }
         }
         // Only a complete update counts, so a scheduled `--if-older-than` run
-        // carries on an unfinished one (a backlog, a rate limit, a failure).
-        if !report.failed() && !report.stopped_early() {
+        // carries on an unfinished one (a backlog, a rate limit, a failure,
+        // a skipped phase).
+        if phases == PhaseSet::all() && !report.failed() && !report.stopped_early() {
             if let Err(e) = execute(
                 db,
                 &format!(
@@ -305,10 +311,7 @@ impl Pipeline {
                 ),
                 &[],
             ) {
-                report.failures.push((
-                    Phase::Index,
-                    format!("recording the update's time failed: {e}"),
-                ));
+                report.last_update_error = Some(format!("recording the update's time failed: {e}"));
             }
         }
         report

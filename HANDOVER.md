@@ -23,7 +23,8 @@ off new work. Longer-term structural items live in
   `PoliteClient`: 30 s spacing, the first 429 ends the phase uncharged and
   sets `library_state.rate_limited_until`; lasting/passing back-off; a new
   version replaces the old in one transaction, a failed new version keeps
-  the old; orphan cache entries removed), index (abstract chunk always plus
+  the old; replaced versions' files deleted via the `cache_deletions`
+  queue, unreferenced files kept), index (abstract chunk always plus
   canonical JATS/PDF chunks, `halfvec` embeddings and the `ChunkSetLabel`
   in one transaction per paper). bml-db migration 2: `library_state`. CLI:
   `bml library update [--from] [--skip]` (worker lock, Ctrl-C, exit 0/1/2/4),
@@ -34,12 +35,21 @@ off new work. Longer-term structural items live in
   searchable within the hour), `--from` is remembered (`from_day`), replaced
   files go through a `cache_deletions` queue (no sweep of unreferenced
   files), a paper failing to index no longer blocks the others (cursor; 3 in
-  a row stop the phase), Linux logs to the file.
+  a row stop the phase), Linux logs to the file. PR #429 review fixes: an
+  index read failure that may pass (I/O, PDF engine, `PDF_READ_DEADLINE`)
+  keeps the file and retries instead of demoting the paper; fetching a full
+  text no longer deletes the paper's chunks; a run with `--skip` is not a
+  complete update; a metadata 429 stops early (exit 4); a PDF that could not
+  be saved is passing; a busy lock exits 4; SIGTERM stops like Ctrl-C; the
+  Linux update unit runs `After=bml-pgserver.service`. Deferred: #430
+  (backlog stalls metadata, fetch-phase PDF deadline needs bmlib, macOS
+  login race) and #428.
   `bml_setup::gguf_path` is public. Docs: `doc/developers/library_pipeline.md`,
   `doc/users/library_updates_guide.md`, `rust_db_schema.md` (migration 2).
-  Verified: `cargo test -- --include-ignored` 290 passed with and without
-  pg_search; macOS schedule hand-checked with `launchctl print` (interval
-  259200 s, removed by `manual`); hand run against the real API and model on
+  Verified: `cargo test -- --include-ignored` 300 passed with and without
+  pg_search; macOS schedule hand-checked with `launchctl print` (removed
+  by `manual`; that check predates the daily `StartCalendarInterval` design
+  and was not repeated); hand run against the real API and model on
   a temp server: 3 days, 153 papers indexed in 88 s, two papers' full text
   (both PDFs), Ctrl-C stopped after the paper in flight with exit 4.
   **Finding:** those papers' medRxiv JATS `<body>` held only
@@ -414,7 +424,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - Rust: `cd rust && cargo test`; with a real PG18 (and pg_search for the BM25
   branch) add `-- --include-ignored` (env vars in CLAUDE.md, memory
-  `reference-local-pg18-bindir`): 290 passed on 2026-11-14 (with and
+  `reference-local-pg18-bindir`): 300 passed on 2026-11-14 (with and
   without pg_search). The first build compiles llama.cpp and MuPDF
   (about 1.5 min on the owner's Mac).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a

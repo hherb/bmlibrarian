@@ -57,3 +57,31 @@ fn main() -> ExitCode {
         ExitCode::from(server::EXIT_FAILED)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// The command lines the schedulers store must still parse, or every
+    /// scheduled run would fail with a usage error into a log nobody reads.
+    #[test]
+    fn the_scheduled_command_lines_parse() {
+        let (exe, cfg) = (Path::new("/opt/bml"), Path::new("/home/u/.bmlibrarian"));
+        let cli = Cli::try_parse_from(bml_pgserver::schedule::update_args(exe, cfg, 7)).unwrap();
+        assert_eq!(cli.config_dir.as_deref(), Some(cfg));
+        assert!(matches!(
+            cli.command,
+            Command::Library(library::LibraryCommand::Update {
+                if_older_than: Some(7),
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(bml_pgserver::autostart::start_args(exe, cfg)).unwrap();
+        assert_eq!(cli.config_dir.as_deref(), Some(cfg));
+        assert!(matches!(
+            cli.command,
+            Command::Server(server::ServerCommand::Start)
+        ));
+    }
+}
