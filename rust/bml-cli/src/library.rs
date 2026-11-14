@@ -12,6 +12,7 @@ use bml_library::status::library_status;
 use bml_library::{try_lock_worker, Phase, PhaseSet, Pipeline, UpdateOptions, UpdateReport};
 use bml_pgserver::envfile::{read_conn_info, APP_ENV_FILE_NAME};
 use bml_pgserver::init::connect;
+use bml_pgserver::schedule::{schedule_updates, unschedule_updates, UPDATE_LOG_NAME, WEEKLY_DAYS};
 use chrono::NaiveDate;
 use clap::{Subcommand, ValueEnum};
 use postgres::Client;
@@ -36,6 +37,27 @@ pub enum LibraryCommand {
     },
     /// Show what the library holds and how the last update went.
     Status,
+    /// Run updates automatically, or only when asked.
+    #[command(subcommand)]
+    Schedule(ScheduleWhen),
+}
+
+/// The longest schedule interval accepted, in days.
+pub const MAX_SCHEDULE_DAYS: u32 = 365;
+
+/// `bml library schedule …`.
+#[derive(Subcommand)]
+pub enum ScheduleWhen {
+    /// Once a week (the default schedule).
+    Weekly,
+    /// Every DAYS days.
+    Every {
+        /// Days between updates (1 is daily).
+        #[arg(value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SCHEDULE_DAYS)))]
+        days: u32,
+    },
+    /// Only when you run `bml library update` (removes the schedule).
+    Manual,
 }
 
 /// Phases a person may leave out.
@@ -93,7 +115,28 @@ pub fn run(command: LibraryCommand, config_dir: &Path) -> Result<ExitCode, Libra
             update(&library, config_dir, from, phases)
         }
         LibraryCommand::Status => status(&library, config_dir),
+        LibraryCommand::Schedule(when) => schedule(when, config_dir),
     }
+}
+
+fn schedule(when: ScheduleWhen, config_dir: &Path) -> Result<ExitCode, LibraryCliError> {
+    let days = match when {
+        ScheduleWhen::Weekly => WEEKLY_DAYS,
+        ScheduleWhen::Every { days } => days,
+        ScheduleWhen::Manual => {
+            unschedule_updates()?;
+            say!("Updates now run only when you run `bml library update`.");
+            return Ok(ExitCode::from(EXIT_HEALTHY));
+        }
+    };
+    let exe = std::env::current_exe().map_err(bml_pgserver::error::PgServerError::Io)?;
+    schedule_updates(&exe, config_dir, days)?;
+    say!(
+        "The library will be updated every {days} day(s) by {}; output goes to {}.",
+        exe.display(),
+        config_dir.join(UPDATE_LOG_NAME).display()
+    );
+    Ok(ExitCode::from(EXIT_HEALTHY))
 }
 
 /// The library's database connection, or the exit code to return.

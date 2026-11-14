@@ -14,4 +14,5 @@ pub mod error;
 pub mod external;
 pub mod init;
 pub mod port;
+pub mod schedule;
 pub mod state;

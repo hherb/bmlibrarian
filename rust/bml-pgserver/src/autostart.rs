@@ -34,7 +34,7 @@ pub const SYSTEMD_UNIT_NAME: &str = "bml-pgserver.service";
 
 /// The user's systemd unit folder, relative to the home folder (Linux).
 #[cfg(target_os = "linux")]
-const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
+pub(crate) const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
 
 /// The folder `systemctl --user enable` links the unit into (the unit has
 /// `WantedBy=default.target`), relative to [`SYSTEMD_USER_DIR`].
@@ -86,7 +86,7 @@ pub fn start_args(exe: &Path, config_dir: &Path) -> Vec<OsString> {
 }
 
 /// `text` with the five XML special characters escaped.
-fn xml_escape(text: &str) -> String {
+pub(crate) fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -131,7 +131,7 @@ pub fn render_launch_agent(exe: &Path, config_dir: &Path) -> String {
 
 /// One argument as a double-quoted systemd command-line word (systemd
 /// expands `%` specifiers and `$` variables even inside quotes).
-fn systemd_quote(arg: &OsString) -> String {
+pub(crate) fn systemd_quote(arg: &OsString) -> String {
     let text = arg
         .to_string_lossy()
         .replace('\\', "\\\\")
@@ -162,7 +162,7 @@ pub fn render_systemd_unit(exe: &Path, config_dir: &Path) -> String {
 /// `arg` double-quoted for a Windows command line. Windows paths cannot
 /// contain `"`, but trailing backslashes (`D:\`) must be doubled, or the
 /// closing quote would read as an escaped one.
-fn windows_quote(arg: &OsString) -> String {
+pub(crate) fn windows_quote(arg: &OsString) -> String {
     let text = arg.to_string_lossy();
     let trailing = text.len() - text.trim_end_matches('\\').len();
     format!("\"{text}{}\"", "\\".repeat(trailing))
@@ -179,7 +179,7 @@ pub fn windows_run_command(exe: &Path, config_dir: &Path) -> String {
 
 /// The user's home folder.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn home() -> Result<PathBuf, PgServerError> {
+pub(crate) fn home() -> Result<PathBuf, PgServerError> {
     std::env::home_dir().ok_or_else(|| {
         PgServerError::Io(std::io::Error::other(
             "cannot find the home directory, where the login start entry is kept",
@@ -187,17 +187,17 @@ fn home() -> Result<PathBuf, PgServerError> {
     })
 }
 
-/// Where the LaunchAgent plist lives.
+/// Where the LaunchAgent plist labelled `label` lives.
 #[cfg(target_os = "macos")]
-fn launch_agent_path() -> Result<PathBuf, PgServerError> {
+pub(crate) fn launch_agent_path(label: &str) -> Result<PathBuf, PgServerError> {
     Ok(home()?
         .join("Library/LaunchAgents")
-        .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
+        .join(format!("{label}.plist")))
 }
 
 /// The `gui/<uid>` launchd domain of the current user.
 #[cfg(target_os = "macos")]
-fn launchd_domain() -> Result<String, PgServerError> {
+pub(crate) fn launchd_domain() -> Result<String, PgServerError> {
     let mut id = Command::new("id");
     id.arg("-u");
     let output = run(id)?;
@@ -213,12 +213,12 @@ fn bootout_succeeded(code: Option<i32>) -> bool {
     code.is_some_and(|c| c == 0 || BOOTOUT_NOT_LOADED_CODES.contains(&c))
 }
 
-/// Unload our LaunchAgent from `domain`; not being loaded is fine.
+/// Unload the LaunchAgent `label` from `domain`; not being loaded is fine.
 #[cfg(target_os = "macos")]
-fn bootout(domain: &str) -> Result<(), PgServerError> {
+pub(crate) fn bootout(domain: &str, label: &str) -> Result<(), PgServerError> {
     let output = Command::new("launchctl")
         .arg("bootout")
-        .arg(format!("{domain}/{LAUNCH_AGENT_LABEL}"))
+        .arg(format!("{domain}/{label}"))
         .output()
         .map_err(|source| PgServerError::Spawn {
             program: "launchctl".into(),
@@ -238,7 +238,7 @@ fn bootout(domain: &str) -> Result<(), PgServerError> {
 /// Load `plist` into `domain`, retrying while a previous load of the job is
 /// still being unloaded (`bootout` returns before it finishes).
 #[cfg(target_os = "macos")]
-fn bootstrap(domain: &str, plist: &Path) -> Result<(), PgServerError> {
+pub(crate) fn bootstrap(domain: &str, plist: &Path) -> Result<(), PgServerError> {
     retry_while_busy(BOOTSTRAP_RETRY_DELAY, || {
         let mut command = Command::new("launchctl");
         command.arg("bootstrap").arg(domain).arg(plist);
@@ -272,7 +272,7 @@ fn retry_while_busy(
 /// Put `path` back as it was before enable wrote it: `previous` bytes, or
 /// no file (a missing file is fine).
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
-fn restore_file(path: &Path, previous: Option<Vec<u8>>) -> std::io::Result<()> {
+pub(crate) fn restore_file(path: &Path, previous: Option<Vec<u8>>) -> std::io::Result<()> {
     match previous {
         Some(bytes) => std::fs::write(path, bytes),
         None => match std::fs::remove_file(path) {
@@ -285,7 +285,7 @@ fn restore_file(path: &Path, previous: Option<Vec<u8>>) -> std::io::Result<()> {
 /// The login entry file at `path` before enable replaces it, or `None` when
 /// there is none.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn read_previous(path: &Path) -> Result<Option<Vec<u8>>, PgServerError> {
+pub(crate) fn read_previous(path: &Path) -> Result<Option<Vec<u8>>, PgServerError> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -298,7 +298,7 @@ fn read_previous(path: &Path) -> Result<Option<Vec<u8>>, PgServerError> {
 /// again and not only on disk (`bootout` unloaded it). Returns the error to
 /// report: `error` itself when undone, else with why the undo failed.
 #[cfg(any(target_os = "macos", test))]
-fn restore_launch_agent(
+pub(crate) fn restore_launch_agent(
     plist: &Path,
     previous: Option<Vec<u8>>,
     error: PgServerError,
@@ -329,7 +329,7 @@ fn restore_launch_agent(
 /// reported with the original error, as the leftover file would make the
 /// next run believe start at login is set up.
 #[cfg(any(target_os = "linux", test))]
-fn undo_on_failure(
+pub(crate) fn undo_on_failure(
     result: Result<(), PgServerError>,
     path: &Path,
     undo: impl FnOnce() -> std::io::Result<()>,
@@ -351,13 +351,13 @@ fn undo_on_failure(
 pub fn enable(exe: &Path, config_dir: &Path) -> Result<(), PgServerError> {
     #[cfg(target_os = "macos")]
     {
-        let plist = launch_agent_path()?;
+        let plist = launch_agent_path(LAUNCH_AGENT_LABEL)?;
         let domain = launchd_domain()?;
         // Kept so a failed re-enable restores a login entry that worked before.
         let previous = read_previous(&plist)?;
         // Unload a previous registration first, so enable can be repeated;
         // before writing, so a failure leaves no new login entry behind.
-        bootout(&domain)?;
+        bootout(&domain, LAUNCH_AGENT_LABEL)?;
         let agents = plist.parent().expect("plist path has a parent");
         // Every failure from here on undoes the bootout too, not only a
         // failed bootstrap (a failed write can leave the plist truncated).
@@ -451,7 +451,10 @@ fn reg_output_has(stdout: &str, command: &str) -> bool {
 pub fn is_enabled(exe: &Path, config_dir: &Path) -> Result<bool, PgServerError> {
     #[cfg(target_os = "macos")]
     {
-        file_has_text(&launch_agent_path()?, &render_launch_agent(exe, config_dir))
+        file_has_text(
+            &launch_agent_path(LAUNCH_AGENT_LABEL)?,
+            &render_launch_agent(exe, config_dir),
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -488,14 +491,14 @@ pub fn disable() -> Result<(), PgServerError> {
     {
         // The plist goes first: it is what starts the server at login, so a
         // failure to unload the current job must not keep it.
-        let plist = launch_agent_path()?;
+        let plist = launch_agent_path(LAUNCH_AGENT_LABEL)?;
         match fs::remove_file(&plist) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 return Err(file_error(&plist)(e))
             }
             _ => {}
         }
-        bootout(&launchd_domain()?)
+        bootout(&launchd_domain()?, LAUNCH_AGENT_LABEL)
     }
     #[cfg(target_os = "linux")]
     {

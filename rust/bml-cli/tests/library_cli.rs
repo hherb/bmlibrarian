@@ -71,3 +71,13 @@ fn a_bad_from_date_is_refused() {
     let out = bml(cfg.path(), &["library", "update", "--from", "2024-13-01"]);
     assert_eq!(out.status.code(), Some(2), "clap usage error");
 }
+
+#[test]
+fn schedule_every_needs_a_number_of_days_in_range() {
+    let cfg = tempfile::tempdir().unwrap();
+    with_library(cfg.path());
+    for days in ["0", "366", "x"] {
+        let out = bml(cfg.path(), &["library", "schedule", "every", days]);
+        assert_eq!(out.status.code(), Some(2), "{days}: clap usage error");
+    }
+}
