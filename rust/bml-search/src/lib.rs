@@ -3,6 +3,7 @@
 //! where pg_search is missing), fused by weighted reciprocal rank, one hit per
 //! paper. Developer notes: `doc/developers/search.md`.
 
+pub mod filter;
 pub mod fusion;
 
 use std::collections::HashMap;
@@ -12,6 +13,7 @@ use bml_library::index::{halfvec_literal, ChunkEmbedder};
 use bmlib::db::{execute, fetch_all, Db, DbError, Row, Value};
 use serde::Serialize;
 
+use crate::filter::is_boilerplate;
 use crate::fusion::{best_per_paper, fuse};
 
 /// How many chunks the vector list holds before fusion.
@@ -80,14 +82,18 @@ pub fn search(
         return Ok(Vec::new());
     }
     let ids: Vec<i64> = fused.iter().map(|(id, _)| *id).collect();
-    let paper_of: HashMap<i64, i64> = select_in(
+    // Reference lists and funding statements are never shown (spec anti-goal);
+    // a paper whose only matches are such passages drops out.
+    let mut paper_of: HashMap<i64, i64> = HashMap::new();
+    for row in select_in(
         db,
-        "SELECT id, publication_id FROM chunks WHERE id IN",
+        "SELECT id, publication_id, text FROM chunks WHERE id IN",
         &ids,
-    )?
-    .iter()
-    .map(|row| Ok((row.get_i64("id")?, row.get_i64("publication_id")?)))
-    .collect::<Result<_, DbError>>()?;
+    )? {
+        if !is_boilerplate(row.get_str("text")?) {
+            paper_of.insert(row.get_i64("id")?, row.get_i64("publication_id")?);
+        }
+    }
     let mut best = best_per_paper(&fused, &paper_of);
     best.truncate(limit);
     let chunk_ids: Vec<i64> = best.iter().map(|(_, chunk, _)| *chunk).collect();

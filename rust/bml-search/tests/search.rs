@@ -218,3 +218,33 @@ fn finds_the_paper_by_meaning() {
 fn works_with_tsvector_fallback() {
     finds_by_meaning(false);
 }
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn boilerplate_passages_are_not_shown() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path(), true) else {
+        return;
+    };
+    let (exercise, _) = library(&mut db);
+    let references = paper_with_chunk(
+        &mut db,
+        "A review that only cites exercise trials",
+        "Mol Psychiatr. (2022) 27:1286–99. doi: 10.1038/s41380-021-01381-x  5. Mcintyre RS, \
+         Alsuwaidan M, et al. Exercise and running for depression: definition, management",
+    );
+    let hits = search(
+        &mut db,
+        &mut TopicEmbedder,
+        "exercise running depression",
+        10,
+    )
+    .unwrap();
+    assert!(
+        hits.iter()
+            .all(|h| h.publication_id != i64::from(references)),
+        "{hits:#?}"
+    );
+    assert_eq!(hits[0].publication_id, i64::from(exercise));
+}

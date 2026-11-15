@@ -35,7 +35,16 @@ walking skeleton the investor-demo spec asks for
    `w / (RRF_K + rank)` with `RRF_K` 60, vectors weighted 2.0 and words 1.0.
    Equal scores keep the order they first appeared in, vectors before
    words.
-5. **One hit per paper** (`fusion::best_per_paper`): each paper's best
+5. **No boilerplate** (`filter::is_boilerplate`): a fused chunk that is a
+   reference list or a funding, competing-interest or acknowledgements
+   statement is dropped before grouping, so a paper whose only matches are
+   such passages drops out. The heuristic counts reference signals: DOIs
+   (double weight), "(2022) 27:" year-volume, "56(9):37-44" page ranges,
+   "et al." outside an in-text "(… et al., 2025)" citation, and numbered
+   author entries. `REFERENCE_SIGNALS` (3) or more is a reference list. On
+   the demo library on 2026-11-15, 6 of 24 passages shown for 8 clinical
+   questions were reference lists before the filter and none after.
+6. **One hit per paper** (`fusion::best_per_paper`): each paper's best
    chunk, in score order, truncated to `limit`; then one query for the hits'
    metadata.
 
