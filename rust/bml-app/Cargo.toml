@@ -9,6 +9,11 @@ publish.workspace = true
 
 [dependencies]
 bml-db.workspace = true
+bml-library.workspace = true
+bml-search.workspace = true
+bml-setup.workspace = true
+bmlib.workspace = true
+postgres.workspace = true
 bml-pgserver.workspace = true
 tauri = { version = "2.12", features = [] }
 serde.workspace = true

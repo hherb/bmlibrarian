@@ -12,8 +12,41 @@
       <h1>Welcome to BMLibrarian</h1>
       <p class="lead">Your own library of medical research, on this computer, searchable by meaning.</p>
     </section>
+    <section id="screen-building" class="screen" hidden>
+      <h1>Building your library</h1>
+      <p class="lead" id="building-line">Starting…</p>
+      <div class="counts">
+        <div class="count"><span class="number" id="count-found">0</span><span class="label">papers found</span></div>
+        <div class="count"><span class="number" id="count-fulltext">0</span><span class="label">full texts downloaded</span></div>
+        <div class="count"><span class="number" id="count-searchable">0</span><span class="label">ready to search</span></div>
+      </div>
+      <p class="muted" id="building-eta"></p>
+      <p class="muted">You can close this window. Next time it carries on where it stopped.</p>
+      <div class="actions">
+        <button class="primary" id="go-search">Search what is ready</button>
+        <button id="pause">Pause</button>
+      </div>
+    </section>
+
     <section id="screen-search" class="screen" hidden>
       <h1>Search your library</h1>
+      <p class="progress-line muted" id="search-progress" hidden></p>
+      <form id="search-form" class="search-form">
+        <input id="search-box" type="search" placeholder="Ask in plain words, e.g. does exercise help depression?" autocomplete="off" aria-label="Search">
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <p class="muted" id="search-status"></p>
+      <div id="results"></div>
+      <div class="actions">
+        <button id="show-building">Library progress</button>
+      </div>
+    </section>
+
+    <section id="screen-paper" class="screen" hidden>
+      <button id="back">← Back to results</button>
+      <h1 id="paper-title"></h1>
+      <p class="muted" id="paper-meta"></p>
+      <article id="paper-text" class="paper-text"></article>
     </section>
   </main>
   <div id="toasts" class="toasts" aria-live="polite"></div>
