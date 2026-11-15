@@ -31,10 +31,13 @@ Example usage:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Callable, Literal
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from bmlibrarian.database import DatabaseManager, get_db_manager
-from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
+from bmlibrarian.embeddings.adaptive_chunker_optimized import (
+    ChunkWithPosition,
+    adaptive_chunker_with_positions,
+)
 
 from ..config import get_ollama_host
 from ..llm import LLMClient
@@ -60,6 +63,15 @@ RETRY_BASE_DELAY = 2.0  # Base delay in seconds (doubles each retry)
 
 # Batch processing - process multiple chunks in one API call for efficiency
 DEFAULT_BATCH_SIZE = 10  # Number of chunks to embed in one batch
+
+
+class ChunkEmbeddingError(RuntimeError):
+    """A document's chunks could not all be embedded or stored.
+
+    Raised by ``ChunkEmbedder.chunk_and_embed`` before anything is written,
+    or after the write was rolled back. The document keeps its old chunks if
+    they still match its current text; stale ones are deleted.
+    """
 
 
 @dataclass
@@ -754,6 +766,50 @@ class ChunkEmbedder:
                     )
                 return deleted
 
+    def _settle_old_chunks(
+        self,
+        document_id: int,
+        chunk_size: int,
+        overlap: int,
+        positions: List[ChunkWithPosition],
+    ) -> str:
+        """After a failed (re-)chunk, keep the stored chunks only if they fit the text.
+
+        Chunks store offsets into ``full_text``, so once the text has changed
+        the old ones point at the wrong passages and are deleted (#435 review).
+
+        Args:
+            document_id: Document database ID.
+            chunk_size: Chunk size of the chunk set.
+            overlap: Chunk overlap of the chunk set.
+            positions: Chunk positions computed from the current full_text.
+
+        Returns:
+            What happened to the stored chunks, for the error message.
+        """
+        try:
+            with self.db_manager.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT chunk_no, start_pos, end_pos FROM semantic.chunks
+                    WHERE document_id = %s AND model_id = %s
+                      AND chunk_size = %s AND chunk_overlap = %s
+                    """,
+                    (document_id, self.model_id, chunk_size, overlap),
+                )
+                stored = {tuple(row) for row in cur.fetchall()}
+            if not stored:
+                return "no chunks stored"
+            # shortcut: equal positions are taken to mean unchanged text; a same-length
+            # edit that keeps every boundary goes unnoticed. Store a text hash if that matters.
+            if stored == {(p.chunk_no, p.start_pos, p.end_pos) for p in positions}:
+                return "existing chunks kept"
+            self.delete_existing_chunks(document_id, chunk_size, overlap)
+            return "stale chunks (from older text) removed"
+        except Exception as e:
+            logger.error(f"Document {document_id}: could not check stored chunks: {e}")
+            return f"stored chunks not checked ({e})"
+
     def chunk_and_embed(
         self,
         document_id: int,
@@ -767,21 +823,27 @@ class ChunkEmbedder:
         Chunk document full_text and generate embeddings using batch processing.
 
         Uses batch embedding API calls for improved efficiency and stability.
+        Every chunk is embedded before anything is written; the old chunks are
+        then replaced by the new ones in one transaction. After a failure the
+        stored chunks are kept if they still match the current text, and
+        deleted if the text has changed since they were made.
 
         Args:
             document_id: Document database ID.
             chunk_size: Target chunk size in characters.
             overlap: Overlap between consecutive chunks.
-            overwrite: If True, delete existing chunks first.
+            overwrite: If True, replace existing chunks.
                       If False, skip if chunks already exist.
             progress_callback: Optional callback(current, total) for progress updates.
             batch_size: Number of chunks to embed in each API call.
 
         Returns:
-            Number of chunks created (0 if failed or skipped).
+            Number of chunks created (0 if skipped: chunks exist, no full text,
+            or the text yields no chunks).
 
         Raises:
             ValueError: If chunk parameters are invalid.
+            ChunkEmbeddingError: If any chunk could not be embedded or stored.
         """
         # Validate parameters
         if chunk_size <= 0:
@@ -818,82 +880,79 @@ class ChunkEmbedder:
             f"(size={chunk_size}, overlap={overlap})"
         )
 
-        # Delete existing chunks if overwriting
-        if overwrite:
-            self.delete_existing_chunks(document_id, chunk_size, overlap)
+        # Embed every chunk before touching the stored ones
+        embeddings: List[Optional[List[float]]] = []
+        for batch_start in range(0, total_chunks, batch_size):
+            batch_end = min(batch_start + batch_size, total_chunks)
+            if progress_callback:
+                progress_callback(batch_end, total_chunks)
+            embeddings.extend(self.create_embeddings_batch(
+                [chunk.text for chunk in chunk_positions[batch_start:batch_end]]
+            ))
 
-        # Generate embeddings in batches and store chunks
-        chunks_created = 0
+        missing = [
+            chunk.chunk_no
+            for chunk, embedding in zip(chunk_positions, embeddings)
+            if not embedding
+        ]
+        missing.extend(chunk.chunk_no for chunk in chunk_positions[len(embeddings):])
+        if missing:
+            message = (
+                f"Document {document_id}: {len(missing)} of {total_chunks} chunks "
+                f"could not be embedded; "
+                f"{self._settle_old_chunks(document_id, chunk_size, overlap, chunk_positions)}"
+            )
+            logger.error(message)
+            raise ChunkEmbeddingError(message)
 
-        with self.db_manager.get_connection() as conn:
-            with conn.cursor() as cur:
-                # Process chunks in batches
-                for batch_start in range(0, total_chunks, batch_size):
-                    batch_end = min(batch_start + batch_size, total_chunks)
-                    batch_chunks = chunk_positions[batch_start:batch_end]
+        vectors: List[List[float]] = [e for e in embeddings if e]
 
-                    # Report progress (at batch level)
-                    if progress_callback:
-                        progress_callback(batch_end, total_chunks)
+        # Replace the old chunks with the new ones in one transaction
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.transaction(), conn.cursor() as cur:
+                    if overwrite:
+                        cur.execute(
+                            "SELECT semantic.delete_chunks(%s, %s, %s, %s)",
+                            (document_id, self.model_id, chunk_size, overlap),
+                        )
+                    for chunk_pos, embedding in zip(chunk_positions, vectors):
+                        embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                        cur.execute(
+                            """
+                            INSERT INTO semantic.chunks (
+                                document_id, model_id, chunk_size, chunk_overlap,
+                                chunk_no, start_pos, end_pos, embedding
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
+                            DO UPDATE SET
+                                start_pos = EXCLUDED.start_pos,
+                                end_pos = EXCLUDED.end_pos,
+                                embedding = EXCLUDED.embedding,
+                                created_at = NOW()
+                            """,
+                            (
+                                document_id,
+                                self.model_id,
+                                chunk_size,
+                                overlap,
+                                chunk_pos.chunk_no,
+                                chunk_pos.start_pos,
+                                chunk_pos.end_pos,
+                                embedding_str,
+                            ),
+                        )
+        except Exception as e:
+            message = (
+                f"Document {document_id}: storing {total_chunks} chunks failed "
+                f"({e}); "
+                f"{self._settle_old_chunks(document_id, chunk_size, overlap, chunk_positions)}"
+            )
+            logger.error(message)
+            raise ChunkEmbeddingError(message) from e
 
-                    # Extract texts for batch embedding
-                    batch_texts = [chunk.text for chunk in batch_chunks]
-
-                    # Generate embeddings for the batch
-                    embeddings = self.create_embeddings_batch(batch_texts)
-
-                    # Store each chunk with its embedding
-                    for chunk_pos, embedding in zip(batch_chunks, embeddings):
-                        if not embedding:
-                            logger.warning(
-                                f"Failed to generate embedding for chunk {chunk_pos.chunk_no} "
-                                f"of document {document_id}"
-                            )
-                            continue
-
-                        # Store chunk with embedding
-                        try:
-                            # Savepoint per chunk: a failed INSERT would otherwise abort the
-                            # whole transaction and every later chunk would be lost at COMMIT.
-                            with conn.transaction():
-                                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
-                                cur.execute(
-                                    """
-                                    INSERT INTO semantic.chunks (
-                                        document_id, model_id, chunk_size, chunk_overlap,
-                                        chunk_no, start_pos, end_pos, embedding
-                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                    ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
-                                    DO UPDATE SET
-                                        start_pos = EXCLUDED.start_pos,
-                                        end_pos = EXCLUDED.end_pos,
-                                        embedding = EXCLUDED.embedding,
-                                        created_at = NOW()
-                                    """,
-                                    (
-                                        document_id,
-                                        self.model_id,
-                                        chunk_size,
-                                        overlap,
-                                        chunk_pos.chunk_no,
-                                        chunk_pos.start_pos,
-                                        chunk_pos.end_pos,
-                                        embedding_str,
-                                    ),
-                                )
-                            chunks_created += 1
-
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to store chunk {chunk_pos.chunk_no} "
-                                f"of document {document_id}: {e}"
-                            )
-                            # Continue with other chunks
-
-        logger.info(
-            f"Document {document_id}: created {chunks_created}/{total_chunks} chunks"
-        )
-        return chunks_created
+        logger.info(f"Document {document_id}: created {total_chunks} chunks")
+        return total_chunks
 
     def process_queue(
         self,
@@ -1021,6 +1080,7 @@ class ChunkEmbedder:
                 - total_documents: Number of documents to process
                 - processed: Successfully processed documents
                 - failed: Failed documents
+                - failed_ids: IDs of the failed documents
                 - total_chunks_created: Total chunks created
                 - elapsed_seconds: Total time taken
                 - chunks_per_second: Processing rate
@@ -1028,10 +1088,11 @@ class ChunkEmbedder:
         """
         import time
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total_documents": 0,
             "processed": 0,
             "failed": 0,
+            "failed_ids": [],
             "total_chunks_created": 0,
             "elapsed_seconds": 0.0,
             "chunks_per_second": 0.0,
@@ -1118,10 +1179,12 @@ class ChunkEmbedder:
                     stats["total_chunks_created"] += num_chunks
                 else:
                     stats["failed"] += 1
+                    stats["failed_ids"].append(doc_id)
                     logger.warning(f"Document {doc_id}: no chunks created")
 
             except Exception as e:
                 stats["failed"] += 1
+                stats["failed_ids"].append(doc_id)
                 logger.error(f"Document {doc_id}: rechunk failed - {e}")
 
         # Calculate final statistics
@@ -1171,6 +1234,7 @@ class ChunkEmbedder:
                 - total_documents: Number of documents to process
                 - processed: Successfully processed documents
                 - failed: Failed documents
+                - failed_ids: IDs of the failed documents
                 - total_chunks_created: Total chunks created
                 - elapsed_seconds: Total time taken
                 - chunks_per_second: Processing rate
@@ -1178,10 +1242,11 @@ class ChunkEmbedder:
         """
         import time
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total_documents": len(document_ids),
             "processed": 0,
             "failed": 0,
+            "failed_ids": [],
             "total_chunks_created": 0,
             "elapsed_seconds": 0.0,
             "chunks_per_second": 0.0,
@@ -1218,10 +1283,12 @@ class ChunkEmbedder:
                     stats["total_chunks_created"] += num_chunks
                 else:
                     stats["failed"] += 1
+                    stats["failed_ids"].append(doc_id)
                     logger.warning(f"Document {doc_id}: no chunks created")
 
             except Exception as e:
                 stats["failed"] += 1
+                stats["failed_ids"].append(doc_id)
                 logger.error(f"Document {doc_id}: chunk failed - {e}")
 
         # Calculate final statistics

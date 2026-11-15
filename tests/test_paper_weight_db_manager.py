@@ -157,8 +157,8 @@ class TestHelpersUseGivenManager:
             assert ingestor.db_manager is manager
             assert ingestor.embedder.db_manager is manager
 
-    def test_chunk_insert_failure_keeps_other_chunks(self) -> None:
-        """Each chunk is inserted in its own savepoint, so one failure loses only that chunk."""
+    def test_chunk_insert_failure_rolls_back_the_document(self) -> None:
+        """One failed insert rolls back the whole document's write and raises (#435)."""
         from bmlibrarian.embeddings import chunk_embedder
 
         manager = make_manager(fetchone=(4,))
@@ -166,15 +166,16 @@ class TestHelpersUseGivenManager:
             embedder = chunk_embedder.ChunkEmbedder(backend="ollama", db_manager=manager)
         conn = manager.get_connection.return_value.__enter__.return_value
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.execute.side_effect = [RuntimeError("insert failed"), None, None]
+        # delete_chunks, then the first insert fails, then the stored-chunk check
+        cursor.execute.side_effect = [None, RuntimeError("insert failed"), None]
         positions = [MagicMock(chunk_no=n, text=f"chunk {n}") for n in range(3)]
         with patch.object(embedder, "get_document_full_text", return_value="text"), \
-             patch.object(embedder, "delete_existing_chunks"), \
              patch.object(embedder, "create_embeddings_batch", return_value=[[0.1]] * 3), \
              patch.object(chunk_embedder, "adaptive_chunker_with_positions",
-                          return_value=positions):
-            assert embedder.chunk_and_embed(1) == 2
-        assert conn.transaction.call_count == 3
+                          return_value=positions), \
+             pytest.raises(chunk_embedder.ChunkEmbeddingError, match="storing 3 chunks"):
+            embedder.chunk_and_embed(1)
+        assert conn.transaction.call_count == 1
 
 
 class TestAgentPassesItsManager:
