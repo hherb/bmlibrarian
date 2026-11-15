@@ -317,7 +317,9 @@ fn a_v2_record_adds_its_version_to_the_same_paper() {
         .map(|r| r.get(0))
         .collect();
     assert_eq!(versions, ["1", "2"]);
-    let due = bml_library::fulltext::next_paper(&mut db).unwrap().unwrap();
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+        .unwrap()
+        .unwrap();
     assert_eq!(due.version, 2);
 }
 
@@ -401,9 +403,11 @@ fn a_refused_pdf_leaves_the_abstract_with_a_lasting_reason() {
         .get(0);
     assert!(later, "a lasting failure waits LASTING_RETRY");
     // Not due again in this run's view.
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -430,9 +434,11 @@ fn a_timeout_is_passing_and_retried_once_its_time_passes() {
         &[],
     )
     .unwrap();
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_some());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -597,13 +603,13 @@ fn failed_new_version_keeps_old() {
         "v1's chunks stay"
     );
     assert!(
-        bml_library::fulltext::next_paper(&mut db)
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
             .unwrap()
             .is_none(),
         "waits for retry_after"
     );
     add_version(&mut db, id, 3);
-    let due = bml_library::fulltext::next_paper(&mut db)
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
         .unwrap()
         .expect("a newer version than the one that failed is due at once");
     assert_eq!((due.version, due.attempts), (3, 0));
@@ -628,9 +634,11 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
         (form.as_str(), attempts, kind.as_deref()),
         ("abstract", 1, Some("lasting"))
     );
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 
     // A new version that fails too counts its attempts from 0 and then
     // waits like any other: it is not picked again and again.
@@ -644,9 +652,11 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
     let (form, _, attempts, _) = fulltext_row(&mut db, id).unwrap();
     assert_eq!((form.as_str(), attempts), ("abstract", 1));
     assert_eq!(version_tried(&mut db, id), Some(2));
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 
     add_version(&mut db, id, 3);
     web.set(&jats_url(3), 200, JATS);
@@ -684,7 +694,7 @@ fn a_row_from_before_version_tried_waits_for_its_retry_time() {
     )
     .unwrap();
     assert!(
-        bml_library::fulltext::next_paper(&mut db)
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
             .unwrap()
             .is_none(),
         "waits for retry_after"
@@ -694,7 +704,7 @@ fn a_row_from_before_version_tried_waits_for_its_retry_time() {
         &[],
     )
     .unwrap();
-    let due = bml_library::fulltext::next_paper(&mut db)
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
         .unwrap()
         .expect("due once its retry time has passed");
     assert_eq!((due.version, due.attempts), (1, 4), "attempts kept");
@@ -1491,4 +1501,148 @@ fn europepmc_window_sends_the_query() {
         .unwrap()
         .get(0);
     assert_eq!(source, EUROPEPMC_SOURCE);
+}
+
+const EUROPEPMC_NO_BODY: &str = include_str!("fixtures/europepmc_no_body.xml");
+
+/// The `fullTextXML` URL of `pmcid`.
+fn europepmc_xml_url(pmcid: &str) -> String {
+    format!("https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML")
+}
+
+/// Insert an open-access Europe PMC paper with its `fullTextXML` source.
+fn europepmc_paper(db: &mut Client, pmcid: &str) -> i32 {
+    let id: i32 = db
+        .query_one(
+            "INSERT INTO publications (title, pmcid, abstract, publication_date, \
+             first_seen_source, created_at, updated_at) VALUES ($1, $2, \
+             'We randomised adults with depression.', '2024-01-15', 'europepmc', 'now', 'now') \
+             RETURNING id",
+            &[&format!("Trial {pmcid}"), &pmcid],
+        )
+        .unwrap()
+        .get(0);
+    db.execute(
+        "INSERT INTO fulltext_sources (publication_id, source, url, format, created_at) \
+         VALUES ($1, 'europepmc', $2, 'xml', 'now')",
+        &[&id, &europepmc_xml_url(pmcid)],
+    )
+    .unwrap();
+    id
+}
+
+fn run_fulltext(
+    db: &mut Client,
+    tmp: &Path,
+    web: &FakeHttp,
+    source: &str,
+) -> bml_library::fulltext::FulltextReport {
+    let stop = AtomicBool::new(false);
+    bml_library::fulltext::run(
+        db,
+        source,
+        Arc::new(web.clone()),
+        Duration::ZERO,
+        &FullTextCache {
+            cache_dir: tmp.join("documents"),
+        },
+        &stop,
+        &mut |_| {},
+    )
+    .unwrap()
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn europepmc_paper_gets_full_text() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC100");
+    let web = FakeHttp::new().route(&europepmc_xml_url("PMC100"), 200, JATS);
+    let report = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.jats, 1, "{report:?}");
+    assert_eq!(
+        web.seen().lock().unwrap().as_slice(),
+        [europepmc_xml_url("PMC100")]
+    );
+    assert_eq!(fulltext_row(&mut db, id).unwrap().0, "jats");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn missing_body_is_abstract_only() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC200");
+    let web = FakeHttp::new().route(&europepmc_xml_url("PMC200"), 200, EUROPEPMC_NO_BODY);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(fulltext_row(&mut db, id).unwrap().0, "abstract");
+    web.seen().lock().unwrap().clear();
+    // Before its retry time it is not asked for again.
+    let again = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(again.tried, 0, "{again:?}");
+    assert!(web.seen().lock().unwrap().is_empty());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn transport_error_leaves_paper_retryable() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC300");
+    // No route: every request is a transport error (the phone dropped out).
+    let report = run_fulltext(
+        &mut db,
+        tmp.path(),
+        &FakeHttp::new(),
+        bml_library::EUROPEPMC_SOURCE,
+    );
+    assert_eq!(report.passing, 1, "{report:?}");
+    assert_eq!(report.lasting, 0, "{report:?}");
+    let (form, _, attempts, kind) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(form, "abstract");
+    assert_eq!(attempts, 1);
+    assert_eq!(kind.as_deref(), Some("passing"));
+    let retry_set: bool = db
+        .query_one(
+            "SELECT retry_after IS NOT NULL FROM publication_fulltext WHERE publication_id = $1",
+            &[&id],
+        )
+        .unwrap()
+        .get(0);
+    assert!(retry_set);
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn source_selects_the_papers() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let medrxiv = paper(&mut db, &[1]);
+    let europepmc = europepmc_paper(&mut db, "PMC400");
+    let web = FakeHttp::new()
+        .route(&europepmc_xml_url("PMC400"), 200, JATS)
+        .route(&jats_url(1), 200, JATS);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(
+        web.seen().lock().unwrap().as_slice(),
+        [europepmc_xml_url("PMC400")]
+    );
+    assert!(fulltext_row(&mut db, medrxiv).is_none());
+    web.seen().lock().unwrap().clear();
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::MEDRXIV_SERVER);
+    assert_eq!(web.seen().lock().unwrap().as_slice(), [jats_url(1)]);
+    assert_eq!(fulltext_row(&mut db, europepmc).unwrap().0, "jats");
 }

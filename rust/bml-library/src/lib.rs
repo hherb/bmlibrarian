@@ -297,6 +297,7 @@ impl Pipeline {
         if phases.fulltext {
             match fulltext::run(
                 db,
+                MEDRXIV_SERVER,
                 self.web.clone(),
                 self.web_delay,
                 &self.cache,
