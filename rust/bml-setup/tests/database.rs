@@ -61,6 +61,7 @@ fn plan(config_dir: PathBuf, database: Option<DatabasePlan>) -> SetupPlan {
         ollama_host: parse_ollama_host(None).unwrap(),
         skip: BTreeSet::new(),
         library_dir: None,
+        login_program: None,
     }
 }
 

@@ -456,16 +456,28 @@ fn autostart(plan: &SetupPlan) -> Result<StepOutcome, SetupError> {
             "the private database is not set up; run the Database step first (`bml setup`)".into(),
         ));
     }
-    let exe = std::env::current_exe().map_err(|e| SetupError::Other {
-        message: format!(
-            "Could not find where the bml program itself is ({e}), which start at login needs. Run setup from an installed bml, or pass --skip autostart."
-        ),
-    })?;
+    let exe = login_program(plan)?;
     if bml_pgserver::autostart::is_enabled(&exe, dir)? {
         return Ok(StepOutcome::AlreadyPresent);
     }
     bml_pgserver::autostart::enable(&exe, dir)?;
     Ok(StepOutcome::Installed)
+}
+
+/// The program login entries run: [`SetupPlan::login_program`], else this one.
+///
+/// # Errors
+///
+/// None is given and this program's own path cannot be found.
+pub(crate) fn login_program(plan: &SetupPlan) -> Result<PathBuf, SetupError> {
+    if let Some(program) = &plan.login_program {
+        return Ok(program.clone());
+    }
+    std::env::current_exe().map_err(|e| SetupError::Other {
+        message: format!(
+            "Could not find where the bml program itself is ({e}), which start at login needs. Run setup from an installed bml, or pass --skip autostart."
+        ),
+    })
 }
 
 /// Pull each approved model that is missing and copy it to its approved name.
@@ -567,11 +579,25 @@ mod tests {
     use crate::test_support::Fake;
     use std::collections::BTreeSet;
 
+    #[test]
+    fn login_entries_run_the_plans_program_when_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan(dir.path());
+        p.login_program = Some(PathBuf::from("/Applications/BMLibrarian.app/bml"));
+        assert_eq!(
+            login_program(&p).unwrap(),
+            PathBuf::from("/Applications/BMLibrarian.app/bml")
+        );
+        p.login_program = None;
+        assert_eq!(login_program(&p).unwrap(), std::env::current_exe().unwrap());
+    }
+
     const PULLED_AS: &str = "medgemma1.5:4b-it-q8_0";
     const APPROVED_AS: &str = "medgemma4B_it_q8:latest";
 
     fn plan(dir: &Path) -> SetupPlan {
         SetupPlan {
+            login_program: None,
             config_dir: dir.to_path_buf(),
             database: None,
             ollama_host: parse_ollama_host(Some("http://127.0.0.1:11434")).unwrap(),

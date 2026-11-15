@@ -253,6 +253,7 @@ pub fn run(args: SetupArgs, config_dir: &Path) -> Result<ExitCode, PgServerError
     };
     let home = std::env::home_dir();
     let plan = SetupPlan {
+        login_program: None,
         config_dir: config_dir.to_path_buf(),
         database: database_plan(&args, config_dir, home.clone())?,
         ollama_host: parse_ollama_host(args.ollama_host.as_deref().or(host.as_deref()))
