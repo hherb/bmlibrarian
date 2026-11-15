@@ -31,10 +31,13 @@ Example usage:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Callable, Literal
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from bmlibrarian.database import DatabaseManager, get_db_manager
-from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
+from bmlibrarian.embeddings.adaptive_chunker_optimized import (
+    ChunkWithPosition,
+    adaptive_chunker_with_positions,
+)
 
 from ..config import get_ollama_host
 from ..llm import LLMClient
@@ -66,7 +69,8 @@ class ChunkEmbeddingError(RuntimeError):
     """A document's chunks could not all be embedded or stored.
 
     Raised by ``ChunkEmbedder.chunk_and_embed`` before anything is written,
-    or after the write was rolled back, so the document keeps its old chunks.
+    or after the write was rolled back. The document keeps its old chunks if
+    they still match its current text; stale ones are deleted.
     """
 
 
@@ -762,6 +766,50 @@ class ChunkEmbedder:
                     )
                 return deleted
 
+    def _settle_old_chunks(
+        self,
+        document_id: int,
+        chunk_size: int,
+        overlap: int,
+        positions: List[ChunkWithPosition],
+    ) -> str:
+        """After a failed (re-)chunk, keep the stored chunks only if they fit the text.
+
+        Chunks store offsets into ``full_text``, so once the text has changed
+        the old ones point at the wrong passages and are deleted (#435 review).
+
+        Args:
+            document_id: Document database ID.
+            chunk_size: Chunk size of the chunk set.
+            overlap: Chunk overlap of the chunk set.
+            positions: Chunk positions computed from the current full_text.
+
+        Returns:
+            What happened to the stored chunks, for the error message.
+        """
+        try:
+            with self.db_manager.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT chunk_no, start_pos, end_pos FROM semantic.chunks
+                    WHERE document_id = %s AND model_id = %s
+                      AND chunk_size = %s AND chunk_overlap = %s
+                    """,
+                    (document_id, self.model_id, chunk_size, overlap),
+                )
+                stored = {tuple(row) for row in cur.fetchall()}
+            if not stored:
+                return "no chunks stored"
+            # shortcut: equal positions are taken to mean unchanged text; a same-length
+            # edit that keeps every boundary goes unnoticed. Store a text hash if that matters.
+            if stored == {(p.chunk_no, p.start_pos, p.end_pos) for p in positions}:
+                return "existing chunks kept"
+            self.delete_existing_chunks(document_id, chunk_size, overlap)
+            return "stale chunks (from older text) removed"
+        except Exception as e:
+            logger.error(f"Document {document_id}: could not check stored chunks: {e}")
+            return f"stored chunks not checked ({e})"
+
     def chunk_and_embed(
         self,
         document_id: int,
@@ -776,8 +824,9 @@ class ChunkEmbedder:
 
         Uses batch embedding API calls for improved efficiency and stability.
         Every chunk is embedded before anything is written; the old chunks are
-        then replaced by the new ones in one transaction, so a failure leaves
-        the document's stored chunks as they were.
+        then replaced by the new ones in one transaction. After a failure the
+        stored chunks are kept if they still match the current text, and
+        deleted if the text has changed since they were made.
 
         Args:
             document_id: Document database ID.
@@ -850,7 +899,8 @@ class ChunkEmbedder:
         if missing:
             message = (
                 f"Document {document_id}: {len(missing)} of {total_chunks} chunks "
-                f"could not be embedded; existing chunks kept"
+                f"could not be embedded; "
+                f"{self._settle_old_chunks(document_id, chunk_size, overlap, chunk_positions)}"
             )
             logger.error(message)
             raise ChunkEmbeddingError(message)
@@ -895,7 +945,8 @@ class ChunkEmbedder:
         except Exception as e:
             message = (
                 f"Document {document_id}: storing {total_chunks} chunks failed "
-                f"({e}); existing chunks kept"
+                f"({e}); "
+                f"{self._settle_old_chunks(document_id, chunk_size, overlap, chunk_positions)}"
             )
             logger.error(message)
             raise ChunkEmbeddingError(message) from e
@@ -1029,6 +1080,7 @@ class ChunkEmbedder:
                 - total_documents: Number of documents to process
                 - processed: Successfully processed documents
                 - failed: Failed documents
+                - failed_ids: IDs of the failed documents
                 - total_chunks_created: Total chunks created
                 - elapsed_seconds: Total time taken
                 - chunks_per_second: Processing rate
@@ -1036,10 +1088,11 @@ class ChunkEmbedder:
         """
         import time
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total_documents": 0,
             "processed": 0,
             "failed": 0,
+            "failed_ids": [],
             "total_chunks_created": 0,
             "elapsed_seconds": 0.0,
             "chunks_per_second": 0.0,
@@ -1126,10 +1179,12 @@ class ChunkEmbedder:
                     stats["total_chunks_created"] += num_chunks
                 else:
                     stats["failed"] += 1
+                    stats["failed_ids"].append(doc_id)
                     logger.warning(f"Document {doc_id}: no chunks created")
 
             except Exception as e:
                 stats["failed"] += 1
+                stats["failed_ids"].append(doc_id)
                 logger.error(f"Document {doc_id}: rechunk failed - {e}")
 
         # Calculate final statistics
@@ -1179,6 +1234,7 @@ class ChunkEmbedder:
                 - total_documents: Number of documents to process
                 - processed: Successfully processed documents
                 - failed: Failed documents
+                - failed_ids: IDs of the failed documents
                 - total_chunks_created: Total chunks created
                 - elapsed_seconds: Total time taken
                 - chunks_per_second: Processing rate
@@ -1186,10 +1242,11 @@ class ChunkEmbedder:
         """
         import time
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total_documents": len(document_ids),
             "processed": 0,
             "failed": 0,
+            "failed_ids": [],
             "total_chunks_created": 0,
             "elapsed_seconds": 0.0,
             "chunks_per_second": 0.0,
@@ -1226,10 +1283,12 @@ class ChunkEmbedder:
                     stats["total_chunks_created"] += num_chunks
                 else:
                     stats["failed"] += 1
+                    stats["failed_ids"].append(doc_id)
                     logger.warning(f"Document {doc_id}: no chunks created")
 
             except Exception as e:
                 stats["failed"] += 1
+                stats["failed_ids"].append(doc_id)
                 logger.error(f"Document {doc_id}: chunk failed - {e}")
 
         # Calculate final statistics

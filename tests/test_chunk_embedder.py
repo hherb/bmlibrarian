@@ -323,17 +323,95 @@ class TestChunkAndEmbedKeepsOldChunksOnFailure:
         return [SimpleNamespace(chunk_no=n, start_pos=n, end_pos=n + 1, text=f"c{n}")
                 for n in range(3)]
 
-    def test_missing_embedding_raises_before_any_write(self, monkeypatch) -> None:
-        """One chunk without an embedding: nothing is deleted or inserted."""
+    @staticmethod
+    def _statements(cursor: MagicMock) -> list:
+        """The SQL texts the cursor executed, in order."""
+        return [c.args[0] for c in cursor.execute.call_args_list]
+
+    def _stored(self) -> list:
+        """Stored rows whose positions match ``_positions`` (unchanged text)."""
+        return [(p.chunk_no, p.start_pos, p.end_pos) for p in self._positions()]
+
+    def test_missing_embedding_keeps_matching_chunks(self, monkeypatch) -> None:
+        """One chunk without an embedding: old chunks that fit the text survive."""
         from bmlibrarian.embeddings import chunk_embedder
 
         monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
                             lambda *a, **k: self._positions())
-        embedder, _, _ = self._embedder([[0.1], None, [0.3]])
+        embedder, conn, cursor = self._embedder([[0.1], None, [0.3]])
+        cursor.fetchall.return_value = self._stored()
 
-        with pytest.raises(chunk_embedder.ChunkEmbeddingError, match="1 of 3"):
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError,
+                           match="1 of 3.*existing chunks kept"):
             embedder.chunk_and_embed(1, batch_size=10)
-        embedder.db_manager.get_connection.assert_not_called()
+        statements = self._statements(cursor)
+        assert len(statements) == 1 and "SELECT chunk_no" in statements[0]
+        conn.transaction.assert_not_called()
+
+    def test_missing_embedding_removes_chunks_of_older_text(self, monkeypatch) -> None:
+        """Old chunks whose offsets no longer fit the changed text are deleted."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, _, cursor = self._embedder([[0.1], None, [0.3]])
+        cursor.fetchall.return_value = [(0, 0, 40), (1, 30, 80)]
+        cursor.fetchone.return_value = (2,)
+
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError, match="stale chunks"):
+            embedder.chunk_and_embed(1)
+        assert "delete_chunks" in self._statements(cursor)[-1]
+
+    def test_short_embedding_list_counts_as_missing(self, monkeypatch) -> None:
+        """A batch answer with fewer vectors than chunks fails the document."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, conn, cursor = self._embedder([[0.1], [0.2]])
+        cursor.fetchall.return_value = []
+
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError,
+                           match="1 of 3.*no chunks stored"):
+            embedder.chunk_and_embed(1)
+        conn.transaction.assert_not_called()
+
+    def test_batches_are_accumulated_in_order(self, monkeypatch) -> None:
+        """With batch_size=1 each chunk is inserted with its own vector."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, _, cursor = self._embedder([])
+        embedder.create_embeddings_batch = MagicMock(
+            side_effect=[[[0.1]], [[0.2]], [[0.3]]])
+
+        assert embedder.chunk_and_embed(1, batch_size=1) == 3
+        assert embedder.create_embeddings_batch.call_count == 3
+        inserted = [c.args[1][-1] for c in cursor.execute.call_args_list[1:]]
+        assert inserted == ["[0.1]", "[0.2]", "[0.3]"]
+
+    def test_no_overwrite_skips_a_document_with_chunks(self) -> None:
+        """overwrite=False returns 0 without embedding when chunks exist."""
+        embedder, _, _ = self._embedder([[0.1]] * 3)
+        embedder.has_chunks = MagicMock(return_value=True)
+
+        assert embedder.chunk_and_embed(1, overwrite=False) == 0
+        embedder.create_embeddings_batch.assert_not_called()
+
+    def test_no_overwrite_inserts_without_deleting(self, monkeypatch) -> None:
+        """overwrite=False on an unchunked document only inserts."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, _, cursor = self._embedder([[0.1]] * 3)
+        embedder.has_chunks = MagicMock(return_value=False)
+
+        assert embedder.chunk_and_embed(1, overwrite=False) == 3
+        statements = self._statements(cursor)
+        assert len(statements) == 3
+        assert all("INSERT INTO semantic.chunks" in s for s in statements)
 
     def test_insert_failure_raises_out_of_the_transaction(self, monkeypatch) -> None:
         """A failed insert escapes the single transaction, so it rolls back."""
@@ -342,9 +420,11 @@ class TestChunkAndEmbedKeepsOldChunksOnFailure:
         monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
                             lambda *a, **k: self._positions())
         embedder, conn, cursor = self._embedder([[0.1]] * 3)
-        cursor.execute.side_effect = [None, RuntimeError("insert failed")]
+        cursor.execute.side_effect = [None, RuntimeError("insert failed"), None]
+        cursor.fetchall.return_value = self._stored()
 
-        with pytest.raises(chunk_embedder.ChunkEmbeddingError, match="existing chunks kept"):
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError,
+                           match="storing 3 chunks failed.*existing chunks kept"):
             embedder.chunk_and_embed(1)
         exit_args = conn.transaction.return_value.__exit__.call_args.args
         assert exit_args[0] is RuntimeError  # the transaction saw the error

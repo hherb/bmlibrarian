@@ -484,6 +484,8 @@ Examples:
     print("=" * 60)
     print(f"Documents processed: {stats['processed']:,}")
     print(f"Documents failed: {stats['failed']:,}")
+    if stats.get('failed_ids'):
+        print(f"Failed document IDs: {', '.join(map(str, stats['failed_ids']))}")
     print(f"Total chunks created: {stats['total_chunks_created']:,}")
     print(f"Time elapsed: {format_duration(total_elapsed)}")
 

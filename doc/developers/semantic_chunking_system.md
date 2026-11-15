@@ -131,9 +131,11 @@ class ChunkEmbedder:
 - **All or nothing per document** (#435): `chunk_and_embed` embeds every
   chunk before writing, then deletes the old chunks and inserts the new ones
   in one transaction. A missing embedding or a failed insert raises
-  `ChunkEmbeddingError` and the document keeps its old chunks; in
-  `process_queue` the document stays queued with the error and its
-  `attempts` count raised.
+  `ChunkEmbeddingError`. The document keeps its old chunks only if their
+  positions still match the current `full_text` (chunks store offsets into
+  the text); after a text change they are deleted. In `process_queue` the
+  document stays queued with the error and its `attempts` count raised;
+  `rechunk_all` and `chunk_document_list` list failures in `failed_ids`.
 
 ### 3. PDF Ingestor (`pdf_ingestor.py`)
 

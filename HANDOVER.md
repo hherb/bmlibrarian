@@ -13,11 +13,15 @@ off new work. Longer-term structural items live in
 - **Chunk embedder keeps old chunks on failure, #435** (2026-11-15).
   `ChunkEmbedder.chunk_and_embed` embeds every chunk first, then deletes the
   old chunks and inserts the new ones in one transaction; a missing embedding
-  or a failed insert raises `ChunkEmbeddingError` and the stored chunks stay
-  (the per-chunk savepoints from #366 are gone). `process_queue` therefore
-  keeps the document queued with the error. Every other caller already
-  caught exceptions. Tests in `tests/test_chunk_embedder.py`; not run
-  against a live database or Ollama.
+  or a failed insert raises `ChunkEmbeddingError` (the per-chunk savepoints
+  from #366 are gone). The stored chunks stay only if their positions still
+  match the current `full_text`; chunks are offsets into the text, so after
+  a text change they are deleted (`_settle_old_chunks`; a same-length edit
+  that keeps every boundary is not detected). `process_queue` keeps the
+  document queued with the error; `rechunk_all`/`chunk_document_list` return
+  `failed_ids`, printed by `scripts/rechunk_semantic_chunks.py`. Every other
+  caller already caught exceptions. Tests in `tests/test_chunk_embedder.py`;
+  not run against a live database or Ollama.
 
 - **pdf_matcher fixes #443, #436** (2026-11-15). `import_pdf_for_document`
   never replaces a different PDF already at the target (status `skipped`,
