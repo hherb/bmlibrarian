@@ -159,6 +159,14 @@ def _merge_with_defaults(
 
 ### 3. Settings Sync Operations
 
+The code below is the original design sketch. As built (`config.py`): if the
+load at login fails, login goes on with JSON/default settings, but
+`sync_to_database()` raises `RuntimeError` until a later
+`_sync_from_database()` succeeds. Otherwise one Save after a temporary
+database error would replace every stored category with local values
+(#437). `sync_to_database()` returns `False` when a category failed to save,
+and the Qt callers turn that into an error message.
+
 ```python
 def sync_to_database(self) -> None:
     """Push current in-memory config to user's database settings.

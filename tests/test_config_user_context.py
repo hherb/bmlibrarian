@@ -206,6 +206,50 @@ class TestBMLibrarianConfigSyncOperations:
         result = config.sync_to_database()
         assert result is True
 
+    def test_failed_load_at_login_blocks_saving(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A failed settings load must not let Save overwrite stored settings (#437)."""
+        manager = MagicMock()
+        manager.get_all.side_effect = RuntimeError("connection lost")
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.has_user_context() is True  # login still goes on
+        with pytest.raises(RuntimeError, match="could not be loaded"):
+            config.sync_to_database()
+        manager.set.assert_not_called()
+
+    def test_successful_reload_lifts_the_block(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """Loading from the database again after a failure allows saving."""
+        manager = MagicMock()
+        manager.get_all.side_effect = [RuntimeError("connection lost"), {}]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        config._sync_from_database()
+        assert config.sync_to_database() is True
+        manager.set.assert_called()
+
+    def test_explicit_reload_failure_raises(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A 'Sync from database' request reports the failure to its caller."""
+        manager = MagicMock()
+        manager.get_all.side_effect = [{}, RuntimeError("connection lost")]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        with pytest.raises(RuntimeError, match="connection lost"):
+            config._sync_from_database()
+        with pytest.raises(RuntimeError, match="could not be loaded"):
+            config.sync_to_database()
+
     def test_export_to_json(self, config: BMLibrarianConfig) -> None:
         """Test export_to_json creates valid JSON file."""
         with tempfile.NamedTemporaryFile(

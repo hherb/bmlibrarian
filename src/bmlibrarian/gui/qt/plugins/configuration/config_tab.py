@@ -269,12 +269,13 @@ class ConfigurationTabWidget(QWidget):
             sync_msg = ""
             if bmlib_config.has_user_context():
                 try:
-                    bmlib_config.sync_to_database()
+                    if not bmlib_config.sync_to_database():
+                        raise RuntimeError("One or more settings categories failed to save (see the log)")
                     sync_msg = " and synced to database"
                     logger.info("Configuration synced to database")
                 except Exception as db_e:
                     logger.warning(f"Failed to sync to database: {db_e}")
-                    sync_msg = " (database sync failed)"
+                    sync_msg = f" (database sync failed: {db_e})"
 
             self.status_message.emit(f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}")
             self.config_saved.emit(str(config_path))
@@ -443,7 +444,8 @@ class ConfigurationTabWidget(QWidget):
                         bmlib_config.set(f"{category}.{key}", value)
 
             # Sync to database
-            bmlib_config.sync_to_database()
+            if not bmlib_config.sync_to_database():
+                raise RuntimeError("One or more settings categories failed to save (see the log)")
 
             self.status_message.emit("Configuration synced to database")
             logger.info("Configuration synced to database successfully")

@@ -498,7 +498,8 @@ class BMLibrarianApplication:
                     migrated_count += 1
 
             # Sync to database
-            config.sync_to_database()
+            if not config.sync_to_database():
+                raise RuntimeError("One or more settings categories failed to save (see the log)")
 
             self.logger.info(f"Migrated {migrated_count} categories from JSON to database")
 

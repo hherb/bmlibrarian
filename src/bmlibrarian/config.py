@@ -678,6 +678,10 @@ class BMLibrarianConfig:
         self._config_loaded: bool = False
         self._user_context: Optional[UserContext] = None
         self._settings_manager: Optional['UserSettingsManager'] = None
+        # True while the user's database settings failed to load: the
+        # in-memory values are then JSON/defaults, and saving them would
+        # overwrite the stored settings (#437).
+        self._db_load_failed: bool = False
         self._load_config()
     
     def _load_config(self):
@@ -792,8 +796,12 @@ class BMLibrarianConfig:
         )
         self._settings_manager = UserSettingsManager(connection, user_id)
 
-        # Sync settings from database to in-memory config
-        self._sync_from_database()
+        # Sync settings from database to in-memory config; login goes on
+        # with JSON/default settings if that fails (saving is then refused).
+        try:
+            self._sync_from_database()
+        except Exception as e:
+            logger.warning(f"Failed to sync settings from database: {e}")
 
         logger.info(f"User context set for user_id={user_id}")
 
@@ -808,6 +816,7 @@ class BMLibrarianConfig:
 
         self._user_context = None
         self._settings_manager = None
+        self._db_load_failed = False
 
         # Reload from JSON/defaults
         self._config = self._deep_copy_config(DEFAULT_CONFIG)
@@ -993,6 +1002,12 @@ class BMLibrarianConfig:
         Called internally when user context is set. Loads all user settings
         from the database and merges them into the in-memory configuration.
 
+        While a load has failed, sync_to_database() refuses to save; a later
+        successful load lifts that.
+
+        Raises:
+            Exception: Whatever the settings manager raised while loading.
+
         Note:
             This is an internal method. Use set_user_context() to trigger
             database synchronization.
@@ -1003,14 +1018,15 @@ class BMLibrarianConfig:
 
         try:
             db_settings = self._settings_manager.get_all(use_cache=False)
-            for category, settings in db_settings.items():
-                if category in self._config and settings:
-                    # Merge database settings with defaults
-                    self._merge_config({category: settings})
-            logger.debug("Synced settings from database to in-memory config")
-        except Exception as e:
-            logger.warning(f"Failed to sync settings from database: {e}")
-            # Continue with in-memory/JSON settings
+        except Exception:
+            self._db_load_failed = True
+            raise
+        for category, settings in db_settings.items():
+            if category in self._config and settings:
+                # Merge database settings with defaults
+                self._merge_config({category: settings})
+        self._db_load_failed = False
+        logger.debug("Synced settings from database to in-memory config")
 
     def sync_to_database(self) -> bool:
         """Push current in-memory configuration to user's database settings.
@@ -1022,7 +1038,9 @@ class BMLibrarianConfig:
             True if sync was successful, False otherwise.
 
         Raises:
-            RuntimeError: If no user context is set.
+            RuntimeError: If no user context is set, or if the user's
+                database settings failed to load (saving would replace them
+                with JSON/default values).
 
         Example:
             config = get_config()
@@ -1032,6 +1050,12 @@ class BMLibrarianConfig:
         """
         if self._settings_manager is None:
             raise RuntimeError("Cannot sync to database: no user context set")
+        if self._db_load_failed:
+            raise RuntimeError(
+                "Your settings could not be loaded from the database, so "
+                "saving now would overwrite them with local values. Load them "
+                "from the database first (or log in again), then save."
+            )
 
         success = True
         for category in VALID_SETTINGS_CATEGORIES:

@@ -10,6 +10,17 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Failed settings load no longer lets Save overwrite settings, #437**
+  (2026-11-15). If `_sync_from_database` fails at login, login goes on with
+  JSON/default settings, but `sync_to_database` raises `RuntimeError` until
+  a later load succeeds (`_db_load_failed`). `_sync_from_database` now
+  raises, so the "load from database" buttons report failures. The Qt
+  callers (config tab Save and Sync, profile widget, JSON import offer)
+  check the `False` that `sync_to_database` returns on a partial failure.
+  Tests in `tests/test_config_user_context.py`. Not run against a live
+  database. #438 (seed defaults override config.json/env after login) is
+  still open.
+
 - **Chunk embedder keeps old chunks on failure, #435** (2026-11-15).
   `ChunkEmbedder.chunk_and_embed` embeds every chunk first, then deletes the
   old chunks and inserts the new ones in one transaction; a missing embedding
@@ -327,11 +338,9 @@ value — pick one, or pull an item from ROADMAP.md:
   bml-library: #430, #433.
 
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #435, #436,
-  #443, #447, #448, #452 fixed). Installer: #451 (setup replaces another config
+  #437, #443, #447, #448, #452 fixed). Installer: #451 (setup replaces another config
   folder's login entry), #453 (rust.yml permissions, SHA-pinned checkout).
-  Data loss: #437
-  (failed settings load + Save overwrites settings), #439 (MigrationManager
-  commit/lock). Security: #434 (session cookies sent to any host), #450
+  Data loss: #439 (MigrationManager commit/lock). Security: #434 (session cookies sent to any host), #450
   (token files restricted after writing), #449 (PBKDF2 iteration count).
   Broken: #441, #445, #446, #438, #440, #442, #444.
 
@@ -378,7 +387,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-15:
-  **4858 passed, 71 skipped** in about 3 min (hermetic since #334;
+  **4866 passed, 71 skipped** in about 2.5 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
