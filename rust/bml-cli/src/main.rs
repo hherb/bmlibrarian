@@ -1,6 +1,7 @@
 //! `bml`: the BMLibrarian command-line tool.
 
 mod library;
+mod search;
 mod server;
 mod setup;
 
@@ -30,9 +31,11 @@ enum Command {
     Server(server::ServerCommand),
     /// Check this computer and install what BMLibrarian needs (safe to run again).
     Setup(setup::SetupArgs),
-    /// Download, update and index the medRxiv library.
+    /// Download, update and index the library (medRxiv, or a Europe PMC topic).
     #[command(subcommand)]
     Library(library::LibraryCommand),
+    /// Search the library by meaning.
+    Search(search::SearchArgs),
 }
 
 /// Parse the command line, run the command and map errors to exit code 1.
@@ -48,6 +51,10 @@ fn main() -> ExitCode {
         Command::Server(command) => server::run(command, &config_dir),
         Command::Setup(args) => setup::run(args, &config_dir),
         Command::Library(command) => Ok(library::run(command, &config_dir).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            ExitCode::from(server::EXIT_FAILED)
+        })),
+        Command::Search(args) => Ok(search::run(&args, &config_dir).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             ExitCode::from(server::EXIT_FAILED)
         })),

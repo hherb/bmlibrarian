@@ -171,7 +171,7 @@ fn schedule(when: ScheduleWhen, config_dir: &Path) -> Result<ExitCode, LibraryCl
 }
 
 /// The library's database connection, or the exit code to return.
-fn database(config_dir: &Path) -> Result<Result<Client, ExitCode>, LibraryCliError> {
+pub(crate) fn database(config_dir: &Path) -> Result<Result<Client, ExitCode>, LibraryCliError> {
     let Some(info) = read_conn_info(&config_dir.join(APP_ENV_FILE_NAME))
         .map_err(bml_pgserver::error::PgServerError::from)?
     else {
