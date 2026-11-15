@@ -1,0 +1,75 @@
+/* BMLibrarian app: the one stylesheet (no inline styles; sizes in rem/em). */
+:root {
+  --ink: #1d2733;
+  --muted: #5b6878;
+  --ground: #f6f7f9;
+  --card: #ffffff;
+  --accent: #146e78;
+  --accent-ink: #ffffff;
+  --line: #dde2e8;
+  --ok: #1f7a3a;
+  --warn: #9a5b00;
+  --bad: #a3261d;
+  --radius: 0.6rem;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8edf2;
+    --muted: #a3afbd;
+    --ground: #12171d;
+    --card: #1b222a;
+    --accent: #4fb3bd;
+    --accent-ink: #0c1216;
+    --line: #2c3540;
+    --ok: #63c27f;
+    --warn: #e0a64a;
+    --bad: #ef7a70;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { font-size: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--ground);
+}
+main { max-width: 52rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+[hidden] { display: none !important; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 0.75rem; }
+h2 { font-size: 1.25rem; margin: 1.5rem 0 0.5rem; }
+.lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; }
+.muted { color: var(--muted); }
+button {
+  font: inherit;
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6em 1.2em;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button:disabled { opacity: 0.55; cursor: default; }
+.actions { display: flex; gap: 0.75rem; margin-top: 2rem; flex-wrap: wrap; }
+.card {
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin: 0.75rem 0;
+}
+.toasts { position: fixed; right: 1.25rem; bottom: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; max-width: 24rem; }
+.toast {
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-left: 0.3rem solid var(--warn);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 15%);
+}
+.toast.bad { border-left-color: var(--bad); }

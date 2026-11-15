@@ -1,0 +1,24 @@
+[package]
+name = "bml-app"
+description = "BMLibrarian's app window (Tauri): set up, download a topic library, search it"
+version.workspace = true
+edition.workspace = true
+# Tauri 2.12 needs 1.90 (the workspace's floor is 1.89).
+rust-version = "1.90"
+publish.workspace = true
+
+[dependencies]
+bml-db.workspace = true
+bml-pgserver.workspace = true
+tauri = { version = "2.12", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library", "bml-search"]
+members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library", "bml-search", "bml-app"]
 # Every member but the Tauri app (`bml-app`, macOS demo only), so `cargo test`
 # and CI never build Tauri; build the app with `cargo build -p bml-app`.
 default-members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library", "bml-search"]
