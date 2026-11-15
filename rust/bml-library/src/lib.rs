@@ -16,9 +16,10 @@ pub mod status;
 pub mod testing;
 pub mod topics;
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,12 +30,13 @@ use bmlib::http::UreqClient;
 use bmlib::publications::fetchers::biorxiv::RATE_LIMIT_SECONDS;
 use bmlib::publications::fetchers::HttpClient;
 use bmlib::publications::sync::SyncError;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Days, NaiveDate, Utc};
 
 use crate::fulltext::{FulltextEnd, FulltextReport};
 use crate::index::{ChunkEmbedder, IndexReport};
 use crate::metadata::MetadataReport;
 use crate::polite_client::PoliteClient;
+use crate::topics::LibrarySource;
 
 /// The bmlib source the metadata phase syncs (`/details/`, every version).
 pub const MEDRXIV_SOURCE: &str = "medrxiv-details";
@@ -57,6 +59,20 @@ pub const EUROPEPMC_FIRST_DAY: &str = "2021-01-01";
 pub const EUROPEPMC_REQUEST_DELAY: Duration = Duration::from_secs(1);
 /// The days one round of a topic library's update covers, newest first.
 pub const EUROPEPMC_ROUND_DAYS: u64 = 30;
+/// The progress line when a whole round failed for want of a network.
+pub const WAITING_FOR_INTERNET: &str =
+    "Waiting for the internet. Downloading carries on when it's back.";
+
+/// [`EUROPEPMC_FIRST_DAY`] as a date.
+///
+/// # Panics
+///
+/// Never: the constant is a valid date (a unit test checks it).
+#[must_use]
+pub fn europepmc_first_day() -> NaiveDate {
+    NaiveDate::parse_from_str(EUROPEPMC_FIRST_DAY, "%Y-%m-%d")
+        .expect("EUROPEPMC_FIRST_DAY is a date")
+}
 
 /// [`MEDRXIV_FIRST_DAY`] as a date.
 ///
@@ -223,6 +239,10 @@ pub struct Pipeline {
     pub web: Arc<dyn HttpClient + Send + Sync>,
     /// The spacing between full-text requests.
     pub web_delay: Duration,
+    /// The client for Europe PMC (a topic library's search and full text).
+    pub europepmc: Arc<dyn HttpClient + Send + Sync>,
+    /// The spacing between Europe PMC requests.
+    pub europepmc_delay: Duration,
     /// Loads the embedder.
     pub embedder: EmbedderLoader,
     /// The clock (UTC).
@@ -238,8 +258,10 @@ impl Pipeline {
             cache,
             api: client.clone(),
             api_delay: Duration::from_secs_f64(RATE_LIMIT_SECONDS),
-            web: client,
+            web: client.clone(),
             web_delay: MEDRXIV_REQUEST_DELAY,
+            europepmc: client,
+            europepmc_delay: EUROPEPMC_REQUEST_DELAY,
             embedder: Box::new(move || index::load_model_embedder(&model_path)),
             clock: Box::new(Utc::now),
         }
@@ -254,6 +276,18 @@ impl Pipeline {
         progress: &mut dyn FnMut(Progress),
     ) -> UpdateReport {
         let mut report = UpdateReport::default();
+        match topics::library_source(db) {
+            Ok(LibrarySource::EuropePmc { query, .. }) => {
+                self.update_topic(db, options, &query, &mut report, progress);
+                self.stamp_if_complete(db, options.phases, &mut report);
+                return report;
+            }
+            Ok(LibrarySource::Medrxiv) => {}
+            Err(e) => {
+                report.failures.push((Phase::Metadata, e.to_string()));
+                return report;
+            }
+        }
         let phases = options.phases;
         if phases.metadata {
             let api = Arc::new(PoliteClient::new(self.api.clone(), self.api_delay));
@@ -269,30 +303,8 @@ impl Pipeline {
         // text (new abstracts are searchable within the hour, not after a
         // full-text backlog of weeks) and again after it (the new full texts).
         let mut embedder: Option<Box<dyn ChunkEmbedder>> = None;
-        let mut index =
-            |db: &mut dyn Db, report: &mut UpdateReport, progress: &mut dyn FnMut(Progress)| {
-                if report.failures.iter().any(|(p, _)| *p == Phase::Index) {
-                    return;
-                }
-                if embedder.is_none() {
-                    match (self.embedder)() {
-                        Ok(e) => embedder = Some(e),
-                        Err(e) => {
-                            report.failures.push((Phase::Index, e));
-                            return;
-                        }
-                    }
-                }
-                let Some(model) = embedder.as_mut() else {
-                    return;
-                };
-                match index::run(db, &self.cache, model.as_mut(), options.stop, progress) {
-                    Ok(r) => report.index.get_or_insert_with(IndexReport::default).add(r),
-                    Err(e) => report.failures.push((Phase::Index, e.to_string())),
-                }
-            };
         if phases.index {
-            index(db, &mut report, progress);
+            self.index_once(db, &mut embedder, options.stop, &mut report, progress);
         }
         if phases.fulltext {
             match fulltext::run(
@@ -308,12 +320,153 @@ impl Pipeline {
                 Err(e) => report.failures.push((Phase::Fulltext, e.to_string())),
             }
             if phases.index {
-                index(db, &mut report, progress);
+                self.index_once(db, &mut embedder, options.stop, &mut report, progress);
             }
         }
-        // Only a complete update counts, so a scheduled `--if-older-than` run
-        // carries on an unfinished one (a backlog, a rate limit, a failure,
-        // a skipped phase).
+        self.stamp_if_complete(db, phases, &mut report);
+        report
+    }
+
+    /// A topic library's update: rounds of [`EUROPEPMC_ROUND_DAYS`], newest
+    /// first, back to `options.from` (else [`EUROPEPMC_FIRST_DAY`]). Each
+    /// round syncs its window, fetches the full texts due, then indexes them,
+    /// so the newest papers are searchable after the first round. A round
+    /// whose every day failed means no network: the update stops there and
+    /// says so, and the next run carries on.
+    fn update_topic(
+        &self,
+        db: &mut dyn Db,
+        options: &UpdateOptions<'_>,
+        query: &str,
+        report: &mut UpdateReport,
+        progress: &mut dyn FnMut(Progress),
+    ) {
+        let phases = options.phases;
+        let first = options.from.unwrap_or_else(europepmc_first_day);
+        let client = Arc::new(PoliteClient::new(
+            self.europepmc.clone(),
+            self.europepmc_delay,
+        ));
+        let configs = BTreeMap::from([(
+            EUROPEPMC_SOURCE.to_string(),
+            BTreeMap::from([("query".to_string(), query.to_string())]),
+        )]);
+        let mut embedder: Option<Box<dyn ChunkEmbedder>> = None;
+        let mut end = (self.clock)().date_naive();
+        while end >= first {
+            if options.stop.load(Ordering::Relaxed) {
+                report
+                    .metadata
+                    .get_or_insert_with(MetadataReport::default)
+                    .stopped = true;
+                break;
+            }
+            let start = end
+                .checked_sub_days(Days::new(EUROPEPMC_ROUND_DAYS - 1))
+                .map_or(first, |d| d.max(first));
+            if phases.metadata {
+                match metadata::run_window(
+                    db,
+                    client.clone(),
+                    EUROPEPMC_SOURCE,
+                    &configs,
+                    start,
+                    end,
+                    options.stop,
+                    &*self.clock,
+                    progress,
+                ) {
+                    Ok(window) => {
+                        let offline = window.days > 0
+                            && window.added + window.merged == 0
+                            && i64::try_from(window.errors.len()).unwrap_or(i64::MAX)
+                                >= window.days;
+                        let rate_limited = window.rate_limited;
+                        let summary = report.metadata.get_or_insert_with(MetadataReport::default);
+                        summary.add(window);
+                        if offline {
+                            summary.stopped = true;
+                            progress(Progress {
+                                phase: Phase::Metadata,
+                                message: WAITING_FOR_INTERNET.to_string(),
+                            });
+                            break;
+                        }
+                        if rate_limited {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        report.failures.push((Phase::Metadata, e.to_string()));
+                        break;
+                    }
+                }
+            }
+            if phases.fulltext {
+                match fulltext::run(
+                    db,
+                    EUROPEPMC_SOURCE,
+                    self.europepmc.clone(),
+                    self.europepmc_delay,
+                    &self.cache,
+                    options.stop,
+                    progress,
+                ) {
+                    Ok(r) => report
+                        .fulltext
+                        .get_or_insert_with(FulltextReport::default)
+                        .add(r),
+                    Err(e) => {
+                        report.failures.push((Phase::Fulltext, e.to_string()));
+                        break;
+                    }
+                }
+            }
+            if phases.index {
+                self.index_once(db, &mut embedder, options.stop, report, progress);
+            }
+            end = match start.pred_opt() {
+                Some(day) => day,
+                None => break,
+            };
+        }
+    }
+
+    /// One index run, loading the embedder the first time (a failure to load
+    /// it, or an earlier index failure, skips the run).
+    fn index_once(
+        &self,
+        db: &mut dyn Db,
+        embedder: &mut Option<Box<dyn ChunkEmbedder>>,
+        stop: &AtomicBool,
+        report: &mut UpdateReport,
+        progress: &mut dyn FnMut(Progress),
+    ) {
+        if report.failures.iter().any(|(p, _)| *p == Phase::Index) {
+            return;
+        }
+        if embedder.is_none() {
+            match (self.embedder)() {
+                Ok(e) => *embedder = Some(e),
+                Err(e) => {
+                    report.failures.push((Phase::Index, e));
+                    return;
+                }
+            }
+        }
+        let Some(model) = embedder.as_mut() else {
+            return;
+        };
+        match index::run(db, &self.cache, model.as_mut(), stop, progress) {
+            Ok(r) => report.index.get_or_insert_with(IndexReport::default).add(r),
+            Err(e) => report.failures.push((Phase::Index, e.to_string())),
+        }
+    }
+
+    /// Stamp `last_update_at` for a complete update only, so a scheduled
+    /// `--if-older-than` run carries on an unfinished one (a backlog, a rate
+    /// limit, a failure, a skipped phase).
+    fn stamp_if_complete(&self, db: &mut dyn Db, phases: PhaseSet, report: &mut UpdateReport) {
         if phases == PhaseSet::all() && !report.failed() && !report.stopped_early() {
             if let Err(e) = execute(
                 db,
@@ -326,7 +479,6 @@ impl Pipeline {
                 report.last_update_error = Some(format!("recording the update's time failed: {e}"));
             }
         }
-        report
     }
 }
 

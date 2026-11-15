@@ -275,6 +275,23 @@ pub struct FulltextReport {
     pub end: FulltextEnd,
 }
 
+impl FulltextReport {
+    /// Fold another run's report into this one (a topic library's rounds).
+    /// An end other than [`FulltextEnd::Done`] is kept.
+    pub fn add(&mut self, other: FulltextReport) {
+        self.tried += other.tried;
+        self.jats += other.jats;
+        self.pdf += other.pdf;
+        self.replaced += other.replaced;
+        self.lasting += other.lasting;
+        self.passing += other.passing;
+        self.old_files_removed += other.old_files_removed;
+        if other.end != FulltextEnd::Done {
+            self.end = other.end;
+        }
+    }
+}
+
 /// One paper due for full text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paper {

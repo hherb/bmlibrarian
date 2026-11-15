@@ -36,6 +36,42 @@ replace each one (`bml_library::testing::FakeHttp`, behind the crate's
 `test-support` feature, which its own dev-dependency turns on; a stub
 `ChunkEmbedder`).
 
+## Topic libraries (Europe PMC)
+
+`library_state.topic_id`/`topic_query` (migration 4) name a library's
+Europe PMC topic; null is medRxiv, so every older library reads as before.
+`topics.rs` holds the presets (`TOPICS`: id, name, terms, the count measured
+on 2026-11-15), `topic_query` (quality filter + terms in title or abstract +
+trial/review/meta-analysis types), `count_url`/`parse_hit_count` (the app's
+live count) and `set_topic`, which refuses a library that already holds
+another topic or medRxiv papers.
+
+For a topic library `update` runs `update_topic` instead of the three
+phases: **rounds** of `EUROPEPMC_ROUND_DAYS` (30), newest first, from the
+clock's day back to `options.from` (else `EUROPEPMC_FIRST_DAY`, 2021-01-01,
+not remembered). Each round is `metadata::run_window` for the bmlib
+`europepmc` source (config `query`), then `fulltext::run(…,
+EUROPEPMC_SOURCE, …)`, then one index run, so a round's papers are
+searchable before the next round starts. The checkpoints are the usual
+ones: bmlib's day ledger (with its 14-day settle period, recent days are
+fetched again) and the full-text and index rows. `stop` is checked between
+rounds and inside each phase as before.
+
+A round whose every day failed (`errors` ≥ `days`, nothing added or merged)
+is read as no network: the update records the metadata phase as stopped,
+says `WAITING_FOR_INTERNET` and ends, instead of failing its way through
+every older round. `last_update_at` is stamped only for a complete update,
+as before.
+
+Full text for a Europe PMC paper (`next_europepmc_paper`: a `europepmc`
+`xml` source, and no row or an abstract-only row past its retry time;
+version always 1) goes through bmlib's **Tier 0** with only the paper's own
+`fullTextXML` URL: no PMC ID, DOI or PMID is passed, so exactly one request
+is made per paper and no NCBI or PDF-render fallback runs. The cache key is
+the PMC ID. Requests are spaced by `EUROPEPMC_REQUEST_DELAY` (1 s) through
+`Pipeline::europepmc`. The index phase is unchanged and source-agnostic; it
+now ends with one progress line, "N paper(s) ready to search (…)".
+
 ## Metadata
 
 bmlib `publications::sync` with the `medrxiv-details` source (`/details/`,

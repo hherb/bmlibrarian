@@ -516,6 +516,15 @@ pub fn run(
             }
         }
     }
+    if report.indexed > 0 {
+        progress(Progress {
+            phase: Phase::Index,
+            message: format!(
+                "{} paper(s) ready to search ({} with full text, {} passages)",
+                report.indexed, report.fulltext, report.chunks
+            ),
+        });
+    }
     Ok(report)
 }
 
