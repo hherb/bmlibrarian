@@ -98,10 +98,15 @@ pub fn library_status(
         })
     })
     .collect::<Result<Vec<_>, PipelineError>>()?;
+    // The days of the source this library syncs (a topic library's are
+    // Europe PMC's).
+    let source = match crate::topics::library_source(db)? {
+        crate::topics::LibrarySource::Medrxiv => crate::MEDRXIV_SOURCE,
+        crate::topics::LibrarySource::EuropePmc { .. } => crate::EUROPEPMC_SOURCE,
+    };
     let days = |status: &str| {
         format!(
-            "SELECT count(*) FROM download_days WHERE source = '{}' AND status = '{status}'",
-            crate::MEDRXIV_SOURCE
+            "SELECT count(*) FROM download_days WHERE source = '{source}' AND status = '{status}'"
         )
     };
     let last_update = fetch_one(

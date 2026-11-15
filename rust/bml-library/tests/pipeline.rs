@@ -1875,3 +1875,31 @@ fn paper_text_reads_the_stored_text_or_the_abstract() {
     assert_eq!(abstract_only.text, "We randomised adults with depression.");
     assert!(paper_text(&cache, &mut db, 999_999).is_err());
 }
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn status_counts_a_topic_librarys_days() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(&query, "2024-02-19", "2024-02-20", &[]);
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let options = UpdateOptions {
+        from: Some(NaiveDate::from_ymd_opt(2024, 2, 19).unwrap()),
+        phases: only(Phase::Metadata),
+        stop: &stop,
+    };
+    p.update(&mut db, &options, &mut |_| {});
+    let status = bml_library::status::library_status(
+        &mut db,
+        &FullTextCache {
+            cache_dir: tmp.path().join("documents"),
+        },
+    )
+    .unwrap();
+    assert_eq!(status.days_complete, 2, "{status:?}");
+}
