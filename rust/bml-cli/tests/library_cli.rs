@@ -89,3 +89,14 @@ fn if_older_than_needs_days_in_range() {
     let out = bml(cfg.path(), &["library", "update", "--if-older-than", "0"]);
     assert_eq!(out.status.code(), Some(2), "clap usage error");
 }
+
+#[test]
+fn unknown_topic_lists_ids() {
+    let cfg = tempfile::tempdir().unwrap();
+    let out = bml(cfg.path(), &["library", "update", "--topic", "nonsense"]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    for id in ["depression-anxiety", "cardiology", "obesity-glp1", "stroke"] {
+        assert!(err.contains(id), "{err}");
+    }
+}
