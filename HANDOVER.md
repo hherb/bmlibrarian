@@ -321,10 +321,9 @@ value — pick one, or pull an item from ROADMAP.md:
     ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
     `~/.bml-demo/build.log`). If it stops, run the same command again; it
     resumes.
-  - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is not
-    pushed yet. `rust/.cargo/config.toml` is a local, uncommitted `[patch]`
-    pointing at that worktree (git-excluded). Never commit `rust/Cargo.lock`
-    while that patch is in place; pin the pushed rev instead.
+  - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
+    PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
+    merged commit once #790 lands (ROADMAP, investor-demo follow-ups).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
