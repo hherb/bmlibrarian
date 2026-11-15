@@ -300,3 +300,81 @@ class TestBatchEmbeddingCallsTheLlmLayer:
         result = embedder._create_embeddings_batch_ollama(["", "second"], 1)
 
         assert result == [None, [0.1, 0.2]]
+
+
+class TestChunkAndEmbedKeepsOldChunksOnFailure:
+    """Issue #435: a failed embed or store must not cost the stored chunks."""
+
+    @staticmethod
+    def _embedder(embeddings: list) -> tuple:
+        """An embedder over a mock database whose three chunks embed as given."""
+        embedder = ChunkEmbedder.__new__(ChunkEmbedder)
+        embedder.model_id = 4
+        embedder.db_manager = MagicMock()
+        embedder.get_document_full_text = MagicMock(return_value="text")
+        embedder.create_embeddings_batch = MagicMock(return_value=embeddings)
+        conn = embedder.db_manager.get_connection.return_value.__enter__.return_value
+        cursor = conn.cursor.return_value.__enter__.return_value
+        return embedder, conn, cursor
+
+    @staticmethod
+    def _positions() -> list:
+        """Three chunk positions."""
+        return [SimpleNamespace(chunk_no=n, start_pos=n, end_pos=n + 1, text=f"c{n}")
+                for n in range(3)]
+
+    def test_missing_embedding_raises_before_any_write(self, monkeypatch) -> None:
+        """One chunk without an embedding: nothing is deleted or inserted."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, _, _ = self._embedder([[0.1], None, [0.3]])
+
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError, match="1 of 3"):
+            embedder.chunk_and_embed(1, batch_size=10)
+        embedder.db_manager.get_connection.assert_not_called()
+
+    def test_insert_failure_raises_out_of_the_transaction(self, monkeypatch) -> None:
+        """A failed insert escapes the single transaction, so it rolls back."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, conn, cursor = self._embedder([[0.1]] * 3)
+        cursor.execute.side_effect = [None, RuntimeError("insert failed")]
+
+        with pytest.raises(chunk_embedder.ChunkEmbeddingError, match="existing chunks kept"):
+            embedder.chunk_and_embed(1)
+        exit_args = conn.transaction.return_value.__exit__.call_args.args
+        assert exit_args[0] is RuntimeError  # the transaction saw the error
+
+    def test_success_deletes_then_inserts_in_one_transaction(self, monkeypatch) -> None:
+        """Delete and all inserts share one transaction; the count is returned."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        monkeypatch.setattr(chunk_embedder, "adaptive_chunker_with_positions",
+                            lambda *a, **k: self._positions())
+        embedder, conn, cursor = self._embedder([[0.1]] * 3)
+
+        assert embedder.chunk_and_embed(1) == 3
+        assert conn.transaction.call_count == 1
+        statements = [c.args[0] for c in cursor.execute.call_args_list]
+        assert "delete_chunks" in statements[0]
+        assert all("INSERT INTO semantic.chunks" in s for s in statements[1:])
+        assert len(statements) == 4
+
+    def test_process_queue_keeps_a_failed_document_queued(self) -> None:
+        """A ChunkEmbeddingError records the error instead of dequeuing."""
+        from bmlibrarian.embeddings import chunk_embedder
+
+        embedder, _, cursor = self._embedder([])
+        cursor.fetchall.return_value = [(7,)]
+        embedder.chunk_and_embed = MagicMock(
+            side_effect=chunk_embedder.ChunkEmbeddingError("2 of 3 chunks"))
+        embedder._remove_from_queue = MagicMock()
+        embedder._update_queue_error = MagicMock()
+
+        assert embedder.process_queue() == (0, 1)
+        embedder._remove_from_queue.assert_not_called()
+        embedder._update_queue_error.assert_called_once_with(7, "2 of 3 chunks")

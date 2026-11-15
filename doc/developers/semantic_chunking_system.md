@@ -128,6 +128,12 @@ class ChunkEmbedder:
 - **On-the-fly extraction**: Text extracted via `substr()` from `document.full_text`
 - **Progress callbacks**: Support GUI progress updates
 - **Queue integration**: Both immediate and async processing paths
+- **All or nothing per document** (#435): `chunk_and_embed` embeds every
+  chunk before writing, then deletes the old chunks and inserts the new ones
+  in one transaction. A missing embedding or a failed insert raises
+  `ChunkEmbeddingError` and the document keeps its old chunks; in
+  `process_queue` the document stays queued with the error and its
+  `attempts` count raised.
 
 ### 3. PDF Ingestor (`pdf_ingestor.py`)
 
