@@ -1407,3 +1407,88 @@ fn set_topic_refuses_another_topic() {
         .to_string();
     assert!(error.contains("medRxiv"), "{error}");
 }
+
+/// The Europe PMC search URL bmlib's fetcher builds for `day`'s first page.
+fn europepmc_url(query: &str, day: &str) -> String {
+    use bmlib::publications::fetchers::europepmc::{page_params, SEARCH_URL};
+    let params = page_params(day, "*", query, None);
+    let pairs: Vec<(&str, &str)> = params
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    format!(
+        "{SEARCH_URL}?{}",
+        bmlib::transparency::analyzer::encode_query(&pairs)
+    )
+}
+
+/// A Europe PMC search page holding open-access hits for `pmcids`.
+fn europepmc_page(pmcids: &[&str], day: &str) -> String {
+    let hits: Vec<serde_json::Value> = pmcids
+        .iter()
+        .enumerate()
+        .map(|(i, pmcid)| {
+            serde_json::json!({
+                "id": format!("{}", 39000000 + i),
+                "source": "MED",
+                "pmid": format!("{}", 39000000 + i),
+                "pmcid": pmcid,
+                "doi": format!("10.1000/demo.{pmcid}"),
+                "title": format!("Trial {pmcid}"),
+                "abstractText": "We randomised adults with depression.",
+                "firstPublicationDate": day,
+                "isOpenAccess": "Y",
+                "inEPMC": "Y",
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "hitCount": hits.len(),
+        "nextCursorMark": "*",
+        "resultList": {"result": hits},
+    })
+    .to_string()
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn europepmc_window_sends_the_query() {
+    use bml_library::metadata::run_window;
+    use bml_library::polite_client::PoliteClient;
+    use bml_library::EUROPEPMC_SOURCE;
+    use std::collections::BTreeMap;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = "OPEN_ACCESS:Y AND TITLE:\"depression\"";
+    let url = europepmc_url(query, "2024-01-16");
+    let api = FakeHttp::new().route(&url, 200, europepmc_page(&["PMC100"], "2024-01-16"));
+    let client = Arc::new(PoliteClient::new(Arc::new(api.clone()), Duration::ZERO));
+    let configs = BTreeMap::from([(
+        EUROPEPMC_SOURCE.to_string(),
+        BTreeMap::from([("query".to_string(), query.to_string())]),
+    )]);
+    let day = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
+    let stop = AtomicBool::new(false);
+    let report = run_window(
+        &mut db,
+        client,
+        EUROPEPMC_SOURCE,
+        &configs,
+        day,
+        day,
+        &stop,
+        &|| instant("2024-01-17T13:00:00Z"),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.added, 1, "{report:?}");
+    assert_eq!(api.seen().lock().unwrap().as_slice(), [url]);
+    let source: String = db
+        .query_one("SELECT first_seen_source FROM publications", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(source, EUROPEPMC_SOURCE);
+}
