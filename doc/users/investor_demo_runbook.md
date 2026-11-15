@@ -20,7 +20,8 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
    ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library status
    ```
 
-   Look for "0 not tried yet" and "0 to do". If the build stopped (log:
+   Look for "0 to do" in the Index line ("not tried yet" may stay at a
+   handful: papers Europe PMC holds no full text for). If the build stopped (log:
    `~/.bml-demo/build.log`), run it again; it carries on:
 
    ```bash
@@ -60,13 +61,26 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
    one `bml search`.
 
 7. **Rehearse once end to end** (below), then clean up as in "Afterwards" and
-   repeat steps 3–4.
+   repeat steps 3–4. During the rehearsal, check these on purpose (no
+   automated test covers them):
+   - Choose a topic with **Every week** and watch screen 5's counts move
+     within a minute (a scheduled update starts at the same moment and must
+     not freeze the screen).
+   - Turn the hotspot off for a minute: screen 5 says it is waiting for the
+     internet. Turn it back on: within a minute or so the download carries on
+     by itself.
+   - Press **Pause**, then **Resume**.
+   - Search on the prepared library: the first search takes a few seconds
+     while the search model loads; later ones are quick.
 
 ## On the day
 
 Keep the Mac on power, and turn off notifications (Focus).
 
 ### 1. The prepared library (about 5 minutes)
+
+Start with the prepared library, so its database is running before the live
+install picks a port for its own.
 
 ```bash
 BML_CONFIG_DIR=~/.bml-demo ~/src/bmlibrarian/rust/target/release/bml-app
