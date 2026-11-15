@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library"]
+members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library", "bml-search"]
+# Every member but the Tauri app (`bml-app`, macOS demo only), so `cargo test`
+# and CI never build Tauri; build the app with `cargo build -p bml-app`.
+default-members = ["bml-pgserver", "bml-cli", "bml-setup", "bml-db", "bml-library", "bml-search"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +22,7 @@ bml-pgserver = { path = "bml-pgserver" }
 bml-setup = { path = "bml-setup" }
 bml-db = { path = "bml-db" }
 bml-library = { path = "bml-library" }
+bml-search = { path = "bml-search" }
 # Switch to the crates.io release (0.3.1) once it is published.
 bmlib = { git = "https://github.com/hherb/bmlib", rev = "c5f6236cc1f71ded9708422d4150d101b827643d", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
 postgres = "0.19"

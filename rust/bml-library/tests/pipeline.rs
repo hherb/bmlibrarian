@@ -1849,3 +1849,29 @@ fn a_round_with_no_network_stops_cleanly() {
         0
     );
 }
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn paper_text_reads_the_stored_text_or_the_abstract() {
+    use bml_library::index::paper_text;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let full = europepmc_paper(&mut db, "PMC700");
+    let bare = europepmc_paper(&mut db, "PMC701");
+    let web = FakeHttp::new()
+        .route(&europepmc_xml_url("PMC700"), 200, JATS)
+        .route(&europepmc_xml_url("PMC701"), 200, EUROPEPMC_NO_BODY);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    let cache = FullTextCache {
+        cache_dir: tmp.path().join("documents"),
+    };
+    let text = paper_text(&cache, &mut db, i64::from(full)).unwrap();
+    assert_eq!(text.title, "Trial PMC700");
+    assert!(text.text.len() > 500, "{}", text.text);
+    let abstract_only = paper_text(&cache, &mut db, i64::from(bare)).unwrap();
+    assert_eq!(abstract_only.text, "We randomised adults with depression.");
+    assert!(paper_text(&cache, &mut db, 999_999).is_err());
+}
