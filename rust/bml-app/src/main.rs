@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod library_worker;
+mod setup_view;
 mod state;
 mod view;
 
@@ -30,6 +31,8 @@ struct App {
     search: SearchWorker,
     /// The library update this window started, if any.
     update: Mutex<Option<Update>>,
+    /// Whether setup is running.
+    setup_running: Mutex<bool>,
 }
 
 /// The screen to open on (`welcome` or `search`).
@@ -141,6 +144,156 @@ fn start_update(app: State<'_, App>, handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Screen 2: the library folder, its free space and a rough size estimate.
+#[derive(Serialize)]
+struct FolderInfo {
+    path: String,
+    free_bytes: Option<u64>,
+    estimate_bytes: u64,
+}
+
+/// The default library folder (`~/BMLibrarian`), as setup will create it.
+#[tauri::command]
+fn library_folder() -> Result<FolderInfo, String> {
+    let home = std::env::home_dir().ok_or("BMLibrarian cannot find your home folder")?;
+    let path = home.join(LIBRARY_FOLDER_NAME);
+    Ok(FolderInfo {
+        free_bytes: bml_setup::hardware::free_space_at(&path, &bml_setup::hardware::mounts()),
+        path: path.display().to_string(),
+        estimate_bytes: setup_view::largest_topic_bytes(),
+    })
+}
+
+/// The default library folder's name in the home folder (`bml setup`'s).
+const LIBRARY_FOLDER_NAME: &str = "BMLibrarian";
+
+/// Run setup on its own thread: a `setup-step` event per step event, then one
+/// `setup-done` event (`true` when no step failed). Running it twice at once
+/// is refused.
+#[tauri::command]
+fn start_setup(app: State<'_, App>, handle: AppHandle) -> Result<(), String> {
+    let mut running = app
+        .setup_running
+        .lock()
+        .map_err(|_| "the setup state is unreadable".to_string())?;
+    if *running {
+        return Err("Setup is already running.".into());
+    }
+    *running = true;
+    let config_dir = app.config_dir.clone();
+    let login = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(setup_view::bml_beside);
+    std::thread::spawn(move || {
+        let mut skip = std::collections::BTreeSet::new();
+        if login.is_none() {
+            // No `bml` beside the app: a login entry would run the app itself.
+            skip.insert(bml_setup::StepId::Autostart);
+        }
+        let ok = match bml_setup::ollama::parse_ollama_host(
+            std::env::var(bml_setup::ollama::OLLAMA_HOST_ENV)
+                .ok()
+                .as_deref(),
+        ) {
+            Ok(ollama_host) => {
+                let plan = bml_setup::runner::SetupPlan {
+                    login_program: login,
+                    config_dir,
+                    database: Some(bml_setup::runner::DatabasePlan::Bundled),
+                    ollama_host,
+                    skip,
+                    library_dir: None,
+                    home: std::env::home_dir(),
+                };
+                let results = bml_setup::runner::run_setup(
+                    &plan,
+                    &bml_setup::ollama::pull_http_client(),
+                    &mut |event| {
+                        let _ = handle.emit("setup-step", setup_view::step_line(&event));
+                    },
+                );
+                !results
+                    .iter()
+                    .any(|(_, o)| matches!(o, bml_setup::StepOutcome::Failed(_)))
+            }
+            Err(e) => {
+                let _ = handle.emit(
+                    "setup-step",
+                    setup_view::step_line(&bml_setup::StepEvent::Finished(
+                        bml_setup::StepId::Ollama,
+                        bml_setup::StepOutcome::Failed(e.to_string()),
+                    )),
+                );
+                false
+            }
+        };
+        if let Some(app) = tauri::Manager::try_state::<App>(&handle) {
+            if let Ok(mut running) = app.setup_running.lock() {
+                *running = false;
+            }
+        }
+        let _ = handle.emit("setup-done", ok);
+    });
+    Ok(())
+}
+
+/// Screen 4: every preset topic with its paper count (live when Europe PMC
+/// answers in time, else as measured).
+#[tauri::command]
+async fn topic_counts() -> Vec<setup_view::TopicCount> {
+    setup_view::topic_counts_with(
+        std::sync::Arc::new(bmlib::http::UreqClient::new()),
+        setup_view::TOPIC_COUNT_TIMEOUT,
+    )
+}
+
+/// How often the library is brought up to date.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Schedule {
+    /// Every week (the default).
+    Weekly,
+    /// Every `days` days.
+    Every { days: u32 },
+    /// Only when asked.
+    Manual,
+}
+
+/// Days in a week, for [`Schedule::Weekly`].
+const WEEKLY_DAYS: u32 = 7;
+
+/// Make the new library topic `id`'s library and record how often to update
+/// it. Returns a note for a toast when the schedule could not be recorded.
+#[tauri::command]
+async fn choose_topic(
+    app: State<'_, App>,
+    id: String,
+    schedule: Schedule,
+) -> Result<Option<String>, String> {
+    let config_dir = app.config_dir.clone();
+    // On a plain thread: the `postgres` client panics on Tauri's runtime.
+    std::thread::spawn(move || -> Result<Option<String>, String> {
+        let topic = bml_library::topics::topic(&id).ok_or_else(|| format!("There is no topic {id:?}."))?;
+        let mut db = library_worker::open_db(&config_dir)?;
+        bml_library::topics::set_topic(&mut db, topic).map_err(|e| e.to_string())?;
+        let Some(bml) = std::env::current_exe().ok().as_deref().and_then(setup_view::bml_beside) else {
+            return Ok(Some(
+                "Automatic updates need the installed BMLibrarian; this copy updates while its window is open.".into(),
+            ));
+        };
+        match schedule {
+            Schedule::Manual => bml_pgserver::schedule::unschedule_updates(),
+            Schedule::Weekly => bml_pgserver::schedule::schedule_updates(&bml, &config_dir, WEEKLY_DAYS),
+            Schedule::Every { days } => bml_pgserver::schedule::schedule_updates(&bml, &config_dir, days),
+        }
+        .map_err(|e| format!("The update schedule could not be recorded: {e}"))?;
+        Ok(None)
+    })
+    .join()
+    .map_err(|_| "choosing the topic failed unexpectedly".to_string())?
+}
+
 /// Stop the update after the paper in flight.
 #[tauri::command]
 fn pause_update(app: State<'_, App>) {
@@ -163,6 +316,7 @@ fn main() {
         search: SearchWorker::spawn(config_dir.clone()),
         config_dir,
         update: Mutex::new(None),
+        setup_running: Mutex::new(false),
     };
     let result = tauri::Builder::default()
         .manage(app)
@@ -172,7 +326,11 @@ fn main() {
             open_paper,
             library_counts,
             start_update,
-            pause_update
+            pause_update,
+            library_folder,
+            start_setup,
+            topic_counts,
+            choose_topic
         ])
         .on_window_event(|window, event| {
             // Closing the window stops the update after the paper in flight.

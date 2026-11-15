@@ -107,3 +107,40 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 /* The reader */
 .paper-text { white-space: pre-wrap; line-height: 1.65; margin-top: 1.5rem; }
+
+/* Screens 1–4 */
+.plain-steps { padding-left: 1.25rem; }
+.plain-steps li { margin: 0.4rem 0; }
+.folder-path { font-weight: 600; font-size: 1.1rem; margin: 0 0 0.25rem; word-break: break-all; }
+.step-list { list-style: none; padding: 0; margin: 1.5rem 0; }
+.step-list li {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 0.0625rem solid var(--line);
+}
+.step-list .label { flex: 0 0 11rem; font-weight: 600; }
+.step-list .text { color: var(--muted); }
+.step-list .state { flex: 0 0 1.25rem; text-align: center; }
+.step-list li.working .state::before { content: "…"; color: var(--accent); }
+.step-list li.done .state::before { content: "✓"; color: var(--ok); }
+.step-list li.warning .state::before { content: "!"; color: var(--warn); font-weight: 700; }
+.step-list li.failed .state::before { content: "✕"; color: var(--bad); font-weight: 700; }
+.step-list li.failed .text { color: var(--bad); }
+.topic-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 1rem 0; }
+.topic {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+}
+.topic:has(input:checked) { border-color: var(--accent); }
+.topic .name { font-weight: 600; flex: 1; }
+.topic .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.schedule { display: flex; flex-direction: column; gap: 0.4rem; }
+.schedule input[type="number"] { width: 4.5em; font: inherit; padding: 0.15em 0.3em; }

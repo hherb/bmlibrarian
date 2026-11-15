@@ -118,7 +118,110 @@ async function startUpdate() {
   }
 }
 
+/** Bytes in a gigabyte, for screen 2. */
+const GB = 1024 * 1024 * 1024;
+
+async function showFolder() {
+  show("folder");
+  try {
+    const folder = await invoke("library_folder");
+    $("folder-path").textContent = folder.path;
+    const free = folder.free_bytes === null ? "unknown" : `${(folder.free_bytes / GB).toFixed(0)} GB free`;
+    $("folder-space").textContent = `${free}. A topic library needs about ${(folder.estimate_bytes / GB).toFixed(0)} GB.`;
+  } catch (error) {
+    toast(String(error), "bad");
+  }
+}
+
+/** One status line per setup step, updated in place. */
+function setStep(line) {
+  let item = document.querySelector(`#step-list li[data-step="${line.step}"]`);
+  if (!item) {
+    item = document.createElement("li");
+    item.dataset.step = line.step;
+    const state = document.createElement("span");
+    state.className = "state";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = line.label;
+    const text = document.createElement("span");
+    text.className = "text";
+    item.append(state, label, text);
+    $("step-list").append(item);
+  }
+  item.className = line.state;
+  item.querySelector(".text").textContent = line.text;
+  if (line.state === "warning") toast(`${line.label}: ${line.text}`);
+}
+
+async function startSetup() {
+  show("installing");
+  $("installing-continue").disabled = true;
+  $("installing-retry").hidden = true;
+  try {
+    await invoke("start_setup");
+  } catch (error) {
+    toast(String(error), "bad");
+  }
+}
+
+async function showTopics() {
+  show("topic");
+  const list = $("topic-list");
+  list.replaceChildren();
+  const topics = await invoke("topic_counts");
+  topics.forEach((topic, index) => {
+    const label = document.createElement("label");
+    label.className = "topic";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "topic";
+    radio.value = topic.id;
+    radio.checked = index === 0;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = topic.name;
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = `${topic.count.toLocaleString()} papers${topic.live ? "" : " (as last counted)"}`;
+    label.append(radio, name, count);
+    list.append(label);
+  });
+}
+
+async function chooseTopic() {
+  const id = document.querySelector('input[name="topic"]:checked')?.value;
+  const when = document.querySelector('input[name="schedule"]:checked').value;
+  const schedule = when === "every" ? { every: { days: Number($("schedule-days").value) } } : when;
+  $("topic-start").disabled = true;
+  try {
+    const note = await invoke("choose_topic", { id, schedule });
+    if (note) toast(note);
+    show("building");
+    await startUpdate();
+    refreshCounts();
+  } catch (error) {
+    toast(String(error), "bad");
+  } finally {
+    $("topic-start").disabled = false;
+  }
+}
+
 function wire() {
+  $("welcome-start").addEventListener("click", showFolder);
+  $("folder-continue").addEventListener("click", startSetup);
+  $("installing-retry").addEventListener("click", startSetup);
+  $("installing-continue").addEventListener("click", showTopics);
+  $("topic-start").addEventListener("click", chooseTopic);
+  tauri.event.listen("setup-step", (event) => setStep(event.payload));
+  tauri.event.listen("setup-done", (event) => {
+    if (event.payload) {
+      $("installing-continue").disabled = false;
+    } else {
+      $("installing-retry").hidden = false;
+      toast("A step did not finish; see its line, then try again.", "bad");
+    }
+  });
   $("search-form").addEventListener("submit", runSearch);
   $("back").addEventListener("click", () => show("search"));
   $("go-search").addEventListener("click", () => show("search"));

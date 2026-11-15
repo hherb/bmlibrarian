@@ -11,6 +11,46 @@
     <section id="screen-welcome" class="screen" hidden>
       <h1>Welcome to BMLibrarian</h1>
       <p class="lead">Your own library of medical research, on this computer, searchable by meaning.</p>
+      <ol class="plain-steps">
+        <li>We set up a private database and the AI that reads the papers, all on this Mac.</li>
+        <li>You choose a topic; we download peer-reviewed, open-access full texts on it.</li>
+        <li>You search them by meaning, as you would ask a colleague.</li>
+      </ol>
+      <p class="muted">No administrator password needed. Nothing leaves this computer except the downloads.</p>
+      <div class="actions"><button class="primary" id="welcome-start">Start</button></div>
+    </section>
+
+    <section id="screen-folder" class="screen" hidden>
+      <h1>Where your library lives</h1>
+      <p class="lead">Your papers and their database go into one folder in your home folder.</p>
+      <div class="card">
+        <p class="folder-path" id="folder-path"></p>
+        <p class="muted" id="folder-space"></p>
+      </div>
+      <div class="actions"><button class="primary" id="folder-continue">Continue</button></div>
+    </section>
+
+    <section id="screen-installing" class="screen" hidden>
+      <h1>Setting up</h1>
+      <p class="lead">This takes a few minutes the first time.</p>
+      <ul class="step-list" id="step-list"></ul>
+      <div class="actions">
+        <button class="primary" id="installing-continue" disabled>Continue</button>
+        <button id="installing-retry" hidden>Try again</button>
+      </div>
+    </section>
+
+    <section id="screen-topic" class="screen" hidden>
+      <h1>Your library</h1>
+      <p class="lead">Choose a topic. We download peer-reviewed, open-access trials, systematic reviews and meta-analyses from 2021 to 2026, in full text.</p>
+      <div id="topic-list" class="topic-list"></div>
+      <h2>Keep it up to date</h2>
+      <div class="schedule">
+        <label><input type="radio" name="schedule" value="weekly" checked> Every week</label>
+        <label><input type="radio" name="schedule" value="every"> Every <input type="number" id="schedule-days" min="1" max="365" value="14" aria-label="days"> days</label>
+        <label><input type="radio" name="schedule" value="manual"> Only when I ask</label>
+      </div>
+      <div class="actions"><button class="primary" id="topic-start">Start downloading</button></div>
     </section>
     <section id="screen-building" class="screen" hidden>
       <h1>Building your library</h1>
