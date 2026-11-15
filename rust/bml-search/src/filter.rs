@@ -9,10 +9,12 @@ use regex::Regex;
 /// How many reference signals make a passage a reference list.
 pub const REFERENCE_SIGNALS: usize = 3;
 
-/// A passage that opens as a funding, interests or acknowledgements statement.
+/// A passage that opens as a funding, interests or acknowledgements
+/// statement: a heading ("Funding:", "Competing interests.") or "This study
+/// was funded by" — not any sentence that merely starts with "Funding".
 static STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*(funding|competing interests?|conflicts? of interest|declarations? of interest|acknowledg|(this|the) (work|study|research|trial) was (supported|funded))",
+        r"(?i)^\s*((funding|competing interests?|conflicts? of interest|declarations? of interest|acknowledge?ments?)(\s+(statement|information|sources?))?\s*[:.]|(this|the) (work|study|research|trial) was (supported|funded) by)",
     )
     .expect("valid")
 });
@@ -44,12 +46,11 @@ pub fn is_boilerplate(passage: &str) -> bool {
         .captures_iter(passage)
         .filter(|c| c.get(1).is_none())
         .count();
-    let signals = 2 * dois
-        + YEAR_VOLUME.find_iter(passage).count()
-        + PAGES.find_iter(passage).count()
-        + et_al
-        + NUMBERED.find_iter(passage).count();
-    signals >= REFERENCE_SIGNALS
+    // A bibliography always has a hard signal (a DOI, a page range or a
+    // year-volume); narrative citations ("Cuijpers et al. found…") have none.
+    let hard = dois + YEAR_VOLUME.find_iter(passage).count() + PAGES.find_iter(passage).count();
+    let signals = hard + dois + et_al + NUMBERED.find_iter(passage).count();
+    hard > 0 && signals >= REFERENCE_SIGNALS
 }
 
 #[cfg(test)]
@@ -108,6 +109,13 @@ mod tests {
              pregnancy-related deaths occur during or after delivery, and many are considered \
              preventable with timely recognition and management.6",
             "We randomised 120 adults with moderate depression to exercise or usual care.",
+            // A review's discussion: narrative citations, no bibliography.
+            "Cuijpers et al. found larger effects for CBT, Furukawa et al. reported similar \
+             response rates, and Linardon et al. showed that apps helped less.",
+            "Cuijpers et al. (2020) and Li et al. [12] pooled 45 trials; (Furukawa et al. 2021) \
+             reached the same conclusion for remission.",
+            "Funding for community mental health services fell during the study period, which \
+             may explain the lower uptake.",
         ] {
             assert!(!is_boilerplate(passage), "{passage}");
         }

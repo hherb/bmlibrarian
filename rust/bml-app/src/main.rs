@@ -91,15 +91,6 @@ async fn library_counts(app: State<'_, App>) -> Result<Progress, String> {
     })
 }
 
-/// How an update ended, for the window.
-#[derive(Clone, Serialize)]
-struct Finished {
-    /// Every paper found so far is downloaded and searchable.
-    complete: bool,
-    /// One plain-language line.
-    message: String,
-}
-
 /// Start (or resume) downloading the library; progress arrives as
 /// `library-progress` events and the end as one `library-done` event.
 #[tauri::command]
@@ -112,32 +103,21 @@ fn start_update(app: State<'_, App>, handle: AppHandle) -> Result<(), String> {
         return Err(ALREADY_RUNNING.to_string());
     }
     let events = handle.clone();
+    // Set when the pipeline says it is waiting for the internet, so the end
+    // reads "waiting" (and the window retries) rather than "Paused".
+    let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen_waiting = waited.clone();
     let update = library_worker::start_update(
         app.config_dir.clone(),
         move |p| {
+            if p.message == bml_library::WAITING_FOR_INTERNET {
+                seen_waiting.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             let _ = events.emit("library-progress", progress_line(p));
         },
         move |result| {
-            let finished = match result {
-                Ok(report) if !report.failed() && !report.stopped_early() => Finished {
-                    complete: true,
-                    message: "Your library is up to date.".to_string(),
-                },
-                Ok(report) if report.stopped_early() => Finished {
-                    complete: false,
-                    message: "Paused. Next time it carries on where it stopped.".to_string(),
-                },
-                Ok(_) => Finished {
-                    complete: false,
-                    message: "Some papers could not be downloaded; they are tried again next time."
-                        .to_string(),
-                },
-                Err(e) => Finished {
-                    complete: false,
-                    message: e,
-                },
-            };
-            let _ = handle.emit("library-done", finished);
+            let ended = view::finished(&result, waited.load(std::sync::atomic::Ordering::Relaxed));
+            let _ = handle.emit("library-done", ended);
         },
     )?;
     *slot = Some(update);
@@ -263,35 +243,49 @@ enum Schedule {
 /// Days in a week, for [`Schedule::Weekly`].
 const WEEKLY_DAYS: u32 = 7;
 
-/// Make the new library topic `id`'s library and record how often to update
-/// it. Returns a note for a toast when the schedule could not be recorded.
+/// Make the new, empty library topic `id`'s library.
 #[tauri::command]
-async fn choose_topic(
-    app: State<'_, App>,
-    id: String,
-    schedule: Schedule,
-) -> Result<Option<String>, String> {
+async fn choose_topic(app: State<'_, App>, id: String) -> Result<(), String> {
     let config_dir = app.config_dir.clone();
     // On a plain thread: the `postgres` client panics on Tauri's runtime.
-    std::thread::spawn(move || -> Result<Option<String>, String> {
-        let topic = bml_library::topics::topic(&id).ok_or_else(|| format!("There is no topic {id:?}."))?;
+    std::thread::spawn(move || -> Result<(), String> {
+        let topic =
+            bml_library::topics::topic(&id).ok_or_else(|| format!("There is no topic {id:?}."))?;
         let mut db = library_worker::open_db(&config_dir)?;
-        bml_library::topics::set_topic(&mut db, topic).map_err(|e| e.to_string())?;
-        let Some(bml) = std::env::current_exe().ok().as_deref().and_then(setup_view::bml_beside) else {
-            return Ok(Some(
-                "Automatic updates need the installed BMLibrarian; this copy updates while its window is open.".into(),
-            ));
-        };
-        match schedule {
-            Schedule::Manual => bml_pgserver::schedule::unschedule_updates(),
-            Schedule::Weekly => bml_pgserver::schedule::schedule_updates(&bml, &config_dir, WEEKLY_DAYS),
-            Schedule::Every { days } => bml_pgserver::schedule::schedule_updates(&bml, &config_dir, days),
-        }
-        .map_err(|e| format!("The update schedule could not be recorded: {e}"))?;
-        Ok(None)
+        bml_library::topics::set_topic(&mut db, topic).map_err(|e| e.to_string())
     })
     .join()
     .map_err(|_| "choosing the topic failed unexpectedly".to_string())?
+}
+
+/// Record how often the library is brought up to date. Call it only once
+/// this window's update holds the library's lock: on macOS the scheduler
+/// starts a `bml library update` at once, which must find the lock taken
+/// (and exit) rather than take it from the window. Returns a note for a toast
+/// when the schedule could not be recorded.
+#[tauri::command]
+fn set_schedule(app: State<'_, App>, schedule: Schedule) -> Result<Option<String>, String> {
+    let Some(bml) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(setup_view::bml_beside)
+    else {
+        return Ok(Some(
+            "Automatic updates need the installed BMLibrarian; this copy updates while its window is open."
+                .into(),
+        ));
+    };
+    match schedule {
+        Schedule::Manual => bml_pgserver::schedule::unschedule_updates(),
+        Schedule::Weekly => {
+            bml_pgserver::schedule::schedule_updates(&bml, &app.config_dir, WEEKLY_DAYS)
+        }
+        Schedule::Every { days } => {
+            bml_pgserver::schedule::schedule_updates(&bml, &app.config_dir, days)
+        }
+    }
+    .map_err(|e| format!("The update schedule could not be recorded: {e}"))?;
+    Ok(None)
 }
 
 /// Stop the update after the paper in flight.
@@ -330,7 +324,8 @@ fn main() {
             library_folder,
             start_setup,
             topic_counts,
-            choose_topic
+            choose_topic,
+            set_schedule
         ])
         .on_window_event(|window, event| {
             // Closing the window stops the update after the paper in flight.

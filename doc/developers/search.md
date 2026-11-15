@@ -41,7 +41,11 @@ walking skeleton the investor-demo spec asks for
    such passages drops out. The heuristic counts reference signals: DOIs
    (double weight), "(2022) 27:" year-volume, "56(9):37-44" page ranges,
    "et al." outside an in-text "(… et al., 2025)" citation, and numbered
-   author entries. `REFERENCE_SIGNALS` (3) or more is a reference list. On
+   author entries. `REFERENCE_SIGNALS` (3) or more, at least one of them a
+   hard signal (a DOI, a year-volume or a page range), is a reference list:
+   narrative citations in a discussion ("Cuijpers et al. found…") have no
+   hard signal and stay. A statement needs a heading form ("Funding:",
+   "Competing interests.") or "This study was funded by". On
    the demo library on 2026-11-15, 6 of 24 passages shown for 8 clinical
    questions were reference lists before the filter and none after.
 6. **One hit per paper** (`fusion::best_per_paper`): each paper's best

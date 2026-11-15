@@ -48,6 +48,49 @@ pub fn progress_line(progress: &Progress) -> String {
     format!("{step}: {}", progress.message)
 }
 
+/// How an update ended, for the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Finished {
+    /// Every paper found so far is downloaded and searchable.
+    pub complete: bool,
+    /// It stopped because the network is down; the window retries.
+    pub waiting: bool,
+    /// One plain-language line.
+    pub message: String,
+}
+
+/// How an update ended: `waited` says a [`WAITING_FOR_INTERNET`] line came
+/// during it, so a stop then is the network, not the Pause button.
+#[must_use]
+pub fn finished(result: &Result<bml_library::UpdateReport, String>, waited: bool) -> Finished {
+    let (complete, waiting, message) = match result {
+        Ok(report) if waited => (
+            false,
+            report.stopped_early(),
+            WAITING_FOR_INTERNET.to_string(),
+        ),
+        Ok(report) if !report.failed() && !report.stopped_early() => {
+            (true, false, "Your library is up to date.".to_string())
+        }
+        Ok(report) if report.stopped_early() => (
+            false,
+            false,
+            "Paused. Press Resume to carry on.".to_string(),
+        ),
+        Ok(_) => (
+            false,
+            false,
+            "Some papers could not be downloaded; they are tried again next time.".to_string(),
+        ),
+        Err(e) => (false, false, e.clone()),
+    };
+    Finished {
+        complete,
+        waiting,
+        message,
+    }
+}
+
 /// Minutes until every paper found so far is searchable, rounded up; `None`
 /// when nothing is left.
 #[must_use]
@@ -67,6 +110,37 @@ mod tests {
     use super::*;
     use bml_library::status::LibraryStatus;
     use bml_library::{Phase, Progress, WAITING_FOR_INTERNET};
+
+    #[test]
+    fn how_an_update_ended_reads_plainly() {
+        use bml_library::metadata::MetadataReport;
+        use bml_library::UpdateReport;
+        let done = finished(&Ok(UpdateReport::default()), false);
+        assert!(done.complete && !done.waiting);
+        let stopped = || UpdateReport {
+            metadata: Some(MetadataReport {
+                stopped: true,
+                ..MetadataReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        let offline = finished(&Ok(stopped()), true);
+        assert!(offline.waiting && !offline.complete);
+        assert_eq!(offline.message, WAITING_FOR_INTERNET);
+        let paused = finished(&Ok(stopped()), false);
+        assert!(!paused.waiting && !paused.complete);
+        assert!(paused.message.starts_with("Paused"), "{}", paused.message);
+        let failed = finished(
+            &Ok(UpdateReport {
+                failures: vec![(Phase::Fulltext, "x".into())],
+                ..UpdateReport::default()
+            }),
+            false,
+        );
+        assert!(!failed.complete && !failed.waiting);
+        let broken = finished(&Err("the database would not start".into()), false);
+        assert_eq!(broken.message, "the database would not start");
+    }
 
     #[test]
     fn counts_from_status_maps_the_library() {

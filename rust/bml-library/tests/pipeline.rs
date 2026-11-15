@@ -1939,3 +1939,35 @@ fn abstracts_are_searchable_before_full_text_and_the_first_round_is_short() {
         .unwrap();
     assert!(first_index < first_text, "{lines:#?}");
 }
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_dead_network_ends_full_text_after_a_few_papers() {
+    use bml_library::fulltext::FulltextEnd;
+    use bml_library::polite_client::NO_ANSWER_LIMIT;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    for pmcid in ["PMC910", "PMC911", "PMC912", "PMC913", "PMC914"] {
+        europepmc_paper(&mut db, pmcid);
+    }
+    // No routes: the network is down.
+    let web = FakeHttp::new();
+    let report = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.end, FulltextEnd::NoNetwork, "{report:?}");
+    assert_eq!(web.seen().lock().unwrap().len(), NO_ANSWER_LIMIT as usize);
+    // The paper whose request gave up is not recorded; the others wait an hour.
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM publication_fulltext"),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM publication_fulltext WHERE last_error_kind = 'lasting'"
+        ),
+        0
+    );
+}

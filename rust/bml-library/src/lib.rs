@@ -383,10 +383,11 @@ impl Pipeline {
                     progress,
                 ) {
                     Ok(window) => {
-                        let offline = window.days > 0
-                            && window.added + window.merged == 0
-                            && i64::try_from(window.errors.len()).unwrap_or(i64::MAX)
-                                >= window.days;
+                        let offline = client.gave_up()
+                            || (window.days > 0
+                                && window.added + window.merged == 0
+                                && i64::try_from(window.errors.len()).unwrap_or(i64::MAX)
+                                    >= window.days);
                         let rate_limited = window.rate_limited;
                         let summary = report.metadata.get_or_insert_with(MetadataReport::default);
                         summary.add(window);
@@ -423,10 +424,20 @@ impl Pipeline {
                     options.stop,
                     progress,
                 ) {
-                    Ok(r) => report
-                        .fulltext
-                        .get_or_insert_with(FulltextReport::default)
-                        .add(r),
+                    Ok(r) => {
+                        let no_network = r.end == FulltextEnd::NoNetwork;
+                        report
+                            .fulltext
+                            .get_or_insert_with(FulltextReport::default)
+                            .add(r);
+                        if no_network {
+                            // Index what arrived, then stop: the next run carries on.
+                            if phases.index {
+                                self.index_once(db, &mut embedder, options.stop, report, progress);
+                            }
+                            break;
+                        }
+                    }
                     Err(e) => {
                         report.failures.push((Phase::Fulltext, e.to_string()));
                         break;

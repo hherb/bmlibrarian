@@ -252,6 +252,9 @@ pub enum FulltextEnd {
         /// When the phase may run again (database time, as text).
         until: String,
     },
+    /// Several requests in a row got no answer: the network is down. The
+    /// paper in flight was not recorded; the next run carries on.
+    NoNetwork,
 }
 
 /// What the full-text phase did.
@@ -803,6 +806,15 @@ pub fn run(
         let result = service.fetch_fulltext(&request);
         service.clear_log();
         let records = polite.take_records();
+        if polite.gave_up() {
+            // Not this paper's fault: leave it untried and stop asking.
+            progress(Progress {
+                phase: Phase::Fulltext,
+                message: crate::WAITING_FOR_INTERNET.to_string(),
+            });
+            report.end = FulltextEnd::NoNetwork;
+            break;
+        }
         if polite.rate_limited() {
             let until = record_rate_limit(db)?;
             progress(Progress {

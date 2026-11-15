@@ -24,8 +24,12 @@ function toast(message, kind = "warn") {
   setTimeout(() => box.remove(), TOAST_MS);
 }
 
-/** How often screen 5's counts are refreshed while an update runs, in ms. */
+/** How often screen 5's counts are refreshed, in ms. */
 const COUNTS_EVERY_MS = 4000;
+/** How long to wait before trying again after the internet dropped, in ms. */
+const RETRY_OFFLINE_MS = 45000;
+/** The Rust side's answer when the library's lock is held elsewhere. */
+const ALREADY_RUNNING = "An update of this library is already running.";
 /** How long a passage may be on a result card, in characters. */
 const PASSAGE_CHARS = 420;
 
@@ -95,7 +99,7 @@ async function refreshCounts() {
       ? `About ${progress.minutes_left.toLocaleString()} minutes to go for the papers found so far.`
       : "";
     updateRunning = progress.running;
-    $("pause").disabled = !progress.running;
+    $("pause").textContent = progress.running ? "Pause" : "Resume";
   } catch (error) {
     // The counts are a nicety; a failed refresh is retried on the next tick.
   }
@@ -108,13 +112,24 @@ function showProgress(line) {
   searchLine.hidden = false;
 }
 
+let retryTimer = null;
+
+/** Start (or resume) the download; true when this window now runs it. */
 async function startUpdate() {
+  clearTimeout(retryTimer);
   try {
     await invoke("start_update");
     updateRunning = true;
+    $("pause").textContent = "Pause";
     showProgress("Starting…");
+    return true;
   } catch (error) {
-    toast(String(error));
+    if (String(error) === ALREADY_RUNNING) {
+      showProgress("Downloading in the background…");
+    } else {
+      toast(String(error));
+    }
+    return false;
   }
 }
 
@@ -195,10 +210,13 @@ async function chooseTopic() {
   const schedule = when === "every" ? { every: { days: Number($("schedule-days").value) } } : when;
   $("topic-start").disabled = true;
   try {
-    const note = await invoke("choose_topic", { id, schedule });
-    if (note) toast(note);
+    await invoke("choose_topic", { id });
     show("building");
     await startUpdate();
+    // Only now: the scheduler starts an update at once, which must find this
+    // window's update holding the library's lock.
+    const note = await invoke("set_schedule", { schedule });
+    if (note) toast(note);
     refreshCounts();
   } catch (error) {
     toast(String(error), "bad");
@@ -227,17 +245,30 @@ function wire() {
   $("go-search").addEventListener("click", () => show("search"));
   $("show-building").addEventListener("click", () => { show("building"); refreshCounts(); });
   $("pause").addEventListener("click", async () => {
-    await invoke("pause_update");
-    showProgress("Pausing after the paper in flight…");
+    if (updateRunning) {
+      await invoke("pause_update");
+      showProgress("Pausing after the paper in flight…");
+    } else {
+      await startUpdate();
+    }
   });
   tauri.event.listen("library-progress", (event) => showProgress(event.payload));
   tauri.event.listen("library-done", (event) => {
     updateRunning = false;
+    $("pause").textContent = "Resume";
     showProgress(event.payload.message);
     $("search-progress").hidden = event.payload.complete;
+    if (event.payload.waiting) {
+      // Try again by itself once the internet may be back.
+      retryTimer = setTimeout(startUpdate, RETRY_OFFLINE_MS);
+    }
     refreshCounts();
   });
-  setInterval(() => { if (updateRunning) refreshCounts(); }, COUNTS_EVERY_MS);
+  // Screen 5's counts move whoever runs the update (this window, or a
+  // scheduled one in the background).
+  setInterval(() => {
+    if (updateRunning || !$("screen-building").hidden) refreshCounts();
+  }, COUNTS_EVERY_MS);
 }
 
 async function start() {

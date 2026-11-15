@@ -280,6 +280,11 @@ fn summarise(report: &UpdateReport) {
         match &f.end {
             FulltextEnd::Done => {}
             FulltextEnd::Stopped => say!("  Stopped; run again to carry on."),
+            FulltextEnd::NoNetwork => {
+                say!(
+                    "  No answer from the server several times; check the internet and run again."
+                );
+            }
             FulltextEnd::RateLimited { until } => {
                 say!("  medRxiv asked us to slow down; full text resumes after {until}.");
             }

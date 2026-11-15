@@ -10,6 +10,12 @@ use bmlib::publications::fetchers::{FetchError, HttpClient, HttpResponse};
 /// The HTTP status a server sends when it rate-limits us.
 pub const HTTP_TOO_MANY_REQUESTS: u16 = 429;
 
+/// Requests in a row with no answer after which the network is taken to be
+/// down: every later request fails unsent, so a dead phone link costs a few
+/// requests (and, when they hang, a few time-outs) rather than one per day or
+/// paper left.
+pub const NO_ANSWER_LIMIT: u32 = 3;
+
 /// What one request got.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestOutcome {
@@ -33,6 +39,8 @@ pub struct RequestRecord {
 struct State {
     last_request_end: Option<Instant>,
     rate_limited: bool,
+    no_answer_in_a_row: u32,
+    gave_up: bool,
     records: Vec<RequestRecord>,
 }
 
@@ -60,6 +68,8 @@ impl PoliteClient {
             state: Mutex::new(State {
                 last_request_end: None,
                 rate_limited: false,
+                no_answer_in_a_row: 0,
+                gave_up: false,
                 records: Vec::new(),
             }),
         }
@@ -85,18 +95,29 @@ impl PoliteClient {
     pub fn rate_limited(&self) -> bool {
         self.state().rate_limited
     }
+
+    /// Whether [`NO_ANSWER_LIMIT`] requests in a row got no answer; every
+    /// later request fails unsent.
+    pub fn gave_up(&self) -> bool {
+        self.state().gave_up
+    }
 }
 
 impl HttpClient for PoliteClient {
     fn get(&self, url: &str) -> Result<HttpResponse, FetchError> {
         let mut state = self.state();
-        if state.rate_limited {
+        if state.rate_limited || state.gave_up {
             state.records.push(RequestRecord {
                 url: url.to_string(),
                 outcome: RequestOutcome::NotSent,
             });
+            let why = if state.rate_limited {
+                "the server rate-limited an earlier request"
+            } else {
+                "the last requests got no answer (no network)"
+            };
             return Err(FetchError::Transport(format!(
-                "not sent: the server rate-limited an earlier request (GET {url})"
+                "not sent: {why} (GET {url})"
             )));
         }
         if let Some(end) = state.last_request_end {
@@ -114,6 +135,12 @@ impl HttpClient for PoliteClient {
         };
         if outcome == RequestOutcome::Status(HTTP_TOO_MANY_REQUESTS) {
             state.rate_limited = true;
+        }
+        if matches!(outcome, RequestOutcome::NoResponse(_)) {
+            state.no_answer_in_a_row += 1;
+            state.gave_up |= state.no_answer_in_a_row >= NO_ANSWER_LIMIT;
+        } else {
+            state.no_answer_in_a_row = 0;
         }
         state.records.push(RequestRecord {
             url: url.to_string(),
@@ -165,6 +192,30 @@ mod tests {
             client.take_records().is_empty(),
             "taking empties the record"
         );
+    }
+
+    #[test]
+    fn no_answer_in_a_row_stops_every_later_request_unsent() {
+        // No routes: every request is a transport error (the network is down).
+        let fake = FakeHttp::new().route("https://x/ok", 200, "ok");
+        let seen = fake.seen();
+        let (client, _) = client(fake, Duration::ZERO);
+        for _ in 0..NO_ANSWER_LIMIT - 1 {
+            assert!(client.get("https://x/down").is_err());
+        }
+        // An answer resets the count.
+        client.get("https://x/ok").unwrap();
+        assert!(!client.gave_up());
+        for _ in 0..NO_ANSWER_LIMIT {
+            assert!(client.get("https://x/down").is_err());
+        }
+        assert!(client.gave_up());
+        let sent = seen.lock().unwrap().len();
+        assert!(
+            client.get("https://x/ok").is_err(),
+            "not sent once given up"
+        );
+        assert_eq!(seen.lock().unwrap().len(), sent);
     }
 
     #[test]
