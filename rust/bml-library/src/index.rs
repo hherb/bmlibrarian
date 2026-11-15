@@ -260,7 +260,8 @@ fn canonical(
 pub struct PaperText {
     /// The title.
     pub title: String,
-    /// One line of where and when: "Journal · 2024".
+    /// One line of where and when: "Journal · 2024", plus a note when a held
+    /// full text could not be read.
     pub meta: String,
     /// The full text when one is held and readable, else the abstract.
     pub text: String,
@@ -299,9 +300,22 @@ pub fn paper_text(
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
+    let mut meta = meta;
     let held = match (opt_text(&row, "form")?, opt_text(&row, "cache_key")?) {
         (Some(form), Some(key)) if form != ABSTRACT_CONVERTER => {
-            canonical(cache, &form, &key, &title).ok().map(|c| c.text)
+            match canonical(cache, &form, &key, &title) {
+                Ok(canonical) => Some(canonical.text),
+                Err(ReadFailure::Lasting(why) | ReadFailure::Passing(why)) => {
+                    // Shown, not hidden: the library says it holds the text.
+                    let note = format!("full text could not be read ({why}); showing the abstract");
+                    meta = if meta.is_empty() {
+                        note
+                    } else {
+                        format!("{meta} · {note}")
+                    };
+                    None
+                }
+            }
         }
         _ => None,
     };
@@ -605,6 +619,29 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records what the model was asked to embed.
+    struct Recording(Vec<String>);
+    impl ChunkEmbedder for Recording {
+        fn model_sha256(&self) -> &str {
+            "recording"
+        }
+        fn embed(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+            self.0.extend(texts.iter().map(|t| (*t).to_string()));
+            Ok(texts.iter().map(|_| vec![0.0; 4]).collect())
+        }
+    }
+
+    #[test]
+    fn embed_query_sends_the_models_query_prefix_once() {
+        let mut model = Recording(Vec::new());
+        model.embed_query("ketamine for depression").unwrap();
+        assert_eq!(
+            model.0,
+            [bmlib::embed::query_text("ketamine for depression")]
+        );
+        assert_eq!(model.0[0], "query: ketamine for depression");
+    }
 
     #[test]
     fn halfvec_literals_are_bracketed_lists() {

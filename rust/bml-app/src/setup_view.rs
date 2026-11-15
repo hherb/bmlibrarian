@@ -23,10 +23,53 @@ pub const MB_PER_PAPER: f64 = 1.2;
 #[must_use]
 pub fn largest_topic_bytes() -> u64 {
     let papers = TOPICS.iter().map(|t| t.stored_count).max().unwrap_or(0);
-    // A few GB at most; the cast cannot lose anything that matters here.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let bytes = (f64::from(papers) * MB_PER_PAPER * 1024.0 * 1024.0) as u64;
-    bytes
+    // A few GB at most: the casts lose nothing that matters for an estimate.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    {
+        (f64::from(papers) * MB_PER_PAPER * MB as f64) as u64
+    }
+}
+
+/// How often the library is brought up to date (screen 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Schedule {
+    /// Every week (the default).
+    Weekly,
+    /// Every `days` days.
+    Every {
+        /// Days between updates, 1 to [`MAX_SCHEDULE_DAYS`].
+        days: u32,
+    },
+    /// Only when asked.
+    Manual,
+}
+
+/// Days in a week, for [`Schedule::Weekly`].
+pub const WEEKLY_DAYS: u32 = 7;
+/// The longest interval accepted, as `bml library schedule every` allows.
+pub const MAX_SCHEDULE_DAYS: u32 = 365;
+
+impl Schedule {
+    /// The interval in days, `None` for only-when-asked, or a plain reason.
+    ///
+    /// # Errors
+    ///
+    /// An interval outside 1 to [`MAX_SCHEDULE_DAYS`] days.
+    pub fn days(self) -> Result<Option<u32>, String> {
+        match self {
+            Schedule::Weekly => Ok(Some(WEEKLY_DAYS)),
+            Schedule::Manual => Ok(None),
+            Schedule::Every { days } if (1..=MAX_SCHEDULE_DAYS).contains(&days) => Ok(Some(days)),
+            Schedule::Every { .. } => Err(format!(
+                "Choose an update interval of 1 to {MAX_SCHEDULE_DAYS} days."
+            )),
+        }
+    }
 }
 
 /// The `bml` program next to `app_exe`, which login entries and scheduled
@@ -187,6 +230,15 @@ mod tests {
     use bmlib::publications::fetchers::{FetchError, HttpClient, HttpResponse};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn schedule_days_are_checked() {
+        assert_eq!(Schedule::Weekly.days(), Ok(Some(7)));
+        assert_eq!(Schedule::Manual.days(), Ok(None));
+        assert_eq!(Schedule::Every { days: 14 }.days(), Ok(Some(14)));
+        assert!(Schedule::Every { days: 0 }.days().is_err());
+        assert!(Schedule::Every { days: 366 }.days().is_err());
+    }
 
     #[test]
     fn bml_beside_finds_the_sibling_program() {

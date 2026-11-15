@@ -324,6 +324,8 @@ value — pick one, or pull an item from ROADMAP.md:
   - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
     PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
     merged commit once #790 lands (ROADMAP, investor-demo follow-ups).
+  - PR #459's review follow-ups that were left for after the meeting are in
+    #460.
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.

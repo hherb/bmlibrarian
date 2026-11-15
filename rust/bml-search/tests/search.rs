@@ -31,7 +31,21 @@ fn server(tmp: &Path, pg_search: bool) -> Option<(StopOnDrop, Client)> {
     let extension_dirs = if pg_search {
         common::test_extension_dirs()
     } else {
-        Vec::new()
+        // Leave out the folders that bring pg_search. Where pgvector shares
+        // one with it (a pgdist bundle's `ext`), a server without pg_search
+        // cannot be had here; bml-db's tests cover tsvector on such a run.
+        let (search, rest): (Vec<PathBuf>, Vec<PathBuf>) = common::test_extension_dirs()
+            .into_iter()
+            .partition(|d| bml_pgserver::conf::provides_pg_search(d));
+        if search.iter().any(|d| {
+            bml_pgserver::conf::extension_control_dir(d)
+                .join("vector.control")
+                .is_file()
+        }) {
+            eprintln!("skipped: pgvector and pg_search share an extension folder here");
+            return None;
+        }
+        rest
     };
     init(
         &InitRequest {
@@ -217,6 +231,20 @@ fn finds_the_paper_by_meaning() {
 #[ignore = "needs BML_TEST_PG_BINDIR"]
 fn works_with_tsvector_fallback() {
     finds_by_meaning(false);
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn the_fallback_server_has_the_tsvector_index() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path(), false) else {
+        return;
+    };
+    assert_eq!(
+        bml_db::lexical_index(&mut db).unwrap(),
+        Some(bml_db::LexicalIndex::TsVector)
+    );
 }
 
 #[test]

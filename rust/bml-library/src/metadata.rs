@@ -1,4 +1,5 @@
-//! The metadata phase: bmlib's `medrxiv-details` source, synced day by day.
+//! The metadata phase: a bmlib source synced day by day (`medrxiv-details`,
+//! or `europepmc` with a topic's search, through [`run_window`]).
 //! bmlib's day ledger (`download_days`) is the checkpoint, so a stopped or
 //! failed run resumes at the first day not yet recorded complete.
 

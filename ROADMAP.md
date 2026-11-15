@@ -191,12 +191,14 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
 
 ## Investor-demo follow-ups (after 2026-11-23)
 
-- Re-pin bmlib to the merged `europepmc` source (feat/europepmc-sync) and
-  drop the local `rust/.cargo/config.toml` patch.
+- Re-pin bmlib (`rust/Cargo.toml`) to the merge commit of the `europepmc`
+  source (bmlib PR #790).
 - Fix #451 (login entries named per config folder), so two installs on one
   Mac do not share `org.bmlibrarian.*` entries.
 - A folder chooser on screen 2; editing the topic search; PDFs in the reader;
   the signed `.dmg`; Windows and Linux app builds.
+- The review follow-ups in #460 (a `FulltextSource` enum, one year-range
+  constant, and the deferred minors).
 
 ## Tracked separately on GitHub
 

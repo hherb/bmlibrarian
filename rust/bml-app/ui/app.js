@@ -28,6 +28,8 @@ function toast(message, kind = "warn") {
 const COUNTS_EVERY_MS = 4000;
 /** How long to wait before trying again after the internet dropped, in ms. */
 const RETRY_OFFLINE_MS = 45000;
+/** The longest update interval, in days (the Rust side's MAX_SCHEDULE_DAYS). */
+const MAX_SCHEDULE_DAYS = 365;
 /** The Rust side's answer when the library's lock is held elsewhere. */
 const ALREADY_RUNNING = "An update of this library is already running.";
 /** How long a passage may be on a result card, in characters. */
@@ -127,7 +129,9 @@ async function startUpdate() {
     if (String(error) === ALREADY_RUNNING) {
       showProgress("Downloading in the background…");
     } else {
-      toast(String(error));
+      // On the screen too: a toast fades, and "Starting…" would stay.
+      showProgress(String(error));
+      toast(String(error), "bad");
     }
     return false;
   }
@@ -197,7 +201,7 @@ async function showTopics() {
     name.className = "name";
     name.textContent = topic.name;
     const count = document.createElement("span");
-    count.className = "count";
+    count.className = "topic-count";
     count.textContent = `${topic.count.toLocaleString()} papers${topic.live ? "" : " (as last counted)"}`;
     label.append(radio, name, count);
     list.append(label);
@@ -207,7 +211,12 @@ async function showTopics() {
 async function chooseTopic() {
   const id = document.querySelector('input[name="topic"]:checked')?.value;
   const when = document.querySelector('input[name="schedule"]:checked').value;
-  const schedule = when === "every" ? { every: { days: Number($("schedule-days").value) } } : when;
+  const days = Number($("schedule-days").value);
+  if (when === "every" && !(Number.isInteger(days) && days >= 1 && days <= MAX_SCHEDULE_DAYS)) {
+    toast(`Choose an update interval of 1 to ${MAX_SCHEDULE_DAYS} days.`, "bad");
+    return;
+  }
+  const schedule = when === "every" ? { every: { days } } : when;
   $("topic-start").disabled = true;
   try {
     await invoke("choose_topic", { id });

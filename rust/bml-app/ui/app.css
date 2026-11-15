@@ -76,15 +76,15 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 /* Screen 5: building the library */
 .counts { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1.5rem 0; }
-.count {
+.counts .count {
   flex: 1 1 10rem;
   background: var(--card);
   border: 0.0625rem solid var(--line);
   border-radius: var(--radius);
   padding: 1rem 1.25rem;
 }
-.count .number { display: block; font-size: 2.2rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-.count .label { color: var(--muted); }
+.counts .count .number { display: block; font-size: 2.2rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.counts .count .label { color: var(--muted); }
 
 /* Screen 6: search */
 .progress-line { margin: 0 0 1rem; }
@@ -141,6 +141,6 @@ button:disabled { opacity: 0.55; cursor: default; }
 }
 .topic:has(input:checked) { border-color: var(--accent); }
 .topic .name { font-weight: 600; flex: 1; }
-.topic .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.topic .topic-count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .schedule { display: flex; flex-direction: column; gap: 0.4rem; }
 .schedule input[type="number"] { width: 4.5em; font: inherit; padding: 0.15em 0.3em; }

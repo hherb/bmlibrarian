@@ -1,6 +1,7 @@
-//! The full-text phase: for one paper at a time, the newest version's JATS
-//! XML (or, without JATS, its PDF) from medRxiv into the library's
-//! documents folder, recorded in `publication_fulltext`.
+//! The full-text phase: for one paper at a time, its full text into the
+//! library's documents folder, recorded in `publication_fulltext`. A medRxiv
+//! paper's newest version's JATS XML (or, without JATS, its PDF); a Europe PMC
+//! paper's own `fullTextXML`.
 //!
 //! Only the paper's own sources are asked (bmlib's Tier 0): the request
 //! carries no DOI, PMID or PMC ID, so no Europe PMC, PMC, Unpaywall or DOI
@@ -323,8 +324,9 @@ impl Paper {
         self.form.as_deref().is_some_and(|f| f != "abstract")
     }
 
-    /// The cache key for this paper's newest version: `<doi>v<version>`,
-    /// sanitised as bmlib's service does.
+    /// The cache key for this paper's newest version, sanitised as bmlib's
+    /// service does: `<doi>v<version>` for medRxiv, the PMC ID (else
+    /// `publication-<id>`) for Europe PMC.
     #[must_use]
     pub fn new_cache_key(&self) -> String {
         sanitize_identifier(&self.identifier())

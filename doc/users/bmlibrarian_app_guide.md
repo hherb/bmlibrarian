@@ -42,8 +42,9 @@ After the first start, the app opens straight on Search.
 ## If the internet drops out
 
 The download says *"Waiting for the internet. Downloading carries on when
-it's back."* and stops. Nothing is lost. Press **Search what is ready**, and
-start again later (or the scheduled update does).
+it's back."* and stops. Nothing is lost: the app tries again by itself about
+every minute while the window is open, and carries on once the internet is
+back. Meanwhile, **Search what is ready** works as usual.
 
 ## Good to know
 

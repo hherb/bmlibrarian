@@ -40,12 +40,16 @@ pub fn progress_line(progress: &Progress) -> String {
     if progress.message == WAITING_FOR_INTERNET {
         return progress.message.clone();
     }
-    let step = match progress.phase {
+    format!("{}: {}", step_name(progress.phase), progress.message)
+}
+
+/// A phase as a non-technical reader names the step.
+fn step_name(phase: Phase) -> &'static str {
+    match phase {
         Phase::Metadata => "Finding papers",
         Phase::Fulltext => "Downloading full text",
         Phase::Index => "Making papers searchable",
-    };
-    format!("{step}: {}", progress.message)
+    }
 }
 
 /// How an update ended, for the window.
@@ -60,35 +64,74 @@ pub struct Finished {
 }
 
 /// How an update ended: `waited` says a [`WAITING_FOR_INTERNET`] line came
-/// during it, so a stop then is the network, not the Pause button.
+/// during it, so a stop then is the network, not the Pause button. A failure
+/// is named before anything else, then the network, a rate limit and a pause.
 #[must_use]
 pub fn finished(result: &Result<bml_library::UpdateReport, String>, waited: bool) -> Finished {
-    let (complete, waiting, message) = match result {
-        Ok(report) if waited => (
-            false,
-            report.stopped_early(),
-            WAITING_FOR_INTERNET.to_string(),
-        ),
-        Ok(report) if !report.failed() && !report.stopped_early() => {
-            (true, false, "Your library is up to date.".to_string())
-        }
-        Ok(report) if report.stopped_early() => (
-            false,
-            false,
-            "Paused. Press Resume to carry on.".to_string(),
-        ),
-        Ok(_) => (
-            false,
-            false,
-            "Some papers could not be downloaded; they are tried again next time.".to_string(),
-        ),
-        Err(e) => (false, false, e.clone()),
-    };
-    Finished {
+    let ended = |complete, waiting, message: String| Finished {
         complete,
         waiting,
         message,
+    };
+    let report = match result {
+        Ok(report) => report,
+        Err(e) => return ended(false, false, e.clone()),
+    };
+    if let Some((phase, why)) = report.failures.first() {
+        return ended(
+            false,
+            false,
+            format!("{} stopped: {why}", step_name(*phase)),
+        );
     }
+    if let Some(why) = &report.last_update_error {
+        return ended(false, false, why.clone());
+    }
+    if waited && report.stopped_early() {
+        return ended(false, true, WAITING_FOR_INTERNET.to_string());
+    }
+    if let Some(until) = rate_limited_until(report) {
+        let when = until.map_or_else(
+            || "at the next update".to_string(),
+            |until| format!("after {until}"),
+        );
+        return ended(
+            false,
+            false,
+            format!("Europe PMC asked us to slow down; downloading carries on {when}."),
+        );
+    }
+    if report.stopped_early() {
+        return ended(
+            false,
+            false,
+            "Paused. Press Resume to carry on.".to_string(),
+        );
+    }
+    if report.failed() {
+        return ended(
+            false,
+            false,
+            "Some papers could not be downloaded or made searchable; they are tried again next time."
+                .to_string(),
+        );
+    }
+    ended(true, false, "Your library is up to date.".to_string())
+}
+
+/// `Some` when Europe PMC rate-limited the update, with the time full text
+/// may resume when it is known.
+fn rate_limited_until(report: &bml_library::UpdateReport) -> Option<Option<String>> {
+    if let Some(bml_library::fulltext::FulltextEnd::RateLimited { until }) =
+        report.fulltext.as_ref().map(|f| &f.end)
+    {
+        return Some(Some(until.clone()));
+    }
+    report
+        .metadata
+        .as_ref()
+        .is_some_and(|m| m.rate_limited)
+        .then_some(None)
 }
 
 /// Minutes until every paper found so far is searchable, rounded up; `None`
@@ -110,6 +153,94 @@ mod tests {
     use super::*;
     use bml_library::status::LibraryStatus;
     use bml_library::{Phase, Progress, WAITING_FOR_INTERNET};
+
+    #[test]
+    fn a_rate_limit_is_not_a_pause() {
+        use bml_library::fulltext::{FulltextEnd, FulltextReport};
+        use bml_library::metadata::MetadataReport;
+        use bml_library::UpdateReport;
+        let metadata = UpdateReport {
+            metadata: Some(MetadataReport {
+                stopped: true,
+                rate_limited: true,
+                ..MetadataReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        let ended = finished(&Ok(metadata), false);
+        assert!(
+            ended.message.contains("asked us to slow down"),
+            "{}",
+            ended.message
+        );
+        assert!(!ended.message.starts_with("Paused"));
+        let fulltext = UpdateReport {
+            fulltext: Some(FulltextReport {
+                end: FulltextEnd::RateLimited {
+                    until: "2026-11-16 10:00".into(),
+                },
+                ..FulltextReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        let ended = finished(&Ok(fulltext), false);
+        assert!(
+            ended.message.contains("2026-11-16 10:00"),
+            "{}",
+            ended.message
+        );
+    }
+
+    #[test]
+    fn a_failure_says_what_failed() {
+        use bml_library::UpdateReport;
+        let report = UpdateReport {
+            failures: vec![(
+                Phase::Index,
+                "the embedding model is missing or damaged; run `bml setup`".into(),
+            )],
+            ..UpdateReport::default()
+        };
+        // Even with a waiting line seen, the failure is what the user needs.
+        let ended = finished(&Ok(report), true);
+        assert!(!ended.waiting && !ended.complete);
+        assert!(
+            ended.message.contains("embedding model is missing"),
+            "{}",
+            ended.message
+        );
+        let stamp = UpdateReport {
+            last_update_error: Some("recording the update's time failed: disk full".into()),
+            ..UpdateReport::default()
+        };
+        assert!(finished(&Ok(stamp), false).message.contains("disk full"));
+    }
+
+    #[test]
+    fn a_real_offline_report_reads_waiting() {
+        use bml_library::fulltext::{FulltextEnd, FulltextReport};
+        use bml_library::metadata::MetadataReport;
+        use bml_library::UpdateReport;
+        // As a_round_with_no_network_stops_cleanly leaves it: errors and stopped.
+        let metadata = UpdateReport {
+            metadata: Some(MetadataReport {
+                days: 7,
+                errors: vec!["day failed".into(); 7],
+                stopped: true,
+                ..MetadataReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        assert!(finished(&Ok(metadata), true).waiting);
+        let fulltext = UpdateReport {
+            fulltext: Some(FulltextReport {
+                end: FulltextEnd::NoNetwork,
+                ..FulltextReport::default()
+            }),
+            ..UpdateReport::default()
+        };
+        assert!(finished(&Ok(fulltext), true).waiting);
+    }
 
     #[test]
     fn how_an_update_ended_reads_plainly() {

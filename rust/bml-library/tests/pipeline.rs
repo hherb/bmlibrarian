@@ -1871,7 +1871,17 @@ fn paper_text_reads_the_stored_text_or_the_abstract() {
     assert!(text.text.len() > 500, "{}", text.text);
     let abstract_only = paper_text(&cache, &mut db, i64::from(bare)).unwrap();
     assert_eq!(abstract_only.text, "We randomised adults with depression.");
+    assert!(!abstract_only.meta.contains("could not be read"));
     assert!(paper_text(&cache, &mut db, 999_999).is_err());
+    // A held full text whose file is gone shows the abstract, and says so.
+    std::fs::remove_dir_all(tmp.path().join("documents")).unwrap();
+    let lost = paper_text(&cache, &mut db, i64::from(full)).unwrap();
+    assert_eq!(lost.text, "We randomised adults with depression.");
+    assert!(
+        lost.meta.contains("full text could not be read"),
+        "{}",
+        lost.meta
+    );
 }
 
 #[test]
@@ -1969,5 +1979,169 @@ fn a_dead_network_ends_full_text_after_a_few_papers() {
             "SELECT count(*) FROM publication_fulltext WHERE last_error_kind = 'lasting'"
         ),
         0
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_topic_librarys_from_day_is_remembered() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(&query, "2024-01-01", "2024-02-20", &[]);
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let from = |day: Option<&str>| UpdateOptions {
+        from: day.map(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap()),
+        phases: only(Phase::Metadata),
+        stop: &stop,
+    };
+    p.update(&mut db, &from(Some("2024-02-10")), &mut |_| {});
+    epmc.seen().lock().unwrap().clear();
+    // A scheduled run passes no --from: the library keeps the day chosen.
+    p.update(&mut db, &from(None), &mut |_| {});
+    let seen = epmc.seen().lock().unwrap().clone();
+    assert!(
+        !seen.contains(&europepmc_url(&query, "2024-02-09")),
+        "{seen:#?}"
+    );
+    assert!(
+        !seen.contains(&europepmc_url(&query, "2024-01-01")),
+        "{seen:#?}"
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn offline_days_are_fetched_when_the_network_is_back() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let offline = FakeHttp::new();
+    let stop = AtomicBool::new(false);
+    update_topic(
+        &topic_pipeline(tmp.path(), &offline),
+        &mut db,
+        &stop,
+        &mut |_| {},
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM download_days WHERE status = 'completed'"
+        ),
+        0
+    );
+    // The network is back.
+    let online = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC950")],
+    );
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &online),
+        &mut db,
+        &stop,
+        &mut |_| {},
+    );
+    assert!(!report.failed() && !report.stopped_early(), "{report:?}");
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        1
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_captive_portal_reads_as_offline_after_one_round() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    // Every day answers 200 with a hotel's sign-in page.
+    let portal = FakeHttp::new();
+    let mut day = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    while day <= NaiveDate::from_ymd_opt(2024, 2, 20).unwrap() {
+        portal.set(
+            &europepmc_url(&query, &day.to_string()),
+            200,
+            "<html>Sign in to the Wi-Fi</html>",
+        );
+        day = day.succ_opt().unwrap();
+    }
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &portal),
+        &mut db,
+        &stop,
+        &mut |l| lines.push(l),
+    );
+    assert!(report.stopped_early(), "{report:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.message == bml_library::WAITING_FOR_INTERNET),
+        "{lines:#?}"
+    );
+    // The first round's week only, not every round back to 2024-01-01.
+    assert!(portal.seen().lock().unwrap().len() <= 7);
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn one_bad_day_does_not_stop_the_update() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-01-10", "PMC960")],
+    );
+    // One day of the first round answers with an error body.
+    epmc.set(
+        &europepmc_url(&query, "2024-02-19"),
+        200,
+        r#"{"errMsg":"busy"}"#,
+    );
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &epmc),
+        &mut db,
+        &stop,
+        &mut |l| lines.push(l),
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.message != bml_library::WAITING_FOR_INTERNET),
+        "{lines:#?}"
+    );
+    assert!(report.failed(), "the bad day is reported");
+    // The older rounds still ran.
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        1
     );
 }

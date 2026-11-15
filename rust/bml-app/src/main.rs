@@ -50,8 +50,11 @@ async fn search(app: State<'_, App>, query: String) -> Result<Vec<SearchHit>, St
 /// A paper to read: title, one line of journal and year, and its text.
 #[derive(Serialize)]
 struct PaperView {
+    /// The title.
     title: String,
+    /// Journal and year, and a note when the full text could not be read.
     meta: String,
+    /// The full text, else the abstract.
     text: String,
 }
 
@@ -69,8 +72,11 @@ async fn open_paper(app: State<'_, App>, id: i64) -> Result<PaperView, String> {
 /// Screen 5's counts and how many minutes are left (none when done).
 #[derive(Serialize)]
 struct Progress {
+    /// What the library holds.
     counts: LibraryCounts,
+    /// Minutes until the papers found so far are searchable; none when done.
     minutes_left: Option<u64>,
+    /// Whether this window's update is running.
     running: bool,
 }
 
@@ -127,8 +133,11 @@ fn start_update(app: State<'_, App>, handle: AppHandle) -> Result<(), String> {
 /// Screen 2: the library folder, its free space and a rough size estimate.
 #[derive(Serialize)]
 struct FolderInfo {
+    /// The library folder setup will create.
     path: String,
+    /// Free space on its disk, when known.
     free_bytes: Option<u64>,
+    /// Roughly what the largest topic needs.
     estimate_bytes: u64,
 }
 
@@ -166,56 +175,75 @@ fn start_setup(app: State<'_, App>, handle: AppHandle) -> Result<(), String> {
         .as_deref()
         .and_then(setup_view::bml_beside);
     std::thread::spawn(move || {
-        let mut skip = std::collections::BTreeSet::new();
-        if login.is_none() {
-            // No `bml` beside the app: a login entry would run the app itself.
-            skip.insert(bml_setup::StepId::Autostart);
-        }
-        let ok = match bml_setup::ollama::parse_ollama_host(
-            std::env::var(bml_setup::ollama::OLLAMA_HOST_ENV)
-                .ok()
-                .as_deref(),
-        ) {
-            Ok(ollama_host) => {
-                let plan = bml_setup::runner::SetupPlan {
-                    login_program: login,
-                    config_dir,
-                    database: Some(bml_setup::runner::DatabasePlan::Bundled),
-                    ollama_host,
-                    skip,
-                    library_dir: None,
-                    home: std::env::home_dir(),
-                };
-                let results = bml_setup::runner::run_setup(
-                    &plan,
-                    &bml_setup::ollama::pull_http_client(),
-                    &mut |event| {
-                        let _ = handle.emit("setup-step", setup_view::step_line(&event));
-                    },
-                );
-                !results
-                    .iter()
-                    .any(|(_, o)| matches!(o, bml_setup::StepOutcome::Failed(_)))
-            }
-            Err(e) => {
+        // A panic inside setup still resets the flag and ends the screen.
+        let ok = library_worker::guarded(|| Ok(run_app_setup(config_dir, login, &handle)))
+            .unwrap_or_else(|e| {
                 let _ = handle.emit(
                     "setup-step",
                     setup_view::step_line(&bml_setup::StepEvent::Finished(
-                        bml_setup::StepId::Ollama,
-                        bml_setup::StepOutcome::Failed(e.to_string()),
+                        bml_setup::StepId::Hardware,
+                        bml_setup::StepOutcome::Failed(e),
                     )),
                 );
                 false
-            }
-        };
+            });
         if let Some(app) = tauri::Manager::try_state::<App>(&handle) {
-            if let Ok(mut running) = app.setup_running.lock() {
-                *running = false;
-            }
+            let mut running = app
+                .setup_running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *running = false;
         }
         let _ = handle.emit("setup-done", ok);
     });
     Ok(())
+}
+
+/// Run setup for `config_dir`, reporting each step as a `setup-step` event;
+/// `true` when no step failed.
+fn run_app_setup(config_dir: PathBuf, login: Option<PathBuf>, handle: &AppHandle) -> bool {
+    let mut skip = std::collections::BTreeSet::new();
+    if login.is_none() {
+        // No `bml` beside the app: a login entry would run the app itself.
+        skip.insert(bml_setup::StepId::Autostart);
+    }
+    match bml_setup::ollama::parse_ollama_host(
+        std::env::var(bml_setup::ollama::OLLAMA_HOST_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        Ok(ollama_host) => {
+            let plan = bml_setup::runner::SetupPlan {
+                login_program: login,
+                config_dir,
+                database: Some(bml_setup::runner::DatabasePlan::Bundled),
+                ollama_host,
+                skip,
+                library_dir: None,
+                home: std::env::home_dir(),
+            };
+            let results = bml_setup::runner::run_setup(
+                &plan,
+                &bml_setup::ollama::pull_http_client(),
+                &mut |event| {
+                    let _ = handle.emit("setup-step", setup_view::step_line(&event));
+                },
+            );
+            !results
+                .iter()
+                .any(|(_, o)| matches!(o, bml_setup::StepOutcome::Failed(_)))
+        }
+        Err(e) => {
+            let _ = handle.emit(
+                "setup-step",
+                setup_view::step_line(&bml_setup::StepEvent::Finished(
+                    bml_setup::StepId::Ollama,
+                    bml_setup::StepOutcome::Failed(e.to_string()),
+                )),
+            );
+            false
+        }
+    }
 }
 
 /// Screen 4: every preset topic with its paper count (live when Europe PMC
@@ -227,21 +255,6 @@ async fn topic_counts() -> Vec<setup_view::TopicCount> {
         setup_view::TOPIC_COUNT_TIMEOUT,
     )
 }
-
-/// How often the library is brought up to date.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Schedule {
-    /// Every week (the default).
-    Weekly,
-    /// Every `days` days.
-    Every { days: u32 },
-    /// Only when asked.
-    Manual,
-}
-
-/// Days in a week, for [`Schedule::Weekly`].
-const WEEKLY_DAYS: u32 = 7;
 
 /// Make the new, empty library topic `id`'s library.
 #[tauri::command]
@@ -264,7 +277,10 @@ async fn choose_topic(app: State<'_, App>, id: String) -> Result<(), String> {
 /// (and exit) rather than take it from the window. Returns a note for a toast
 /// when the schedule could not be recorded.
 #[tauri::command]
-fn set_schedule(app: State<'_, App>, schedule: Schedule) -> Result<Option<String>, String> {
+fn set_schedule(
+    app: State<'_, App>,
+    schedule: setup_view::Schedule,
+) -> Result<Option<String>, String> {
     let Some(bml) = std::env::current_exe()
         .ok()
         .as_deref()
@@ -275,14 +291,9 @@ fn set_schedule(app: State<'_, App>, schedule: Schedule) -> Result<Option<String
                 .into(),
         ));
     };
-    match schedule {
-        Schedule::Manual => bml_pgserver::schedule::unschedule_updates(),
-        Schedule::Weekly => {
-            bml_pgserver::schedule::schedule_updates(&bml, &app.config_dir, WEEKLY_DAYS)
-        }
-        Schedule::Every { days } => {
-            bml_pgserver::schedule::schedule_updates(&bml, &app.config_dir, days)
-        }
+    match schedule.days()? {
+        None => bml_pgserver::schedule::unschedule_updates(),
+        Some(days) => bml_pgserver::schedule::schedule_updates(&bml, &app.config_dir, days),
     }
     .map_err(|e| format!("The update schedule could not be recorded: {e}"))?;
     Ok(None)
@@ -291,13 +302,16 @@ fn set_schedule(app: State<'_, App>, schedule: Schedule) -> Result<Option<String
 /// Stop the update after the paper in flight.
 #[tauri::command]
 fn pause_update(app: State<'_, App>) {
-    if let Ok(slot) = app.update.lock() {
-        if let Some(update) = slot.as_ref() {
-            update.pause();
-        }
+    let slot = app
+        .update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(update) = slot.as_ref() {
+        update.pause();
     }
 }
 
+/// Open the window on the configuration folder of this run.
 fn main() {
     let config_dir = match state::config_dir() {
         Ok(dir) => dir,
@@ -331,10 +345,12 @@ fn main() {
             // Closing the window stops the update after the paper in flight.
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(app) = tauri::Manager::try_state::<App>(window) {
-                    if let Ok(slot) = app.update.lock() {
-                        if let Some(update) = slot.as_ref() {
-                            update.pause();
-                        }
+                    let slot = app
+                        .update
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(update) = slot.as_ref() {
+                        update.pause();
                     }
                 }
             }

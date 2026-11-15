@@ -152,10 +152,12 @@ fn word_ids(db: &mut dyn Db, index: LexicalIndex, query: &str) -> Result<Vec<i64
     ids(rows)
 }
 
+/// `k` as an SQL `LIMIT` value.
 fn limit_value(k: usize) -> i64 {
     i64::try_from(k).unwrap_or(i64::MAX)
 }
 
+/// The `id` column of `rows`, in order.
 fn ids(rows: Vec<Row>) -> Result<Vec<i64>, DbError> {
     rows.iter().map(|row| row.get_i64("id")).collect()
 }
@@ -170,6 +172,7 @@ fn select_in(db: &mut dyn Db, sql: &str, ids: &[i64]) -> Result<Vec<Row>, DbErro
     fetch_all(db, &format!("{sql} ({placeholders})"), &params)
 }
 
+/// Column `name` of `row` as text, `None` when null.
 fn text(row: &Row, name: &str) -> Result<Option<String>, DbError> {
     Ok(row.get(name)?.as_str().map(str::to_string))
 }

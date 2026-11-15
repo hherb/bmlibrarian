@@ -30,7 +30,8 @@ pub fn config_dir_from(env: Option<OsString>, home: Option<PathBuf>) -> Result<P
 }
 
 /// The configuration folder for this run: `$BML_CONFIG_DIR`, else
-/// `~/.bmlibrarian`. The live demo sets the variable to a separate folder.
+/// `~/.bmlibrarian`. The demo opens the prepared library with the variable;
+/// the live install uses the default.
 ///
 /// # Errors
 ///

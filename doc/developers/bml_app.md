@@ -42,22 +42,33 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
   spawned thread (`choose_topic`).
 - **Login entries run `bml`, never the app.** `SetupPlan::login_program`
   and `schedule_updates` get the `bml` beside the app. Without one, setup
-  skips start-at-login and the schedule is not recorded, and a toast says
-  so.
+  skips start-at-login (its status line says "Left out: …") and the
+  schedule is not recorded (a toast says so).
+- **The schedule comes after the lock.** `choose_topic(id)` only records the
+  topic. `set_schedule(schedule)` runs once `start_update` holds the
+  library's lock, because on macOS the scheduler starts a `bml library
+  update` at once; that one then finds the lock taken and exits.
+  `Schedule::days` refuses an interval outside 1–365 days.
 - **The window never blocks.** Setup and updates report through events:
   `setup-step` (a `StepLine`), `setup-done` (bool), `library-progress` (a
-  line) and `library-done` (`{complete, message}`). Closing the window sets
-  the update's stop flag.
+  line) and `library-done` (`view::Finished`, `{complete, waiting,
+  message}`). `view::finished` names a failure first, then no network
+  (`waiting`: the window starts the update again after 45 s), a rate limit,
+  then a pause. Closing the window sets the update's stop flag.
+- **No thread dies silently.** The update and setup threads run under
+  `library_worker::guarded`, which turns a panic into a plain error for the
+  window.
 - **Toasts, never `alert()`**.
 
 ## Commands
 
 `start_screen`, `library_folder`, `start_setup`, `topic_counts`,
-`choose_topic(id, schedule)`, `start_update`, `pause_update`,
+`choose_topic(id)`, `set_schedule(schedule)`, `start_update`, `pause_update`,
 `library_counts`, `search(query)` (20 hits), `open_paper(id)`.
 
 ## Tests
 
 `cargo test -p bml-app` runs the pure modules' tests. `--include-ignored`
 with `BML_TEST_PG_BINDIR` also runs `counts_from_an_async_command_do_not_panic`,
-which reproduces the runtime panic above through the old code path.
+which runs the counts as the command does, on Tauri's async runtime, and
+guards against the runtime panic above coming back.

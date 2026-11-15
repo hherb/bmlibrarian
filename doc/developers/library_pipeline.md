@@ -59,11 +59,18 @@ ones: bmlib's day ledger (with its 14-day settle period, recent days are
 fetched again) and the full-text and index rows. `stop` is checked between
 rounds and inside each phase as before.
 
-A round whose every day failed (`errors` ≥ `days`, nothing added or merged)
-is read as no network: the update records the metadata phase as stopped,
-says `WAITING_FOR_INTERNET` and ends, instead of failing its way through
-every older round. `last_update_at` is stamped only for a complete update,
-as before.
+No network is caught two ways. `PoliteClient` gives up after
+`NO_ANSWER_LIMIT` (3) unanswered requests in a row, after which every
+request fails unsent. And a round whose every day failed (`errors` ≥
+`days`, nothing added or merged) is read as no network too; a captive portal
+answering every day with an HTML page counts. Either way the update records
+the metadata phase as stopped, says `WAITING_FOR_INTERNET` and ends, instead
+of failing its way through every older round. The full-text phase ends as
+`FulltextEnd::NoNetwork` without recording the paper in flight; the round
+indexes what arrived and the rounds end. Days not fetched stay unfinished in
+bmlib's ledger, so the next run fetches them. `last_update_at` is stamped
+only for a complete update, as before. `--from` is remembered for a topic
+library as for medRxiv (`start_day_or`, default `EUROPEPMC_FIRST_DAY`).
 
 Full text for a Europe PMC paper (`next_europepmc_paper`: a `europepmc`
 `xml` source, and no row or an abstract-only row past its retry time;
@@ -71,8 +78,9 @@ version always 1) goes through bmlib's **Tier 0** with only the paper's own
 `fullTextXML` URL: no PMC ID, DOI or PMID is passed, so exactly one request
 is made per paper and no NCBI or PDF-render fallback runs. The cache key is
 the PMC ID. Requests are spaced by `EUROPEPMC_REQUEST_DELAY` (1 s) through
-`Pipeline::europepmc`. The index phase is unchanged and source-agnostic; it
-now ends with one progress line, "N paper(s) ready to search (…)".
+`Pipeline::europepmc`. The index phase is unchanged and source-agnostic; a
+run that indexed anything ends with one progress line, "N paper(s) ready to
+search (…)".
 
 ## Metadata
 

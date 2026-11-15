@@ -66,5 +66,10 @@ only the abstract is held, or when the file cannot be read. `meta` is
 `BML_TEST_PG_BINDIR`, plus `BML_TEST_PG_EXTENSION_DIRS` for BM25) covers:
 blank and whitespace queries, which never call the model; an empty library;
 a paper found by meaning alone (a keyword stub embedder, where no query word
-is in the paper); a word query; and the tsvector fallback, run on a server
-set up without pg_search.
+is in the paper); a word query; boilerplate passages left out
+(`boilerplate_passages_are_not_shown`); and the tsvector fallback, run on a
+server set up without the folders that bring pg_search
+(`the_fallback_server_has_the_tsvector_index` checks it really is
+tsvector). Where pgvector and pg_search share one extension folder (a pgdist
+bundle), the fallback tests skip; bml-db's schema tests cover tsvector
+there.

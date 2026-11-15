@@ -1,11 +1,14 @@
-//! The BMLibrarian library pipeline: medRxiv metadata, full text and the
-//! search index, each a resumable phase driven by database state alone, so a
-//! killed run loses at most the paper in flight.
+//! The BMLibrarian library pipeline: paper details, full text and the search
+//! index (medRxiv, or a Europe PMC topic, [`topics`]), each a resumable phase
+//! driven by database state alone, so a killed run loses at most the paper in
+//! flight.
 //!
-//! [`Pipeline::update`] runs the phases in order: [`metadata`], [`index`]
-//! (new abstracts), [`fulltext`], then [`index`] again (the new full texts).
-//! A phase that fails is reported and the next still runs. One worker at a
-//! time holds [`try_lock_worker`].
+//! For a medRxiv library [`Pipeline::update`] runs the phases in order:
+//! [`metadata`], [`index`] (new abstracts), [`fulltext`], then [`index`] again
+//! (the new full texts); a phase that fails is reported and the next still
+//! runs. A topic library runs them in rounds, newest first (a 7-day round,
+//! then 30-day rounds); a metadata or full-text failure, no network or a rate
+//! limit ends the rounds. One worker at a time holds [`try_lock_worker`].
 
 pub mod fulltext;
 pub mod index;
@@ -62,7 +65,8 @@ pub const EUROPEPMC_ROUND_DAYS: u64 = 30;
 /// The first round's days: a short newest week, so a new library is
 /// searchable within minutes (about 25 papers at the demo topic's rate).
 pub const EUROPEPMC_FIRST_ROUND_DAYS: u64 = 7;
-/// The progress line when a whole round failed for want of a network.
+/// The progress line when the network is down: a whole round of days failed,
+/// or [`polite_client::NO_ANSWER_LIMIT`] requests in a row got no answer.
 pub const WAITING_FOR_INTERNET: &str =
     "Waiting for the internet. Downloading carries on when it's back.";
 
@@ -169,8 +173,9 @@ impl PhaseSet {
 
 /// What [`Pipeline::update`] is asked to do.
 pub struct UpdateOptions<'a> {
-    /// The first posting day to sync (default: the day last given, else
-    /// [`MEDRXIV_FIRST_DAY`]; see [`start_day`]).
+    /// The first day to sync, remembered (default: the day last given, else
+    /// [`MEDRXIV_FIRST_DAY`], or [`EUROPEPMC_FIRST_DAY`] for a topic library;
+    /// see [`start_day_or`]).
     pub from: Option<NaiveDate>,
     /// The phases to run.
     pub phases: PhaseSet,
@@ -213,8 +218,8 @@ impl UpdateReport {
             || self.index.as_ref().is_some_and(|i| !i.failed.is_empty())
     }
 
-    /// Whether a phase stopped before its work was done (`stop`, or medRxiv
-    /// rate-limiting the metadata or full-text phase).
+    /// Whether a phase stopped before its work was done: `stop`, the server
+    /// rate-limiting the metadata or full-text phase, or no network.
     #[must_use]
     pub fn stopped_early(&self) -> bool {
         self.metadata.as_ref().is_some_and(|m| m.stopped)
@@ -271,7 +276,8 @@ impl Pipeline {
     }
 
     /// Run the phases in `options` (see the crate docs). A phase failure is
-    /// in [`UpdateReport::failures`]; the phases after it still run.
+    /// in [`UpdateReport::failures`]; for a medRxiv library the phases after it
+    /// still run, for a topic library the rounds end.
     pub fn update(
         &self,
         db: &mut dyn Db,
@@ -346,7 +352,15 @@ impl Pipeline {
         progress: &mut dyn FnMut(Progress),
     ) {
         let phases = options.phases;
-        let first = options.from.unwrap_or_else(europepmc_first_day);
+        // Remembered like medRxiv's, so a scheduled run without --from keeps
+        // the library's range.
+        let first = match start_day_or(db, options.from, europepmc_first_day()) {
+            Ok(day) => day,
+            Err(e) => {
+                report.failures.push((Phase::Metadata, e.to_string()));
+                return;
+            }
+        };
         let client = Arc::new(PoliteClient::new(
             self.europepmc.clone(),
             self.europepmc_delay,
@@ -511,6 +525,20 @@ impl Pipeline {
 ///
 /// The database fails, or the remembered day cannot be read.
 pub fn start_day(db: &mut dyn Db, from: Option<NaiveDate>) -> Result<NaiveDate, PipelineError> {
+    start_day_or(db, from, medrxiv_first_day())
+}
+
+/// [`start_day`] with `default` for a library that never had a day given
+/// (a topic library's is [`EUROPEPMC_FIRST_DAY`]).
+///
+/// # Errors
+///
+/// The database fails, or the remembered day cannot be read.
+pub fn start_day_or(
+    db: &mut dyn Db,
+    from: Option<NaiveDate>,
+    default: NaiveDate,
+) -> Result<NaiveDate, PipelineError> {
     if let Some(day) = from {
         execute(
             db,
@@ -536,7 +564,7 @@ pub fn start_day(db: &mut dyn Db, from: Option<NaiveDate>) -> Result<NaiveDate, 
                 ))
             })
         }
-        None => Ok(medrxiv_first_day()),
+        None => Ok(default),
     }
 }
 

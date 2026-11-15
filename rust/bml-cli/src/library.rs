@@ -1,5 +1,5 @@
-//! `bml library …`: bring the library up to date with medRxiv, show what it
-//! holds, and schedule updates.
+//! `bml library …`: bring the library up to date (medRxiv, or its Europe PMC
+//! topic), show what it holds, and schedule updates.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -24,9 +24,9 @@ use postgres::Client;
 
 use crate::server::{say, EXIT_FAILED, EXIT_HEALTHY, EXIT_NOT_SET_UP};
 
-/// Exit code of `update`: it stopped before its work was done (Ctrl-C,
-/// medRxiv asked us to slow down, or another update holds the lock); running
-/// it again carries on.
+/// Exit code of `update`: it stopped before its work was done (Ctrl-C, the
+/// server asked us to slow down, no network, or another update holds the
+/// lock); running it again carries on.
 pub const EXIT_STOPPED_EARLY: u8 = 4;
 
 /// `bml library …` subcommands.
@@ -35,8 +35,9 @@ pub enum LibraryCommand {
     /// Bring the library up to date with medRxiv, or with its Europe PMC topic
     /// (safe to stop and run again).
     Update {
-        /// The first posting day to download (default: the day last given
-        /// with --from, else medRxiv's first day).
+        /// The first day to download (default: the day last given with
+        /// --from, else medRxiv's first day, or 2021-01-01 for a topic library).
+        /// The day given is remembered.
         #[arg(long, value_name = "YYYY-MM-DD")]
         from: Option<NaiveDate>,
         /// Make a new, empty library a Europe PMC topic library (an id from
@@ -80,7 +81,7 @@ pub enum ScheduleWhen {
 /// Phases a person may leave out.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SkipPhase {
-    /// Paper details from medRxiv, day by day.
+    /// Paper details (medRxiv, or the topic's Europe PMC search), day by day.
     Metadata,
     /// Full text (JATS XML or PDF), paper by paper.
     Fulltext,
@@ -263,7 +264,7 @@ fn summarise(report: &UpdateReport) {
             eprintln!("  {line} (fetched again next time)");
         }
         if m.rate_limited {
-            say!("  medRxiv asked us to slow down; the metadata carries on next run.");
+            say!("  The server asked us to slow down; the metadata carries on next run.");
         }
     }
     if let Some(f) = &report.fulltext {
@@ -286,7 +287,7 @@ fn summarise(report: &UpdateReport) {
                 );
             }
             FulltextEnd::RateLimited { until } => {
-                say!("  medRxiv asked us to slow down; full text resumes after {until}.");
+                say!("  The server asked us to slow down; full text resumes after {until}.");
             }
         }
     }

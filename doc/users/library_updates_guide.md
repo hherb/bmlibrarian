@@ -58,8 +58,9 @@ A topic library updates in **rounds, newest first**: the newest week, then
 30 days at a time. Each round makes its papers searchable by their abstracts
 first, then downloads their full texts and adds those, before the next,
 older round starts. So the newest papers can be searched within minutes of
-starting. Europe PMC is asked once a second, so
-a topic of several thousand papers takes some hours in total.
+starting. Each paper takes about 10–15 seconds (downloading its full text
+and making it searchable), so a topic of several thousand papers takes
+about a day in all.
 
 If the internet drops out, the update says *"Waiting for the internet.
 Downloading carries on when it's back."* and stops; nothing is lost, and the

@@ -66,16 +66,25 @@ pub fn counts(config_dir: &Path) -> Result<LibraryCounts, String> {
 
 /// One request to the search worker.
 enum Ask {
+    /// Search the library.
     Search {
+        /// The question.
         query: String,
+        /// How many papers to return.
         limit: usize,
+        /// Where the hits go.
         reply: Sender<Result<Vec<SearchHit>, String>>,
     },
+    /// Read one paper.
     Paper {
+        /// `publications.id`.
         id: i64,
+        /// Where its text goes.
         reply: Sender<Result<PaperText, String>>,
     },
+    /// Count what the library holds.
     Counts {
+        /// Where the counts go.
         reply: Sender<Result<LibraryCounts, String>>,
     },
 }
@@ -115,6 +124,9 @@ impl SearchWorker {
                                 paper_text(&lib.cache(), db, id).map_err(|e| e.to_string())
                             })
                         });
+                        if text.is_err() {
+                            db = None; // reconnect next time (a restarted server)
+                        }
                         let _ = reply.send(text);
                     }
                     Ask::Counts { reply } => {
@@ -167,6 +179,7 @@ impl SearchWorker {
         answer.recv().map_err(|_| WORKER_GONE.to_string())?
     }
 
+    /// Hand `ask` to the worker thread.
     fn send(&self, ask: Ask) -> Result<(), String> {
         self.asks
             .lock()
@@ -179,6 +192,7 @@ impl SearchWorker {
 /// When the search worker has stopped.
 const WORKER_GONE: &str = "search stopped working; close and reopen BMLibrarian";
 
+/// The worker's connection, opened (and the server started) when there is none.
 fn connected<'a>(config_dir: &Path, db: &'a mut Option<Client>) -> Result<&'a mut Client, String> {
     if db.is_none() {
         *db = Some(open_db(config_dir)?);
@@ -186,6 +200,7 @@ fn connected<'a>(config_dir: &Path, db: &'a mut Option<Client>) -> Result<&'a mu
     db.as_mut().ok_or_else(|| WORKER_GONE.to_string())
 }
 
+/// The connection and the embedding model, each loaded on first use.
 fn ready<'a>(
     config_dir: &Path,
     db: &'a mut Option<Client>,
@@ -238,18 +253,41 @@ pub fn start_update(
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let _lock = lock; // held until the update ends
-        let result = open_db(&config_dir).map(|mut db| {
-            let pipeline = Pipeline::new(library.cache(), bml_setup::gguf_path(&config_dir));
-            let options = UpdateOptions {
-                from: None,
-                phases: PhaseSet::all(),
-                stop: &flag,
-            };
-            pipeline.update(&mut db, &options, &mut |p| progress(&p))
+                          // A panic inside the pipeline still reaches the window as an error.
+        let result = guarded(|| {
+            open_db(&config_dir).map(|mut db| {
+                let pipeline = Pipeline::new(library.cache(), bml_setup::gguf_path(&config_dir));
+                let options = UpdateOptions {
+                    from: None,
+                    phases: PhaseSet::all(),
+                    stop: &flag,
+                };
+                pipeline.update(&mut db, &options, &mut |p| progress(&p))
+            })
         });
         done(result);
     });
     Ok(Update { stop, thread })
+}
+
+/// `work`'s result, or a plain-language error when it panics (bmlib, MuPDF
+/// or the embedder failing in a way they did not report), so a background
+/// thread always ends with an answer for the window.
+///
+/// # Errors
+///
+/// `work`'s own error, or the panic's message.
+pub fn guarded<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| {
+        let why = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no details".to_string());
+        Err(format!(
+            "It stopped unexpectedly ({why}). Start it again; nothing is lost."
+        ))
+    })
 }
 
 /// When the library's lock is held (another window, or a scheduled update).
@@ -298,6 +336,32 @@ mod tests {
         )
         .unwrap();
         Some((guard, cfg))
+    }
+
+    #[test]
+    fn guarded_turns_a_panic_into_an_error() {
+        assert_eq!(guarded(|| Ok::<_, String>(7)), Ok(7));
+        assert_eq!(
+            guarded(|| Err::<i32, _>("no".to_string())),
+            Err("no".to_string())
+        );
+        let error = guarded(|| -> Result<i32, String> { panic!("the model crashed") }).unwrap_err();
+        assert!(error.contains("stopped unexpectedly"), "{error}");
+        assert!(error.contains("the model crashed"), "{error}");
+    }
+
+    #[test]
+    fn start_update_refuses_a_held_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let library = Library {
+            dir: tmp.path().join("library"),
+        };
+        ensure_library(&cfg, &library).unwrap();
+        // Another update (a scheduled `bml`) holds the library.
+        let _held = try_lock_worker(&library.dir).unwrap().unwrap();
+        let refused = start_update(cfg, |_| {}, |_| panic!("must not run")).err();
+        assert_eq!(refused.as_deref(), Some(ALREADY_RUNNING));
     }
 
     #[test]
