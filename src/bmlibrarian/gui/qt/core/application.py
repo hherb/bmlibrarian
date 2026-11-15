@@ -17,6 +17,7 @@ from PySide6.QtGui import QFont
 from .main_window import BMLibrarianMainWindow
 from .config_manager import GUIConfigManager
 from ..dialogs import LoginDialog, LoginResult
+from ..widgets.toast import ToastLevel, show_toast
 
 
 class BMLibrarianApplication:
@@ -73,6 +74,7 @@ class BMLibrarianApplication:
         # Login state
         self._login_result: Optional[LoginResult] = None
         self._db_connection = None
+        self._settings_load_failed: bool = False
 
         self.logger.info("Application initialized")
 
@@ -199,6 +201,7 @@ class BMLibrarianApplication:
                 username=self._login_result.username if self._login_result else None,
             )
             self.main_window.show()
+            self._warn_if_settings_load_failed()
 
             self.logger.info("Application running")
 
@@ -404,13 +407,32 @@ class BMLibrarianApplication:
                 connection=self._db_connection,
                 session_token=self._login_result.session_token
             )
-            self.logger.info(
-                f"User context set for user_id={self._login_result.user_id}, "
-                "database-backed settings enabled"
-            )
+            self._settings_load_failed = config.settings_load_failed()
+            if self._settings_load_failed:
+                self.logger.warning(
+                    f"Settings for user_id={self._login_result.user_id} failed to "
+                    "load; using local settings, database saving disabled"
+                )
+            else:
+                self.logger.info(
+                    f"User context set for user_id={self._login_result.user_id}, "
+                    "database-backed settings enabled"
+                )
         except Exception as e:
             self.logger.error(f"Failed to set user context: {e}")
             # Continue without database-backed settings - fall back to JSON/defaults
+
+    def _warn_if_settings_load_failed(self) -> None:
+        """Tell the user, with a toast, that their database settings did not load."""
+        if not self._settings_load_failed or self.main_window is None:
+            return
+        show_toast(
+            self.main_window,
+            "Your saved settings could not be loaded from the database, so "
+            "local settings are in use and saving to the database is disabled. "
+            "Use 'Sync from Database' in the Configuration tab to retry.",
+            ToastLevel.WARNING,
+        )
 
     def _check_config_migration(self) -> None:
         """Check for existing JSON config and offer to migrate to database.

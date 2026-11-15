@@ -164,8 +164,11 @@ load at login fails, login goes on with JSON/default settings, but
 `sync_to_database()` raises `RuntimeError` until a later
 `_sync_from_database()` succeeds. Otherwise one Save after a temporary
 database error would replace every stored category with local values
-(#437). `sync_to_database()` returns `False` when a category failed to save,
-and the Qt callers turn that into an error message.
+(#437). Any failure during the load, including merging a malformed reply,
+sets the block; `settings_load_failed()` reports it, and the Qt app shows a
+warning toast at login. `sync_to_database()` returns `False` when a category
+failed to save, and the Qt callers and `import_from_json()` turn that into
+an error message.
 
 ```python
 def sync_to_database(self) -> None:

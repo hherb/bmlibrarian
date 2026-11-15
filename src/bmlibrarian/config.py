@@ -801,9 +801,20 @@ class BMLibrarianConfig:
         try:
             self._sync_from_database()
         except Exception as e:
-            logger.warning(f"Failed to sync settings from database: {e}")
+            logger.error(f"Failed to sync settings from database: {e}", exc_info=True)
 
         logger.info(f"User context set for user_id={user_id}")
+
+    def settings_load_failed(self) -> bool:
+        """Report whether the user's database settings failed to load.
+
+        While this is True, the in-memory values are JSON/defaults and
+        sync_to_database() refuses to save.
+
+        Returns:
+            True if the last load from the database failed.
+        """
+        return self._db_load_failed
 
     def clear_user_context(self) -> None:
         """Clear user context, reverting to JSON/default configuration.
@@ -1018,13 +1029,13 @@ class BMLibrarianConfig:
 
         try:
             db_settings = self._settings_manager.get_all(use_cache=False)
+            for category, settings in db_settings.items():
+                if category in self._config and settings:
+                    # Merge database settings with defaults
+                    self._merge_config({category: settings})
         except Exception:
             self._db_load_failed = True
             raise
-        for category, settings in db_settings.items():
-            if category in self._config and settings:
-                # Merge database settings with defaults
-                self._merge_config({category: settings})
         self._db_load_failed = False
         logger.debug("Synced settings from database to in-memory config")
 
@@ -1053,8 +1064,9 @@ class BMLibrarianConfig:
         if self._db_load_failed:
             raise RuntimeError(
                 "Your settings could not be loaded from the database, so "
-                "saving now would overwrite them with local values. Load them "
-                "from the database first (or log in again), then save."
+                "saving now would overwrite them with local values. Click "
+                "'Sync from Database' in the Configuration tab (or log in "
+                "again), then save."
             )
 
         success = True
@@ -1104,6 +1116,8 @@ class BMLibrarianConfig:
         Raises:
             FileNotFoundError: If the file does not exist.
             json.JSONDecodeError: If the file is not valid JSON.
+            RuntimeError: If saving to the database was refused or a
+                category failed to save.
 
         Example:
             config = get_config()
@@ -1123,7 +1137,10 @@ class BMLibrarianConfig:
 
             # Optionally sync to database if user context is set
             if sync_to_db and self._settings_manager is not None:
-                self.sync_to_database()
+                if not self.sync_to_database():
+                    raise RuntimeError(
+                        "One or more settings categories failed to save (see the log)"
+                    )
         else:
             logger.warning(f"No valid configuration found in: {expanded_path}")
 

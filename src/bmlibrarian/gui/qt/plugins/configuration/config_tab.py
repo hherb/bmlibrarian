@@ -267,6 +267,7 @@ class ConfigurationTabWidget(QWidget):
 
             # If authenticated, also sync to database
             sync_msg = ""
+            db_sync_failed = False
             if bmlib_config.has_user_context():
                 try:
                     if not bmlib_config.sync_to_database():
@@ -274,17 +275,18 @@ class ConfigurationTabWidget(QWidget):
                     sync_msg = " and synced to database"
                     logger.info("Configuration synced to database")
                 except Exception as db_e:
-                    logger.warning(f"Failed to sync to database: {db_e}")
+                    logger.error(f"Failed to sync to database: {db_e}", exc_info=True)
                     sync_msg = f" (database sync failed: {db_e})"
+                    db_sync_failed = True
 
-            self.status_message.emit(f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}")
+            message = f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}"
+            self.status_message.emit(message)
             self.config_saved.emit(str(config_path))
 
-            QMessageBox.information(
-                self,
-                "Success",
-                f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}",
-            )
+            if db_sync_failed:
+                QMessageBox.warning(self, "Saved Locally Only", message)
+            else:
+                QMessageBox.information(self, "Success", message)
 
         except Exception as e:
             QMessageBox.critical(
