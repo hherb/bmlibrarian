@@ -288,6 +288,62 @@ class TestConfigurationTabDatabaseSync:
             assert widget.sync_to_db_btn.isEnabled() is False
             assert widget.sync_from_db_btn.isEnabled() is False
 
+    def test_save_with_failed_database_sync_warns_instead_of_success(self):
+        """A Save whose database part fails is not reported as a success (#437)."""
+        module = 'bmlibrarian.gui.qt.plugins.configuration.config_tab'
+        with patch(f'{module}.get_config') as mock_get_config, \
+                patch(f'{module}.QMessageBox') as mock_box:
+            mock_config = MagicMock()
+            mock_config.has_user_context.return_value = False
+            mock_config._config = {'models': {}, 'ollama': {}, 'agents': {}}
+            mock_get_config.return_value = mock_config
+
+            from bmlibrarian.gui.qt.plugins.configuration.config_tab import ConfigurationTabWidget
+
+            widget = ConfigurationTabWidget()
+            mock_config.has_user_context.return_value = True
+            mock_config.sync_to_database.side_effect = RuntimeError("could not be loaded")
+
+            widget._save_to_default()
+
+            mock_box.information.assert_not_called()
+            mock_box.warning.assert_called_once()
+            assert "could not be loaded" in mock_box.warning.call_args.args[2]
+
+
+@skip_if_no_qt
+class TestSettingsLoadFailureAtLogin:
+    """A failed settings load at login is shown to the user (#437)."""
+
+    def test_failed_load_is_recorded_and_shown_as_toast(self):
+        """_setup_user_context records the failure and a warning toast reports it."""
+        from bmlibrarian.gui.qt.core.application import BMLibrarianApplication
+        from bmlibrarian.gui.qt.dialogs import LoginResult
+        from bmlibrarian.gui.qt.widgets.toast import ToastLevel
+
+        with patch('bmlibrarian.gui.qt.core.application.QApplication'), \
+                patch('bmlibrarian.config.get_config') as mock_get_config:
+            mock_config = MagicMock()
+            mock_config.settings_load_failed.return_value = True
+            mock_get_config.return_value = mock_config
+
+            app = BMLibrarianApplication(['test'])
+            app._login_result = LoginResult(
+                user_id=42, username="testuser", email="t@example.com",
+                session_token="tok",
+            )
+            app._db_connection = MagicMock()
+            app._setup_user_context()
+            assert app._settings_load_failed is True
+
+            app.main_window = MagicMock()
+            with patch('bmlibrarian.gui.qt.core.application.show_toast') as mock_toast:
+                app._warn_if_settings_load_failed()
+
+            mock_toast.assert_called_once()
+            assert mock_toast.call_args.args[0] is app.main_window
+            assert mock_toast.call_args.args[2] == ToastLevel.WARNING
+
 
 @skip_if_no_qt
 class TestLoginResultDataclass:

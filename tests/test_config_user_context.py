@@ -206,6 +206,111 @@ class TestBMLibrarianConfigSyncOperations:
         result = config.sync_to_database()
         assert result is True
 
+    def test_failed_load_at_login_blocks_saving(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A failed settings load must not let Save overwrite stored settings (#437)."""
+        manager = MagicMock()
+        manager.get_all.side_effect = RuntimeError("connection lost")
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.has_user_context() is True  # login still goes on
+        with pytest.raises(RuntimeError, match="could not be loaded"):
+            config.sync_to_database()
+        manager.set.assert_not_called()
+
+    def test_successful_reload_lifts_the_block(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """Loading from the database again after a failure allows saving."""
+        manager = MagicMock()
+        manager.get_all.side_effect = [RuntimeError("connection lost"), {}]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        config._sync_from_database()
+        assert config.sync_to_database() is True
+        manager.set.assert_called()
+
+    def test_explicit_reload_failure_raises(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A 'Sync from database' request reports the failure to its caller."""
+        manager = MagicMock()
+        manager.get_all.side_effect = [{}, RuntimeError("connection lost")]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        with pytest.raises(RuntimeError, match="connection lost"):
+            config._sync_from_database()
+        with pytest.raises(RuntimeError, match="could not be loaded"):
+            config.sync_to_database()
+
+    def test_failed_merge_after_load_blocks_saving(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A malformed database reply (not a mapping) must also block saving (#437)."""
+        manager = MagicMock()
+        manager.get_all.return_value = ["not", "a", "mapping"]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.settings_load_failed() is True
+        with pytest.raises(RuntimeError, match="could not be loaded"):
+            config.sync_to_database()
+        manager.set.assert_not_called()
+
+    def test_successful_load_merges_and_saves_database_values(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """Database values replace local ones in memory and are what Save writes back."""
+        manager = MagicMock()
+        manager.get_all.return_value = {'models': {'query_agent': 'from-db'}}
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.settings_load_failed() is False
+        assert config.get('models.query_agent') == 'from-db'
+        assert config.sync_to_database() is True
+        saved_models = dict(c.args for c in manager.set.call_args_list)['models']
+        assert saved_models['query_agent'] == 'from-db'
+
+    def test_import_from_json_raises_when_a_category_fails_to_save(
+        self,
+        config: BMLibrarianConfig,
+        tmp_path: Path
+    ) -> None:
+        """import_from_json reports a partial database save instead of ignoring it."""
+        manager = MagicMock()
+        manager.get_all.return_value = {}
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+        source = tmp_path / "import.json"
+        source.write_text(json.dumps({'models': {'query_agent': 'imported'}}))
+
+        with patch.object(config, 'sync_to_database', return_value=False):
+            with pytest.raises(RuntimeError, match="failed to save"):
+                config.import_from_json(source)
+
+    def test_refusal_names_the_sync_from_database_button(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """The refusal tells the user which control lifts it."""
+        manager = MagicMock()
+        manager.get_all.side_effect = RuntimeError("connection lost")
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        with pytest.raises(RuntimeError, match="Sync from Database"):
+            config.sync_to_database()
+
     def test_export_to_json(self, config: BMLibrarianConfig) -> None:
         """Test export_to_json creates valid JSON file."""
         with tempfile.NamedTemporaryFile(

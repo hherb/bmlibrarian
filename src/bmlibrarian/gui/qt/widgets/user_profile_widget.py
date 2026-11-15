@@ -196,7 +196,8 @@ class UserProfileWidget(QWidget):
             bmlib_config = get_config()
 
             if direction == 'to_db':
-                bmlib_config.sync_to_database()
+                if not bmlib_config.sync_to_database():
+                    raise RuntimeError("One or more settings categories failed to save (see the log)")
                 QMessageBox.information(
                     self,
                     "Success",
