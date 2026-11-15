@@ -14,6 +14,7 @@ pub mod polite_client;
 pub mod status;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod topics;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,15 @@ pub const MEDRXIV_FIRST_DAY: &str = "2019-06-06";
 pub const MEDRXIV_REQUEST_DELAY: Duration = Duration::from_secs(30);
 /// The worker lock's file name inside the library folder.
 pub const WORKER_LOCK_FILE: &str = ".bml-library.lock";
+
+/// The bmlib source a topic library syncs (`europepmc`).
+pub const EUROPEPMC_SOURCE: &str = "europepmc";
+/// The first day a topic library walks back to (the presets cover 2021–2026).
+pub const EUROPEPMC_FIRST_DAY: &str = "2021-01-01";
+/// The spacing between Europe PMC requests (bmlib's fetchers do not sleep).
+pub const EUROPEPMC_REQUEST_DELAY: Duration = Duration::from_secs(1);
+/// The days one round of a topic library's update covers, newest first.
+pub const EUROPEPMC_ROUND_DAYS: u64 = 30;
 
 /// [`MEDRXIV_FIRST_DAY`] as a date.
 ///

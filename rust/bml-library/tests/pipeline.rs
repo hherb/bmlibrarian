@@ -1357,3 +1357,53 @@ fn a_missing_model_fails_the_index_phase_only() {
     assert_eq!(*phase, Phase::Index);
     assert!(message.contains("bml setup"), "{message}");
 }
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn library_without_topic_reads_medrxiv() {
+    use bml_library::topics::{library_source, set_topic, topic, topic_query, LibrarySource};
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    assert_eq!(library_source(&mut db).unwrap(), LibrarySource::Medrxiv);
+    let depression = topic("depression-anxiety").unwrap();
+    set_topic(&mut db, depression).unwrap();
+    assert_eq!(
+        library_source(&mut db).unwrap(),
+        LibrarySource::EuropePmc {
+            topic_id: "depression-anxiety".into(),
+            query: topic_query(depression),
+        }
+    );
+    // Choosing the same topic again changes nothing.
+    set_topic(&mut db, depression).unwrap();
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn set_topic_refuses_another_topic() {
+    use bml_library::topics::{set_topic, topic};
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    set_topic(&mut db, topic("stroke").unwrap()).unwrap();
+    let error = set_topic(&mut db, topic("cardiology").unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Stroke"), "{error}");
+
+    // A medRxiv library with papers is refused too.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let Some((_s2, mut db2)) = server(tmp2.path()) else {
+        return;
+    };
+    other_paper(&mut db2, "10.1101/2024.01.15.24000099", "A medRxiv paper");
+    let error = set_topic(&mut db2, topic("stroke").unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("medRxiv"), "{error}");
+}
