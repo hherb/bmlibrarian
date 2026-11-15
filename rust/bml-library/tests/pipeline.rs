@@ -1720,12 +1720,13 @@ fn first_round_is_searchable_before_the_second_starts() {
         return;
     };
     let query = stroke_library(&mut db);
-    // Rounds: 2024-01-22..2024-02-20, then 2024-01-01..2024-01-21.
+    // Rounds: 2024-02-14..2024-02-20 (the short first week), then
+    // 2024-01-15..2024-02-13, then 2024-01-01..2024-01-14.
     let epmc = topic_days(
         &query,
         "2024-01-01",
         "2024-02-20",
-        &[("2024-02-10", "PMC500"), ("2024-01-10", "PMC501")],
+        &[("2024-02-18", "PMC500"), ("2024-02-01", "PMC501")],
     );
     let p = topic_pipeline(tmp.path(), &epmc);
     let stop = AtomicBool::new(false);
@@ -1739,7 +1740,7 @@ fn first_round_is_searchable_before_the_second_starts() {
     let second_round = lines
         .iter()
         .position(|l| {
-            l.phase == Phase::Metadata && l.message.starts_with("2024-01-01 to 2024-01-21")
+            l.phase == Phase::Metadata && l.message.starts_with("2024-01-15 to 2024-02-13")
         })
         .expect("the second round's metadata line");
     assert!(first_index < second_round, "{lines:#?}");
@@ -1750,7 +1751,7 @@ fn first_round_is_searchable_before_the_second_starts() {
         .unwrap();
     let older_day = seen
         .iter()
-        .position(|u| u == &europepmc_url(&query, "2024-01-21"))
+        .position(|u| u == &europepmc_url(&query, "2024-02-13"))
         .unwrap();
     assert!(newest_text < older_day);
     assert_eq!(
@@ -1775,7 +1776,7 @@ fn stop_between_rounds_resumes() {
         &query,
         "2024-01-01",
         "2024-02-20",
-        &[("2024-02-10", "PMC600"), ("2024-01-10", "PMC601")],
+        &[("2024-02-18", "PMC600"), ("2024-01-10", "PMC601")],
     );
     let p = topic_pipeline(tmp.path(), &epmc);
     let stop = AtomicBool::new(false);
@@ -1789,18 +1790,15 @@ fn stop_between_rounds_resumes() {
         .seen()
         .lock()
         .unwrap()
-        .contains(&europepmc_url(&query, "2024-01-21")));
+        .contains(&europepmc_url(&query, "2024-02-13")));
     epmc.seen().lock().unwrap().clear();
     let resumed = AtomicBool::new(false);
     let second = update_topic(&p, &mut db, &resumed, &mut |_| {});
     assert!(!second.failed() && !second.stopped_early(), "{second:?}");
     let seen = epmc.seen().lock().unwrap().clone();
-    // A settled day of round one is not fetched again; round two runs.
-    assert!(
-        !seen.contains(&europepmc_url(&query, "2024-01-25")),
-        "{seen:#?}"
-    );
-    assert!(seen.contains(&europepmc_url(&query, "2024-01-21")));
+    // The rounds not reached before the stop run now.
+    assert!(seen.contains(&europepmc_url(&query, "2024-02-13")));
+    assert!(seen.contains(&europepmc_url(&query, "2024-01-10")));
     assert_eq!(
         scalar_i64(
             &mut db,
@@ -1902,4 +1900,42 @@ fn status_counts_a_topic_librarys_days() {
     )
     .unwrap();
     assert_eq!(status.days_complete, 2, "{status:?}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn abstracts_are_searchable_before_full_text_and_the_first_round_is_short() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC800")],
+    );
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    update_topic(&p, &mut db, &stop, &mut |line| lines.push(line));
+    // The first round is the newest week only.
+    assert_eq!(
+        lines
+            .iter()
+            .find(|l| l.phase == Phase::Metadata)
+            .unwrap()
+            .message,
+        "2024-02-14 to 2024-02-20: 7 day(s), 1 new, 0 updated",
+        "{lines:#?}"
+    );
+    // Its abstract is indexed before its full text is downloaded.
+    let first_index = lines.iter().position(|l| l.phase == Phase::Index).unwrap();
+    let first_text = lines
+        .iter()
+        .position(|l| l.phase == Phase::Fulltext)
+        .unwrap();
+    assert!(first_index < first_text, "{lines:#?}");
 }

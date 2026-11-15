@@ -54,10 +54,11 @@ topics are offered: depression & anxiety, heart failure & cardiology,
 obesity & GLP-1 drugs, and stroke. A library holds one topic, or medRxiv,
 never both; use another library folder for another topic.
 
-A topic library updates in **rounds of 30 days, newest first**. Each round
-downloads that month's paper details and full texts and makes them
-searchable before the next, older month starts, so the newest papers can be
-searched within minutes of starting. Europe PMC is asked once a second, so
+A topic library updates in **rounds, newest first**: the newest week, then
+30 days at a time. Each round makes its papers searchable by their abstracts
+first, then downloads their full texts and adds those, before the next,
+older round starts. So the newest papers can be searched within minutes of
+starting. Europe PMC is asked once a second, so
 a topic of several thousand papers takes some hours in total.
 
 If the internet drops out, the update says *"Waiting for the internet.

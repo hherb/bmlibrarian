@@ -59,6 +59,9 @@ pub const EUROPEPMC_FIRST_DAY: &str = "2021-01-01";
 pub const EUROPEPMC_REQUEST_DELAY: Duration = Duration::from_secs(1);
 /// The days one round of a topic library's update covers, newest first.
 pub const EUROPEPMC_ROUND_DAYS: u64 = 30;
+/// The first round's days: a short newest week, so a new library is
+/// searchable within minutes (about 25 papers at the demo topic's rate).
+pub const EUROPEPMC_FIRST_ROUND_DAYS: u64 = 7;
 /// The progress line when a whole round failed for want of a network.
 pub const WAITING_FOR_INTERNET: &str =
     "Waiting for the internet. Downloading carries on when it's back.";
@@ -327,10 +330,11 @@ impl Pipeline {
         report
     }
 
-    /// A topic library's update: rounds of [`EUROPEPMC_ROUND_DAYS`], newest
-    /// first, back to `options.from` (else [`EUROPEPMC_FIRST_DAY`]). Each
-    /// round syncs its window, fetches the full texts due, then indexes them,
-    /// so the newest papers are searchable after the first round. A round
+    /// A topic library's update: rounds newest first, the first of
+    /// [`EUROPEPMC_FIRST_ROUND_DAYS`] and the rest of [`EUROPEPMC_ROUND_DAYS`],
+    /// back to `options.from` (else [`EUROPEPMC_FIRST_DAY`]). Each round syncs
+    /// its window, indexes the new abstracts, fetches the full texts due, then
+    /// indexes them, so the newest papers are searchable within minutes. A round
     /// whose every day failed means no network: the update stops there and
     /// says so, and the next run carries on.
     fn update_topic(
@@ -353,6 +357,7 @@ impl Pipeline {
         )]);
         let mut embedder: Option<Box<dyn ChunkEmbedder>> = None;
         let mut end = (self.clock)().date_naive();
+        let mut round_days = EUROPEPMC_FIRST_ROUND_DAYS;
         while end >= first {
             if options.stop.load(Ordering::Relaxed) {
                 report
@@ -362,8 +367,9 @@ impl Pipeline {
                 break;
             }
             let start = end
-                .checked_sub_days(Days::new(EUROPEPMC_ROUND_DAYS - 1))
+                .checked_sub_days(Days::new(round_days - 1))
                 .map_or(first, |d| d.max(first));
+            round_days = EUROPEPMC_ROUND_DAYS;
             if phases.metadata {
                 match metadata::run_window(
                     db,
@@ -401,6 +407,11 @@ impl Pipeline {
                         break;
                     }
                 }
+            }
+            // The round's abstracts become searchable before its full texts
+            // (minutes at Europe PMC's pace) arrive.
+            if phases.index {
+                self.index_once(db, &mut embedder, options.stop, report, progress);
             }
             if phases.fulltext {
                 match fulltext::run(

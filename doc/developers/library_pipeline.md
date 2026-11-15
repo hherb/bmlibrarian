@@ -47,12 +47,14 @@ live count) and `set_topic`, which refuses a library that already holds
 another topic or medRxiv papers.
 
 For a topic library `update` runs `update_topic` instead of the three
-phases: **rounds** of `EUROPEPMC_ROUND_DAYS` (30), newest first, from the
-clock's day back to `options.from` (else `EUROPEPMC_FIRST_DAY`, 2021-01-01,
-not remembered). Each round is `metadata::run_window` for the bmlib
-`europepmc` source (config `query`), then `fulltext::run(…,
-EUROPEPMC_SOURCE, …)`, then one index run, so a round's papers are
-searchable before the next round starts. The checkpoints are the usual
+phases: **rounds**, newest first, from the clock's day back to
+`options.from` (else `EUROPEPMC_FIRST_DAY`, 2021-01-01, not remembered). The
+first round is `EUROPEPMC_FIRST_ROUND_DAYS` (7), so a new library is
+searchable within minutes; the rest are `EUROPEPMC_ROUND_DAYS` (30). Each
+round is `metadata::run_window` for the bmlib `europepmc` source (config
+`query`), then an index run (the new abstracts), then `fulltext::run(…,
+EUROPEPMC_SOURCE, …)`, then another index run (the new full texts). So a
+round's papers are searchable before the next round starts. The checkpoints are the usual
 ones: bmlib's day ledger (with its 14-day settle period, recent days are
 fetched again) and the full-text and index rows. `stop` is checked between
 rounds and inside each phase as before.
