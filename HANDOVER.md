@@ -10,20 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Demo polish from #460** (2026-11-16, branch `feat/demo-polish-460`).
-  The app's search screen loads the search model in the background
+- **Demo polish from #460** (2026-11-16, branch `feat/demo-polish-460`). The
+  app's search screen loads the search model in the background
   (`warm_search` → `Ask::Warm`), so the first search no longer waits
   seconds. ⌘Q and closing the window end in `RunEvent::Exit`, where
   `pause_before_exit` hides the window and waits up to 15 s
   (`Update::pause_and_wait`) for the update to stop after the paper in
   flight; before, the process exited mid-paper (the old `CloseRequested`
-  pause never got the time to act). A recorded library with no papers and
-  no topic reopens on screen 4 (`LibraryCounts::needs_topic`). Verified:
-  `cargo test -p bml-app -- --include-ignored` 21 passed; the dev app opened
+  pause never got the time to act). A recorded library with no papers and no
+  topic reopens on screen 4 (`LibraryCounts::needs_topic`), and an update
+  started there anyway is refused (`CHOOSE_TOPIC_FIRST`) rather than filling
+  it with medRxiv papers, after which no topic can be chosen. Verified:
+  `cargo test -p bml-app -- --include-ignored` 22 passed; the dev app opened
   on the prepared library had the GGUF open and ~40 s of CPU before any
   search. **Not verified by hand:** ⌘Q during an update and the screen-4
-  return (osascript may not send keystrokes here); both are rehearsal
-  checks in `doc/users/investor_demo_runbook.md`.
+  return (osascript may not send keystrokes here); both are rehearsal checks
+  in `doc/users/investor_demo_runbook.md`.
 
 - **Failed settings load no longer lets Save overwrite settings, #437**
   (2026-11-15). If `_sync_from_database` fails at login, login goes on with
@@ -338,7 +340,7 @@ value — pick one, or pull an item from ROADMAP.md:
     2026-11-15 23:10 AEDT, detached (`nohup caffeinate -i
     ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
     `~/.bml-demo/build.log`). If it stops, run the same command again; it
-    resumes. On 2026-11-16 10:30 AEST it held 3,559 papers, 3,431 indexed.
+    resumes. On 2026-11-16 10:30 AEDT it held 3,559 papers, 3,431 indexed.
   - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
     PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
     merged commit once #790 lands (ROADMAP, investor-demo follow-ups).

@@ -75,8 +75,8 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
      after opening).
    - On the live install, while it downloads, press **⌘Q**: the window
      goes at once. Open the app again, press **Library progress**, then
-     **Resume**; it
-     carries on (the paper in hand was finished, not lost).
+     **Resume**; it carries on (nothing is lost; at worst the paper in hand
+     is done again).
    - Close the window on screen 4 (before choosing a topic) and open the
      app again: it comes back to **Your library**, not an empty search.
 

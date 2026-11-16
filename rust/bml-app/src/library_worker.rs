@@ -62,10 +62,20 @@ pub fn open_db(config_dir: &Path) -> Result<Client, String> {
 pub fn counts(config_dir: &Path) -> Result<LibraryCounts, String> {
     let library = library(config_dir)?;
     let mut db = open_db(config_dir)?;
-    let status = library_status(&mut db, &library.cache()).map_err(|e| e.to_string())?;
-    let source = library_source(&mut db).map_err(|e| e.to_string())?;
+    counts_in(&mut db, &library)
+}
+
+/// [`counts`] on an open connection.
+fn counts_in(db: &mut Client, library: &Library) -> Result<LibraryCounts, String> {
+    let status = library_status(db, &library.cache()).map_err(|e| e.to_string())?;
+    let source = library_source(db).map_err(|e| e.to_string())?;
     Ok(counts_from_status(&status, &source))
 }
+
+/// The update's answer when no topic is chosen yet: it would otherwise fill
+/// the library with medRxiv papers, after which no topic can be chosen.
+pub const CHOOSE_TOPIC_FIRST: &str =
+    "No topic is chosen yet. Close BMLibrarian and open it again to choose one.";
 
 /// One request to the search worker.
 enum Ask {
@@ -252,7 +262,8 @@ impl Update {
 
     /// Ask the update to stop and wait up to `limit` for its thread to end;
     /// `true` when it ended. Past `limit` the paper in flight is redone next
-    /// time (its work is in one transaction, so nothing is half stored).
+    /// time (its database work is one transaction, so nothing half stored is
+    /// recorded).
     pub fn pause_and_wait(&self, limit: Duration) -> bool {
         self.pause();
         let deadline = Instant::now() + limit;
@@ -291,14 +302,17 @@ pub fn start_update(
         let _lock = lock; // held until the update ends
                           // A panic inside the pipeline still reaches the window as an error.
         let result = guarded(|| {
-            open_db(&config_dir).map(|mut db| {
+            open_db(&config_dir).and_then(|mut db| {
+                if counts_in(&mut db, &library)?.needs_topic {
+                    return Err(CHOOSE_TOPIC_FIRST.to_string());
+                }
                 let pipeline = Pipeline::new(library.cache(), bml_setup::gguf_path(&config_dir));
                 let options = UpdateOptions {
                     from: None,
                     phases: PhaseSet::all(),
                     stop: &flag,
                 };
-                pipeline.update(&mut db, &options, &mut |p| progress(&p))
+                Ok(pipeline.update(&mut db, &options, &mut |p| progress(&p)))
             })
         });
         done(result);
@@ -446,5 +460,27 @@ mod tests {
         assert_eq!(counts.found, 0);
         // Set up, no topic chosen yet: the window goes back to screen 4.
         assert!(counts.needs_topic);
+    }
+
+    #[test]
+    #[ignore = "needs BML_TEST_PG_BINDIR"]
+    fn an_update_without_a_topic_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((_s, cfg)) = set_up(tmp.path()) else {
+            return;
+        };
+        let (done, answer) = channel();
+        let update = start_update(
+            cfg,
+            |_| {},
+            move |result| {
+                let _ = done.send(result);
+            },
+        )
+        .unwrap();
+        // Refused before any medRxiv download makes a topic impossible.
+        let result = answer.recv().unwrap();
+        assert_eq!(result.err().as_deref(), Some(CHOOSE_TOPIC_FIRST));
+        assert!(update.pause_and_wait(Duration::from_secs(10)));
     }
 }

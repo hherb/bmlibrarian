@@ -56,17 +56,21 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
   (`waiting`: the window starts the update again after 45 s), a rate limit,
   then a pause.
 - **Quitting stops the update cleanly.** ⌘Q and closing the window both
-  end in `RunEvent::Exit` (macOS cannot cancel it), where
-  `pause_before_exit` hides the window and waits up to `QUIT_WAIT` (15 s)
-  for the update to stop after the paper in flight
-  (`Update::pause_and_wait`). Past that, the paper is redone next time.
+  end in `RunEvent::Exit` (⌘Q on macOS skips `ExitRequested`, so `Exit` is
+  the one hook every quit reaches), where `pause_before_exit` hides the
+  window and waits up to `QUIT_WAIT` (15 s) for the update to stop after
+  the paper in flight (`Update::pause_and_wait`). Past that, the paper is
+  done again next time, and a line on stderr says so.
 - **The search model loads before the first search.** The search screen
   calls `warm_search`, which has the search worker connect and load the
   1.16 GB model in the background; a search asked meanwhile waits behind it
   on the same thread.
 - **Screen 4 is not skipped.** A recorded library that holds no papers and
-  no topic (the window was closed before a topic was chosen) reopens on
-  topic choice: `LibraryCounts::needs_topic`.
+  no topic (the window was closed after setup recorded the library, before
+  a topic was chosen) reopens on topic choice: `LibraryCounts::needs_topic`.
+  The window shows search at once and switches once the counts arrive. An
+  update of such a library is refused (`CHOOSE_TOPIC_FIRST`): it would
+  fill the library with medRxiv papers, after which no topic can be set.
 - **No thread dies silently.** The update and setup threads run under
   `library_worker::guarded`, which turns a panic into a plain error for the
   window.

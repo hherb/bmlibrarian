@@ -297,15 +297,23 @@ async function start() {
       show(screen);
       return;
     }
-    const progress = await refreshCounts();
-    // Closed on screen 4 last time: choose the topic, not an empty search.
-    if (progress?.counts.needs_topic) {
-      await showTopics();
-    } else {
-      showSearch();
-    }
   } catch (error) {
     show("welcome");
+    toast(String(error), "bad");
+    return;
+  }
+  // Search at once; the counts can wait for the database to start (and go
+  // first, so the model load does not hold them up).
+  show("search");
+  const progress = await refreshCounts();
+  // Closed before a topic was chosen: choose it, not an empty search.
+  if (!progress?.counts.needs_topic) {
+    showSearch();
+    return;
+  }
+  try {
+    await showTopics();
+  } catch (error) {
     toast(String(error), "bad");
   }
 }

@@ -15,7 +15,8 @@ pub enum StartScreen {
     /// Nothing set up yet: the wizard's first screen.
     Welcome,
     /// A library is recorded: straight to search (spec: re-opening after
-    /// setup goes to screen 6).
+    /// setup goes to screen 6), or to topic choice when none is chosen yet
+    /// (`LibraryCounts::needs_topic`).
     Search,
 }
 

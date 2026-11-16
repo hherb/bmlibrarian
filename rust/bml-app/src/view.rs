@@ -22,8 +22,9 @@ pub struct LibraryCounts {
     pub abstract_only: i64,
     /// Papers that search can find.
     pub searchable: i64,
-    /// No topic chosen yet (the window was closed on screen 4): the window
-    /// goes back to topic choice instead of an empty search.
+    /// No topic chosen yet (the window was closed after setup recorded the
+    /// library, before a topic was chosen): the window goes back to topic
+    /// choice instead of an empty search.
     pub needs_topic: bool,
 }
 

@@ -24,8 +24,9 @@ use view::{minutes_left, progress_line, LibraryCounts};
 const SEARCH_LIMIT: usize = 20;
 
 /// How long quitting waits for a running update to stop after the paper in
-/// flight (a full text, or a medRxiv request waiting up to 30 s for its turn,
-/// takes longer: that paper is then redone next time).
+/// flight (a slow full text or index of one paper, or a medRxiv request
+/// waiting up to 30 s for its turn, can take longer: that paper is then done
+/// again next time).
 const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What every command shares.
@@ -355,9 +356,9 @@ fn main() {
         ])
         .build(tauri::generate_context!());
     match result {
-        // Quitting (⌘Q, or closing the window) ends here on every platform,
-        // and cannot be cancelled on macOS: stop the update after the paper
-        // in flight before the process goes.
+        // Every quit (⌘Q, or closing the window) ends here; ⌘Q on macOS
+        // skips `ExitRequested`, so this is the one hook all of them reach.
+        // Stop the update after the paper in flight before the process goes.
         Ok(built) => built.run(|handle, event| {
             if let tauri::RunEvent::Exit = event {
                 pause_before_exit(handle);
@@ -385,6 +386,8 @@ fn pause_before_exit(handle: &AppHandle) {
         for window in handle.webview_windows().values() {
             let _ = window.hide();
         }
-        update.pause_and_wait(QUIT_WAIT);
+        if !update.pause_and_wait(QUIT_WAIT) {
+            eprintln!("BMLibrarian quit before the update stopped; the paper in flight is done again next time.");
+        }
     }
 }
