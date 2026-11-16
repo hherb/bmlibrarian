@@ -39,7 +39,10 @@ traffic is the downloads.
    while the library is still downloading.
 
 After the first start, the app opens straight on Search (or on **Your
-library**, if it was closed before a topic was chosen).
+library**, if it was closed before a topic was chosen). If it was closed
+while setup was still running, it opens on the welcome screen again; run
+setup once more and it skips what is already done (a download that was cut
+off starts again).
 
 ## If the internet drops out
 
