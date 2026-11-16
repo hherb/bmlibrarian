@@ -153,20 +153,20 @@ struct FolderInfo {
     estimate_bytes: u64,
 }
 
-/// The default library folder (`~/BMLibrarian`), as setup will create it.
+/// The library folder setup will use: the saved one when setup already
+/// recorded it (a re-run after the window closed mid-setup, #462), else the
+/// default `~/BMLibrarian`.
 #[tauri::command]
-fn library_folder() -> Result<FolderInfo, String> {
-    let home = std::env::home_dir().ok_or("BMLibrarian cannot find your home folder")?;
-    let path = home.join(LIBRARY_FOLDER_NAME);
+fn library_folder(app: State<'_, App>) -> Result<FolderInfo, String> {
+    let path = bml_db::library::resolve_library(&app.config_dir, None, std::env::home_dir())
+        .map_err(|e| e.to_string())?
+        .dir;
     Ok(FolderInfo {
         free_bytes: bml_setup::hardware::free_space_at(&path, &bml_setup::hardware::mounts()),
         path: path.display().to_string(),
         estimate_bytes: setup_view::largest_topic_bytes(),
     })
 }
-
-/// The default library folder's name in the home folder (`bml setup`'s).
-const LIBRARY_FOLDER_NAME: &str = "BMLibrarian";
 
 /// Run setup on its own thread: a `setup-step` event per step event, then one
 /// `setup-done` event (`true` when no step failed). Running it twice at once

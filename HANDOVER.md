@@ -15,10 +15,16 @@ off new work. Longer-term structural items live in
   on Search only when a library is recorded **and** the embedding GGUF is at
   `bml_setup::gguf_path` (setup records the library in step 2 but downloads
   the GGUF last; bmlib renames the download into place only once verified).
-  Otherwise it opens on Welcome and setup resumes. The prepared demo config
-  `~/.bml-demo` has the GGUF, so it still opens on Search. Verified: `cargo
-  test -- --include-ignored` 357 passed with pg_search, `-p bml-app` 22
-  passed; Python suite 4872 passed. Not checked by hand in the app.
+  Otherwise it opens on Welcome and setup, re-run, skips the steps already
+  done (a cut-off download starts again). The prepared demo config
+  `~/.bml-demo` has the GGUF, so it still opens on Search. Verified:
+  `cargo test -- --include-ignored` 357 passed with pg_search,
+  `cargo test -p bml-app -- --include-ignored` 24 passed (tests for a
+  leftover `.part` file and an unreadable library record added in review);
+  Python suite 4872 passed. Not checked by hand in the app. Screen 2
+  (`library_folder`) now shows the saved library folder when setup already
+  recorded one (a CLI setup with `--library-dir` that stopped before the
+  GGUF), not always `~/BMLibrarian`.
 
 - **bmlib #790 re-pin and two #460 items** (2026-11-16, branch
   `chore/bmlib-790-repin`). `rust/Cargo.toml` pins bmlib main at #790's

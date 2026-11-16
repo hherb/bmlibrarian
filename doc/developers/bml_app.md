@@ -66,13 +66,15 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
   1.16 GB model in the background; a search asked meanwhile waits behind it
   on the same thread.
 - **A window closed mid-setup reopens the wizard.** Setup records the
-  library in its Database step but downloads the GGUF last, so
-  `start_screen` also requires the GGUF (the download is renamed into place
-  only once verified). Without it the window opens on Welcome, and setup,
-  safe to re-run, resumes (#462).
+  library early but downloads the GGUF last, so `start_screen` also
+  requires the GGUF (the download is renamed into place only once
+  verified). Without it the window opens on Welcome, and setup, safe to
+  re-run, skips the steps already done; a cut-off download starts again
+  (#462). Screen 2's `library_folder` shows the saved library folder
+  (`resolve_library`), so a re-run never shows a folder setup will not use.
 - **Screen 4 is not skipped.** A recorded library that holds no papers and
-  no topic (the window was closed after setup recorded the library, before
-  a topic was chosen) reopens on topic choice: `LibraryCounts::needs_topic`.
+  no topic (the window was closed after setup finished, before a topic was
+  chosen) reopens on topic choice: `LibraryCounts::needs_topic`.
   The window shows search at once and switches once the counts arrive. An
   update of such a library is refused (`CHOOSE_TOPIC_FIRST`): it would
   fill the library with medRxiv papers, after which no topic can be set.

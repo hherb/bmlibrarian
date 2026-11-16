@@ -15,9 +15,9 @@ use serde::Serialize;
 pub enum StartScreen {
     /// Nothing set up yet: the wizard's first screen.
     Welcome,
-    /// Setup finished (a library is recorded and the embedding model is in
-    /// place): straight to search (spec: re-opening after setup goes to
-    /// screen 6), or to topic choice when none is chosen yet
+    /// Setup reached its last step (a library is recorded and the embedding
+    /// model is in place): straight to search (spec: re-opening after setup
+    /// goes to screen 6), or to topic choice when none is chosen yet
     /// (`LibraryCounts::needs_topic`).
     Search,
 }
@@ -48,9 +48,9 @@ pub fn config_dir() -> Result<PathBuf, String> {
 /// treated as none, so the wizard runs and setup reports the problem in plain
 /// words).
 ///
-/// Setup records the library in its Database step but downloads the model
-/// last, so a window closed mid-setup must reopen the wizard (safe to re-run),
-/// not a library that cannot update or search (#462). The model download is
+/// Setup records the library early but downloads the model last, so a window
+/// closed mid-setup must reopen the wizard (safe to re-run), not a library
+/// that cannot update or search (#462). The model download is
 /// atomic (verified, then renamed into place), so its presence means the last
 /// step got there.
 #[must_use]
@@ -64,7 +64,7 @@ pub fn start_screen(config_dir: &Path) -> StartScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bml_db::library::{ensure_library, Library};
+    use bml_db::library::{ensure_library, Library, LIBRARY_FILE_NAME};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -106,5 +106,30 @@ mod tests {
         std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();
         std::fs::write(&gguf, b"").unwrap();
         assert_eq!(start_screen(cfg.path()), StartScreen::Search);
+    }
+
+    #[test]
+    fn cut_off_model_download_starts_at_welcome() {
+        let cfg = tempfile::tempdir().unwrap();
+        let library = Library {
+            dir: cfg.path().join("library"),
+        };
+        ensure_library(cfg.path(), &library).unwrap();
+        // A download stopped midway leaves only its hidden part file.
+        let gguf = gguf_path(cfg.path());
+        let name = gguf.file_name().unwrap().to_string_lossy();
+        std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();
+        std::fs::write(gguf.with_file_name(format!(".{name}.1.part")), b"").unwrap();
+        assert_eq!(start_screen(cfg.path()), StartScreen::Welcome);
+    }
+
+    #[test]
+    fn unreadable_library_record_starts_at_welcome() {
+        let cfg = tempfile::tempdir().unwrap();
+        let gguf = gguf_path(cfg.path());
+        std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();
+        std::fs::write(&gguf, b"").unwrap();
+        std::fs::write(cfg.path().join(LIBRARY_FILE_NAME), b"{not json").unwrap();
+        assert_eq!(start_screen(cfg.path()), StartScreen::Welcome);
     }
 }
