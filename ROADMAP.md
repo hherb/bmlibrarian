@@ -189,6 +189,17 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
   returned instead of the bare results dict. Only worth it once something
   beyond the docs calls this API.
 
+## Investor-demo follow-ups (after 2026-11-23)
+
+- Re-pin bmlib (`rust/Cargo.toml`) to the merge commit of the `europepmc`
+  source (bmlib PR #790).
+- Fix #451 (login entries named per config folder), so two installs on one
+  Mac do not share `org.bmlibrarian.*` entries.
+- A folder chooser on screen 2; editing the topic search; PDFs in the reader;
+  the signed `.dmg`; Windows and Linux app builds.
+- The review follow-ups in #460 (a `FulltextSource` enum, one year-range
+  constant, and the deferred minors).
+
 ## Tracked separately on GitHub
 
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker

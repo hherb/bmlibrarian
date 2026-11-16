@@ -1,6 +1,7 @@
-//! The full-text phase: for one paper at a time, the newest version's JATS
-//! XML (or, without JATS, its PDF) from medRxiv into the library's
-//! documents folder, recorded in `publication_fulltext`.
+//! The full-text phase: for one paper at a time, its full text into the
+//! library's documents folder, recorded in `publication_fulltext`. A medRxiv
+//! paper's newest version's JATS XML (or, without JATS, its PDF); a Europe PMC
+//! paper's own `fullTextXML`.
 //!
 //! Only the paper's own sources are asked (bmlib's Tier 0): the request
 //! carries no DOI, PMID or PMC ID, so no Europe PMC, PMC, Unpaywall or DOI
@@ -23,7 +24,7 @@ use bmlib::fulltext::{ContentKind, FullTextResult, FullTextSourceEntry, MupdfPdf
 use bmlib::publications::fetchers::HttpClient;
 
 use crate::polite_client::{PoliteClient, RequestOutcome, RequestRecord};
-use crate::{Phase, PipelineError, Progress, MEDRXIV_SERVER};
+use crate::{Phase, PipelineError, Progress, EUROPEPMC_SOURCE, MEDRXIV_SERVER};
 
 /// The first wait after a passing failure; each further one doubles it.
 pub const RETRY_BASE: Duration = Duration::from_secs(60 * 60);
@@ -252,6 +253,9 @@ pub enum FulltextEnd {
         /// When the phase may run again (database time, as text).
         until: String,
     },
+    /// Several requests in a row got no answer: the network is down. The
+    /// paper in flight was not recorded; the next run carries on.
+    NoNetwork,
 }
 
 /// What the full-text phase did.
@@ -275,14 +279,35 @@ pub struct FulltextReport {
     pub end: FulltextEnd,
 }
 
+impl FulltextReport {
+    /// Fold another run's report into this one (a topic library's rounds).
+    /// An end other than [`FulltextEnd::Done`] is kept.
+    pub fn add(&mut self, other: FulltextReport) {
+        self.tried += other.tried;
+        self.jats += other.jats;
+        self.pdf += other.pdf;
+        self.replaced += other.replaced;
+        self.lasting += other.lasting;
+        self.passing += other.passing;
+        self.old_files_removed += other.old_files_removed;
+        if other.end != FulltextEnd::Done {
+            self.end = other.end;
+        }
+    }
+}
+
 /// One paper due for full text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paper {
     /// `publications.id`.
     pub id: i64,
-    /// The paper's DOI.
+    /// The source its full text comes from (`medrxiv` or `europepmc`).
+    pub source: String,
+    /// The paper's DOI (empty for a Europe PMC paper without one).
     pub doi: String,
-    /// The newest version among its medRxiv sources.
+    /// The paper's PMC ID (Europe PMC papers).
+    pub pmc_id: Option<String>,
+    /// The newest version among its medRxiv sources; always 1 for Europe PMC.
     pub version: i64,
     /// The full-text form held (`None`: no row yet).
     pub form: Option<String>,
@@ -299,15 +324,41 @@ impl Paper {
         self.form.as_deref().is_some_and(|f| f != "abstract")
     }
 
-    /// The cache key for this paper's newest version: `<doi>v<version>`,
-    /// sanitised as bmlib's service does.
+    /// The cache key for this paper's newest version, sanitised as bmlib's
+    /// service does: `<doi>v<version>` for medRxiv, the PMC ID (else
+    /// `publication-<id>`) for Europe PMC.
     #[must_use]
     pub fn new_cache_key(&self) -> String {
         sanitize_identifier(&self.identifier())
     }
 
     fn identifier(&self) -> String {
+        if self.source == EUROPEPMC_SOURCE {
+            // Europe PMC has no versions; the PMC ID names the paper.
+            return self
+                .pmc_id
+                .clone()
+                .unwrap_or_else(|| format!("publication-{}", self.id));
+        }
         format!("{}v{}", self.doi, self.version)
+    }
+
+    /// The paper as a progress line names it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        if self.source == EUROPEPMC_SOURCE {
+            return self.identifier();
+        }
+        format!("{} v{}", self.doi, self.version)
+    }
+}
+
+/// The name a progress line gives `source`.
+fn source_name(source: &str) -> &str {
+    if source == EUROPEPMC_SOURCE {
+        "Europe PMC"
+    } else {
+        "medRxiv"
     }
 }
 
@@ -327,7 +378,10 @@ fn text(row: &Row, name: &str) -> Result<Option<String>, PipelineError> {
 /// # Errors
 ///
 /// The query fails.
-pub fn next_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
+pub fn next_paper(db: &mut dyn Db, source: &str) -> Result<Option<Paper>, PipelineError> {
+    if source == EUROPEPMC_SOURCE {
+        return next_europepmc_paper(db);
+    }
     let sql = format!(
         "WITH current AS (\
            SELECT publication_id, max({VERSION_INT}) AS version FROM fulltext_sources \
@@ -351,7 +405,9 @@ pub fn next_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
     };
     Ok(Some(Paper {
         id: row.get_i64("id")?,
+        source: MEDRXIV_SERVER.to_string(),
         doi: row.get_str("doi")?.to_string(),
+        pmc_id: None,
         version: row.get_i64("version")?,
         form: text(&row, "form")?,
         cache_key: text(&row, "cache_key")?,
@@ -359,8 +415,58 @@ pub fn next_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
     }))
 }
 
-/// The paper's medRxiv sources for `version`.
+/// The next Europe PMC paper due: no full-text row yet, or abstract-only with
+/// its retry time passed. Newest first. Europe PMC has no versions, so every
+/// paper is version 1.
+fn next_europepmc_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
+    let sql = format!(
+        "SELECT p.id AS id, p.doi AS doi, p.pmcid AS pmcid, f.form AS form, \
+                f.cache_key AS cache_key, COALESCE(f.attempts, 0) AS attempts \
+         FROM publications p \
+         LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
+         WHERE EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
+                         AND s.source = ? AND s.format = 'xml') \
+           AND (f.publication_id IS NULL \
+                OR (f.form = 'abstract' AND (f.retry_after IS NULL OR f.retry_after <= now()))) \
+         ORDER BY p.publication_date DESC NULLS LAST, p.id DESC LIMIT 1"
+    );
+    let Some(row) = fetch_one(db, &sql, &[Value::Text(EUROPEPMC_SOURCE.into())])? else {
+        return Ok(None);
+    };
+    Ok(Some(Paper {
+        id: row.get_i64("id")?,
+        source: EUROPEPMC_SOURCE.to_string(),
+        doi: text(&row, "doi")?.unwrap_or_default(),
+        pmc_id: text(&row, "pmcid")?,
+        version: 1,
+        form: text(&row, "form")?,
+        cache_key: text(&row, "cache_key")?,
+        attempts: row.get_i64("attempts")?,
+    }))
+}
+
+/// The paper's sources: medRxiv's for `version`, or the Europe PMC `xml` one.
 fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, PipelineError> {
+    if paper.source == EUROPEPMC_SOURCE {
+        let rows = fetch_all(
+            db,
+            "SELECT url, format FROM fulltext_sources WHERE publication_id = ? AND source = ? \
+             AND format = 'xml' ORDER BY id",
+            &[Value::Int(paper.id), Value::Text(EUROPEPMC_SOURCE.into())],
+        )?;
+        return rows
+            .iter()
+            .map(|row| {
+                Ok(FullTextSourceEntry {
+                    url: row.get_str("url")?.to_string(),
+                    format: row.get_str("format")?.to_string(),
+                    source: EUROPEPMC_SOURCE.to_string(),
+                    open_access: true,
+                    version: None,
+                })
+            })
+            .collect();
+    }
     let rows = fetch_all(
         db,
         &format!(
@@ -663,6 +769,7 @@ pub fn finish_cache_deletions(
 /// A database failure; papers already recorded keep their state.
 pub fn run(
     db: &mut dyn Db,
+    source: &str,
     web: Arc<dyn HttpClient + Send + Sync>,
     delay: Duration,
     cache: &FullTextCache,
@@ -680,7 +787,7 @@ pub fn run(
         .with_cache(Some(cache.clone()))
         .with_pdf_extractor(Arc::new(MupdfPdfExtractor::new()))
         .with_fetch_pdf_with_jats(false);
-    while let Some(paper) = next_paper(db)? {
+    while let Some(paper) = next_paper(db, source)? {
         if stop.load(Ordering::Relaxed) {
             report.end = FulltextEnd::Stopped;
             break;
@@ -701,11 +808,23 @@ pub fn run(
         let result = service.fetch_fulltext(&request);
         service.clear_log();
         let records = polite.take_records();
+        if polite.gave_up() {
+            // Not this paper's fault: leave it untried and stop asking.
+            progress(Progress {
+                phase: Phase::Fulltext,
+                message: crate::WAITING_FOR_INTERNET.to_string(),
+            });
+            report.end = FulltextEnd::NoNetwork;
+            break;
+        }
         if polite.rate_limited() {
             let until = record_rate_limit(db)?;
             progress(Progress {
                 phase: Phase::Fulltext,
-                message: format!("medRxiv asked us to slow down; full text resumes after {until}"),
+                message: format!(
+                    "{} asked us to slow down; full text resumes after {until}",
+                    source_name(source)
+                ),
             });
             report.end = FulltextEnd::RateLimited { until };
             break;
@@ -735,7 +854,7 @@ pub fn run(
         }
         progress(Progress {
             phase: Phase::Fulltext,
-            message: format!("{} v{}: {line}", paper.doi, paper.version),
+            message: format!("{}: {line}", paper.label()),
         });
     }
     Ok(report)

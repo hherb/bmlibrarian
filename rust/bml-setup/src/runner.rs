@@ -61,6 +61,10 @@ pub struct SetupPlan {
     pub library_dir: Option<PathBuf>,
     /// The home folder, for the default library folder.
     pub home: Option<PathBuf>,
+    /// The `bml` program login entries run (`server start`); `None` is this
+    /// program. An app that runs setup passes the `bml` beside it, since its
+    /// own executable would open a window at login instead.
+    pub login_program: Option<PathBuf>,
 }
 
 /// `Ok` if `step` should run; otherwise the reason it must not.
@@ -159,6 +163,7 @@ mod tests {
     fn runner_continues_after_a_failure() {
         let dir = tempfile::tempdir().unwrap();
         let plan = SetupPlan {
+            login_program: None,
             config_dir: dir.path().to_path_buf(),
             database: None,
             ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),
@@ -217,6 +222,7 @@ mod tests {
         };
         bml_pgserver::state::save_state(dir.path(), &saved).unwrap();
         let plan = SetupPlan {
+            login_program: None,
             config_dir: dir.path().to_path_buf(),
             database: Some(DatabasePlan::Bundled),
             ollama_host: parse_ollama_host(Some("http://gpu-box:11434")).unwrap(),

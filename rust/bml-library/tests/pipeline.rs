@@ -119,6 +119,8 @@ fn pipeline(tmp: &Path, api: &FakeHttp, web: &FakeHttp, sha: &str) -> Pipeline {
         api_delay: Duration::ZERO,
         web: Arc::new(web.clone()),
         web_delay: Duration::ZERO,
+        europepmc: Arc::new(FakeHttp::new()),
+        europepmc_delay: Duration::ZERO,
         embedder: Box::new(move || Ok(Box::new(stub(&sha, None)))),
         clock: Box::new(|| instant("2024-01-17T13:00:00Z")),
     }
@@ -317,7 +319,9 @@ fn a_v2_record_adds_its_version_to_the_same_paper() {
         .map(|r| r.get(0))
         .collect();
     assert_eq!(versions, ["1", "2"]);
-    let due = bml_library::fulltext::next_paper(&mut db).unwrap().unwrap();
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+        .unwrap()
+        .unwrap();
     assert_eq!(due.version, 2);
 }
 
@@ -401,9 +405,11 @@ fn a_refused_pdf_leaves_the_abstract_with_a_lasting_reason() {
         .get(0);
     assert!(later, "a lasting failure waits LASTING_RETRY");
     // Not due again in this run's view.
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -430,9 +436,11 @@ fn a_timeout_is_passing_and_retried_once_its_time_passes() {
         &[],
     )
     .unwrap();
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_some());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -597,13 +605,13 @@ fn failed_new_version_keeps_old() {
         "v1's chunks stay"
     );
     assert!(
-        bml_library::fulltext::next_paper(&mut db)
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
             .unwrap()
             .is_none(),
         "waits for retry_after"
     );
     add_version(&mut db, id, 3);
-    let due = bml_library::fulltext::next_paper(&mut db)
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
         .unwrap()
         .expect("a newer version than the one that failed is due at once");
     assert_eq!((due.version, due.attempts), (3, 0));
@@ -628,9 +636,11 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
         (form.as_str(), attempts, kind.as_deref()),
         ("abstract", 1, Some("lasting"))
     );
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 
     // A new version that fails too counts its attempts from 0 and then
     // waits like any other: it is not picked again and again.
@@ -644,9 +654,11 @@ fn a_new_version_of_an_abstract_only_paper_is_due_at_once() {
     let (form, _, attempts, _) = fulltext_row(&mut db, id).unwrap();
     assert_eq!((form.as_str(), attempts), ("abstract", 1));
     assert_eq!(version_tried(&mut db, id), Some(2));
-    assert!(bml_library::fulltext::next_paper(&mut db)
-        .unwrap()
-        .is_none());
+    assert!(
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
+            .unwrap()
+            .is_none()
+    );
 
     add_version(&mut db, id, 3);
     web.set(&jats_url(3), 200, JATS);
@@ -684,7 +696,7 @@ fn a_row_from_before_version_tried_waits_for_its_retry_time() {
     )
     .unwrap();
     assert!(
-        bml_library::fulltext::next_paper(&mut db)
+        bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
             .unwrap()
             .is_none(),
         "waits for retry_after"
@@ -694,7 +706,7 @@ fn a_row_from_before_version_tried_waits_for_its_retry_time() {
         &[],
     )
     .unwrap();
-    let due = bml_library::fulltext::next_paper(&mut db)
+    let due = bml_library::fulltext::next_paper(&mut db, bml_library::MEDRXIV_SERVER)
         .unwrap()
         .expect("due once its retry time has passed");
     assert_eq!((due.version, due.attempts), (1, 4), "attempts kept");
@@ -1356,4 +1368,780 @@ fn a_missing_model_fails_the_index_phase_only() {
     let (phase, message) = &report.failures[0];
     assert_eq!(*phase, Phase::Index);
     assert!(message.contains("bml setup"), "{message}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn library_without_topic_reads_medrxiv() {
+    use bml_library::topics::{library_source, set_topic, topic, topic_query, LibrarySource};
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    assert_eq!(library_source(&mut db).unwrap(), LibrarySource::Medrxiv);
+    let depression = topic("depression-anxiety").unwrap();
+    set_topic(&mut db, depression).unwrap();
+    assert_eq!(
+        library_source(&mut db).unwrap(),
+        LibrarySource::EuropePmc {
+            topic_id: "depression-anxiety".into(),
+            query: topic_query(depression),
+        }
+    );
+    // Choosing the same topic again changes nothing.
+    set_topic(&mut db, depression).unwrap();
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn set_topic_refuses_another_topic() {
+    use bml_library::topics::{set_topic, topic};
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    set_topic(&mut db, topic("stroke").unwrap()).unwrap();
+    let error = set_topic(&mut db, topic("cardiology").unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Stroke"), "{error}");
+
+    // A medRxiv library with papers is refused too.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let Some((_s2, mut db2)) = server(tmp2.path()) else {
+        return;
+    };
+    other_paper(&mut db2, "10.1101/2024.01.15.24000099", "A medRxiv paper");
+    let error = set_topic(&mut db2, topic("stroke").unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("medRxiv"), "{error}");
+}
+
+/// The Europe PMC search URL bmlib's fetcher builds for `day`'s first page.
+fn europepmc_url(query: &str, day: &str) -> String {
+    use bmlib::publications::fetchers::europepmc::{page_params, SEARCH_URL};
+    let params = page_params(day, "*", query, None);
+    let pairs: Vec<(&str, &str)> = params
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    format!(
+        "{SEARCH_URL}?{}",
+        bmlib::transparency::analyzer::encode_query(&pairs)
+    )
+}
+
+/// A Europe PMC search page holding open-access hits for `pmcids`.
+fn europepmc_page(pmcids: &[&str], day: &str) -> String {
+    let hits: Vec<serde_json::Value> = pmcids
+        .iter()
+        .map(|pmcid| {
+            // A PMID of its own per paper (bmlib merges records sharing one).
+            let pmid = format!("39{}", pmcid.trim_start_matches("PMC"));
+            serde_json::json!({
+                "id": pmid,
+                "source": "MED",
+                "pmid": pmid,
+                "pmcid": pmcid,
+                "doi": format!("10.1000/demo.{pmcid}"),
+                "title": format!("Trial {pmcid}"),
+                "abstractText": "We randomised adults with depression.",
+                "firstPublicationDate": day,
+                "isOpenAccess": "Y",
+                "inEPMC": "Y",
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "hitCount": hits.len(),
+        "nextCursorMark": "*",
+        "resultList": {"result": hits},
+    })
+    .to_string()
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn europepmc_window_sends_the_query() {
+    use bml_library::metadata::run_window;
+    use bml_library::polite_client::PoliteClient;
+    use bml_library::EUROPEPMC_SOURCE;
+    use std::collections::BTreeMap;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = "OPEN_ACCESS:Y AND TITLE:\"depression\"";
+    let url = europepmc_url(query, "2024-01-16");
+    let api = FakeHttp::new().route(&url, 200, europepmc_page(&["PMC100"], "2024-01-16"));
+    let client = Arc::new(PoliteClient::new(Arc::new(api.clone()), Duration::ZERO));
+    let configs = BTreeMap::from([(
+        EUROPEPMC_SOURCE.to_string(),
+        BTreeMap::from([("query".to_string(), query.to_string())]),
+    )]);
+    let day = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
+    let stop = AtomicBool::new(false);
+    let report = run_window(
+        &mut db,
+        client,
+        EUROPEPMC_SOURCE,
+        &configs,
+        day,
+        day,
+        &stop,
+        &|| instant("2024-01-17T13:00:00Z"),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.added, 1, "{report:?}");
+    assert_eq!(api.seen().lock().unwrap().as_slice(), [url]);
+    let source: String = db
+        .query_one("SELECT first_seen_source FROM publications", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(source, EUROPEPMC_SOURCE);
+}
+
+const EUROPEPMC_NO_BODY: &str = include_str!("fixtures/europepmc_no_body.xml");
+
+/// The `fullTextXML` URL of `pmcid`.
+fn europepmc_xml_url(pmcid: &str) -> String {
+    format!("https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML")
+}
+
+/// Insert an open-access Europe PMC paper with its `fullTextXML` source.
+fn europepmc_paper(db: &mut Client, pmcid: &str) -> i32 {
+    let id: i32 = db
+        .query_one(
+            "INSERT INTO publications (title, pmcid, abstract, publication_date, \
+             first_seen_source, created_at, updated_at) VALUES ($1, $2, \
+             'We randomised adults with depression.', '2024-01-15', 'europepmc', 'now', 'now') \
+             RETURNING id",
+            &[&format!("Trial {pmcid}"), &pmcid],
+        )
+        .unwrap()
+        .get(0);
+    db.execute(
+        "INSERT INTO fulltext_sources (publication_id, source, url, format, created_at) \
+         VALUES ($1, 'europepmc', $2, 'xml', 'now')",
+        &[&id, &europepmc_xml_url(pmcid)],
+    )
+    .unwrap();
+    id
+}
+
+fn run_fulltext(
+    db: &mut Client,
+    tmp: &Path,
+    web: &FakeHttp,
+    source: &str,
+) -> bml_library::fulltext::FulltextReport {
+    let stop = AtomicBool::new(false);
+    bml_library::fulltext::run(
+        db,
+        source,
+        Arc::new(web.clone()),
+        Duration::ZERO,
+        &FullTextCache {
+            cache_dir: tmp.join("documents"),
+        },
+        &stop,
+        &mut |_| {},
+    )
+    .unwrap()
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn europepmc_paper_gets_full_text() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC100");
+    let web = FakeHttp::new().route(&europepmc_xml_url("PMC100"), 200, JATS);
+    let report = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.jats, 1, "{report:?}");
+    assert_eq!(
+        web.seen().lock().unwrap().as_slice(),
+        [europepmc_xml_url("PMC100")]
+    );
+    assert_eq!(fulltext_row(&mut db, id).unwrap().0, "jats");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn missing_body_is_abstract_only() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC200");
+    let web = FakeHttp::new().route(&europepmc_xml_url("PMC200"), 200, EUROPEPMC_NO_BODY);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(fulltext_row(&mut db, id).unwrap().0, "abstract");
+    web.seen().lock().unwrap().clear();
+    // Before its retry time it is not asked for again.
+    let again = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(again.tried, 0, "{again:?}");
+    assert!(web.seen().lock().unwrap().is_empty());
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn transport_error_leaves_paper_retryable() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC300");
+    // No route: every request is a transport error (the phone dropped out).
+    let report = run_fulltext(
+        &mut db,
+        tmp.path(),
+        &FakeHttp::new(),
+        bml_library::EUROPEPMC_SOURCE,
+    );
+    assert_eq!(report.passing, 1, "{report:?}");
+    assert_eq!(report.lasting, 0, "{report:?}");
+    let (form, _, attempts, kind) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(form, "abstract");
+    assert_eq!(attempts, 1);
+    assert_eq!(kind.as_deref(), Some("passing"));
+    let retry_set: bool = db
+        .query_one(
+            "SELECT retry_after IS NOT NULL FROM publication_fulltext WHERE publication_id = $1",
+            &[&id],
+        )
+        .unwrap()
+        .get(0);
+    assert!(retry_set);
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn source_selects_the_papers() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let medrxiv = paper(&mut db, &[1]);
+    let europepmc = europepmc_paper(&mut db, "PMC400");
+    let web = FakeHttp::new()
+        .route(&europepmc_xml_url("PMC400"), 200, JATS)
+        .route(&jats_url(1), 200, JATS);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(
+        web.seen().lock().unwrap().as_slice(),
+        [europepmc_xml_url("PMC400")]
+    );
+    assert!(fulltext_row(&mut db, medrxiv).is_none());
+    web.seen().lock().unwrap().clear();
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::MEDRXIV_SERVER);
+    assert_eq!(web.seen().lock().unwrap().as_slice(), [jats_url(1)]);
+    assert_eq!(fulltext_row(&mut db, europepmc).unwrap().0, "jats");
+}
+
+/// A pipeline for a topic library whose Europe PMC traffic goes to `epmc`,
+/// on 2024-02-20.
+fn topic_pipeline(tmp: &Path, epmc: &FakeHttp) -> Pipeline {
+    Pipeline {
+        cache: FullTextCache {
+            cache_dir: tmp.join("documents"),
+        },
+        api: Arc::new(FakeHttp::new()),
+        api_delay: Duration::ZERO,
+        web: Arc::new(FakeHttp::new()),
+        web_delay: Duration::ZERO,
+        europepmc: Arc::new(epmc.clone()),
+        europepmc_delay: Duration::ZERO,
+        embedder: Box::new(|| Ok(Box::new(stub("sha", None)))),
+        clock: Box::new(|| instant("2024-02-20T13:00:00Z")),
+    }
+}
+
+/// Every day from `from` to `to` answers an empty page, except `papers`
+/// (day, PMC ID), each with its full text.
+fn topic_days(query: &str, from: &str, to: &str, papers: &[(&str, &str)]) -> FakeHttp {
+    let http = FakeHttp::new();
+    let mut day = NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap();
+    let last = NaiveDate::parse_from_str(to, "%Y-%m-%d").unwrap();
+    while day <= last {
+        let d = day.to_string();
+        let held: Vec<&str> = papers
+            .iter()
+            .filter(|(pd, _)| *pd == d)
+            .map(|(_, id)| *id)
+            .collect();
+        http.set(&europepmc_url(query, &d), 200, europepmc_page(&held, &d));
+        day = day.succ_opt().unwrap();
+    }
+    for (_, pmcid) in papers {
+        http.set(&europepmc_xml_url(pmcid), 200, JATS);
+    }
+    http
+}
+
+fn stroke_library(db: &mut Client) -> String {
+    use bml_library::topics::{set_topic, topic, topic_query};
+    let stroke = topic("stroke").unwrap();
+    set_topic(db, stroke).unwrap();
+    topic_query(stroke)
+}
+
+fn update_topic(
+    p: &Pipeline,
+    db: &mut Client,
+    stop: &AtomicBool,
+    progress: &mut dyn FnMut(bml_library::Progress),
+) -> UpdateReport {
+    let options = UpdateOptions {
+        from: Some(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+        phases: PhaseSet::all(),
+        stop,
+    };
+    p.update(db, &options, progress)
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn first_round_is_searchable_before_the_second_starts() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    // Rounds: 2024-02-14..2024-02-20 (the short first week), then
+    // 2024-01-15..2024-02-13, then 2024-01-01..2024-01-14.
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC500"), ("2024-02-01", "PMC501")],
+    );
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(&p, &mut db, &stop, &mut |line| lines.push(line));
+    assert!(!report.failed(), "{report:?}");
+    let first_index = lines
+        .iter()
+        .position(|l| l.phase == Phase::Index)
+        .expect("an index line");
+    let second_round = lines
+        .iter()
+        .position(|l| {
+            l.phase == Phase::Metadata && l.message.starts_with("2024-01-15 to 2024-02-13")
+        })
+        .expect("the second round's metadata line");
+    assert!(first_index < second_round, "{lines:#?}");
+    let seen = epmc.seen().lock().unwrap().clone();
+    let newest_text = seen
+        .iter()
+        .position(|u| u == &europepmc_xml_url("PMC500"))
+        .unwrap();
+    let older_day = seen
+        .iter()
+        .position(|u| u == &europepmc_url(&query, "2024-02-13"))
+        .unwrap();
+    assert!(newest_text < older_day);
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        2
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn stop_between_rounds_resumes() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC600"), ("2024-01-10", "PMC601")],
+    );
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let first = update_topic(&p, &mut db, &stop, &mut |line| {
+        if line.phase == Phase::Index {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    assert!(first.stopped_early(), "{first:?}");
+    assert!(!epmc
+        .seen()
+        .lock()
+        .unwrap()
+        .contains(&europepmc_url(&query, "2024-02-13")));
+    epmc.seen().lock().unwrap().clear();
+    let resumed = AtomicBool::new(false);
+    let second = update_topic(&p, &mut db, &resumed, &mut |_| {});
+    assert!(!second.failed() && !second.stopped_early(), "{second:?}");
+    let seen = epmc.seen().lock().unwrap().clone();
+    // The rounds not reached before the stop run now.
+    assert!(seen.contains(&europepmc_url(&query, "2024-02-13")));
+    assert!(seen.contains(&europepmc_url(&query, "2024-01-10")));
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        2
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_round_with_no_network_stops_cleanly() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    stroke_library(&mut db);
+    // No routes: every Europe PMC request is a transport error.
+    let epmc = FakeHttp::new();
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(&p, &mut db, &stop, &mut |line| lines.push(line));
+    assert!(report.failed(), "{report:?}");
+    assert!(report.stopped_early(), "{report:?}");
+    // One round's days were tried, not the whole range.
+    let tried = epmc.seen().lock().unwrap().len();
+    assert!(tried <= 30, "{tried} requests");
+    assert!(
+        lines.iter().any(|l| l.message.contains("internet")),
+        "{lines:#?}"
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM publication_fulltext WHERE last_error_kind = 'lasting'"
+        ),
+        0
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM library_state WHERE last_update_at IS NOT NULL"
+        ),
+        0
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn paper_text_reads_the_stored_text_or_the_abstract() {
+    use bml_library::index::paper_text;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let full = europepmc_paper(&mut db, "PMC700");
+    let bare = europepmc_paper(&mut db, "PMC701");
+    let web = FakeHttp::new()
+        .route(&europepmc_xml_url("PMC700"), 200, JATS)
+        .route(&europepmc_xml_url("PMC701"), 200, EUROPEPMC_NO_BODY);
+    run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    let cache = FullTextCache {
+        cache_dir: tmp.path().join("documents"),
+    };
+    let text = paper_text(&cache, &mut db, i64::from(full)).unwrap();
+    assert_eq!(text.title, "Trial PMC700");
+    assert!(text.text.len() > 500, "{}", text.text);
+    let abstract_only = paper_text(&cache, &mut db, i64::from(bare)).unwrap();
+    assert_eq!(abstract_only.text, "We randomised adults with depression.");
+    assert!(!abstract_only.meta.contains("could not be read"));
+    assert!(paper_text(&cache, &mut db, 999_999).is_err());
+    // A held full text whose file is gone shows the abstract, and says so.
+    std::fs::remove_dir_all(tmp.path().join("documents")).unwrap();
+    let lost = paper_text(&cache, &mut db, i64::from(full)).unwrap();
+    assert_eq!(lost.text, "We randomised adults with depression.");
+    assert!(
+        lost.meta.contains("full text could not be read"),
+        "{}",
+        lost.meta
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn status_counts_a_topic_librarys_days() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(&query, "2024-02-19", "2024-02-20", &[]);
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let options = UpdateOptions {
+        from: Some(NaiveDate::from_ymd_opt(2024, 2, 19).unwrap()),
+        phases: only(Phase::Metadata),
+        stop: &stop,
+    };
+    p.update(&mut db, &options, &mut |_| {});
+    let status = bml_library::status::library_status(
+        &mut db,
+        &FullTextCache {
+            cache_dir: tmp.path().join("documents"),
+        },
+    )
+    .unwrap();
+    assert_eq!(status.days_complete, 2, "{status:?}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn abstracts_are_searchable_before_full_text_and_the_first_round_is_short() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC800")],
+    );
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    update_topic(&p, &mut db, &stop, &mut |line| lines.push(line));
+    // The first round is the newest week only.
+    assert_eq!(
+        lines
+            .iter()
+            .find(|l| l.phase == Phase::Metadata)
+            .unwrap()
+            .message,
+        "2024-02-14 to 2024-02-20: 7 day(s), 1 new, 0 updated",
+        "{lines:#?}"
+    );
+    // Its abstract is indexed before its full text is downloaded.
+    let first_index = lines.iter().position(|l| l.phase == Phase::Index).unwrap();
+    let first_text = lines
+        .iter()
+        .position(|l| l.phase == Phase::Fulltext)
+        .unwrap();
+    assert!(first_index < first_text, "{lines:#?}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_dead_network_ends_full_text_after_a_few_papers() {
+    use bml_library::fulltext::FulltextEnd;
+    use bml_library::polite_client::NO_ANSWER_LIMIT;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    for pmcid in ["PMC910", "PMC911", "PMC912", "PMC913", "PMC914"] {
+        europepmc_paper(&mut db, pmcid);
+    }
+    // No routes: the network is down.
+    let web = FakeHttp::new();
+    let report = run_fulltext(&mut db, tmp.path(), &web, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.end, FulltextEnd::NoNetwork, "{report:?}");
+    assert_eq!(web.seen().lock().unwrap().len(), NO_ANSWER_LIMIT as usize);
+    // The paper whose request gave up is not recorded; the others wait an hour.
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM publication_fulltext"),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM publication_fulltext WHERE last_error_kind = 'lasting'"
+        ),
+        0
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_topic_librarys_from_day_is_remembered() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(&query, "2024-01-01", "2024-02-20", &[]);
+    let p = topic_pipeline(tmp.path(), &epmc);
+    let stop = AtomicBool::new(false);
+    let from = |day: Option<&str>| UpdateOptions {
+        from: day.map(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap()),
+        phases: only(Phase::Metadata),
+        stop: &stop,
+    };
+    p.update(&mut db, &from(Some("2024-02-10")), &mut |_| {});
+    epmc.seen().lock().unwrap().clear();
+    // A scheduled run passes no --from: the library keeps the day chosen.
+    p.update(&mut db, &from(None), &mut |_| {});
+    let seen = epmc.seen().lock().unwrap().clone();
+    assert!(
+        !seen.contains(&europepmc_url(&query, "2024-02-09")),
+        "{seen:#?}"
+    );
+    assert!(
+        !seen.contains(&europepmc_url(&query, "2024-01-01")),
+        "{seen:#?}"
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn offline_days_are_fetched_when_the_network_is_back() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let offline = FakeHttp::new();
+    let stop = AtomicBool::new(false);
+    update_topic(
+        &topic_pipeline(tmp.path(), &offline),
+        &mut db,
+        &stop,
+        &mut |_| {},
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM download_days WHERE status = 'completed'"
+        ),
+        0
+    );
+    // The network is back.
+    let online = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-18", "PMC950")],
+    );
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &online),
+        &mut db,
+        &stop,
+        &mut |_| {},
+    );
+    assert!(!report.failed() && !report.stopped_early(), "{report:?}");
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        1
+    );
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_captive_portal_reads_as_offline_after_one_round() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    // Every day answers 200 with a hotel's sign-in page.
+    let portal = FakeHttp::new();
+    let mut day = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    while day <= NaiveDate::from_ymd_opt(2024, 2, 20).unwrap() {
+        portal.set(
+            &europepmc_url(&query, &day.to_string()),
+            200,
+            "<html>Sign in to the Wi-Fi</html>",
+        );
+        day = day.succ_opt().unwrap();
+    }
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &portal),
+        &mut db,
+        &stop,
+        &mut |l| lines.push(l),
+    );
+    assert!(report.stopped_early(), "{report:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.message == bml_library::WAITING_FOR_INTERNET),
+        "{lines:#?}"
+    );
+    // The first round's week only, not every round back to 2024-01-01.
+    assert!(portal.seen().lock().unwrap().len() <= 7);
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn one_bad_day_does_not_stop_the_update() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let query = stroke_library(&mut db);
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-01-10", "PMC960")],
+    );
+    // One day of the first round answers with an error body.
+    epmc.set(
+        &europepmc_url(&query, "2024-02-19"),
+        200,
+        r#"{"errMsg":"busy"}"#,
+    );
+    let stop = AtomicBool::new(false);
+    let mut lines: Vec<bml_library::Progress> = Vec::new();
+    let report = update_topic(
+        &topic_pipeline(tmp.path(), &epmc),
+        &mut db,
+        &stop,
+        &mut |l| lines.push(l),
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.message != bml_library::WAITING_FOR_INTERNET),
+        "{lines:#?}"
+    );
+    assert!(report.failed(), "the bad day is reported");
+    // The older rounds still ran.
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(DISTINCT publication_id) FROM chunks WHERE kind = 'fulltext'"
+        ),
+        1
+    );
 }

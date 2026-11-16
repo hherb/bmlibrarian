@@ -1,5 +1,5 @@
-//! `bml library …`: bring the library up to date with medRxiv, show what it
-//! holds, and schedule updates.
+//! `bml library …`: bring the library up to date (medRxiv, or its Europe PMC
+//! topic), show what it holds, and schedule updates.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -9,6 +9,7 @@ use std::sync::Arc;
 use bml_db::library::{load_library, Library};
 use bml_library::fulltext::FulltextEnd;
 use bml_library::status::library_status;
+use bml_library::topics::{library_source, set_topic, topic, LibrarySource, Topic, TOPICS};
 use bml_library::{
     try_lock_worker, updated_within, Phase, PhaseSet, Pipeline, UpdateOptions, UpdateReport,
 };
@@ -23,20 +24,26 @@ use postgres::Client;
 
 use crate::server::{say, EXIT_FAILED, EXIT_HEALTHY, EXIT_NOT_SET_UP};
 
-/// Exit code of `update`: it stopped before its work was done (Ctrl-C,
-/// medRxiv asked us to slow down, or another update holds the lock); running
-/// it again carries on.
+/// Exit code of `update`: it stopped before its work was done (Ctrl-C, the
+/// server asked us to slow down, no network, or another update holds the
+/// lock); running it again carries on.
 pub const EXIT_STOPPED_EARLY: u8 = 4;
 
 /// `bml library …` subcommands.
 #[derive(Subcommand)]
 pub enum LibraryCommand {
-    /// Bring the library up to date with medRxiv (safe to stop and run again).
+    /// Bring the library up to date with medRxiv, or with its Europe PMC topic
+    /// (safe to stop and run again).
     Update {
-        /// The first posting day to download (default: the day last given
-        /// with --from, else medRxiv's first day).
+        /// The first day to download (default: the day last given with
+        /// --from, else medRxiv's first day, or 2021-01-01 for a topic library).
+        /// The day given is remembered.
         #[arg(long, value_name = "YYYY-MM-DD")]
         from: Option<NaiveDate>,
+        /// Make a new, empty library a Europe PMC topic library (an id from
+        /// `bml_library::topics::TOPICS`); a library keeps the topic it has.
+        #[arg(long, value_name = "TOPIC", value_parser = parse_topic)]
+        topic: Option<&'static Topic>,
         /// Leave out a phase; repeatable.
         #[arg(long = "skip", value_enum, value_name = "PHASE")]
         skip: Vec<SkipPhase>,
@@ -74,7 +81,7 @@ pub enum ScheduleWhen {
 /// Phases a person may leave out.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SkipPhase {
-    /// Paper details from medRxiv, day by day.
+    /// Paper details (medRxiv, or the topic's Europe PMC search), day by day.
     Metadata,
     /// Full text (JATS XML or PDF), paper by paper.
     Fulltext,
@@ -121,13 +128,14 @@ pub fn run(command: LibraryCommand, config_dir: &Path) -> Result<ExitCode, Libra
     match command {
         LibraryCommand::Update {
             from,
+            topic,
             skip,
             if_older_than,
         } => {
             let phases = skip
                 .iter()
                 .fold(PhaseSet::all(), |set, s| set.without(s.phase()));
-            update(&library, config_dir, from, phases, if_older_than)
+            update(&library, config_dir, from, topic, phases, if_older_than)
         }
         LibraryCommand::Status => status(&library, config_dir),
         LibraryCommand::Schedule(when) => schedule(when, config_dir),
@@ -164,7 +172,7 @@ fn schedule(when: ScheduleWhen, config_dir: &Path) -> Result<ExitCode, LibraryCl
 }
 
 /// The library's database connection, or the exit code to return.
-fn database(config_dir: &Path) -> Result<Result<Client, ExitCode>, LibraryCliError> {
+pub(crate) fn database(config_dir: &Path) -> Result<Result<Client, ExitCode>, LibraryCliError> {
     let Some(info) = read_conn_info(&config_dir.join(APP_ENV_FILE_NAME))
         .map_err(bml_pgserver::error::PgServerError::from)?
     else {
@@ -184,6 +192,7 @@ fn update(
     library: &Library,
     config_dir: &Path,
     from: Option<NaiveDate>,
+    topic: Option<&'static Topic>,
     phases: PhaseSet,
     if_older_than: Option<u32>,
 ) -> Result<ExitCode, LibraryCliError> {
@@ -196,6 +205,12 @@ fn update(
         Err(code) => return Ok(code),
     };
     bml_db::migrate(&mut db).map_err(LibraryCliError::Migrate)?;
+    if let Some(topic) = topic {
+        if let Err(e) = set_topic(&mut db, topic) {
+            eprintln!("{e}");
+            return Ok(ExitCode::from(EXIT_FAILED));
+        }
+    }
     if let Some(days) = if_older_than {
         if updated_within(&mut db, days)? {
             say!("The library was brought up to date less than {days} day(s) ago; nothing to do.");
@@ -249,7 +264,7 @@ fn summarise(report: &UpdateReport) {
             eprintln!("  {line} (fetched again next time)");
         }
         if m.rate_limited {
-            say!("  medRxiv asked us to slow down; the metadata carries on next run.");
+            say!("  The server asked us to slow down; the metadata carries on next run.");
         }
     }
     if let Some(f) = &report.fulltext {
@@ -266,8 +281,13 @@ fn summarise(report: &UpdateReport) {
         match &f.end {
             FulltextEnd::Done => {}
             FulltextEnd::Stopped => say!("  Stopped; run again to carry on."),
+            FulltextEnd::NoNetwork => {
+                say!(
+                    "  No answer from the server several times; check the internet and run again."
+                );
+            }
             FulltextEnd::RateLimited { until } => {
-                say!("  medRxiv asked us to slow down; full text resumes after {until}.");
+                say!("  The server asked us to slow down; full text resumes after {until}.");
             }
         }
     }
@@ -292,6 +312,25 @@ fn summarise(report: &UpdateReport) {
     }
 }
 
+/// `--topic`'s parser: a preset id, else the list of ids.
+fn parse_topic(id: &str) -> Result<&'static Topic, String> {
+    topic(id).ok_or_else(|| {
+        let ids: Vec<&str> = TOPICS.iter().map(|t| t.id).collect();
+        format!("no topic {id:?}; the topics are: {}", ids.join(", "))
+    })
+}
+
+/// The status line naming where the library downloads from.
+fn source_line(source: &LibrarySource) -> String {
+    match source {
+        LibrarySource::Medrxiv => "Source: medRxiv".to_string(),
+        LibrarySource::EuropePmc { topic_id, .. } => {
+            let name = topic(topic_id).map_or(topic_id.as_str(), |t| t.name);
+            format!("Source: Europe PMC, topic \"{name}\"")
+        }
+    }
+}
+
 fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliError> {
     let mut db = match database(config_dir)? {
         Ok(db) => db,
@@ -300,6 +339,7 @@ fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliEr
     bml_db::migrate(&mut db).map_err(LibraryCliError::Migrate)?;
     let s = library_status(&mut db, &library.cache())?;
     say!("Library: {}", library.dir.display());
+    say!("{}", source_line(&library_source(&mut db)?));
     say!("Papers: {}", s.papers);
     say!(
         "Full text: {} JATS, {} PDF, {} abstract only, {} not tried yet",
@@ -347,6 +387,26 @@ fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_line_names_the_topic_or_medrxiv() {
+        use bml_library::topics::LibrarySource;
+        assert_eq!(source_line(&LibrarySource::Medrxiv), "Source: medRxiv");
+        assert_eq!(
+            source_line(&LibrarySource::EuropePmc {
+                topic_id: "stroke".into(),
+                query: "q".into(),
+            }),
+            "Source: Europe PMC, topic \"Stroke\""
+        );
+        assert_eq!(
+            source_line(&LibrarySource::EuropePmc {
+                topic_id: "retired-topic".into(),
+                query: "q".into(),
+            }),
+            "Source: Europe PMC, topic \"retired-topic\""
+        );
+    }
     use bml_library::fulltext::FulltextReport;
     use bml_library::index::IndexReport;
     use bml_library::metadata::MetadataReport;

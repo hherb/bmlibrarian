@@ -58,3 +58,6 @@ rust/target/
 
 # pgdist bundles built by rust/pgdist/build.sh
 rust/pgdist/out/
+
+# Tauri build output (generated schemas)
+rust/bml-app/gen/

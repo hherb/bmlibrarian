@@ -1,4 +1,5 @@
-//! The metadata phase: bmlib's `medrxiv-details` source, synced day by day.
+//! The metadata phase: a bmlib source synced day by day (`medrxiv-details`,
+//! or `europepmc` with a topic's search, through [`run_window`]).
 //! bmlib's day ledger (`download_days`) is the checkpoint, so a stopped or
 //! failed run resumes at the first day not yet recorded complete.
 
@@ -12,7 +13,7 @@ use bmlib::publications::sync::{sync, SyncRequest};
 use chrono::{DateTime, Days, NaiveDate, Utc};
 
 use crate::polite_client::PoliteClient;
-use crate::{Phase, PipelineError, Progress, MEDRXIV_SOURCE};
+use crate::{Phase, PipelineError, Progress, EUROPEPMC_SOURCE, MEDRXIV_SOURCE};
 
 /// How many days one `sync` call covers; `stop` is checked between calls.
 pub const METADATA_WINDOW_DAYS: u64 = 30;
@@ -38,6 +39,19 @@ pub struct MetadataReport {
     pub rate_limited: bool,
 }
 
+impl MetadataReport {
+    /// Fold one window's report into this one.
+    pub fn add(&mut self, window: MetadataReport) {
+        self.days += window.days;
+        self.added += window.added;
+        self.merged += window.merged;
+        self.failed += window.failed;
+        self.errors.extend(window.errors);
+        self.stopped |= window.stopped;
+        self.rate_limited |= window.rate_limited;
+    }
+}
+
 /// Sync `medrxiv-details` from `from` to `clock()`'s date, one window at a time.
 ///
 /// # Errors
@@ -51,8 +65,6 @@ pub fn run(
     clock: &dyn Fn() -> DateTime<Utc>,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<MetadataReport, PipelineError> {
-    let registry =
-        builtin_registry(client.clone()).map_err(|e| PipelineError::Other(e.to_string()))?;
     let configs = BTreeMap::new();
     let today = clock().date_naive();
     let mut report = MetadataReport::default();
@@ -65,44 +77,98 @@ pub fn run(
         let end = start
             .checked_add_days(Days::new(METADATA_WINDOW_DAYS - 1))
             .map_or(today, |d| d.min(today));
-        let request = SyncRequest {
-            sources: vec![MEDRXIV_SOURCE.to_string()],
-            date_from: start,
-            date_to: end,
-            recheck_days: 0,
-            configs: &configs,
-        };
-        let synced = sync(db, &registry, &request, clock)?;
-        if client.rate_limited() {
-            // bmlib recorded the window's days failed, so they come again.
-            progress(Progress {
-                phase: Phase::Metadata,
-                message: format!(
-                    "medRxiv asked us to slow down at {start} to {end}; the metadata carries on next run"
-                ),
-            });
-            report.stopped = true;
-            report.rate_limited = true;
+        let window = run_window(
+            db,
+            client.clone(),
+            MEDRXIV_SOURCE,
+            &configs,
+            start,
+            end,
+            stop,
+            clock,
+            progress,
+        )?;
+        let rate_limited = window.rate_limited;
+        report.add(window);
+        if rate_limited {
             break;
         }
-        if synced.days_processed > 0 {
-            progress(Progress {
-                phase: Phase::Metadata,
-                message: format!(
-                    "{start} to {end}: {} day(s), {} new, {} updated",
-                    synced.days_processed, synced.records_added, synced.records_merged
-                ),
-            });
-        }
-        report.days += synced.days_processed;
-        report.added += synced.records_added;
-        report.merged += synced.records_merged;
-        report.failed += synced.records_failed;
-        report.errors.extend(synced.errors);
         start = match end.succ_opt() {
             Some(next) => next,
             None => break,
         };
     }
+    Ok(report)
+}
+
+/// The name a progress line gives `source`.
+fn source_name(source: &str) -> &str {
+    match source {
+        MEDRXIV_SOURCE => "medRxiv",
+        EUROPEPMC_SOURCE => "Europe PMC",
+        other => other,
+    }
+}
+
+/// Sync one window, `from` to `to` (inclusive), of bmlib source `source`, with
+/// `configs` as each source's settings (a topic library's `query`).
+///
+/// # Errors
+///
+/// A database failure outside one day, or a window bmlib refuses.
+#[allow(clippy::too_many_arguments)]
+pub fn run_window(
+    db: &mut dyn Db,
+    client: Arc<PoliteClient>,
+    source: &str,
+    configs: &BTreeMap<String, BTreeMap<String, String>>,
+    from: NaiveDate,
+    to: NaiveDate,
+    stop: &AtomicBool,
+    clock: &dyn Fn() -> DateTime<Utc>,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<MetadataReport, PipelineError> {
+    let mut report = MetadataReport::default();
+    if stop.load(Ordering::Relaxed) {
+        report.stopped = true;
+        return Ok(report);
+    }
+    let registry =
+        builtin_registry(client.clone()).map_err(|e| PipelineError::Other(e.to_string()))?;
+    let request = SyncRequest {
+        sources: vec![source.to_string()],
+        date_from: from,
+        date_to: to,
+        recheck_days: 0,
+        configs,
+    };
+    let synced = sync(db, &registry, &request, clock)?;
+    if client.rate_limited() {
+        // bmlib recorded the window's days failed, so they come again.
+        progress(Progress {
+            phase: Phase::Metadata,
+            message: format!(
+                "{} asked us to slow down at {from} to {to}; the metadata carries on next run",
+                source_name(source)
+            ),
+        });
+        report.stopped = true;
+        report.rate_limited = true;
+        return Ok(report);
+    }
+    if synced.days_processed > 0 {
+        progress(Progress {
+            phase: Phase::Metadata,
+            message: format!(
+                "{from} to {to}: {} day(s), {} new, {} updated",
+                synced.days_processed, synced.records_added, synced.records_merged
+            ),
+        });
+    }
+    report.days = synced.days_processed;
+    report.added = synced.records_added;
+    report.merged = synced.records_merged;
+    report.failed = synced.records_failed;
+    report.errors = synced.errors;
     Ok(report)
 }

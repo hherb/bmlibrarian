@@ -45,6 +45,28 @@ does nothing (exit 0) if the library was brought fully up to date less than
 7 days ago; this is what a scheduled update runs. An update with `--skip`
 does not count as bringing it fully up to date.
 
+## Topic libraries (Europe PMC)
+
+A library can instead hold one **topic** from Europe PMC: peer-reviewed,
+open-access papers with full text, published 2021–2026, limited to
+randomised controlled trials, systematic reviews and meta-analyses. Four
+topics are offered: depression & anxiety, heart failure & cardiology,
+obesity & GLP-1 drugs, and stroke. A library holds one topic, or medRxiv,
+never both; use another library folder for another topic.
+
+A topic library updates in **rounds, newest first**: the newest week, then
+30 days at a time. Each round makes its papers searchable by their abstracts
+first, then downloads their full texts and adds those, before the next,
+older round starts. So the newest papers can be searched within minutes of
+starting. Each paper takes about 10–15 seconds (downloading its full text
+and making it searchable), so a topic of several thousand papers takes
+about a day in all.
+
+If the internet drops out, the update says *"Waiting for the internet.
+Downloading carries on when it's back."* and stops; nothing is lost, and the
+next update carries on where it stopped. A paper whose full text Europe PMC
+does not hold stays searchable by its abstract.
+
 ## Why full text is slow
 
 medRxiv limits how fast one computer may download from it. BMLibrarian waits

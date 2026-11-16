@@ -1,0 +1,146 @@
+/* BMLibrarian app: the one stylesheet (no inline styles; sizes in rem/em). */
+:root {
+  --ink: #1d2733;
+  --muted: #5b6878;
+  --ground: #f6f7f9;
+  --card: #ffffff;
+  --accent: #146e78;
+  --accent-ink: #ffffff;
+  --line: #dde2e8;
+  --ok: #1f7a3a;
+  --warn: #9a5b00;
+  --bad: #a3261d;
+  --radius: 0.6rem;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8edf2;
+    --muted: #a3afbd;
+    --ground: #12171d;
+    --card: #1b222a;
+    --accent: #4fb3bd;
+    --accent-ink: #0c1216;
+    --line: #2c3540;
+    --ok: #63c27f;
+    --warn: #e0a64a;
+    --bad: #ef7a70;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { font-size: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--ground);
+}
+main { max-width: 52rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+[hidden] { display: none !important; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 0.75rem; }
+h2 { font-size: 1.25rem; margin: 1.5rem 0 0.5rem; }
+.lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; }
+.muted { color: var(--muted); }
+button {
+  font: inherit;
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6em 1.2em;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button:disabled { opacity: 0.55; cursor: default; }
+.actions { display: flex; gap: 0.75rem; margin-top: 2rem; flex-wrap: wrap; }
+.card {
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin: 0.75rem 0;
+}
+.toasts { position: fixed; right: 1.25rem; bottom: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; max-width: 24rem; }
+.toast {
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-left: 0.3rem solid var(--warn);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 15%);
+}
+.toast.bad { border-left-color: var(--bad); }
+
+/* Screen 5: building the library */
+.counts { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1.5rem 0; }
+.counts .count {
+  flex: 1 1 10rem;
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+}
+.counts .count .number { display: block; font-size: 2.2rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.counts .count .label { color: var(--muted); }
+
+/* Screen 6: search */
+.progress-line { margin: 0 0 1rem; }
+.search-form { display: flex; gap: 0.75rem; margin: 1rem 0; }
+.search-form input {
+  flex: 1;
+  font: inherit;
+  font-size: 1.1rem;
+  padding: 0.65em 0.9em;
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--ink);
+}
+.result { cursor: pointer; }
+.result:hover { border-color: var(--accent); }
+.result h3 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+.result .meta { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }
+.result .passage { margin: 0; }
+
+/* The reader */
+.paper-text { white-space: pre-wrap; line-height: 1.65; margin-top: 1.5rem; }
+
+/* Screens 1–4 */
+.plain-steps { padding-left: 1.25rem; }
+.plain-steps li { margin: 0.4rem 0; }
+.folder-path { font-weight: 600; font-size: 1.1rem; margin: 0 0 0.25rem; word-break: break-all; }
+.step-list { list-style: none; padding: 0; margin: 1.5rem 0; }
+.step-list li {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 0.0625rem solid var(--line);
+}
+.step-list .label { flex: 0 0 11rem; font-weight: 600; }
+.step-list .text { color: var(--muted); }
+.step-list .state { flex: 0 0 1.25rem; text-align: center; }
+.step-list li.working .state::before { content: "…"; color: var(--accent); }
+.step-list li.done .state::before { content: "✓"; color: var(--ok); }
+.step-list li.warning .state::before { content: "!"; color: var(--warn); font-weight: 700; }
+.step-list li.failed .state::before { content: "✕"; color: var(--bad); font-weight: 700; }
+.step-list li.failed .text { color: var(--bad); }
+.topic-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 1rem 0; }
+.topic {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--card);
+  border: 0.0625rem solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+}
+.topic:has(input:checked) { border-color: var(--accent); }
+.topic .name { font-weight: 600; flex: 1; }
+.topic .topic-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.schedule { display: flex; flex-direction: column; gap: 0.4rem; }
+.schedule input[type="number"] { width: 4.5em; font: inherit; padding: 0.15em 0.3em; }

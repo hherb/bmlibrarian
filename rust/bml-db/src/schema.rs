@@ -184,6 +184,19 @@ fn version_tried(db: &mut dyn Db) -> bmlib::db::Result<()> {
     Ok(())
 }
 
+/// Migration 4: `library_state.topic_id` and `topic_query`, the Europe PMC
+/// topic a library downloads (both null for a medRxiv library).
+fn library_topic(db: &mut dyn Db) -> bmlib::db::Result<()> {
+    for column in ["topic_id", "topic_query"] {
+        execute(
+            db,
+            &format!("ALTER TABLE {LIBRARY_STATE} ADD COLUMN IF NOT EXISTS {column} TEXT"),
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
 /// BMLibrarian's migrations, in version order.
 #[must_use]
 pub fn migrations() -> Vec<Migration> {
@@ -191,6 +204,7 @@ pub fn migrations() -> Vec<Migration> {
         Migration::new(1, "library_tables", library_tables),
         Migration::new(2, "library_state", library_state),
         Migration::new(3, "version_tried", version_tried),
+        Migration::new(4, "library_topic", library_topic),
     ]
 }
 

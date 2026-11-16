@@ -303,7 +303,30 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- **Rust installer (current focus)**, design
+- **Investor demo (current focus, meeting 2026-11-23)**: spec
+  `docs/superpowers/specs/2026-11-15-investor-demo-europepmc-design.md`,
+  plan `docs/superpowers/plans/2026-11-15-investor-demo.md`, branch
+  `feat/investor-demo-europepmc`. It replaces the MECA route: both AWS
+  accounts are region-locked "projects" that cannot read us-east-1 S3.
+  - **Measured 2026-11-15** (demo Mac, Europe PMC from Australia, topic
+    "Depression & anxiety", trials and reviews 2021–2026, 8,372 papers): the
+    paper-details search takes ~3.5 s per day (2,140 days, ~0.9 s per paper).
+    Full text came back as JATS for 46 of 46 papers, ~6 s each. Each paper
+    makes ~93 passages, embedded at ~30 passages/s (~3.1 s per paper). That
+    is ~10 s per paper in all, **~23 h for the whole topic**. Disk: ~0.2 MB
+    of documents and ~1 MB of database per paper.
+  - The prepared library: config `~/.bml-demo`, library `~/BMLibrarian-demo`,
+    server on :5418, no login items, schedule manual. Its full build started
+    2026-11-15 23:10 AEDT, detached (`nohup caffeinate -i
+    ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
+    `~/.bml-demo/build.log`). If it stops, run the same command again; it
+    resumes.
+  - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
+    PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
+    merged commit once #790 lands (ROADMAP, investor-demo follow-ups).
+  - PR #459's review follow-ups that were left for after the meeting are in
+    #460.
+- **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
   1. Measure how many medRxiv JATS files carry the article body (the hand

@@ -53,6 +53,20 @@ pub trait ChunkEmbedder {
     ///
     /// The model failed, in plain words.
     fn embed(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String>;
+
+    /// The vector of a search query: [`embed`](Self::embed) of the query with
+    /// the model's query prefix (bmlib's `query_text`), as bmlib's
+    /// `Embedder::embed_query` does.
+    ///
+    /// # Errors
+    ///
+    /// The model failed, in plain words.
+    fn embed_query(&mut self, query: &str) -> Result<Vec<f32>, String> {
+        let text = bmlib::embed::query_text(query);
+        self.embed(&[&text])?
+            .pop()
+            .ok_or_else(|| "the embedding model returned no vector".to_string())
+    }
 }
 
 /// bmlib's in-process [`Embedder`] over the setup's Arctic GGUF file.
@@ -241,6 +255,77 @@ fn canonical(
     }
 }
 
+/// A paper's readable text, for showing it (the app's reader view).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaperText {
+    /// The title.
+    pub title: String,
+    /// One line of where and when: "Journal · 2024", plus a note when a held
+    /// full text could not be read.
+    pub meta: String,
+    /// The full text when one is held and readable, else the abstract.
+    pub text: String,
+}
+
+/// The readable text of paper `publication_id`: its held full text, else its
+/// abstract (also when the held file cannot be read).
+///
+/// # Errors
+///
+/// The database fails, or there is no such paper.
+pub fn paper_text(
+    cache: &FullTextCache,
+    db: &mut dyn Db,
+    publication_id: i64,
+) -> Result<PaperText, PipelineError> {
+    let row = fetch_one(
+        db,
+        &format!(
+            "SELECT p.title AS title, p.abstract AS abstract, p.journal AS journal, \
+             p.publication_date AS publication_date, f.form AS form, f.cache_key AS cache_key \
+             FROM publications p LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
+             WHERE p.id = ?"
+        ),
+        &[Value::Int(publication_id)],
+    )?
+    .ok_or_else(|| {
+        PipelineError::Other(format!(
+            "there is no paper {publication_id} in this library"
+        ))
+    })?;
+    let title = opt_text(&row, "title")?.unwrap_or_default();
+    let year = opt_text(&row, "publication_date")?.and_then(|d| d.get(..4).map(str::to_string));
+    let meta = [opt_text(&row, "journal")?, year]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut meta = meta;
+    let held = match (opt_text(&row, "form")?, opt_text(&row, "cache_key")?) {
+        (Some(form), Some(key)) if form != ABSTRACT_CONVERTER => {
+            match canonical(cache, &form, &key, &title) {
+                Ok(canonical) => Some(canonical.text),
+                Err(ReadFailure::Lasting(why) | ReadFailure::Passing(why)) => {
+                    // Shown, not hidden: the library says it holds the text.
+                    let note = format!("full text could not be read ({why}); showing the abstract");
+                    meta = if meta.is_empty() {
+                        note
+                    } else {
+                        format!("{meta} · {note}")
+                    };
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let text = match held {
+        Some(text) => text,
+        None => opt_text(&row, "abstract")?.unwrap_or_default(),
+    };
+    Ok(PaperText { title, meta, text })
+}
+
 /// Why a held full text could not be read in the index phase.
 enum ReadFailure {
     /// The file's own fault (missing, not UTF-8, does not parse, no text):
@@ -290,7 +375,10 @@ fn sha256_hex(text: &str) -> String {
         .collect()
 }
 
-fn halfvec_literal(vector: &[f32]) -> String {
+/// `vector` as pgvector's text form, `[a,b,…]` (bound as text and cast to
+/// `halfvec` in SQL).
+#[must_use]
+pub fn halfvec_literal(vector: &[f32]) -> String {
     let parts: Vec<String> = vector.iter().map(f32::to_string).collect();
     format!("[{}]", parts.join(","))
 }
@@ -516,12 +604,44 @@ pub fn run(
             }
         }
     }
+    if report.indexed > 0 {
+        progress(Progress {
+            phase: Phase::Index,
+            message: format!(
+                "{} paper(s) ready to search ({} with full text, {} passages)",
+                report.indexed, report.fulltext, report.chunks
+            ),
+        });
+    }
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records what the model was asked to embed.
+    struct Recording(Vec<String>);
+    impl ChunkEmbedder for Recording {
+        fn model_sha256(&self) -> &str {
+            "recording"
+        }
+        fn embed(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+            self.0.extend(texts.iter().map(|t| (*t).to_string()));
+            Ok(texts.iter().map(|_| vec![0.0; 4]).collect())
+        }
+    }
+
+    #[test]
+    fn embed_query_sends_the_models_query_prefix_once() {
+        let mut model = Recording(Vec::new());
+        model.embed_query("ketamine for depression").unwrap();
+        assert_eq!(
+            model.0,
+            [bmlib::embed::query_text("ketamine for depression")]
+        );
+        assert_eq!(model.0[0], "query: ketamine for depression");
+    }
 
     #[test]
     fn halfvec_literals_are_bracketed_lists() {
