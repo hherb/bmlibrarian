@@ -70,8 +70,15 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
      internet. Turn it back on: within a minute or so the download carries on
      by itself.
    - Press **Pause**, then **Resume**.
-   - Search on the prepared library: the first search takes a few seconds
-     while the search model loads; later ones are quick.
+   - Search on the prepared library: the search model loads while the
+     window opens, so even the first search is quick (give it ten seconds
+     after opening).
+   - On the live install, while it downloads, press **⌘Q**: the window
+     goes at once. Open the app again, press **Library progress**, then
+     **Resume**; it
+     carries on (the paper in hand was finished, not lost).
+   - Close the window on screen 4 (before choosing a topic) and open the
+     app again: it comes back to **Your library**, not an empty search.
 
 ## On the day
 

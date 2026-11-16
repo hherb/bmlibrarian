@@ -29,15 +29,16 @@ traffic is the downloads.
    date, then press **Start downloading**.
 5. **Building your library.** Counts of papers found, full texts downloaded,
    and papers ready to search, with a time estimate. The newest papers come
-   first and are searchable within minutes. You can **Pause**, or close the
-   window; the next time, it carries on where it stopped. A topic takes about
-   a day in all.
+   first and are searchable within minutes. You can **Pause**, close the
+   window or quit; the app finishes the paper in hand first, and the next
+   time it carries on where it stopped. A topic takes about a day in all.
 6. **Search.** Ask in plain words, for example *does exercise help
    depression?* The results show the paper, its journal and year, and the
    passage that matched. Click a result to read the paper. Search works
    while the library is still downloading.
 
-After the first start, the app opens straight on Search.
+After the first start, the app opens straight on Search (or on **Your
+library**, if it was closed before a topic was chosen).
 
 ## If the internet drops out
 

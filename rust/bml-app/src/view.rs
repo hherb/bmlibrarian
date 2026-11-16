@@ -2,6 +2,7 @@
 //! Tauri, so it is unit-tested.
 
 use bml_library::status::LibraryStatus;
+use bml_library::topics::LibrarySource;
 use bml_library::{Phase, Progress, WAITING_FOR_INTERNET};
 use serde::Serialize;
 
@@ -21,16 +22,22 @@ pub struct LibraryCounts {
     pub abstract_only: i64,
     /// Papers that search can find.
     pub searchable: i64,
+    /// No topic chosen yet (the window was closed on screen 4): the window
+    /// goes back to topic choice instead of an empty search.
+    pub needs_topic: bool,
 }
 
-/// Screen 5's counts from the library's status.
+/// Screen 5's counts from the library's status and source. An empty library
+/// with no topic recorded still needs one (the app only makes topic
+/// libraries; one holding medRxiv papers is left alone).
 #[must_use]
-pub fn counts_from_status(status: &LibraryStatus) -> LibraryCounts {
+pub fn counts_from_status(status: &LibraryStatus, source: &LibrarySource) -> LibraryCounts {
     LibraryCounts {
         found: status.papers,
         full_text: status.jats + status.pdf,
         abstract_only: status.abstract_only,
         searchable: status.indexed,
+        needs_topic: *source == LibrarySource::Medrxiv && status.papers == 0,
     }
 }
 
@@ -286,14 +293,33 @@ mod tests {
             ..LibraryStatus::default()
         };
         assert_eq!(
-            counts_from_status(&status),
+            counts_from_status(&status, &LibrarySource::Medrxiv),
             LibraryCounts {
                 found: 120,
                 full_text: 75,
                 abstract_only: 15,
                 searchable: 90,
+                needs_topic: false,
             }
         );
+    }
+
+    #[test]
+    fn only_an_empty_library_without_a_topic_needs_one() {
+        let empty = LibraryStatus::default();
+        let topic = LibrarySource::EuropePmc {
+            topic_id: "stroke".to_string(),
+            query: "stroke".to_string(),
+        };
+        assert!(counts_from_status(&empty, &LibrarySource::Medrxiv).needs_topic);
+        // Chosen, still empty (the first round has not found papers yet).
+        assert!(!counts_from_status(&empty, &topic).needs_topic);
+        // A medRxiv library with papers (made by `bml library update`).
+        let held = LibraryStatus {
+            papers: 3,
+            ..LibraryStatus::default()
+        };
+        assert!(!counts_from_status(&held, &LibrarySource::Medrxiv).needs_topic);
     }
 
     #[test]
@@ -334,6 +360,7 @@ mod tests {
             full_text: 40,
             abstract_only: 0,
             searchable: 40,
+            needs_topic: false,
         };
         // 60 papers at SECONDS_PER_PAPER each, rounded up to whole minutes.
         let expected = (60.0 * SECONDS_PER_PAPER / 60.0_f64).ceil() as u64;

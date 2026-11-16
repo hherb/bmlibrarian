@@ -54,7 +54,19 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
   line) and `library-done` (`view::Finished`, `{complete, waiting,
   message}`). `view::finished` names a failure first, then no network
   (`waiting`: the window starts the update again after 45 s), a rate limit,
-  then a pause. Closing the window sets the update's stop flag.
+  then a pause.
+- **Quitting stops the update cleanly.** ⌘Q and closing the window both
+  end in `RunEvent::Exit` (macOS cannot cancel it), where
+  `pause_before_exit` hides the window and waits up to `QUIT_WAIT` (15 s)
+  for the update to stop after the paper in flight
+  (`Update::pause_and_wait`). Past that, the paper is redone next time.
+- **The search model loads before the first search.** The search screen
+  calls `warm_search`, which has the search worker connect and load the
+  1.16 GB model in the background; a search asked meanwhile waits behind it
+  on the same thread.
+- **Screen 4 is not skipped.** A recorded library that holds no papers and
+  no topic (the window was closed before a topic was chosen) reopens on
+  topic choice: `LibraryCounts::needs_topic`.
 - **No thread dies silently.** The update and setup threads run under
   `library_worker::guarded`, which turns a panic into a plain error for the
   window.
@@ -64,7 +76,7 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
 
 `start_screen`, `library_folder`, `start_setup`, `topic_counts`,
 `choose_topic(id)`, `set_schedule(schedule)`, `start_update`, `pause_update`,
-`library_counts`, `search(query)` (20 hits), `open_paper(id)`.
+`library_counts`, `warm_search`, `search(query)` (20 hits), `open_paper(id)`.
 
 ## Tests
 

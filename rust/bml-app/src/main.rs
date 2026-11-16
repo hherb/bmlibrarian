@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use bml_search::SearchHit;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use library_worker::{SearchWorker, Update, ALREADY_RUNNING};
 use state::StartScreen;
@@ -22,6 +22,11 @@ use view::{minutes_left, progress_line, LibraryCounts};
 
 /// How many papers a search shows.
 const SEARCH_LIMIT: usize = 20;
+
+/// How long quitting waits for a running update to stop after the paper in
+/// flight (a full text, or a medRxiv request waiting up to 30 s for its turn,
+/// takes longer: that paper is then redone next time).
+const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What every command shares.
 struct App {
@@ -45,6 +50,12 @@ fn start_screen(app: State<'_, App>) -> StartScreen {
 #[tauri::command]
 async fn search(app: State<'_, App>, query: String) -> Result<Vec<SearchHit>, String> {
     app.search.search(query, SEARCH_LIMIT)
+}
+
+/// Load the search model now (it takes seconds), so the first search is quick.
+#[tauri::command]
+fn warm_search(app: State<'_, App>) {
+    app.search.warm();
 }
 
 /// A paper to read: title, one line of journal and year, and its text.
@@ -331,6 +342,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_screen,
             search,
+            warm_search,
             open_paper,
             library_counts,
             start_update,
@@ -341,23 +353,38 @@ fn main() {
             choose_topic,
             set_schedule
         ])
-        .on_window_event(|window, event| {
-            // Closing the window stops the update after the paper in flight.
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Some(app) = tauri::Manager::try_state::<App>(window) {
-                    let slot = app
-                        .update
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(update) = slot.as_ref() {
-                        update.pause();
-                    }
-                }
+        .build(tauri::generate_context!());
+    match result {
+        // Quitting (⌘Q, or closing the window) ends here on every platform,
+        // and cannot be cancelled on macOS: stop the update after the paper
+        // in flight before the process goes.
+        Ok(built) => built.run(|handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                pause_before_exit(handle);
             }
-        })
-        .run(tauri::generate_context!());
-    if let Err(e) = result {
-        eprintln!("BMLibrarian's window could not open: {e}");
-        std::process::exit(1);
+        }),
+        Err(e) => {
+            eprintln!("BMLibrarian's window could not open: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Hide the window and wait (at most [`QUIT_WAIT`]) for this window's update
+/// to stop after the paper in flight.
+fn pause_before_exit(handle: &AppHandle) {
+    let Some(app) = handle.try_state::<App>() else {
+        return;
+    };
+    let slot = app
+        .update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(update) = slot.as_ref().filter(|u| u.running()) {
+        // The window goes at once; only the update's last paper is waited for.
+        for window in handle.webview_windows().values() {
+            let _ = window.hide();
+        }
+        update.pause_and_wait(QUIT_WAIT);
     }
 }
