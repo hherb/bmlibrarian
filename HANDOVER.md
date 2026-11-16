@@ -10,6 +10,16 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **A window closed mid-setup reopens the wizard, #462** (2026-11-16,
+  branch `fix/462-reopen-mid-setup`). `bml-app` `state::start_screen` opens
+  on Search only when a library is recorded **and** the embedding GGUF is at
+  `bml_setup::gguf_path` (setup records the library in step 2 but downloads
+  the GGUF last; bmlib renames the download into place only once verified).
+  Otherwise it opens on Welcome and setup resumes. The prepared demo config
+  `~/.bml-demo` has the GGUF, so it still opens on Search. Verified: `cargo
+  test -- --include-ignored` 357 passed with pg_search, `-p bml-app` 22
+  passed; Python suite 4872 passed. Not checked by hand in the app.
+
 - **bmlib #790 re-pin and two #460 items** (2026-11-16, branch
   `chore/bmlib-790-repin`). `rust/Cargo.toml` pins bmlib main at #790's
   merge, `6465096`. Its review changed the Europe PMC walk: days are the
@@ -204,52 +214,15 @@ off new work. Longer-term structural items live in
   (#399), only in the `pgdist` PR build (its paths include `rust/bml-db/**`).
   Review follow-ups: #424.
 
-- **pgdist: OS floor checked before download; #420 review follow-ups**
-  (2026-11-13, closes #419, #421). `pgdist-release.json` gains `requires`
-  (`macos` 15.0, `glibc` 2.36; the test `release_floors_match_the_build_inputs`
-  ties them to `inputs.json`'s new `macos_build.min_os` and
-  `linux_build.glibc`, and `build.sh` fails when theseus's `postgres`
-  minimum macOS differs from `macos_build.min_os`). `pgdist::system_too_old`
-  (macOS via `sysinfo`, glibc via `getconf GNU_LIBC_VERSION`; unreadable =
-  let through) fails the Database step before `ensure_pgdist`. The "no
-  pg_search build for this computer" reason now comes from the bundle's
-  `pgdist.json` `pg_search: false` (`built_without_pg_search`), not from
-  "runs from a bundle". `ensure_pgdist` deletes (or warns again about) a
-  leftover archive whenever it finds the bundle installed (only reached
-  while no server is saved; a saved server is resumed first), and
-  `private_database` reports earlier warnings even when `init` fails.
-  `build.sh` saves a `make -n` dry run of pgvector and fails on
-  `-march=native` (macOS/Linux). The macOS/Linux `build.sh` changes run
-  only in the `pgdist` workflow's PR build; not run locally.
-
 - **Bundled PostgreSQL (pgdist), piece 1 of the installer milestone**
-  (2026-11-11, PRs #417, #420, #422; closes #416, #418). Design:
-  `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`
-  (Mac-first GUI wizard → private PG18 → medRxiv download/full text/chunk
-  embedding → test search; owner decisions recorded there); plan
-  `docs/superpowers/plans/2026-11-11-pgdist.md`. Release **`pgdist-18.6-r1`**
-  is published (5 targets, built from `04edd55`) and pinned in
-  `rust/bml-setup/pgdist-release.json` (`release_pins_every_target` checks
-  that every `inputs.json` target has an asset), so `bml setup` with no
-  database options downloads and installs it into
-  `<config>/pgdist/18.6-r1/` (a saved server always wins; an explicit
-  `--data-dir` must match a saved private server; `--data-dir` was since
-  replaced by `--library-dir`, piece 2). Inputs: theseus-rs PG
-  18.6.1, pgvector v0.8.7 from source (`OPTFLAGS=`, no `-march=native`;
-  Linux built in pinned bookworm), ParadeDB pg_search 0.26.6 (macOS arm64,
-  Linux only). Floors: macOS 15, glibc 2.36 (Ubuntu 22.04/RHEL 9 out);
-  `build.sh` checks both, Windows `dumpbin` checks for pruned LLVM/Python.
-  Windows rename retried on `PermissionDenied`; `jit = off`; `pg_ctl start`
-  writes to `bml-pg_ctl.out` (a pipe hung Windows). The CLI test
-  `failed_step_goes_to_stderr` now fails the Database step with a missing
-  `--pg-bindir` (with assets pinned it would have downloaded the bundle).
-  Verified by hand on the owner's Mac (macOS arm64, 2026-11-11): fresh
-  `--config-dir`, `bml setup --skip autostart --skip ollama --skip models
-  --skip embedding-model` downloaded the release asset, installed it,
-  `server status` exit 0, `\dx` shows vector 0.8.7 + pg_search 0.26.6, a
-  second run is "already in place" with no download.
-  Docs: `doc/developers/pgdist.md` (Releasing, Bumping an input),
-  `doc/users/bml_setup_guide.md`. Open: #397 (Windows).
+  (2026-11-11 to 11-13, PRs #417, #420, #422; closes #416, #418, #419,
+  #421). Release **`pgdist-18.6-r1`** (theseus PG 18.6.1, pgvector v0.8.7,
+  pg_search 0.26.6 on macOS arm64/Linux) is pinned in
+  `rust/bml-setup/pgdist-release.json` with OS floors (`requires`: macOS 15,
+  glibc 2.36, checked before download). Design
+  `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`;
+  docs `doc/developers/pgdist.md`, `doc/users/bml_setup_guide.md`. Verified
+  by hand on macOS arm64 only. Open: #397 (Windows).
 
 - **Early-to-mid November 2026, Python side** (details in git history and
   the linked docs): paper-weight sample sizes read thousands separators and
@@ -366,7 +339,11 @@ value — pick one, or pull an item from ROADMAP.md:
     completed under the old walk (bmlib #793, query-blind ledger).
   - PR #459's review follow-ups that were left for after the meeting are in
     #460 (first search, ⌘Q, topic choice, captive portal in full text and
-    app migrations are done, above).
+    app migrations are done, above; #462 done). Still open there:
+    `Paper.source` string → `FulltextSource` enum, the 2021–2026 range in
+    three places (derive before 2027), "Not tried yet" never reaching 0,
+    two `update_topic` tests (the short-walk item is settled by the #790
+    re-pin).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.

@@ -27,7 +27,7 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
 
 | File | What it holds |
 |---|---|
-| `state.rs` | `config_dir_from(env, home)` (the `BML_CONFIG_DIR` variable, as `bml` resolves it) and `start_screen` (Search when a library is recorded). |
+| `state.rs` | `config_dir_from(env, home)` (the `BML_CONFIG_DIR` variable, as `bml` resolves it) and `start_screen` (Search when a library is recorded and the embedding GGUF is at `bml_setup::gguf_path`). |
 | `view.rs` | Screen 5's `LibraryCounts` from `LibraryStatus`, `progress_line` (plain words per phase), and `minutes_left` from `SECONDS_PER_PAPER` (10, measured). |
 | `setup_view.rs` | `bml_beside` (the `bml` next to the app), `step_line` (a status line per `StepEvent`), and `topic_counts_with` (live Europe PMC counts, the stored ones after `TOPIC_COUNT_TIMEOUT`). |
 | `library_worker.rs` | `open_db` (starts a stopped private server and runs the `bml-db` migrations, as `bml library update` and `status` do, so a library made by an older version still updates), the `SearchWorker` thread, and `start_update` (`Pipeline::update` on its own thread under the library's worker lock). |
@@ -65,6 +65,11 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
   calls `warm_search`, which has the search worker connect and load the
   1.16 GB model in the background; a search asked meanwhile waits behind it
   on the same thread.
+- **A window closed mid-setup reopens the wizard.** Setup records the
+  library in its Database step but downloads the GGUF last, so
+  `start_screen` also requires the GGUF (the download is renamed into place
+  only once verified). Without it the window opens on Welcome, and setup,
+  safe to re-run, resumes (#462).
 - **Screen 4 is not skipped.** A recorded library that holds no papers and
   no topic (the window was closed after setup recorded the library, before
   a topic was chosen) reopens on topic choice: `LibraryCounts::needs_topic`.

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use bml_db::library::load_library;
 use bml_pgserver::state::{resolve_config_dir, CONFIG_DIR_ENV};
+use bml_setup::gguf_path;
 use serde::Serialize;
 
 /// The screen the window opens on.
@@ -14,8 +15,9 @@ use serde::Serialize;
 pub enum StartScreen {
     /// Nothing set up yet: the wizard's first screen.
     Welcome,
-    /// A library is recorded: straight to search (spec: re-opening after
-    /// setup goes to screen 6), or to topic choice when none is chosen yet
+    /// Setup finished (a library is recorded and the embedding model is in
+    /// place): straight to search (spec: re-opening after setup goes to
+    /// screen 6), or to topic choice when none is chosen yet
     /// (`LibraryCounts::needs_topic`).
     Search,
 }
@@ -41,13 +43,20 @@ pub fn config_dir() -> Result<PathBuf, String> {
     config_dir_from(std::env::var_os(CONFIG_DIR_ENV), std::env::home_dir())
 }
 
-/// [`StartScreen::Search`] when `config_dir` records a library, else
-/// [`StartScreen::Welcome`] (an unreadable record is treated as none, so the
-/// wizard runs and setup reports the problem in plain words).
+/// [`StartScreen::Search`] when `config_dir` records a library and holds the
+/// embedding model, else [`StartScreen::Welcome`] (an unreadable record is
+/// treated as none, so the wizard runs and setup reports the problem in plain
+/// words).
+///
+/// Setup records the library in its Database step but downloads the model
+/// last, so a window closed mid-setup must reopen the wizard (safe to re-run),
+/// not a library that cannot update or search (#462). The model download is
+/// atomic (verified, then renamed into place), so its presence means the last
+/// step got there.
 #[must_use]
 pub fn start_screen(config_dir: &Path) -> StartScreen {
     match load_library(config_dir) {
-        Ok(Some(_)) => StartScreen::Search,
+        Ok(Some(_)) if gguf_path(config_dir).is_file() => StartScreen::Search,
         _ => StartScreen::Welcome,
     }
 }
@@ -85,12 +94,17 @@ mod tests {
     }
 
     #[test]
-    fn recorded_library_starts_at_search() {
+    fn finished_setup_starts_at_search() {
         let cfg = tempfile::tempdir().unwrap();
         let library = Library {
             dir: cfg.path().join("library"),
         };
         ensure_library(cfg.path(), &library).unwrap();
+        // Library recorded, model not yet downloaded: setup stopped midway.
+        assert_eq!(start_screen(cfg.path()), StartScreen::Welcome);
+        let gguf = gguf_path(cfg.path());
+        std::fs::create_dir_all(gguf.parent().unwrap()).unwrap();
+        std::fs::write(&gguf, b"").unwrap();
         assert_eq!(start_screen(cfg.path()), StartScreen::Search);
     }
 }
