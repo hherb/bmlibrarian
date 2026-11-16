@@ -54,7 +54,8 @@ pub const MEDRXIV_REQUEST_DELAY: Duration = Duration::from_secs(30);
 /// The worker lock's file name inside the library folder.
 pub const WORKER_LOCK_FILE: &str = ".bml-library.lock";
 
-/// The bmlib source a topic library syncs (`europepmc`).
+/// The bmlib source a topic library syncs (`europepmc`), and the
+/// `fulltext_sources.source` of its `fullTextXML` links.
 pub const EUROPEPMC_SOURCE: &str = "europepmc";
 /// The spacing between Europe PMC requests (bmlib's fetchers do not sleep).
 pub const EUROPEPMC_REQUEST_DELAY: Duration = Duration::from_secs(1);

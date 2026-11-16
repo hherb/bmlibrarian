@@ -18,11 +18,13 @@ off new work. Longer-term structural items live in
   the query's `PUB_YEAR` range and `europepmc_first_day()`
   (`EUROPEPMC_FIRST_DAY` is gone); a `bml-app` test checks screen 4 names the
   same years (static text, `shortcut:`). `library status` counts papers with
-  no full-text link apart ("N none offered", `LibraryStatus::no_link`), so
-  "not tried yet" reaches 0. New tests: `update_topic` with full text down
+  no full-text link apart ("N none offered", `LibraryStatus::no_link`) by the
+  same condition `next_paper` reads (`fulltext::offers_link`), so "not tried
+  yet" reaches 0. New tests: `update_topic` with full text down
   mid-rounds, a complete topic update stamps `last_update_at`, the status
-  split. This closes #460 (its short-walk item was settled by the #790
-  re-pin). Verified: `cargo test -- --include-ignored` 359 passed with
+  split, and (PR #465 review) the medRxiv split and a full text indexed before
+  the network goes. This closes #460 (its short-walk item was settled by the
+  #790 re-pin). Verified: `cargo test -- --include-ignored` 361 passed with
   pg_search, `-p bml-app -- --include-ignored` 25, Python 4872 passed.
 
 - **A window closed mid-setup reopens the wizard, #462** (2026-11-16,
@@ -353,8 +355,8 @@ value — pick one, or pull an item from ROADMAP.md:
     (`nohup caffeinate -i ~/.bml-demo-bin/bml --config-dir ~/.bml-demo
     library update`, log `~/.bml-demo/build.log`); if it stops, run the same
     command again; it resumes. It stopped on 2026-11-16 15:43 when the
-    network dropped (4,954 papers, all indexed, 4,883 JATS, 45 days of
-    2023-10 failed) and was resumed on 2026-11-17 08:31 AEST; a DNS drop-out
+    network dropped (4,954 papers, all indexed, 4,883 JATS, 45 failed days
+    back to 2023-10) and was resumed on 2026-11-17 08:31 AEST; a DNS drop-out
     stopped it again minutes later and it was restarted. Under the new walk
     2026-11-01/02 fail the 50% floor against counts stored by the old walk,
     so they show as failed days for up to 33 days (bmlib #793).
@@ -363,7 +365,9 @@ value — pick one, or pull an item from ROADMAP.md:
     counting the topic's days); the 2026-11-15 binary is kept beside it as
     `bml.2026-11-15`. The day ledger keeps the days completed under the old
     walk (bmlib #793, query-blind ledger). The app is built separately
-    (runbook step 2).
+    (runbook step 2). It predates PR #465, so it prints no "none offered"
+    and counts those papers under "not tried yet": rebuild it from master
+    once #465 is merged.
   - #460 (PR #459 review follow-ups) is closed by `chore/460-leftovers`
     (above).
 - **Rust installer**, design

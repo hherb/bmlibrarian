@@ -35,8 +35,9 @@ pub struct LibraryStatus {
     pub abstract_only: i64,
     /// Not tried for full text yet (the source offers a link).
     pub not_tried: i64,
-    /// Not tried because the source offers no full-text link (a Europe PMC
-    /// paper without `fullTextXML`), so never will be.
+    /// Not tried because the source offers no full-text link the pipeline
+    /// fetches (e.g. a Europe PMC paper without `fullTextXML`, or a medRxiv
+    /// record without a DOI); tried once one appears.
     pub no_link: i64,
     /// The most common abstract-only reasons, most papers first.
     pub reasons: Vec<AbstractReason>,
@@ -80,19 +81,13 @@ pub fn library_status(
     let form = |f: &str| format!("SELECT count(*) FROM {PUBLICATION_FULLTEXT} WHERE form = '{f}'");
     let papers = count(db, "SELECT count(*) FROM publications")?;
     let tried = count(db, &format!("SELECT count(*) FROM {PUBLICATION_FULLTEXT}"))?;
-    // The formats `fulltext::next_paper` fetches for this source.
-    let formats = match source {
-        FulltextSource::Medrxiv => "('xml', 'pdf')",
-        FulltextSource::EuropePmc => "('xml')",
-    };
     let no_link = count(
         db,
         &format!(
             "SELECT count(*) FROM publications p WHERE NOT EXISTS \
              (SELECT 1 FROM {PUBLICATION_FULLTEXT} f WHERE f.publication_id = p.id) \
-             AND NOT EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
-             AND s.source = '{}' AND s.format IN {formats})",
-            source.links_source()
+             AND NOT ({})",
+            crate::fulltext::offers_link(source)
         ),
     )?;
     let indexed = count(
@@ -139,7 +134,6 @@ pub fn library_status(
         abstract_only: count(db, &form("abstract"))?,
         not_tried: papers - tried - no_link,
         no_link,
-
         reasons,
         indexed,
         to_index: papers - indexed,

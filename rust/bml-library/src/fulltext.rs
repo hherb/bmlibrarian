@@ -363,6 +363,28 @@ impl Paper {
 
 /// The version as an integer where the text is digits only (no cast error).
 const VERSION_INT: &str = "CASE WHEN version ~ '^[0-9]{1,9}$' THEN CAST(version AS INTEGER) END";
+/// The `fulltext_sources.format`s a medRxiv paper's full text is fetched from.
+const MEDRXIV_LINK_FORMATS: &str = "('xml', 'pdf')";
+
+/// The SQL condition, on `publications p`, that the library's source offers
+/// `p` a full-text link [`next_paper`] fetches. `library_status` counts the
+/// papers without one as "none offered", so both read this one condition.
+#[must_use]
+pub fn offers_link(source: FulltextSource) -> String {
+    match source {
+        FulltextSource::Medrxiv => format!(
+            "p.doi IS NOT NULL AND p.doi <> '' AND EXISTS (SELECT 1 FROM fulltext_sources s \
+             WHERE s.publication_id = p.id AND s.source = '{}' \
+             AND s.format IN {MEDRXIV_LINK_FORMATS} AND ({VERSION_INT}) IS NOT NULL)",
+            source.links_source()
+        ),
+        FulltextSource::EuropePmc => format!(
+            "EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
+             AND s.source = '{}' AND s.format = 'xml')",
+            source.links_source()
+        ),
+    }
+}
 
 fn text(row: &Row, name: &str) -> Result<Option<String>, PipelineError> {
     Ok(row.get(name)?.as_str().map(str::to_string))
@@ -382,10 +404,11 @@ pub fn next_paper(db: &mut dyn Db, source: FulltextSource) -> Result<Option<Pape
         return next_europepmc_paper(db);
     }
     let medrxiv = FulltextSource::Medrxiv.links_source();
+    let offered = offers_link(FulltextSource::Medrxiv);
     let sql = format!(
         "WITH current AS (\
            SELECT publication_id, max({VERSION_INT}) AS version FROM fulltext_sources \
-           WHERE source = ? AND format IN ('xml', 'pdf') GROUP BY publication_id) \
+           WHERE source = ? AND format IN {MEDRXIV_LINK_FORMATS} GROUP BY publication_id) \
          SELECT p.id AS id, p.doi AS doi, c.version AS version, f.form AS form, \
                 f.cache_key AS cache_key, \
                 CASE WHEN f.version_tried < c.version THEN 0 \
@@ -393,7 +416,7 @@ pub fn next_paper(db: &mut dyn Db, source: FulltextSource) -> Result<Option<Pape
          FROM current c \
          JOIN publications p ON p.id = c.publication_id \
          LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
-         WHERE c.version IS NOT NULL AND p.doi IS NOT NULL AND p.doi <> '' \
+         WHERE {offered} \
            AND (f.publication_id IS NULL OR f.version_tried < c.version \
                 OR ((f.retry_after IS NULL OR f.retry_after <= now()) \
                     AND (f.form = 'abstract' OR f.version_held IS NULL \
@@ -419,19 +442,18 @@ pub fn next_paper(db: &mut dyn Db, source: FulltextSource) -> Result<Option<Pape
 /// its retry time passed. Newest first. Europe PMC has no versions, so every
 /// paper is version 1.
 fn next_europepmc_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError> {
+    let offered = offers_link(FulltextSource::EuropePmc);
     let sql = format!(
         "SELECT p.id AS id, p.doi AS doi, p.pmcid AS pmcid, f.form AS form, \
                 f.cache_key AS cache_key, COALESCE(f.attempts, 0) AS attempts \
          FROM publications p \
          LEFT JOIN {PUBLICATION_FULLTEXT} f ON f.publication_id = p.id \
-         WHERE EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
-                         AND s.source = ? AND s.format = 'xml') \
+         WHERE {offered} \
            AND (f.publication_id IS NULL \
                 OR (f.form = 'abstract' AND (f.retry_after IS NULL OR f.retry_after <= now()))) \
          ORDER BY p.publication_date DESC NULLS LAST, p.id DESC LIMIT 1"
     );
-    let europepmc = FulltextSource::EuropePmc.links_source();
-    let Some(row) = fetch_one(db, &sql, &[Value::Text(europepmc.into())])? else {
+    let Some(row) = fetch_one(db, &sql, &[])? else {
         return Ok(None);
     };
     Ok(Some(Paper {

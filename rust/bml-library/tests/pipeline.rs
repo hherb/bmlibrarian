@@ -2025,8 +2025,14 @@ fn full_text_down_mid_rounds_indexes_what_arrived_and_stops() {
         return;
     };
     let query = stroke_library(&mut db);
-    // The days answer; the papers' full texts get no answer (no route).
-    let epmc = topic_days(&query, "2024-01-01", "2024-02-20", &[]);
+    // The days answer; the newest paper's full text arrives, the others'
+    // get no answer (no route).
+    let epmc = topic_days(
+        &query,
+        "2024-01-01",
+        "2024-02-20",
+        &[("2024-02-19", "PMC954")],
+    );
     let pmcids = ["PMC950", "PMC951", "PMC952", "PMC953"];
     epmc.set(
         &europepmc_url(&query, "2024-02-18"),
@@ -2053,18 +2059,28 @@ fn full_text_down_mid_rounds_indexes_what_arrived_and_stops() {
         .lock()
         .unwrap()
         .contains(&europepmc_url(&query, "2024-02-13")));
-    // The abstracts that arrived are searchable; no paper is charged a
-    // lasting failure, and the one in flight is left untried.
+    // The abstracts that arrived are searchable, and so is the full text
+    // that arrived before the network went; no paper is charged a lasting
+    // failure, and the one in flight is left untried.
     assert_eq!(
         scalar_i64(
             &mut db,
             "SELECT count(*) FROM publication_index WHERE status = 'complete'"
         ),
-        pmcids.len() as i64
+        pmcids.len() as i64 + 1
     );
+    let converter: String = db
+        .query_one(
+            "SELECT i.converter_version FROM publication_index i \
+             JOIN publications p ON p.id = i.publication_id WHERE p.pmcid = 'PMC954'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(converter.starts_with("jats-"), "{converter}");
     assert_eq!(
         scalar_i64(&mut db, "SELECT count(*) FROM publication_fulltext"),
-        i64::from(NO_ANSWER_LIMIT - 1)
+        i64::from(NO_ANSWER_LIMIT - 1) + 1
     );
     assert_eq!(
         scalar_i64(
@@ -2113,6 +2129,44 @@ fn status_counts_papers_with_no_full_text_link_apart() {
     );
     let status = bml_library::status::library_status(&mut db, &cache).unwrap();
     assert_eq!((status.not_tried, status.no_link), (0, 1), "{status:?}");
+    // A tried paper whose link is gone later stays tried, not "none offered".
+    db.execute(
+        "DELETE FROM fulltext_sources WHERE url = $1",
+        &[&europepmc_xml_url("PMC960")],
+    )
+    .unwrap();
+    let status = bml_library::status::library_status(&mut db, &cache).unwrap();
+    assert_eq!((status.not_tried, status.no_link), (0, 1), "{status:?}");
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn status_counts_medrxiv_papers_the_pipeline_never_fetches_as_none_offered() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    paper(&mut db, &[1]);
+    let linkless = other_paper(&mut db, "10.1101/2024.01.15.000002", "No link");
+    // Links, but a DOI that is empty: next_paper never asks for it.
+    let no_doi = other_paper(&mut db, "10.1101/2024.01.15.000003", "No DOI");
+    add_version(&mut db, no_doi, 1);
+    db.execute("UPDATE publications SET doi = '' WHERE id = $1", &[&no_doi])
+        .unwrap();
+    let cache = FullTextCache {
+        cache_dir: tmp.path().join("documents"),
+    };
+    let status = bml_library::status::library_status(&mut db, &cache).unwrap();
+    assert_eq!((status.not_tried, status.no_link), (1, 2), "{status:?}");
+    // Only the paper status calls "not tried yet" is the one fetched.
+    let next = bml_library::fulltext::next_paper(&mut db, bml_library::FulltextSource::Medrxiv)
+        .unwrap()
+        .unwrap();
+    assert!(
+        next.id != i64::from(linkless) && next.id != i64::from(no_doi),
+        "{next:?}"
+    );
 }
 
 #[test]
