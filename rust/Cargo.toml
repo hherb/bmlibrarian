@@ -23,9 +23,9 @@ bml-setup = { path = "bml-setup" }
 bml-db = { path = "bml-db" }
 bml-library = { path = "bml-library" }
 bml-search = { path = "bml-search" }
-# bmlib PR #790's head (the europepmc source); re-pin to its merge commit once
-# it lands, and to a crates.io release once one contains it.
-bmlib = { git = "https://github.com/hherb/bmlib", rev = "25ab6655e45216dcbc1e58b10a48693671c9ac37", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
+# bmlib main at PR #790's merge (the europepmc source); move to a crates.io
+# release once one contains it.
+bmlib = { git = "https://github.com/hherb/bmlib", rev = "6465096ff88837d76530199bff2e89570d12eeee", default-features = false, features = ["http-ureq", "model-download", "postgres"] }
 postgres = "0.19"
 postgres-protocol = "0.6"
 clap = { version = "4.5", features = ["derive"] }

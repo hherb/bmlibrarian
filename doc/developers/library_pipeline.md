@@ -55,13 +55,20 @@ round is `metadata::run_window` for the bmlib `europepmc` source (config
 `query`), then an index run (the new abstracts), then `fulltext::run(…,
 EUROPEPMC_SOURCE, …)`, then another index run (the new full texts). So a
 round's papers are searchable before the next round starts. The checkpoints are the usual
-ones: bmlib's day ledger (with its 14-day settle period, recent days are
-fetched again) and the full-text and index rows. `stop` is checked between
+ones: bmlib's day ledger and the full-text and index rows. Since bmlib PR
+#790's review (pinned at `6465096`), a day is the day a record was first
+indexed by Europe PMC (`FIRST_IDATE`), not its publication day; the settle
+period is 3 days (`EUROPEPMC_SETTLE_DAYS`); a walk that ends short of the
+first page's `hitCount`, or returns a record not first indexed on the day,
+fails the day; and an empty day completes only if the query without its date
+clause finds something (one more request per empty day). A topic's
+`PUB_YEAR` range still applies, so a paper published in 2021 but first
+indexed before `EUROPEPMC_FIRST_DAY` is not fetched. `stop` is checked between
 rounds and inside each phase as before.
 
 No network is caught two ways. `PoliteClient` gives up after
-`NO_ANSWER_LIMIT` (3) unanswered requests in a row, after which every
-request fails unsent. And a round whose every day failed (`errors` ≥
+`NO_ANSWER_LIMIT` (3) requests in a row that got no answer or a web page
+(below), after which every request fails unsent. And a round whose every day failed (`errors` ≥
 `days`, nothing added or merged) is read as no network too; a captive portal
 answering every day with an HTML page counts. Either way the update records
 the metadata phase as stopped, says `WAITING_FOR_INTERNET` and ends, instead
@@ -133,13 +140,24 @@ unsent.
 | PDF extraction `engine`/`cancelled`/`timed-out` | abstract | passing |
 | PDF requested and failed | abstract | bmlib's `pdf_failure_may_pass` |
 | JATS only: 404, 403, other 4xx, not readable, no body | abstract | lasting |
-| JATS only: no answer, 408, 5xx | abstract | passing |
+| JATS only: no answer, 408, 5xx, a web page | abstract | passing |
 
 The paper's kind is the PDF's when a PDF was requested. The reason names
 both requests ("JATS: not found (HTTP 404); PDF: refused (HTTP 403)"). A
 request with no answer is stored as "no answer" only; the transport message
 (which names the URL) goes to the progress line, so `bml library status`
-groups the papers under one reason.
+groups the papers under one reason. A 200 whose body is an HTML page
+(`polite_client::is_web_page`: `<!doctype html` or `<html` after any XML
+declaration and comments; none of the sources answers with HTML) is
+recorded as `RequestOutcome::WebPage`, and bmlib gets an error instead of
+the page, so it never parses or caches it (its JATS reader would take an
+XHTML page's `<body><p>` for an article body and store the sign-in text as
+the paper's full text). The paper's failure is passing, for JATS and for a
+PDF alike, with the reason "a web page came back instead". A web page counts
+towards `NO_ANSWER_LIMIT` like no answer: behind a Wi-Fi sign-in page the
+phase ends as `FulltextEnd::NoNetwork` after three requests, and the papers
+tried wait the usual passing back-off, not 30 days.
+
 Back-off (`retry_delay`): passing doubles from `RETRY_BASE` (1 h) to
 `RETRY_MAX` (7 days); lasting waits `LASTING_RETRY` (30 days). Abstract-only
 is never final.

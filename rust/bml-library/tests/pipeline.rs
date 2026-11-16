@@ -1434,6 +1434,26 @@ fn europepmc_url(query: &str, day: &str) -> String {
     )
 }
 
+/// The undated search bmlib sends after an empty day, to tell an empty day
+/// from a query that matches nothing on any day.
+fn europepmc_probe_url(query: &str) -> String {
+    use bmlib::publications::fetchers::europepmc::SEARCH_URL;
+    let query = format!("({query})");
+    let pairs = [
+        ("query", query.as_str()),
+        ("resultType", "lite"),
+        ("format", "json"),
+        ("pageSize", "1"),
+    ];
+    format!(
+        "{SEARCH_URL}?{}",
+        bmlib::transparency::analyzer::encode_query(&pairs)
+    )
+}
+
+/// The probe's answer: the query finds papers on other days.
+const EUROPEPMC_PROBE_HIT: &str = r#"{"hitCount": 1, "resultList": {"result": []}}"#;
+
 /// A Europe PMC search page holding open-access hits for `pmcids`.
 fn europepmc_page(pmcids: &[&str], day: &str) -> String {
     let hits: Vec<serde_json::Value> = pmcids
@@ -1450,6 +1470,7 @@ fn europepmc_page(pmcids: &[&str], day: &str) -> String {
                 "title": format!("Trial {pmcid}"),
                 "abstractText": "We randomised adults with depression.",
                 "firstPublicationDate": day,
+                "firstIndexDate": day,
                 "isOpenAccess": "Y",
                 "inEPMC": "Y",
             })
@@ -1625,6 +1646,72 @@ fn transport_error_leaves_paper_retryable() {
     assert!(retry_set);
 }
 
+/// Every file under `dir` (none when it does not exist).
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                files_under(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_sign_in_page_in_place_of_the_xml_is_passing_and_ends_the_phase() {
+    use bml_library::fulltext::FulltextEnd;
+    use bml_library::polite_client::NO_ANSWER_LIMIT;
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    // An XHTML page with a <body><p>, which bmlib's JATS reader would take
+    // for an article body.
+    let page = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+        <!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"x\">\n\
+        <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Wi-Fi</title></head>\
+        <body><p>Please accept the terms of the hotel Wi-Fi to continue.</p></body></html>";
+    let portal = FakeHttp::new();
+    for pmcid in ["PMC310", "PMC311", "PMC312", "PMC313", "PMC314"] {
+        europepmc_paper(&mut db, pmcid);
+        portal.set(&europepmc_xml_url(pmcid), 200, page);
+    }
+    let report = run_fulltext(&mut db, tmp.path(), &portal, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.end, FulltextEnd::NoNetwork, "{report:?}");
+    assert_eq!(report.jats, 0, "{report:?}");
+    assert_eq!(report.lasting, 0, "{report:?}");
+    assert_eq!(
+        portal.seen().lock().unwrap().len(),
+        NO_ANSWER_LIMIT as usize
+    );
+    // The paper whose request gave up is not recorded; the others wait an
+    // hour, as abstracts.
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM publication_fulltext \
+             WHERE form = 'abstract' AND last_error_kind = 'passing'"
+        ),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM publication_fulltext"),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    // Nothing of the page was cached as the paper's full text.
+    let cached = files_under(&tmp.path().join("documents"));
+    assert!(cached.is_empty(), "{cached:?}");
+}
+
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
 fn source_selects_the_papers() {
@@ -1684,6 +1771,7 @@ fn topic_days(query: &str, from: &str, to: &str, papers: &[(&str, &str)]) -> Fak
         http.set(&europepmc_url(query, &d), 200, europepmc_page(&held, &d));
         day = day.succ_opt().unwrap();
     }
+    http.set(&europepmc_probe_url(query), 200, EUROPEPMC_PROBE_HIT);
     for (_, pmcid) in papers {
         http.set(&europepmc_xml_url(pmcid), 200, JATS);
     }

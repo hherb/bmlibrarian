@@ -101,7 +101,8 @@ fn status_reason(status: u16) -> String {
 }
 
 /// A JATS request's failure: lasting for 404, 403 or a body that is not
-/// usable XML; passing for no answer, a 408 or a 5xx.
+/// usable XML; passing for no answer, a 408, a 5xx or a web page (a Wi-Fi
+/// sign-in page answers 200 in the article's place; the next try may get it).
 fn jats_failure(
     outcome: &RequestOutcome,
     result_kind: Option<ContentKind>,
@@ -131,6 +132,10 @@ fn jats_failure(
         // The message (with the URL) goes to the progress line only, so
         // `status` can group the stored reasons.
         RequestOutcome::NoResponse(_) => ("no answer".into(), FailureKind::Passing),
+        RequestOutcome::WebPage => (
+            "a web page came back instead (a Wi-Fi sign-in page?)".into(),
+            FailureKind::Passing,
+        ),
         RequestOutcome::NotSent => ("not sent (rate limited)".into(), FailureKind::Passing),
     }
 }
@@ -193,6 +198,9 @@ pub fn classify(
     }
     if let Some(pdf) = records.iter().rev().find(is_pdf) {
         let (reason, k) = match ok.and_then(|r| r.pdf_download_failure.as_deref().map(|c| (r, c))) {
+            // A web page is the network's, whatever bmlib made of the error
+            // the client gave it.
+            _ if pdf.outcome == RequestOutcome::WebPage => jats_failure(&pdf.outcome, None),
             Some((r, cause)) => (
                 pdf_cause_reason(cause),
                 // A full disk is ours to fix, not the paper's: bmlib counts
@@ -967,6 +975,44 @@ mod tests {
     }
 
     #[test]
+    fn a_web_page_in_place_of_the_pdf_is_passing_and_named() {
+        // bmlib says "request-failed" (the client turned the page into an
+        // error); a plain non-PDF answer stays lasting.
+        for (cause, outcome, want) in [
+            (
+                "request-failed",
+                RequestOutcome::WebPage,
+                FailureKind::Passing,
+            ),
+            ("not-a-pdf", RequestOutcome::WebPage, FailureKind::Passing),
+            (
+                "not-a-pdf",
+                RequestOutcome::Status(200),
+                FailureKind::Lasting,
+            ),
+        ] {
+            let r = FullTextResult {
+                pdf_download_failure: Some(cause.into()),
+                ..empty()
+            };
+            let records = [
+                rec("https://m/j.xml", RequestOutcome::Status(404)),
+                rec("https://m/p.pdf", outcome.clone()),
+            ];
+            let Classified::Failed { reason, kind } = classify(&ok(r), &records, &pdf_urls())
+            else {
+                panic!("not a failure")
+            };
+            assert_eq!(kind, want, "{cause} {outcome:?}");
+            assert_eq!(
+                reason.contains("web page"),
+                outcome == RequestOutcome::WebPage,
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
     fn a_pdf_that_could_not_be_saved_is_passing() {
         let r = FullTextResult {
             pdf_download_failure: Some(PDF_WRITE_FAILED.into()),
@@ -992,6 +1038,7 @@ mod tests {
             (RequestOutcome::Status(404), FailureKind::Lasting),
             (RequestOutcome::Status(403), FailureKind::Lasting),
             (RequestOutcome::Status(200), FailureKind::Lasting),
+            (RequestOutcome::WebPage, FailureKind::Passing),
             (RequestOutcome::Status(408), FailureKind::Passing),
             (RequestOutcome::Status(502), FailureKind::Passing),
             (

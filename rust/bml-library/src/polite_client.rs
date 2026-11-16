@@ -1,6 +1,7 @@
 //! [`PoliteClient`]: an [`HttpClient`] that sends one request at a time,
 //! spaced by a fixed delay, records what each request got, and stops sending
-//! after the first 429.
+//! after the first 429 or after [`NO_ANSWER_LIMIT`] requests in a row without
+//! an answer (no answer at all, or a web page in the data's place).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,10 +11,11 @@ use bmlib::publications::fetchers::{FetchError, HttpClient, HttpResponse};
 /// The HTTP status a server sends when it rate-limits us.
 pub const HTTP_TOO_MANY_REQUESTS: u16 = 429;
 
-/// Requests in a row with no answer after which the network is taken to be
-/// down: every later request fails unsent, so a dead phone link costs a few
-/// requests (and, when they hang, a few time-outs) rather than one per day or
-/// paper left.
+/// Requests in a row with no answer (or a web page, see
+/// [`RequestOutcome::WebPage`]) after which the network is taken to be down:
+/// every later request fails unsent, so a dead phone link costs a few requests
+/// (and, when they hang, a few time-outs) rather than one per day or paper
+/// left.
 pub const NO_ANSWER_LIMIT: u32 = 3;
 
 /// What one request got.
@@ -21,6 +23,12 @@ pub const NO_ANSWER_LIMIT: u32 = 3;
 pub enum RequestOutcome {
     /// The server answered with this status.
     Status(u16),
+    /// A 200 whose body is an HTML page (a Wi-Fi sign-in page, a challenge
+    /// page), where data was asked for. The caller gets an error instead of
+    /// the page, so bmlib never parses or caches it (its JATS reader takes an
+    /// XHTML page's `<body><p>` for an article), and it counts towards
+    /// [`NO_ANSWER_LIMIT`]: a sign-in page means there is no internet yet.
+    WebPage,
     /// No answer: a timeout, a reset, DNS (the transport error's message).
     NoResponse(String),
     /// Not sent, because the host rate-limited an earlier request.
@@ -96,8 +104,8 @@ impl PoliteClient {
         self.state().rate_limited
     }
 
-    /// Whether [`NO_ANSWER_LIMIT`] requests in a row got no answer; every
-    /// later request fails unsent.
+    /// Whether [`NO_ANSWER_LIMIT`] requests in a row got no answer or a web
+    /// page; every later request fails unsent.
     pub fn gave_up(&self) -> bool {
         self.state().gave_up
     }
@@ -114,7 +122,7 @@ impl HttpClient for PoliteClient {
             let why = if state.rate_limited {
                 "the server rate-limited an earlier request"
             } else {
-                "the last requests got no answer (no network)"
+                "the last requests got no answer or a sign-in page (no network)"
             };
             return Err(FetchError::Transport(format!(
                 "not sent: {why} (GET {url})"
@@ -126,9 +134,12 @@ impl HttpClient for PoliteClient {
                 (self.sleep)(self.delay - waited);
             }
         }
-        let result = self.inner.get(url);
+        let mut result = self.inner.get(url);
         state.last_request_end = Some(Instant::now());
         let outcome = match &result {
+            Ok(response) if response.status == 200 && is_web_page(&response.body) => {
+                RequestOutcome::WebPage
+            }
             Ok(response) => RequestOutcome::Status(response.status),
             Err(FetchError::HttpStatus { status, .. }) => RequestOutcome::Status(*status),
             Err(error) => RequestOutcome::NoResponse(error.to_string()),
@@ -136,7 +147,15 @@ impl HttpClient for PoliteClient {
         if outcome == RequestOutcome::Status(HTTP_TOO_MANY_REQUESTS) {
             state.rate_limited = true;
         }
-        if matches!(outcome, RequestOutcome::NoResponse(_)) {
+        if outcome == RequestOutcome::WebPage {
+            result = Err(FetchError::Malformed(format!(
+                "a web page came back instead of the data (a Wi-Fi sign-in page?) (GET {url})"
+            )));
+        }
+        if matches!(
+            outcome,
+            RequestOutcome::NoResponse(_) | RequestOutcome::WebPage
+        ) {
             state.no_answer_in_a_row += 1;
             state.gave_up |= state.no_answer_in_a_row >= NO_ANSWER_LIMIT;
         } else {
@@ -148,6 +167,34 @@ impl HttpClient for PoliteClient {
         });
         result
     }
+}
+
+/// Whether `body` starts like an HTML page: `<!doctype html` or `<html`,
+/// after a byte-order mark, white space, an XML declaration and comments (an
+/// XHTML page starts `<?xml …?>`). None of the library's sources answers with
+/// HTML: they send JSON, JATS XML (`<!DOCTYPE article`, `<article`) or a PDF.
+#[must_use]
+pub fn is_web_page(body: &[u8]) -> bool {
+    let starts_with = |head: &[u8], prefix: &[u8]| {
+        head.len() >= prefix.len() && head[..prefix.len()].eq_ignore_ascii_case(prefix)
+    };
+    let mut head = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
+    loop {
+        head = head.trim_ascii_start();
+        let skip = [(b"<?".as_slice(), b"?>".as_slice()), (b"<!--", b"-->")]
+            .into_iter()
+            .find(|(open, _)| head.starts_with(open))
+            .map(|(_, close)| {
+                head.windows(close.len())
+                    .position(|w| w == close)
+                    .map_or(head.len(), |at| at + close.len())
+            });
+        match skip {
+            Some(end) => head = &head[end..],
+            None => break,
+        }
+    }
+    starts_with(head, b"<!doctype html") || starts_with(head, b"<html")
 }
 
 #[cfg(test)]
@@ -191,6 +238,70 @@ mod tests {
         assert!(
             client.take_records().is_empty(),
             "taking empties the record"
+        );
+    }
+
+    #[test]
+    fn an_html_page_is_told_from_data() {
+        assert!(is_web_page(b"<!DOCTYPE html><html>Sign in</html>"));
+        assert!(is_web_page(
+            b"\xEF\xBB\xBF \n<HTML><body>Wi-Fi</body></HTML>"
+        ));
+        assert!(!is_web_page(b"<?xml version=\"1.0\"?><article/>"));
+        assert!(!is_web_page(b"{\"hitCount\": 1}"));
+        assert!(!is_web_page(b"%PDF-1.7"));
+        assert!(!is_web_page(b"<htm"));
+        assert!(!is_web_page(b""));
+        // XHTML, and a page that starts with a comment.
+        assert!(is_web_page(
+            b"<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0//EN\"><html/>"
+        ));
+        assert!(is_web_page(b"<!-- portal --><html><body/></html>"));
+        assert!(!is_web_page(
+            b"<?xml version=\"1.0\"?><!-- c --><!DOCTYPE article PUBLIC \"-//NLM//DTD JATS\"><article/>"
+        ));
+        assert!(!is_web_page(b"<?xml unclosed"));
+    }
+
+    #[test]
+    fn a_200_web_page_is_an_error_and_counts_as_no_answer() {
+        let fake = FakeHttp::new()
+            .route("https://x/j.xml", 200, "<html>Sign in</html>")
+            .route("https://x/ok", 200, "ok");
+        let (client, _) = client(fake, Duration::ZERO);
+        let error = client.get("https://x/j.xml").unwrap_err();
+        assert!(matches!(error, FetchError::Malformed(_)), "{error:?}");
+        assert_eq!(client.take_records()[0].outcome, RequestOutcome::WebPage);
+        // A web page and no answer mix in one run of NO_ANSWER_LIMIT.
+        assert!(client.get("https://x/down").is_err());
+        assert!(!client.gave_up());
+        assert!(client.get("https://x/j.xml").is_err());
+        assert!(client.gave_up());
+        assert!(
+            client.get("https://x/ok").is_err(),
+            "not sent once given up"
+        );
+    }
+
+    #[test]
+    fn an_error_status_with_an_html_body_keeps_its_status() {
+        let page = "<!DOCTYPE html><html>Error</html>";
+        let fake =
+            FakeHttp::new()
+                .route("https://x/gone", 404, page)
+                .route("https://x/slow", 429, page);
+        let (client, _) = client(fake, Duration::ZERO);
+        assert_eq!(client.get("https://x/gone").unwrap().status, 404);
+        assert_eq!(client.get("https://x/slow").unwrap().status, 429);
+        assert!(client.rate_limited(), "an HTML 429 still rate-limits");
+        let outcomes: Vec<_> = client
+            .take_records()
+            .into_iter()
+            .map(|r| r.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            [RequestOutcome::Status(404), RequestOutcome::Status(429)]
         );
     }
 

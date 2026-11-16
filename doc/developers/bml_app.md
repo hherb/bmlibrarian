@@ -30,7 +30,7 @@ is git-ignored. `icons/icon.png` is required by `tauri-build`.
 | `state.rs` | `config_dir_from(env, home)` (the `BML_CONFIG_DIR` variable, as `bml` resolves it) and `start_screen` (Search when a library is recorded). |
 | `view.rs` | Screen 5's `LibraryCounts` from `LibraryStatus`, `progress_line` (plain words per phase), and `minutes_left` from `SECONDS_PER_PAPER` (10, measured). |
 | `setup_view.rs` | `bml_beside` (the `bml` next to the app), `step_line` (a status line per `StepEvent`), and `topic_counts_with` (live Europe PMC counts, the stored ones after `TOPIC_COUNT_TIMEOUT`). |
-| `library_worker.rs` | `open_db` (starts a stopped private server), the `SearchWorker` thread, and `start_update` (`Pipeline::update` on its own thread under the library's worker lock). |
+| `library_worker.rs` | `open_db` (starts a stopped private server and runs the `bml-db` migrations, as `bml library update` and `status` do, so a library made by an older version still updates), the `SearchWorker` thread, and `start_update` (`Pipeline::update` on its own thread under the library's worker lock). |
 | `main.rs` | The Tauri commands and events. |
 
 ## Rules the code keeps
