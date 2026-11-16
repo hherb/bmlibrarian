@@ -90,6 +90,7 @@ async function openPaper(id) {
   }
 }
 
+/** Refresh screen 5's counts; the progress, or null when they could not be read. */
 async function refreshCounts() {
   try {
     const progress = await invoke("library_counts");
@@ -102,9 +103,17 @@ async function refreshCounts() {
       : "";
     updateRunning = progress.running;
     $("pause").textContent = progress.running ? "Pause" : "Resume";
+    return progress;
   } catch (error) {
     // The counts are a nicety; a failed refresh is retried on the next tick.
+    return null;
   }
+}
+
+/** Show the search screen and load the search model behind it. */
+function showSearch() {
+  show("search");
+  invoke("warm_search").catch(() => {}); // the next search reports a failure
 }
 
 function showProgress(line) {
@@ -251,7 +260,7 @@ function wire() {
   });
   $("search-form").addEventListener("submit", runSearch);
   $("back").addEventListener("click", () => show("search"));
-  $("go-search").addEventListener("click", () => show("search"));
+  $("go-search").addEventListener("click", showSearch);
   $("show-building").addEventListener("click", () => { show("building"); refreshCounts(); });
   $("pause").addEventListener("click", async () => {
     if (updateRunning) {
@@ -284,10 +293,27 @@ async function start() {
   wire();
   try {
     const screen = await invoke("start_screen");
-    show(screen);
-    if (screen === "search") refreshCounts();
+    if (screen !== "search") {
+      show(screen);
+      return;
+    }
   } catch (error) {
     show("welcome");
+    toast(String(error), "bad");
+    return;
+  }
+  // Search at once; the counts can wait for the database to start (and go
+  // first, so the model load does not hold them up).
+  show("search");
+  const progress = await refreshCounts();
+  // Closed before a topic was chosen: choose it, not an empty search.
+  if (!progress?.counts.needs_topic) {
+    showSearch();
+    return;
+  }
+  try {
+    await showTopics();
+  } catch (error) {
     toast(String(error), "bad");
   }
 }

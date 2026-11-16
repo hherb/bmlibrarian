@@ -10,6 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Demo polish from #460** (2026-11-16, branch `feat/demo-polish-460`). The
+  app's search screen loads the search model in the background
+  (`warm_search` → `Ask::Warm`), so the first search no longer waits
+  seconds. ⌘Q and closing the window end in `RunEvent::Exit`, where
+  `pause_before_exit` hides the window and waits up to 15 s
+  (`Update::pause_and_wait`) for the update to stop after the paper in
+  flight; before, the process exited mid-paper (the old `CloseRequested`
+  pause never got the time to act). A recorded library with no papers and no
+  topic reopens on screen 4 (`LibraryCounts::needs_topic`), and an update
+  started there anyway is refused (`CHOOSE_TOPIC_FIRST`) rather than filling
+  it with medRxiv papers, after which no topic can be chosen. Verified:
+  `cargo test -p bml-app -- --include-ignored` 22 passed; the dev app opened
+  on the prepared library had the GGUF open and ~40 s of CPU before any
+  search. **Not verified by hand:** ⌘Q during an update and the screen-4
+  return (osascript may not send keystrokes here); both are rehearsal checks
+  in `doc/users/investor_demo_runbook.md`.
+
 - **Failed settings load no longer lets Save overwrite settings, #437**
   (2026-11-15). If `_sync_from_database` fails at login, login goes on with
   JSON/default settings, but `sync_to_database` raises `RuntimeError` until
@@ -305,9 +322,12 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **Investor demo (current focus, meeting 2026-11-23)**: spec
   `docs/superpowers/specs/2026-11-15-investor-demo-europepmc-design.md`,
-  plan `docs/superpowers/plans/2026-11-15-investor-demo.md`, branch
-  `feat/investor-demo-europepmc`. It replaces the MECA route: both AWS
-  accounts are region-locked "projects" that cannot read us-east-1 S3.
+  plan `docs/superpowers/plans/2026-11-15-investor-demo.md`. PR #459
+  (Europe PMC topic libraries, `bml search`, the Tauri app) merged
+  2026-11-16. It replaces the MECA route: both AWS accounts are
+  region-locked "projects" that cannot read us-east-1 S3. **Left: the
+  owner's rehearsal** (plan Task 16, by 2026-11-22), following
+  `doc/users/investor_demo_runbook.md` and its rehearsal checks.
   - **Measured 2026-11-15** (demo Mac, Europe PMC from Australia, topic
     "Depression & anxiety", trials and reviews 2021–2026, 8,372 papers): the
     paper-details search takes ~3.5 s per day (2,140 days, ~0.9 s per paper).
@@ -320,12 +340,12 @@ value — pick one, or pull an item from ROADMAP.md:
     2026-11-15 23:10 AEDT, detached (`nohup caffeinate -i
     ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
     `~/.bml-demo/build.log`). If it stops, run the same command again; it
-    resumes.
+    resumes. On 2026-11-16 10:30 AEDT it held 3,559 papers, 3,431 indexed.
   - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
     PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
     merged commit once #790 lands (ROADMAP, investor-demo follow-ups).
   - PR #459's review follow-ups that were left for after the meeting are in
-    #460.
+    #460 (its first-search, ⌘Q and topic-choice items are done, above).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.

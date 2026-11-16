@@ -9,10 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use bml_db::library::{load_library, Library};
 use bml_library::index::{load_model_embedder, paper_text, ChunkEmbedder, PaperText};
 use bml_library::status::library_status;
+use bml_library::topics::library_source;
 use bml_library::{try_lock_worker, PhaseSet, Pipeline, Progress, UpdateOptions, UpdateReport};
 use bml_pgserver::control::{start, status, ServerStatus};
 use bml_pgserver::envfile::{read_conn_info, APP_ENV_FILE_NAME};
@@ -60,9 +62,20 @@ pub fn open_db(config_dir: &Path) -> Result<Client, String> {
 pub fn counts(config_dir: &Path) -> Result<LibraryCounts, String> {
     let library = library(config_dir)?;
     let mut db = open_db(config_dir)?;
-    let status = library_status(&mut db, &library.cache()).map_err(|e| e.to_string())?;
-    Ok(counts_from_status(&status))
+    counts_in(&mut db, &library)
 }
+
+/// [`counts`] on an open connection.
+fn counts_in(db: &mut Client, library: &Library) -> Result<LibraryCounts, String> {
+    let status = library_status(db, &library.cache()).map_err(|e| e.to_string())?;
+    let source = library_source(db).map_err(|e| e.to_string())?;
+    Ok(counts_from_status(&status, &source))
+}
+
+/// The update's answer when no topic is chosen yet: it would otherwise fill
+/// the library with medRxiv papers, after which no topic can be chosen.
+pub const CHOOSE_TOPIC_FIRST: &str =
+    "No topic is chosen yet. Close BMLibrarian and open it again to choose one.";
 
 /// One request to the search worker.
 enum Ask {
@@ -87,6 +100,8 @@ enum Ask {
         /// Where the counts go.
         reply: Sender<Result<LibraryCounts, String>>,
     },
+    /// Connect and load the model now, so the first search is quick.
+    Warm,
 }
 
 /// The search worker: a thread that keeps the connection and the model.
@@ -128,6 +143,12 @@ impl SearchWorker {
                             db = None; // reconnect next time (a restarted server)
                         }
                         let _ = reply.send(text);
+                    }
+                    Ask::Warm => {
+                        // A failure here is reported by the next search, which retries.
+                        if ready(&config_dir, &mut db, &mut model).is_err() {
+                            db = None;
+                        }
                     }
                     Ask::Counts { reply } => {
                         // Here, off Tauri's async runtime: the `postgres` client
@@ -177,6 +198,13 @@ impl SearchWorker {
         let (reply, answer) = channel();
         self.send(Ask::Counts { reply })?;
         answer.recv().map_err(|_| WORKER_GONE.to_string())?
+    }
+
+    /// Load the connection and the model in the background (the model takes
+    /// seconds), so the first search does not wait for them.
+    pub fn warm(&self) {
+        // A stopped worker is reported by the next search.
+        let _ = self.send(Ask::Warm);
     }
 
     /// Hand `ask` to the worker thread.
@@ -231,7 +259,26 @@ impl Update {
     pub fn pause(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+
+    /// Ask the update to stop and wait up to `limit` for its thread to end;
+    /// `true` when it ended. Past `limit` the paper in flight is redone next
+    /// time (its database work is one transaction, so nothing half stored is
+    /// recorded).
+    pub fn pause_and_wait(&self, limit: Duration) -> bool {
+        self.pause();
+        let deadline = Instant::now() + limit;
+        while self.running() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(STOP_POLL);
+        }
+        true
+    }
 }
+
+/// How often [`Update::pause_and_wait`] looks whether the update has ended.
+const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// Start a library update on its own thread; `progress` gets every progress
 /// event and `done` the report. Another update holding the library's lock is
@@ -255,14 +302,17 @@ pub fn start_update(
         let _lock = lock; // held until the update ends
                           // A panic inside the pipeline still reaches the window as an error.
         let result = guarded(|| {
-            open_db(&config_dir).map(|mut db| {
+            open_db(&config_dir).and_then(|mut db| {
+                if counts_in(&mut db, &library)?.needs_topic {
+                    return Err(CHOOSE_TOPIC_FIRST.to_string());
+                }
                 let pipeline = Pipeline::new(library.cache(), bml_setup::gguf_path(&config_dir));
                 let options = UpdateOptions {
                     from: None,
                     phases: PhaseSet::all(),
                     stop: &flag,
                 };
-                pipeline.update(&mut db, &options, &mut |p| progress(&p))
+                Ok(pipeline.update(&mut db, &options, &mut |p| progress(&p)))
             })
         });
         done(result);
@@ -350,6 +400,39 @@ mod tests {
         assert!(error.contains("the model crashed"), "{error}");
     }
 
+    /// An update whose thread runs `work` with the update's stop flag.
+    fn fake_update(work: impl FnOnce(Arc<AtomicBool>) + Send + 'static) -> Update {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        Update {
+            stop,
+            thread: std::thread::spawn(move || work(flag)),
+        }
+    }
+
+    #[test]
+    fn pause_and_wait_returns_once_the_update_stops() {
+        let update = fake_update(|stop| {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        assert!(update.pause_and_wait(Duration::from_secs(10)));
+        assert!(!update.running());
+    }
+
+    #[test]
+    fn pause_and_wait_gives_up_after_the_limit() {
+        let (release, wait) = channel::<()>();
+        // Ignores the stop flag, like a request still waiting for its turn.
+        let update = fake_update(move |_| {
+            let _ = wait.recv();
+        });
+        assert!(!update.pause_and_wait(Duration::from_millis(50)));
+        assert!(update.running());
+        drop(release);
+    }
+
     #[test]
     fn start_update_refuses_a_held_lock() {
         let tmp = tempfile::tempdir().unwrap();
@@ -375,5 +458,29 @@ mod tests {
         // As the `library_counts` command runs: on Tauri's async runtime.
         let counts = tauri::async_runtime::block_on(async { worker.counts() }).unwrap();
         assert_eq!(counts.found, 0);
+        // Set up, no topic chosen yet: the window goes back to screen 4.
+        assert!(counts.needs_topic);
+    }
+
+    #[test]
+    #[ignore = "needs BML_TEST_PG_BINDIR"]
+    fn an_update_without_a_topic_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((_s, cfg)) = set_up(tmp.path()) else {
+            return;
+        };
+        let (done, answer) = channel();
+        let update = start_update(
+            cfg,
+            |_| {},
+            move |result| {
+                let _ = done.send(result);
+            },
+        )
+        .unwrap();
+        // Refused before any medRxiv download makes a topic impossible.
+        let result = answer.recv().unwrap();
+        assert_eq!(result.err().as_deref(), Some(CHOOSE_TOPIC_FIRST));
+        assert!(update.pause_and_wait(Duration::from_secs(10)));
     }
 }
