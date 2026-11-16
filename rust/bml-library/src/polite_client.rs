@@ -21,6 +21,9 @@ pub const NO_ANSWER_LIMIT: u32 = 3;
 pub enum RequestOutcome {
     /// The server answered with this status.
     Status(u16),
+    /// A 200 whose body is an HTML page (a Wi-Fi sign-in page, a challenge
+    /// page), where data was asked for.
+    WebPage,
     /// No answer: a timeout, a reset, DNS (the transport error's message).
     NoResponse(String),
     /// Not sent, because the host rate-limited an earlier request.
@@ -129,6 +132,9 @@ impl HttpClient for PoliteClient {
         let result = self.inner.get(url);
         state.last_request_end = Some(Instant::now());
         let outcome = match &result {
+            Ok(response) if response.status == 200 && is_web_page(&response.body) => {
+                RequestOutcome::WebPage
+            }
             Ok(response) => RequestOutcome::Status(response.status),
             Err(FetchError::HttpStatus { status, .. }) => RequestOutcome::Status(*status),
             Err(error) => RequestOutcome::NoResponse(error.to_string()),
@@ -148,6 +154,24 @@ impl HttpClient for PoliteClient {
         });
         result
     }
+}
+
+/// Whether `body` starts (after a byte-order mark and white space) like an
+/// HTML page. None of the library's sources answers with HTML: they send
+/// JSON, JATS XML or a PDF.
+#[must_use]
+pub fn is_web_page(body: &[u8]) -> bool {
+    let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
+    let start = body
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(body.len());
+    let head = &body[start..];
+    [b"<!doctype html".as_slice(), b"<html".as_slice()]
+        .iter()
+        .any(|prefix| {
+            head.len() >= prefix.len() && head[..prefix.len()].eq_ignore_ascii_case(prefix)
+        })
 }
 
 #[cfg(test)]
@@ -192,6 +216,28 @@ mod tests {
             client.take_records().is_empty(),
             "taking empties the record"
         );
+    }
+
+    #[test]
+    fn an_html_page_is_told_from_data() {
+        assert!(is_web_page(b"<!DOCTYPE html><html>Sign in</html>"));
+        assert!(is_web_page(
+            b"\xEF\xBB\xBF \n<HTML><body>Wi-Fi</body></HTML>"
+        ));
+        assert!(!is_web_page(b"<?xml version=\"1.0\"?><article/>"));
+        assert!(!is_web_page(b"{\"hitCount\": 1}"));
+        assert!(!is_web_page(b"%PDF-1.7"));
+        assert!(!is_web_page(b"<htm"));
+        assert!(!is_web_page(b""));
+    }
+
+    #[test]
+    fn a_200_web_page_is_recorded_as_one() {
+        let fake = FakeHttp::new().route("https://x/j.xml", 200, "<html>Sign in</html>");
+        let (client, _) = client(fake, Duration::ZERO);
+        client.get("https://x/j.xml").unwrap();
+        assert_eq!(client.take_records()[0].outcome, RequestOutcome::WebPage);
+        assert!(!client.gave_up());
     }
 
     #[test]

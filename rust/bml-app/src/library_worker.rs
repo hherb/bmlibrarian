@@ -37,11 +37,14 @@ pub fn library(config_dir: &Path) -> Result<Library, String> {
 }
 
 /// A connection to the library's database, starting the private server first
-/// when it is stopped (a library set up without a login item).
+/// when it is stopped (a library set up without a login item), with the
+/// library's tables brought up to date (as every `bml library` command does),
+/// so a library made by an older version still updates.
 ///
 /// # Errors
 ///
-/// Not set up, the server will not start, or the connection fails.
+/// Not set up, the server will not start, the connection or a migration
+/// fails.
 pub fn open_db(config_dir: &Path) -> Result<Client, String> {
     if let Some(state) = load_state(config_dir).map_err(|e| e.to_string())? {
         if status(&state).map_err(|e| e.to_string())? == ServerStatus::Stopped {
@@ -51,7 +54,11 @@ pub fn open_db(config_dir: &Path) -> Result<Client, String> {
     let info = read_conn_info(&config_dir.join(APP_ENV_FILE_NAME))
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No database is set up yet.".to_string())?;
-    connect(&info).map_err(|e| format!("the library's database cannot be reached: {e}"))
+    let mut db =
+        connect(&info).map_err(|e| format!("the library's database cannot be reached: {e}"))?;
+    bml_db::migrate(&mut db)
+        .map_err(|e| format!("the library's database could not be brought up to date: {e}"))?;
+    Ok(db)
 }
 
 /// What the library holds, for screen 5.
@@ -350,8 +357,15 @@ mod tests {
     use bml_pgserver::control::stop;
     use bml_pgserver::init::{init, InitRequest};
 
-    /// Stops the test's server when dropped.
-    struct StopOnDrop(PathBuf);
+    /// One test server at a time: servers started together can pick the same
+    /// free port, and one fails to start.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Stops the test's server when dropped, then lets the next test start one.
+    struct StopOnDrop(
+        PathBuf,
+        #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
+    );
     impl Drop for StopOnDrop {
         fn drop(&mut self) {
             if let Ok(Some(state)) = load_state(&self.0) {
@@ -366,7 +380,8 @@ mod tests {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)?;
         let cfg = tmp.join("cfg");
-        let guard = StopOnDrop(cfg.clone());
+        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = StopOnDrop(cfg.clone(), serial);
         init(
             &InitRequest {
                 bindir,
@@ -376,8 +391,8 @@ mod tests {
             &cfg,
         )
         .unwrap();
-        let mut db = open_db(&cfg).unwrap();
-        bml_db::migrate(&mut db).unwrap();
+        // open_db migrates: the tests below need the library's tables.
+        open_db(&cfg).unwrap();
         ensure_library(
             &cfg,
             &Library {

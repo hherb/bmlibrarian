@@ -10,7 +10,24 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Demo polish from #460** (2026-11-16, branch `feat/demo-polish-460`). The
+- **bmlib #790 re-pin and two #460 items** (2026-11-16, branch
+  `chore/bmlib-790-repin`). `rust/Cargo.toml` pins bmlib main at #790's
+  merge, `6465096`. Its review changed the Europe PMC walk: days are the
+  first-index day (`FIRST_IDATE`), the settle period is 3 days, a walk short
+  of `hitCount` or holding a record not indexed on the day fails the day, and
+  an empty day costs one more request (an undated probe). The pipeline test
+  fixtures gained `firstIndexDate` and the probe route. A 200 HTML page in
+  place of JATS/PDF (`RequestOutcome::WebPage`, a Wi-Fi sign-in page) is now
+  passing (1 h), not lasting (30 days). The app's `open_db` runs the `bml-db`
+  migrations, as the CLI does. bml-app tests no longer race for a port
+  (`SERIAL`). Verified: `cargo
+  test -- --include-ignored` 355 passed with pg_search, `-p bml-app` 22
+  passed six runs in a row; live, a fresh "Depression & anxiety" library
+  with `--skip fulltext --skip index` for 3 minutes fetched 187 papers,
+  67 days complete, 0 failed (Ctrl-C, exit 4). Not checked: Windows build
+  with the lockfile's re-picked `windows-sys` versions.
+
+- **Demo polish from #460** (2026-11-16, PR #461). The
   app's search screen loads the search model in the background
   (`warm_search` → `Ask::Warm`), so the first search no longer waits
   seconds. ⌘Q and closing the window end in `RunEvent::Exit`, where
@@ -341,11 +358,13 @@ value — pick one, or pull an item from ROADMAP.md:
     ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
     `~/.bml-demo/build.log`). If it stops, run the same command again; it
     resumes. On 2026-11-16 10:30 AEDT it held 3,559 papers, 3,431 indexed.
-  - bmlib `feat/europepmc-sync` (worktree `../bmlib-europepmc`) is bmlib
-    PR #790. `rust/Cargo.toml` pins its head, `25ab665`. Re-pin to the
-    merged commit once #790 lands (ROADMAP, investor-demo follow-ups).
+  - The prepared library's binary (`~/.bml-demo-bin`) was built before the
+    re-pin to bmlib `6465096` (above); a build from master now walks
+    Europe PMC by first-index day. Its day ledger keeps the days it already
+    completed under the old walk (bmlib #793, query-blind ledger).
   - PR #459's review follow-ups that were left for after the meeting are in
-    #460 (its first-search, ⌘Q and topic-choice items are done, above).
+    #460 (first search, ⌘Q, topic choice, captive portal in full text and
+    app migrations are done, above).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.

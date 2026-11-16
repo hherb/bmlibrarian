@@ -55,8 +55,15 @@ round is `metadata::run_window` for the bmlib `europepmc` source (config
 `query`), then an index run (the new abstracts), then `fulltext::run(…,
 EUROPEPMC_SOURCE, …)`, then another index run (the new full texts). So a
 round's papers are searchable before the next round starts. The checkpoints are the usual
-ones: bmlib's day ledger (with its 14-day settle period, recent days are
-fetched again) and the full-text and index rows. `stop` is checked between
+ones: bmlib's day ledger and the full-text and index rows. Since bmlib PR
+#790's review (pinned at `6465096`), a day is the day a record was first
+indexed by Europe PMC (`FIRST_IDATE`), not its publication day; the settle
+period is 3 days (`EUROPEPMC_SETTLE_DAYS`); a walk that ends short of the
+first page's `hitCount`, or returns a record not first indexed on the day,
+fails the day; and an empty day completes only if the query without its date
+clause finds something (one more request per empty day). A topic's
+`PUB_YEAR` range still applies, so a paper published in 2021 but first
+indexed before `EUROPEPMC_FIRST_DAY` is not fetched. `stop` is checked between
 rounds and inside each phase as before.
 
 No network is caught two ways. `PoliteClient` gives up after
@@ -133,13 +140,19 @@ unsent.
 | PDF extraction `engine`/`cancelled`/`timed-out` | abstract | passing |
 | PDF requested and failed | abstract | bmlib's `pdf_failure_may_pass` |
 | JATS only: 404, 403, other 4xx, not readable, no body | abstract | lasting |
-| JATS only: no answer, 408, 5xx | abstract | passing |
+| JATS only: no answer, 408, 5xx, a web page | abstract | passing |
 
 The paper's kind is the PDF's when a PDF was requested. The reason names
 both requests ("JATS: not found (HTTP 404); PDF: refused (HTTP 403)"). A
 request with no answer is stored as "no answer" only; the transport message
 (which names the URL) goes to the progress line, so `bml library status`
-groups the papers under one reason.
+groups the papers under one reason. A 200 whose body is an HTML page
+(`polite_client::is_web_page`; none of the sources answers with HTML) is
+recorded as `RequestOutcome::WebPage` and is passing, also for a PDF request
+bmlib calls `not-a-pdf`: a Wi-Fi sign-in page in the middle of full text
+costs an hour, not 30 days. It does not count towards `NO_ANSWER_LIMIT`, so
+the phase goes on; papers tried during the portal are retried from 1 h.
+
 Back-off (`retry_delay`): passing doubles from `RETRY_BASE` (1 h) to
 `RETRY_MAX` (7 days); lasting waits `LASTING_RETRY` (30 days). Abstract-only
 is never final.

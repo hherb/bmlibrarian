@@ -101,7 +101,8 @@ fn status_reason(status: u16) -> String {
 }
 
 /// A JATS request's failure: lasting for 404, 403 or a body that is not
-/// usable XML; passing for no answer, a 408 or a 5xx.
+/// usable XML; passing for no answer, a 408, a 5xx or a web page (a Wi-Fi
+/// sign-in page answers 200 in the article's place; the next try may get it).
 fn jats_failure(
     outcome: &RequestOutcome,
     result_kind: Option<ContentKind>,
@@ -131,6 +132,10 @@ fn jats_failure(
         // The message (with the URL) goes to the progress line only, so
         // `status` can group the stored reasons.
         RequestOutcome::NoResponse(_) => ("no answer".into(), FailureKind::Passing),
+        RequestOutcome::WebPage => (
+            "a web page came back instead (a Wi-Fi sign-in page?)".into(),
+            FailureKind::Passing,
+        ),
         RequestOutcome::NotSent => ("not sent (rate limited)".into(), FailureKind::Passing),
     }
 }
@@ -197,7 +202,10 @@ pub fn classify(
                 pdf_cause_reason(cause),
                 // A full disk is ours to fix, not the paper's: bmlib counts
                 // it final, the library tries again.
-                if r.pdf_failure_may_pass() || cause == PDF_WRITE_FAILED {
+                if r.pdf_failure_may_pass()
+                    || cause == PDF_WRITE_FAILED
+                    || pdf.outcome == RequestOutcome::WebPage
+                {
                     FailureKind::Passing
                 } else {
                     FailureKind::Lasting
@@ -992,6 +1000,7 @@ mod tests {
             (RequestOutcome::Status(404), FailureKind::Lasting),
             (RequestOutcome::Status(403), FailureKind::Lasting),
             (RequestOutcome::Status(200), FailureKind::Lasting),
+            (RequestOutcome::WebPage, FailureKind::Passing),
             (RequestOutcome::Status(408), FailureKind::Passing),
             (RequestOutcome::Status(502), FailureKind::Passing),
             (

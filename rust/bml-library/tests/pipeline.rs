@@ -1434,6 +1434,26 @@ fn europepmc_url(query: &str, day: &str) -> String {
     )
 }
 
+/// The undated search bmlib sends after an empty day, to tell an empty day
+/// from a query that matches nothing on any day.
+fn europepmc_probe_url(query: &str) -> String {
+    use bmlib::publications::fetchers::europepmc::SEARCH_URL;
+    let query = format!("({query})");
+    let pairs = [
+        ("query", query.as_str()),
+        ("resultType", "lite"),
+        ("format", "json"),
+        ("pageSize", "1"),
+    ];
+    format!(
+        "{SEARCH_URL}?{}",
+        bmlib::transparency::analyzer::encode_query(&pairs)
+    )
+}
+
+/// The probe's answer: the query finds papers on other days.
+const EUROPEPMC_PROBE_HIT: &str = r#"{"hitCount": 1, "resultList": {"result": []}}"#;
+
 /// A Europe PMC search page holding open-access hits for `pmcids`.
 fn europepmc_page(pmcids: &[&str], day: &str) -> String {
     let hits: Vec<serde_json::Value> = pmcids
@@ -1450,6 +1470,7 @@ fn europepmc_page(pmcids: &[&str], day: &str) -> String {
                 "title": format!("Trial {pmcid}"),
                 "abstractText": "We randomised adults with depression.",
                 "firstPublicationDate": day,
+                "firstIndexDate": day,
                 "isOpenAccess": "Y",
                 "inEPMC": "Y",
             })
@@ -1627,6 +1648,28 @@ fn transport_error_leaves_paper_retryable() {
 
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
+fn a_sign_in_page_in_place_of_the_xml_is_passing() {
+    let _g = common::serial();
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_s, mut db)) = server(tmp.path()) else {
+        return;
+    };
+    let id = europepmc_paper(&mut db, "PMC310");
+    let portal = FakeHttp::new().route(
+        &europepmc_xml_url("PMC310"),
+        200,
+        "<!DOCTYPE html><html><body>Sign in to the hotel Wi-Fi</body></html>",
+    );
+    let report = run_fulltext(&mut db, tmp.path(), &portal, bml_library::EUROPEPMC_SOURCE);
+    assert_eq!(report.passing, 1, "{report:?}");
+    assert_eq!(report.lasting, 0, "{report:?}");
+    let (form, _, _, kind) = fulltext_row(&mut db, id).unwrap();
+    assert_eq!(form, "abstract");
+    assert_eq!(kind.as_deref(), Some("passing"));
+}
+
+#[test]
+#[ignore = "needs BML_TEST_PG_BINDIR"]
 fn source_selects_the_papers() {
     let _g = common::serial();
     let tmp = tempfile::tempdir().unwrap();
@@ -1684,6 +1727,7 @@ fn topic_days(query: &str, from: &str, to: &str, papers: &[(&str, &str)]) -> Fak
         http.set(&europepmc_url(query, &d), 200, europepmc_page(&held, &d));
         day = day.succ_opt().unwrap();
     }
+    http.set(&europepmc_probe_url(query), 200, EUROPEPMC_PROBE_HIT);
     for (_, pmcid) in papers {
         http.set(&europepmc_xml_url(pmcid), 200, JATS);
     }
