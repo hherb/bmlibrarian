@@ -56,8 +56,6 @@ pub const WORKER_LOCK_FILE: &str = ".bml-library.lock";
 
 /// The bmlib source a topic library syncs (`europepmc`).
 pub const EUROPEPMC_SOURCE: &str = "europepmc";
-/// The first day a topic library walks back to (the presets cover 2021–2026).
-pub const EUROPEPMC_FIRST_DAY: &str = "2021-01-01";
 /// The spacing between Europe PMC requests (bmlib's fetchers do not sleep).
 pub const EUROPEPMC_REQUEST_DELAY: Duration = Duration::from_secs(1);
 /// The days one round of a topic library's update covers, newest first.
@@ -70,15 +68,65 @@ pub const EUROPEPMC_FIRST_ROUND_DAYS: u64 = 7;
 pub const WAITING_FOR_INTERNET: &str =
     "Waiting for the internet. Downloading carries on when it's back.";
 
-/// [`EUROPEPMC_FIRST_DAY`] as a date.
+/// Where a library's papers and full texts come from. Mapped from a
+/// library's [`LibrarySource`] in one place (`From`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FulltextSource {
+    /// medRxiv: details from [`MEDRXIV_SOURCE`], full text from medRxiv's
+    /// own JATS and PDF links.
+    Medrxiv,
+    /// A Europe PMC topic: details and `fullTextXML` from Europe PMC.
+    EuropePmc,
+}
+
+impl FulltextSource {
+    /// The bmlib source its metadata phase syncs (`download_days.source`).
+    #[must_use]
+    pub fn metadata_source(self) -> &'static str {
+        match self {
+            FulltextSource::Medrxiv => MEDRXIV_SOURCE,
+            FulltextSource::EuropePmc => EUROPEPMC_SOURCE,
+        }
+    }
+
+    /// The `fulltext_sources.source` of its full-text links.
+    #[must_use]
+    pub fn links_source(self) -> &'static str {
+        match self {
+            FulltextSource::Medrxiv => MEDRXIV_SERVER,
+            FulltextSource::EuropePmc => EUROPEPMC_SOURCE,
+        }
+    }
+
+    /// The name a progress line gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            FulltextSource::Medrxiv => "medRxiv",
+            FulltextSource::EuropePmc => "Europe PMC",
+        }
+    }
+}
+
+impl From<&LibrarySource> for FulltextSource {
+    fn from(source: &LibrarySource) -> Self {
+        match source {
+            LibrarySource::Medrxiv => FulltextSource::Medrxiv,
+            LibrarySource::EuropePmc { .. } => FulltextSource::EuropePmc,
+        }
+    }
+}
+
+/// The first day a topic library walks back to: 1 January of
+/// [`topics::TOPIC_FIRST_YEAR`].
 ///
 /// # Panics
 ///
-/// Never: the constant is a valid date (a unit test checks it).
+/// Never: 1 January of the constant year is a date (a unit test checks it).
 #[must_use]
 pub fn europepmc_first_day() -> NaiveDate {
-    NaiveDate::parse_from_str(EUROPEPMC_FIRST_DAY, "%Y-%m-%d")
-        .expect("EUROPEPMC_FIRST_DAY is a date")
+    NaiveDate::from_ymd_opt(topics::TOPIC_FIRST_YEAR, 1, 1)
+        .expect("1 January of TOPIC_FIRST_YEAR is a date")
 }
 
 /// [`MEDRXIV_FIRST_DAY`] as a date.
@@ -174,7 +222,7 @@ impl PhaseSet {
 /// What [`Pipeline::update`] is asked to do.
 pub struct UpdateOptions<'a> {
     /// The first day to sync, remembered (default: the day last given, else
-    /// [`MEDRXIV_FIRST_DAY`], or [`EUROPEPMC_FIRST_DAY`] for a topic library;
+    /// [`MEDRXIV_FIRST_DAY`], or [`europepmc_first_day`] for a topic library;
     /// see [`start_day_or`]).
     pub from: Option<NaiveDate>,
     /// The phases to run.
@@ -318,7 +366,7 @@ impl Pipeline {
         if phases.fulltext {
             match fulltext::run(
                 db,
-                MEDRXIV_SERVER,
+                FulltextSource::Medrxiv,
                 self.web.clone(),
                 self.web_delay,
                 &self.cache,
@@ -338,7 +386,7 @@ impl Pipeline {
 
     /// A topic library's update: rounds newest first, the first of
     /// [`EUROPEPMC_FIRST_ROUND_DAYS`] and the rest of [`EUROPEPMC_ROUND_DAYS`],
-    /// back to `options.from` (else [`EUROPEPMC_FIRST_DAY`]). Each round syncs
+    /// back to `options.from` (else [`europepmc_first_day`]). Each round syncs
     /// its window, indexes the new abstracts, fetches the full texts due, then
     /// indexes them, so the newest papers are searchable within minutes. A round
     /// whose every day failed means no network: the update stops there and
@@ -388,7 +436,7 @@ impl Pipeline {
                 match metadata::run_window(
                     db,
                     client.clone(),
-                    EUROPEPMC_SOURCE,
+                    FulltextSource::EuropePmc,
                     &configs,
                     start,
                     end,
@@ -431,7 +479,7 @@ impl Pipeline {
             if phases.fulltext {
                 match fulltext::run(
                     db,
-                    EUROPEPMC_SOURCE,
+                    FulltextSource::EuropePmc,
                     self.europepmc.clone(),
                     self.europepmc_delay,
                     &self.cache,
@@ -529,7 +577,7 @@ pub fn start_day(db: &mut dyn Db, from: Option<NaiveDate>) -> Result<NaiveDate, 
 }
 
 /// [`start_day`] with `default` for a library that never had a day given
-/// (a topic library's is [`EUROPEPMC_FIRST_DAY`]).
+/// (a topic library's is [`europepmc_first_day`]).
 ///
 /// # Errors
 ///
@@ -616,6 +664,10 @@ mod tests {
     #[test]
     fn the_first_day_parses() {
         assert_eq!(medrxiv_first_day().to_string(), MEDRXIV_FIRST_DAY);
+        assert_eq!(
+            europepmc_first_day().to_string(),
+            format!("{}-01-01", topics::TOPIC_FIRST_YEAR)
+        );
     }
 
     #[test]

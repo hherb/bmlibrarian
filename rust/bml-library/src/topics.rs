@@ -56,9 +56,21 @@ pub const TOPICS: &[Topic] = &[
     },
 ];
 
-/// Peer-reviewed, open access with full text, 2021–2026 (spec goal 1).
-const QUALITY_FILTER: &str =
-    "OPEN_ACCESS:Y AND HAS_FT:Y AND NOT SRC:PPR AND PUB_YEAR:[2021 TO 2026]";
+/// The first publication year a topic library covers (spec goal 1). It also
+/// sets the first day walked back to ([`crate::europepmc_first_day`]); the
+/// app's screen 4 names the range (a `bml-app` test checks the text).
+pub const TOPIC_FIRST_YEAR: i32 = 2021;
+/// The last publication year a topic library covers (see
+/// [`TOPIC_FIRST_YEAR`]).
+pub const TOPIC_LAST_YEAR: i32 = 2026;
+
+/// Peer-reviewed, open access with full text, in the topic years.
+fn quality_filter() -> String {
+    format!(
+        "OPEN_ACCESS:Y AND HAS_FT:Y AND NOT SRC:PPR \
+         AND PUB_YEAR:[{TOPIC_FIRST_YEAR} TO {TOPIC_LAST_YEAR}]"
+    )
+}
 
 /// Trials, systematic reviews and meta-analyses only (spec goal 1).
 const EVIDENCE_TYPES: &str = "(PUB_TYPE:\"Randomized Controlled Trial\" OR \
@@ -79,7 +91,7 @@ pub fn topic_query(topic: &Topic) -> String {
         .map(|t| format!("TITLE:\"{t}\" OR ABSTRACT:\"{t}\""))
         .collect::<Vec<_>>()
         .join(" OR ");
-    format!("{QUALITY_FILTER} AND ({terms}) AND {EVIDENCE_TYPES}")
+    format!("{} AND ({terms}) AND {EVIDENCE_TYPES}", quality_filter())
 }
 
 /// The URL that asks Europe PMC how many papers `topic` matches (one hit).

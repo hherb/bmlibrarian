@@ -20,9 +20,11 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
    ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library status
    ```
 
-   Look for "0 to do" in the Index line ("not tried yet" may stay at a
-   handful: papers Europe PMC holds no full text for). If the build stopped (log:
-   `~/.bml-demo/build.log`), run it again; it carries on:
+   Look for "0 to do" in the Index line and "0 not tried yet" in the Full
+   text line once the build is done ("none offered" counts papers Europe PMC
+   holds no full text for; the prepared library had 18 on 2026-11-17). If the
+   build stopped (log: `~/.bml-demo/build.log`), run it again; it carries
+   on:
 
    ```bash
    nohup caffeinate -i ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update \

@@ -24,7 +24,7 @@ use bmlib::fulltext::{ContentKind, FullTextResult, FullTextSourceEntry, MupdfPdf
 use bmlib::publications::fetchers::HttpClient;
 
 use crate::polite_client::{PoliteClient, RequestOutcome, RequestRecord};
-use crate::{Phase, PipelineError, Progress, EUROPEPMC_SOURCE, MEDRXIV_SERVER};
+use crate::{FulltextSource, Phase, PipelineError, Progress};
 
 /// The first wait after a passing failure; each further one doubles it.
 pub const RETRY_BASE: Duration = Duration::from_secs(60 * 60);
@@ -309,8 +309,8 @@ impl FulltextReport {
 pub struct Paper {
     /// `publications.id`.
     pub id: i64,
-    /// The source its full text comes from (`medrxiv` or `europepmc`).
-    pub source: String,
+    /// The source its full text comes from.
+    pub source: FulltextSource,
     /// The paper's DOI (empty for a Europe PMC paper without one).
     pub doi: String,
     /// The paper's PMC ID (Europe PMC papers).
@@ -341,7 +341,7 @@ impl Paper {
     }
 
     fn identifier(&self) -> String {
-        if self.source == EUROPEPMC_SOURCE {
+        if self.source == FulltextSource::EuropePmc {
             // Europe PMC has no versions; the PMC ID names the paper.
             return self
                 .pmc_id
@@ -354,19 +354,10 @@ impl Paper {
     /// The paper as a progress line names it.
     #[must_use]
     pub fn label(&self) -> String {
-        if self.source == EUROPEPMC_SOURCE {
+        if self.source == FulltextSource::EuropePmc {
             return self.identifier();
         }
         format!("{} v{}", self.doi, self.version)
-    }
-}
-
-/// The name a progress line gives `source`.
-fn source_name(source: &str) -> &str {
-    if source == EUROPEPMC_SOURCE {
-        "Europe PMC"
-    } else {
-        "medRxiv"
     }
 }
 
@@ -386,10 +377,11 @@ fn text(row: &Row, name: &str) -> Result<Option<String>, PipelineError> {
 /// # Errors
 ///
 /// The query fails.
-pub fn next_paper(db: &mut dyn Db, source: &str) -> Result<Option<Paper>, PipelineError> {
-    if source == EUROPEPMC_SOURCE {
+pub fn next_paper(db: &mut dyn Db, source: FulltextSource) -> Result<Option<Paper>, PipelineError> {
+    if source == FulltextSource::EuropePmc {
         return next_europepmc_paper(db);
     }
+    let medrxiv = FulltextSource::Medrxiv.links_source();
     let sql = format!(
         "WITH current AS (\
            SELECT publication_id, max({VERSION_INT}) AS version FROM fulltext_sources \
@@ -408,12 +400,12 @@ pub fn next_paper(db: &mut dyn Db, source: &str) -> Result<Option<Paper>, Pipeli
                          OR CAST(f.version_held AS INTEGER) < c.version))) \
          ORDER BY p.publication_date DESC NULLS LAST, p.id DESC LIMIT 1"
     );
-    let Some(row) = fetch_one(db, &sql, &[Value::Text(MEDRXIV_SERVER.into())])? else {
+    let Some(row) = fetch_one(db, &sql, &[Value::Text(medrxiv.into())])? else {
         return Ok(None);
     };
     Ok(Some(Paper {
         id: row.get_i64("id")?,
-        source: MEDRXIV_SERVER.to_string(),
+        source: FulltextSource::Medrxiv,
         doi: row.get_str("doi")?.to_string(),
         pmc_id: None,
         version: row.get_i64("version")?,
@@ -438,12 +430,13 @@ fn next_europepmc_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError>
                 OR (f.form = 'abstract' AND (f.retry_after IS NULL OR f.retry_after <= now()))) \
          ORDER BY p.publication_date DESC NULLS LAST, p.id DESC LIMIT 1"
     );
-    let Some(row) = fetch_one(db, &sql, &[Value::Text(EUROPEPMC_SOURCE.into())])? else {
+    let europepmc = FulltextSource::EuropePmc.links_source();
+    let Some(row) = fetch_one(db, &sql, &[Value::Text(europepmc.into())])? else {
         return Ok(None);
     };
     Ok(Some(Paper {
         id: row.get_i64("id")?,
-        source: EUROPEPMC_SOURCE.to_string(),
+        source: FulltextSource::EuropePmc,
         doi: text(&row, "doi")?.unwrap_or_default(),
         pmc_id: text(&row, "pmcid")?,
         version: 1,
@@ -455,12 +448,13 @@ fn next_europepmc_paper(db: &mut dyn Db) -> Result<Option<Paper>, PipelineError>
 
 /// The paper's sources: medRxiv's for `version`, or the Europe PMC `xml` one.
 fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, PipelineError> {
-    if paper.source == EUROPEPMC_SOURCE {
+    let links_source = paper.source.links_source();
+    if paper.source == FulltextSource::EuropePmc {
         let rows = fetch_all(
             db,
             "SELECT url, format FROM fulltext_sources WHERE publication_id = ? AND source = ? \
              AND format = 'xml' ORDER BY id",
-            &[Value::Int(paper.id), Value::Text(EUROPEPMC_SOURCE.into())],
+            &[Value::Int(paper.id), Value::Text(links_source.into())],
         )?;
         return rows
             .iter()
@@ -468,7 +462,7 @@ fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, P
                 Ok(FullTextSourceEntry {
                     url: row.get_str("url")?.to_string(),
                     format: row.get_str("format")?.to_string(),
-                    source: EUROPEPMC_SOURCE.to_string(),
+                    source: links_source.to_string(),
                     open_access: true,
                     version: None,
                 })
@@ -483,7 +477,7 @@ fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, P
         ),
         &[
             Value::Int(paper.id),
-            Value::Text(MEDRXIV_SERVER.into()),
+            Value::Text(links_source.into()),
             Value::Int(paper.version),
         ],
     )?;
@@ -492,7 +486,7 @@ fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, P
             Ok(FullTextSourceEntry {
                 url: row.get_str("url")?.to_string(),
                 format: row.get_str("format")?.to_string(),
-                source: MEDRXIV_SERVER.to_string(),
+                source: links_source.to_string(),
                 open_access: true,
                 version: Some(paper.version.to_string()),
             })
@@ -777,7 +771,7 @@ pub fn finish_cache_deletions(
 /// A database failure; papers already recorded keep their state.
 pub fn run(
     db: &mut dyn Db,
-    source: &str,
+    source: FulltextSource,
     web: Arc<dyn HttpClient + Send + Sync>,
     delay: Duration,
     cache: &FullTextCache,
@@ -831,7 +825,7 @@ pub fn run(
                 phase: Phase::Fulltext,
                 message: format!(
                     "{} asked us to slow down; full text resumes after {until}",
-                    source_name(source)
+                    source.name()
                 ),
             });
             report.end = FulltextEnd::RateLimited { until };

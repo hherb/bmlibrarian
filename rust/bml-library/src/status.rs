@@ -6,7 +6,7 @@ use bmlib::db::{fetch_all, fetch_one, fetch_scalar, Db, Value};
 use bmlib::fulltext::cache::FullTextCache;
 
 use crate::fulltext::{known_cache_keys, rate_limited_until, unreferenced_cache_keys};
-use crate::PipelineError;
+use crate::{FulltextSource, PipelineError};
 
 /// How many abstract-only reasons [`library_status`] lists.
 pub const REASONS_SHOWN: i64 = 10;
@@ -33,8 +33,11 @@ pub struct LibraryStatus {
     pub pdf: i64,
     /// Abstract-only after trying.
     pub abstract_only: i64,
-    /// Not tried for full text yet.
+    /// Not tried for full text yet (the source offers a link).
     pub not_tried: i64,
+    /// Not tried because the source offers no full-text link (a Europe PMC
+    /// paper without `fullTextXML`), so never will be.
+    pub no_link: i64,
     /// The most common abstract-only reasons, most papers first.
     pub reasons: Vec<AbstractReason>,
     /// Papers whose index is complete.
@@ -73,9 +76,25 @@ pub fn library_status(
     db: &mut dyn Db,
     cache: &FullTextCache,
 ) -> Result<LibraryStatus, PipelineError> {
+    let source = FulltextSource::from(&crate::topics::library_source(db)?);
     let form = |f: &str| format!("SELECT count(*) FROM {PUBLICATION_FULLTEXT} WHERE form = '{f}'");
     let papers = count(db, "SELECT count(*) FROM publications")?;
     let tried = count(db, &format!("SELECT count(*) FROM {PUBLICATION_FULLTEXT}"))?;
+    // The formats `fulltext::next_paper` fetches for this source.
+    let formats = match source {
+        FulltextSource::Medrxiv => "('xml', 'pdf')",
+        FulltextSource::EuropePmc => "('xml')",
+    };
+    let no_link = count(
+        db,
+        &format!(
+            "SELECT count(*) FROM publications p WHERE NOT EXISTS \
+             (SELECT 1 FROM {PUBLICATION_FULLTEXT} f WHERE f.publication_id = p.id) \
+             AND NOT EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
+             AND s.source = '{}' AND s.format IN {formats})",
+            source.links_source()
+        ),
+    )?;
     let indexed = count(
         db,
         &format!("SELECT count(*) FROM {PUBLICATION_INDEX} WHERE status = 'complete'"),
@@ -98,15 +117,11 @@ pub fn library_status(
         })
     })
     .collect::<Result<Vec<_>, PipelineError>>()?;
-    // The days of the source this library syncs (a topic library's are
-    // Europe PMC's).
-    let source = match crate::topics::library_source(db)? {
-        crate::topics::LibrarySource::Medrxiv => crate::MEDRXIV_SOURCE,
-        crate::topics::LibrarySource::EuropePmc { .. } => crate::EUROPEPMC_SOURCE,
-    };
+    // The days of the source this library syncs.
     let days = |status: &str| {
         format!(
-            "SELECT count(*) FROM download_days WHERE source = '{source}' AND status = '{status}'"
+            "SELECT count(*) FROM download_days WHERE source = '{}' AND status = '{status}'",
+            source.metadata_source()
         )
     };
     let last_update = fetch_one(
@@ -122,7 +137,9 @@ pub fn library_status(
         jats: count(db, &form("jats"))?,
         pdf: count(db, &form("pdf"))?,
         abstract_only: count(db, &form("abstract"))?,
-        not_tried: papers - tried,
+        not_tried: papers - tried - no_link,
+        no_link,
+
         reasons,
         indexed,
         to_index: papers - indexed,
