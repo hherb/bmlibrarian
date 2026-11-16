@@ -17,11 +17,13 @@ off new work. Longer-term structural items live in
   of `hitCount` or holding a record not indexed on the day fails the day, and
   an empty day costs one more request (an undated probe). The pipeline test
   fixtures gained `firstIndexDate` and the probe route. A 200 HTML page in
-  place of JATS/PDF (`RequestOutcome::WebPage`, a Wi-Fi sign-in page) is now
-  passing (1 h), not lasting (30 days). The app's `open_db` runs the `bml-db`
+  place of JATS/PDF (`RequestOutcome::WebPage`, a Wi-Fi sign-in page,
+  XHTML included) reaches bmlib as an error, so it is never parsed or cached
+  as full text; the paper is passing, not lasting (30 days), and three in a
+  row end the phase as no network (`NO_ANSWER_LIMIT`). The app's `open_db` runs the `bml-db`
   migrations, as the CLI does. bml-app tests no longer race for a port
   (`SERIAL`). Verified: `cargo
-  test -- --include-ignored` 355 passed with pg_search, `-p bml-app` 22
+  test -- --include-ignored` 357 passed with pg_search, `-p bml-app` 22
   passed six runs in a row; live, a fresh "Depression & anxiety" library
   with `--skip fulltext --skip index` for 3 minutes fetched 187 papers,
   67 days complete, 0 failed (Ctrl-C, exit 4). Not checked: Windows build

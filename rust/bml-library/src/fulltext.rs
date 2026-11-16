@@ -198,14 +198,14 @@ pub fn classify(
     }
     if let Some(pdf) = records.iter().rev().find(is_pdf) {
         let (reason, k) = match ok.and_then(|r| r.pdf_download_failure.as_deref().map(|c| (r, c))) {
+            // A web page is the network's, whatever bmlib made of the error
+            // the client gave it.
+            _ if pdf.outcome == RequestOutcome::WebPage => jats_failure(&pdf.outcome, None),
             Some((r, cause)) => (
                 pdf_cause_reason(cause),
                 // A full disk is ours to fix, not the paper's: bmlib counts
                 // it final, the library tries again.
-                if r.pdf_failure_may_pass()
-                    || cause == PDF_WRITE_FAILED
-                    || pdf.outcome == RequestOutcome::WebPage
-                {
+                if r.pdf_failure_may_pass() || cause == PDF_WRITE_FAILED {
                     FailureKind::Passing
                 } else {
                     FailureKind::Lasting
@@ -972,6 +972,44 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_web_page_in_place_of_the_pdf_is_passing_and_named() {
+        // bmlib says "request-failed" (the client turned the page into an
+        // error); a plain non-PDF answer stays lasting.
+        for (cause, outcome, want) in [
+            (
+                "request-failed",
+                RequestOutcome::WebPage,
+                FailureKind::Passing,
+            ),
+            ("not-a-pdf", RequestOutcome::WebPage, FailureKind::Passing),
+            (
+                "not-a-pdf",
+                RequestOutcome::Status(200),
+                FailureKind::Lasting,
+            ),
+        ] {
+            let r = FullTextResult {
+                pdf_download_failure: Some(cause.into()),
+                ..empty()
+            };
+            let records = [
+                rec("https://m/j.xml", RequestOutcome::Status(404)),
+                rec("https://m/p.pdf", outcome.clone()),
+            ];
+            let Classified::Failed { reason, kind } = classify(&ok(r), &records, &pdf_urls())
+            else {
+                panic!("not a failure")
+            };
+            assert_eq!(kind, want, "{cause} {outcome:?}");
+            assert_eq!(
+                reason.contains("web page"),
+                outcome == RequestOutcome::WebPage,
+                "{reason}"
+            );
+        }
     }
 
     #[test]

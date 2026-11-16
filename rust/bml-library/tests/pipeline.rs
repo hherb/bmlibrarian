@@ -1646,26 +1646,70 @@ fn transport_error_leaves_paper_retryable() {
     assert!(retry_set);
 }
 
+/// Every file under `dir` (none when it does not exist).
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                files_under(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "needs BML_TEST_PG_BINDIR"]
-fn a_sign_in_page_in_place_of_the_xml_is_passing() {
+fn a_sign_in_page_in_place_of_the_xml_is_passing_and_ends_the_phase() {
+    use bml_library::fulltext::FulltextEnd;
+    use bml_library::polite_client::NO_ANSWER_LIMIT;
     let _g = common::serial();
     let tmp = tempfile::tempdir().unwrap();
     let Some((_s, mut db)) = server(tmp.path()) else {
         return;
     };
-    let id = europepmc_paper(&mut db, "PMC310");
-    let portal = FakeHttp::new().route(
-        &europepmc_xml_url("PMC310"),
-        200,
-        "<!DOCTYPE html><html><body>Sign in to the hotel Wi-Fi</body></html>",
-    );
+    // An XHTML page with a <body><p>, which bmlib's JATS reader would take
+    // for an article body.
+    let page = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+        <!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"x\">\n\
+        <html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Wi-Fi</title></head>\
+        <body><p>Please accept the terms of the hotel Wi-Fi to continue.</p></body></html>";
+    let portal = FakeHttp::new();
+    for pmcid in ["PMC310", "PMC311", "PMC312", "PMC313", "PMC314"] {
+        europepmc_paper(&mut db, pmcid);
+        portal.set(&europepmc_xml_url(pmcid), 200, page);
+    }
     let report = run_fulltext(&mut db, tmp.path(), &portal, bml_library::EUROPEPMC_SOURCE);
-    assert_eq!(report.passing, 1, "{report:?}");
+    assert_eq!(report.end, FulltextEnd::NoNetwork, "{report:?}");
+    assert_eq!(report.jats, 0, "{report:?}");
     assert_eq!(report.lasting, 0, "{report:?}");
-    let (form, _, _, kind) = fulltext_row(&mut db, id).unwrap();
-    assert_eq!(form, "abstract");
-    assert_eq!(kind.as_deref(), Some("passing"));
+    assert_eq!(
+        portal.seen().lock().unwrap().len(),
+        NO_ANSWER_LIMIT as usize
+    );
+    // The paper whose request gave up is not recorded; the others wait an
+    // hour, as abstracts.
+    assert_eq!(
+        scalar_i64(
+            &mut db,
+            "SELECT count(*) FROM publication_fulltext \
+             WHERE form = 'abstract' AND last_error_kind = 'passing'"
+        ),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    assert_eq!(
+        scalar_i64(&mut db, "SELECT count(*) FROM publication_fulltext"),
+        i64::from(NO_ANSWER_LIMIT - 1)
+    );
+    // Nothing of the page was cached as the paper's full text.
+    let cached = files_under(&tmp.path().join("documents"));
+    assert!(cached.is_empty(), "{cached:?}");
 }
 
 #[test]

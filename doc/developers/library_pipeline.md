@@ -67,8 +67,8 @@ indexed before `EUROPEPMC_FIRST_DAY` is not fetched. `stop` is checked between
 rounds and inside each phase as before.
 
 No network is caught two ways. `PoliteClient` gives up after
-`NO_ANSWER_LIMIT` (3) unanswered requests in a row, after which every
-request fails unsent. And a round whose every day failed (`errors` ≥
+`NO_ANSWER_LIMIT` (3) requests in a row that got no answer or a web page
+(below), after which every request fails unsent. And a round whose every day failed (`errors` ≥
 `days`, nothing added or merged) is read as no network too; a captive portal
 answering every day with an HTML page counts. Either way the update records
 the metadata phase as stopped, says `WAITING_FOR_INTERNET` and ends, instead
@@ -147,11 +147,16 @@ both requests ("JATS: not found (HTTP 404); PDF: refused (HTTP 403)"). A
 request with no answer is stored as "no answer" only; the transport message
 (which names the URL) goes to the progress line, so `bml library status`
 groups the papers under one reason. A 200 whose body is an HTML page
-(`polite_client::is_web_page`; none of the sources answers with HTML) is
-recorded as `RequestOutcome::WebPage` and is passing, also for a PDF request
-bmlib calls `not-a-pdf`: a Wi-Fi sign-in page in the middle of full text
-costs an hour, not 30 days. It does not count towards `NO_ANSWER_LIMIT`, so
-the phase goes on; papers tried during the portal are retried from 1 h.
+(`polite_client::is_web_page`: `<!doctype html` or `<html` after any XML
+declaration and comments; none of the sources answers with HTML) is
+recorded as `RequestOutcome::WebPage`, and bmlib gets an error instead of
+the page, so it never parses or caches it (its JATS reader would take an
+XHTML page's `<body><p>` for an article body and store the sign-in text as
+the paper's full text). The paper's failure is passing, for JATS and for a
+PDF alike, with the reason "a web page came back instead". A web page counts
+towards `NO_ANSWER_LIMIT` like no answer: behind a Wi-Fi sign-in page the
+phase ends as `FulltextEnd::NoNetwork` after three requests, and the papers
+tried wait the usual passing back-off, not 30 days.
 
 Back-off (`retry_delay`): passing doubles from `RETRY_BASE` (1 h) to
 `RETRY_MAX` (7 days); lasting waits `LASTING_RETRY` (30 days). Abstract-only

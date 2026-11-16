@@ -38,8 +38,8 @@ pub fn library(config_dir: &Path) -> Result<Library, String> {
 
 /// A connection to the library's database, starting the private server first
 /// when it is stopped (a library set up without a login item), with the
-/// library's tables brought up to date (as every `bml library` command does),
-/// so a library made by an older version still updates.
+/// library's tables brought up to date (as `bml library update` and
+/// `status` do), so a library made by an older version still updates.
 ///
 /// # Errors
 ///
