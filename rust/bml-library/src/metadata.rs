@@ -13,7 +13,7 @@ use bmlib::publications::sync::{sync, SyncRequest};
 use chrono::{DateTime, Days, NaiveDate, Utc};
 
 use crate::polite_client::PoliteClient;
-use crate::{Phase, PipelineError, Progress, EUROPEPMC_SOURCE, MEDRXIV_SOURCE};
+use crate::{FulltextSource, Phase, PipelineError, Progress};
 
 /// How many days one `sync` call covers; `stop` is checked between calls.
 pub const METADATA_WINDOW_DAYS: u64 = 30;
@@ -80,7 +80,7 @@ pub fn run(
         let window = run_window(
             db,
             client.clone(),
-            MEDRXIV_SOURCE,
+            FulltextSource::Medrxiv,
             &configs,
             start,
             end,
@@ -101,16 +101,7 @@ pub fn run(
     Ok(report)
 }
 
-/// The name a progress line gives `source`.
-fn source_name(source: &str) -> &str {
-    match source {
-        MEDRXIV_SOURCE => "medRxiv",
-        EUROPEPMC_SOURCE => "Europe PMC",
-        other => other,
-    }
-}
-
-/// Sync one window, `from` to `to` (inclusive), of bmlib source `source`, with
+/// Sync one window, `from` to `to` (inclusive), of `source`'s details, with
 /// `configs` as each source's settings (a topic library's `query`).
 ///
 /// # Errors
@@ -120,7 +111,7 @@ fn source_name(source: &str) -> &str {
 pub fn run_window(
     db: &mut dyn Db,
     client: Arc<PoliteClient>,
-    source: &str,
+    source: FulltextSource,
     configs: &BTreeMap<String, BTreeMap<String, String>>,
     from: NaiveDate,
     to: NaiveDate,
@@ -136,7 +127,7 @@ pub fn run_window(
     let registry =
         builtin_registry(client.clone()).map_err(|e| PipelineError::Other(e.to_string()))?;
     let request = SyncRequest {
-        sources: vec![source.to_string()],
+        sources: vec![source.metadata_source().to_string()],
         date_from: from,
         date_to: to,
         recheck_days: 0,
@@ -149,7 +140,7 @@ pub fn run_window(
             phase: Phase::Metadata,
             message: format!(
                 "{} asked us to slow down at {from} to {to}; the metadata carries on next run",
-                source_name(source)
+                source.name()
             ),
         });
         report.stopped = true;

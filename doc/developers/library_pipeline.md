@@ -48,14 +48,15 @@ another topic or medRxiv papers.
 
 For a topic library `update` runs `update_topic` instead of the three
 phases: **rounds**, newest first, from the clock's day back to
-`options.from` (else `EUROPEPMC_FIRST_DAY`, 2021-01-01, not remembered). The
-first round is `EUROPEPMC_FIRST_ROUND_DAYS` (7), so a new library is
-searchable within minutes; the rest are `EUROPEPMC_ROUND_DAYS` (30). Each
-round is `metadata::run_window` for the bmlib `europepmc` source (config
-`query`), then an index run (the new abstracts), then `fulltext::run(…,
-EUROPEPMC_SOURCE, …)`, then another index run (the new full texts). So a
-round's papers are searchable before the next round starts. The checkpoints are the usual
-ones: bmlib's day ledger and the full-text and index rows. Since bmlib PR
+`options.from` (else `europepmc_first_day()`, 1 January of
+`topics::TOPIC_FIRST_YEAR`, not remembered). The first round is
+`EUROPEPMC_FIRST_ROUND_DAYS` (7), so a new library is searchable within
+minutes; the rest are `EUROPEPMC_ROUND_DAYS` (30). Each round is
+`metadata::run_window` for the bmlib `europepmc` source (config `query`),
+then an index run (the new abstracts), then `fulltext::run(…,
+FulltextSource::EuropePmc, …)`, then another index run (the new full texts).
+So a round's papers are searchable before the next round starts. The
+checkpoints are the usual ones: bmlib's day ledger and the full-text and index rows. Since bmlib PR
 #790's review (pinned at `6465096`), a day is the day a record was first
 indexed by Europe PMC (`FIRST_IDATE`), not its publication day; the settle
 period is 3 days (`EUROPEPMC_SETTLE_DAYS`); a walk that ends short of the
@@ -63,8 +64,8 @@ first page's `hitCount`, or returns a record not first indexed on the day,
 fails the day; and an empty day completes only if the query without its date
 clause finds something (one more request per empty day). A topic's
 `PUB_YEAR` range still applies, so a paper published in 2021 but first
-indexed before `EUROPEPMC_FIRST_DAY` is not fetched. `stop` is checked between
-rounds and inside each phase as before.
+indexed before `europepmc_first_day()` is not fetched. `stop` is checked
+between rounds and inside each phase as before.
 
 No network is caught two ways. `PoliteClient` gives up after
 `NO_ANSWER_LIMIT` (3) requests in a row that got no answer or a web page
@@ -77,7 +78,19 @@ of failing its way through every older round. The full-text phase ends as
 indexes what arrived and the rounds end. Days not fetched stay unfinished in
 bmlib's ledger, so the next run fetches them. `last_update_at` is stamped
 only for a complete update, as before. `--from` is remembered for a topic
-library as for medRxiv (`start_day_or`, default `EUROPEPMC_FIRST_DAY`).
+library as for medRxiv (`start_day_or`, default `europepmc_first_day()`).
+
+The topic years are `topics::TOPIC_FIRST_YEAR` and `TOPIC_LAST_YEAR` (2021
+and 2026): the query's `PUB_YEAR` range and the first day come from them,
+and a `bml-app` test checks that screen 4 names the same years. Changing them
+changes the query of new libraries only (a library keeps the query recorded
+when its topic was chosen), but the default first day is computed on every
+run, so it moves for an existing library without a remembered `--from` too.
+
+`FulltextSource` (`Medrxiv`, `EuropePmc`, mapped from `LibrarySource`) names
+the source for `metadata::run_window`, `fulltext::run`/`next_paper` and
+`library status`: its metadata source, its `fulltext_sources.source` and its
+name in progress lines.
 
 Full text for a Europe PMC paper (`next_europepmc_paper`: a `europepmc`
 `xml` source, and no row or an abstract-only row past its retry time;
@@ -254,7 +267,12 @@ so a scheduled run's "no answer" causes are lost there too). Output goes to
 (exit 0 done, 1 failed, 2 not set up, 4 stopped early: Ctrl-C, SIGTERM,
 rate limited, or another update running; `--if-older-than <days>` exits 0
 at once while the last complete update is younger; a run with `--skip` is
-never a complete update); `bml library status`; `bml library schedule weekly|every
+never a complete update); `bml library status` (its "none offered" counts
+the papers not yet tried that `fulltext::offers_link` rejects, the condition
+`next_paper` also reads: no full-text link from the library's source, such
+as a Europe PMC paper without `fullTextXML`, a medRxiv record without a DOI
+or medRxiv links whose version is not a whole number; they are not tried, so
+"not tried yet" can reach 0); `bml library schedule weekly|every
 <days>|manual` (days 1–365). The update runs `bml_db::migrate` first, so an
 older library gains migrations 2 and 3.
 

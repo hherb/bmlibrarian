@@ -163,6 +163,16 @@ mod tests {
     use bml_library::{Phase, Progress, WAITING_FOR_INTERNET};
 
     #[test]
+    fn screen_4_names_the_topic_years() {
+        use bml_library::topics::{TOPIC_FIRST_YEAR, TOPIC_LAST_YEAR};
+        // shortcut: static text checked here, not filled in from Rust; move it
+        // to a command if the years ever vary per topic.
+        let html = include_str!("../ui/index.html");
+        let years = format!("from {TOPIC_FIRST_YEAR} to {TOPIC_LAST_YEAR}");
+        assert!(html.contains(&years), "index.html must say {years:?}");
+    }
+
+    #[test]
     fn a_rate_limit_is_not_a_pause() {
         use bml_library::fulltext::{FulltextEnd, FulltextReport};
         use bml_library::metadata::MetadataReport;

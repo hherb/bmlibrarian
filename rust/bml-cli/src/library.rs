@@ -36,7 +36,8 @@ pub enum LibraryCommand {
     /// (safe to stop and run again).
     Update {
         /// The first day to download (default: the day last given with
-        /// --from, else medRxiv's first day, or 2021-01-01 for a topic library).
+        /// --from, else medRxiv's first day, or 1 January of the first topic year,
+        /// 2021, for a topic library).
         /// The day given is remembered.
         #[arg(long, value_name = "YYYY-MM-DD")]
         from: Option<NaiveDate>,
@@ -342,11 +343,12 @@ fn status(library: &Library, config_dir: &Path) -> Result<ExitCode, LibraryCliEr
     say!("{}", source_line(&library_source(&mut db)?));
     say!("Papers: {}", s.papers);
     say!(
-        "Full text: {} JATS, {} PDF, {} abstract only, {} not tried yet",
+        "Full text: {} JATS, {} PDF, {} abstract only, {} not tried yet, {} none offered",
         s.jats,
         s.pdf,
         s.abstract_only,
-        s.not_tried
+        s.not_tried,
+        s.no_link
     );
     for r in &s.reasons {
         say!("  {:>7} {} ({})", r.papers, r.reason, r.kind);

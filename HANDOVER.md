@@ -10,6 +10,29 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **#460 leftovers: `FulltextSource`, topic years, "none offered"**
+  (2026-11-17, branch `chore/460-leftovers`). `bml_library::FulltextSource
+  { Medrxiv, EuropePmc }` (from `LibrarySource`) replaces the source strings
+  in `Paper.source`, `fulltext::run`/`next_paper`, `metadata::run_window` and
+  `status`. `topics::TOPIC_FIRST_YEAR`/`TOPIC_LAST_YEAR` (2021, 2026) build
+  the query's `PUB_YEAR` range and `europepmc_first_day()`
+  (`EUROPEPMC_FIRST_DAY` is gone); a `bml-app` test checks screen 4 names the
+  same years (static text, `shortcut:`). `library status` counts papers with
+  no full-text link apart ("N none offered", `LibraryStatus::no_link`) by the
+  same condition `next_paper` reads (`fulltext::offers_link`), so "not tried
+  yet" reaches 0. New tests: `update_topic` with full text down
+  mid-rounds, a complete topic update stamps `last_update_at`, the status
+  split, and (PR #465 review) the medRxiv split and a full text indexed before
+  the network goes. Final check: one shared format constant per source in
+  `fulltext.rs`, `offers_link` is `pub(crate)`, `status` errors instead of
+  counting a non-integer as 0, and the medRxiv split test also covers a NULL
+  DOI, an html-only link and a NULL or non-numeric version. This closes #460
+  (its short-walk item was settled by the #790 re-pin). Verified: `cargo test
+  -- --include-ignored` 360 passed with pg_search, `-p bml-app --
+  --include-ignored` 25, Python 4871 passed (the one failure,
+  `test_browser_download.py::test_simple_pdf`, a live-URL timeout, passed on
+  rerun).
+
 - **A window closed mid-setup reopens the wizard, #462** (2026-11-16,
   branch `fix/462-reopen-mid-setup`). `bml-app` `state::start_screen` opens
   on Search only when a library is recorded **and** the embedding GGUF is at
@@ -334,22 +357,25 @@ value — pick one, or pull an item from ROADMAP.md:
     is ~10 s per paper in all, **~23 h for the whole topic**. Disk: ~0.2 MB
     of documents and ~1 MB of database per paper.
   - The prepared library: config `~/.bml-demo`, library `~/BMLibrarian-demo`,
-    server on :5418, no login items, schedule manual. Its full build started
-    2026-11-15 23:10 AEDT, detached (`nohup caffeinate -i
-    ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update`, log
-    `~/.bml-demo/build.log`). If it stops, run the same command again; it
-    resumes. On 2026-11-16 10:30 AEDT it held 3,559 papers, 3,431 indexed.
-  - The prepared library's binary (`~/.bml-demo-bin`) was built before the
-    re-pin to bmlib `6465096` (above); a build from master now walks
-    Europe PMC by first-index day. Its day ledger keeps the days it already
-    completed under the old walk (bmlib #793, query-blind ledger).
-  - PR #459's review follow-ups that were left for after the meeting are in
-    #460 (first search, ⌘Q, topic choice, captive portal in full text and
-    app migrations are done, above; #462 done). Still open there:
-    `Paper.source` string → `FulltextSource` enum, the 2021–2026 range in
-    three places (derive before 2027), "Not tried yet" never reaching 0,
-    two `update_topic` tests (the short-walk item is settled by the #790
-    re-pin).
+    server on :5418, no login items, schedule manual. Built detached
+    (`nohup caffeinate -i ~/.bml-demo-bin/bml --config-dir ~/.bml-demo
+    library update`, log `~/.bml-demo/build.log`); if it stops, run the same
+    command again; it resumes. It stopped on 2026-11-16 15:43 when the
+    network dropped (4,954 papers, all indexed, 4,883 JATS, 45 failed days
+    back to 2023-10) and was resumed on 2026-11-17 08:31 AEST; a DNS drop-out
+    stopped it again minutes later and it was restarted. Under the new walk
+    2026-11-01/02 fail the 50% floor against counts stored by the old walk,
+    so they show as failed days for up to 33 days (bmlib #793).
+  - `~/.bml-demo-bin/bml` was rebuilt from master on 2026-11-17 (release, at
+    `d4403f6`: bmlib `6465096`, first-index-day walk, `library status`
+    counting the topic's days); the 2026-11-15 binary is kept beside it as
+    `bml.2026-11-15`. The day ledger keeps the days completed under the old
+    walk (bmlib #793, query-blind ledger). The app is built separately
+    (runbook step 2). It predates PR #465, so it prints no "none offered"
+    and counts those papers under "not tried yet": rebuild it from master
+    once #465 is merged.
+  - #460 (PR #459 review follow-ups) is closed by `chore/460-leftovers`
+    (above).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
