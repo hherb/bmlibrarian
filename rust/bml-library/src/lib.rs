@@ -69,8 +69,9 @@ pub const EUROPEPMC_FIRST_ROUND_DAYS: u64 = 7;
 pub const WAITING_FOR_INTERNET: &str =
     "Waiting for the internet. Downloading carries on when it's back.";
 
-/// Where a library's papers and full texts come from. Mapped from a
-/// library's [`LibrarySource`] in one place (`From`).
+/// Where a library's papers and full texts come from. `library_status` maps
+/// it from the library's [`LibrarySource`] (`From`); `Pipeline::update` picks
+/// it per branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FulltextSource {
     /// medRxiv: details from [`MEDRXIV_SOURCE`], full text from medRxiv's
@@ -415,7 +416,7 @@ impl Pipeline {
             self.europepmc_delay,
         ));
         let configs = BTreeMap::from([(
-            EUROPEPMC_SOURCE.to_string(),
+            FulltextSource::EuropePmc.metadata_source().to_string(),
             BTreeMap::from([("query".to_string(), query.to_string())]),
         )]);
         let mut embedder: Option<Box<dyn ChunkEmbedder>> = None;

@@ -105,10 +105,11 @@ bml library status
 
 shows how many papers there are, how many have JATS or PDF full text, how
 many are abstract only (with the most common reasons), how many are not tried
-yet, how many have no full text on offer at all (never tried), how many are
-indexed, when the last complete update finished, and whether full text is
-paused after medRxiv asked us to slow down. Files in the documents folder that
-no paper uses are only counted, never deleted for that alone.
+yet, how many have no full text on offer at all (not tried until a link
+appears), how many are indexed, when the last complete update finished, and
+whether full text is paused after medRxiv asked us to slow down. Files in the
+documents folder that no paper uses are only counted, never deleted for that
+alone.
 
 ## Updating automatically
 

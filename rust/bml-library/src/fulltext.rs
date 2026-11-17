@@ -366,11 +366,15 @@ const VERSION_INT: &str = "CASE WHEN version ~ '^[0-9]{1,9}$' THEN CAST(version 
 /// The `fulltext_sources.format`s a medRxiv paper's full text is fetched from.
 const MEDRXIV_LINK_FORMATS: &str = "('xml', 'pdf')";
 
+/// The `fulltext_sources.format` a Europe PMC paper's full text is fetched from.
+const EUROPEPMC_LINK_FORMAT: &str = "'xml'";
+
 /// The SQL condition, on `publications p`, that the library's source offers
 /// `p` a full-text link [`next_paper`] fetches. `library_status` counts the
-/// papers without one as "none offered", so both read this one condition.
+/// untried papers without one as "none offered", so both read this one
+/// condition.
 #[must_use]
-pub fn offers_link(source: FulltextSource) -> String {
+pub(crate) fn offers_link(source: FulltextSource) -> String {
     match source {
         FulltextSource::Medrxiv => format!(
             "p.doi IS NOT NULL AND p.doi <> '' AND EXISTS (SELECT 1 FROM fulltext_sources s \
@@ -380,7 +384,7 @@ pub fn offers_link(source: FulltextSource) -> String {
         ),
         FulltextSource::EuropePmc => format!(
             "EXISTS (SELECT 1 FROM fulltext_sources s WHERE s.publication_id = p.id \
-             AND s.source = '{}' AND s.format = 'xml')",
+             AND s.source = '{}' AND s.format = {EUROPEPMC_LINK_FORMAT})",
             source.links_source()
         ),
     }
@@ -474,8 +478,10 @@ fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, P
     if paper.source == FulltextSource::EuropePmc {
         let rows = fetch_all(
             db,
-            "SELECT url, format FROM fulltext_sources WHERE publication_id = ? AND source = ? \
-             AND format = 'xml' ORDER BY id",
+            &format!(
+                "SELECT url, format FROM fulltext_sources WHERE publication_id = ? \
+                 AND source = ? AND format = {EUROPEPMC_LINK_FORMAT} ORDER BY id"
+            ),
             &[Value::Int(paper.id), Value::Text(links_source.into())],
         )?;
         return rows
@@ -495,7 +501,7 @@ fn sources(db: &mut dyn Db, paper: &Paper) -> Result<Vec<FullTextSourceEntry>, P
         db,
         &format!(
             "SELECT url, format FROM fulltext_sources WHERE publication_id = ? AND source = ? \
-             AND format IN ('xml', 'pdf') AND {VERSION_INT} = ? ORDER BY id"
+             AND format IN {MEDRXIV_LINK_FORMATS} AND {VERSION_INT} = ? ORDER BY id"
         ),
         &[
             Value::Int(paper.id),

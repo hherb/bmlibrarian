@@ -23,9 +23,15 @@ off new work. Longer-term structural items live in
   yet" reaches 0. New tests: `update_topic` with full text down
   mid-rounds, a complete topic update stamps `last_update_at`, the status
   split, and (PR #465 review) the medRxiv split and a full text indexed before
-  the network goes. This closes #460 (its short-walk item was settled by the
-  #790 re-pin). Verified: `cargo test -- --include-ignored` 361 passed with
-  pg_search, `-p bml-app -- --include-ignored` 25, Python 4872 passed.
+  the network goes. Final check: one shared format constant per source in
+  `fulltext.rs`, `offers_link` is `pub(crate)`, `status` errors instead of
+  counting a non-integer as 0, and the medRxiv split test also covers a NULL
+  DOI, an html-only link and a NULL or non-numeric version. This closes #460
+  (its short-walk item was settled by the #790 re-pin). Verified: `cargo test
+  -- --include-ignored` 360 passed with pg_search, `-p bml-app --
+  --include-ignored` 25, Python 4871 passed (the one failure,
+  `test_browser_download.py::test_simple_pdf`, a live-URL timeout, passed on
+  rerun).
 
 - **A window closed mid-setup reopens the wizard, #462** (2026-11-16,
   branch `fix/462-reopen-mid-setup`). `bml-app` `state::start_screen` opens

@@ -36,8 +36,9 @@ pub struct LibraryStatus {
     /// Not tried for full text yet (the source offers a link).
     pub not_tried: i64,
     /// Not tried because the source offers no full-text link the pipeline
-    /// fetches (e.g. a Europe PMC paper without `fullTextXML`, or a medRxiv
-    /// record without a DOI); tried once one appears.
+    /// fetches (e.g. a Europe PMC paper without `fullTextXML`, a medRxiv
+    /// record without a DOI, or medRxiv links whose version is not a whole
+    /// number); tried once a later metadata sync records one.
     pub no_link: i64,
     /// The most common abstract-only reasons, most papers first.
     pub reasons: Vec<AbstractReason>,
@@ -62,10 +63,11 @@ pub struct LibraryStatus {
     pub unreferenced_files: usize,
 }
 
+/// The integer `sql` returns; anything else is an error, not a silent 0.
 fn count(db: &mut dyn Db, sql: &str) -> Result<i64, PipelineError> {
-    Ok(fetch_scalar(db, sql, &[])?
+    fetch_scalar(db, sql, &[])?
         .and_then(|v| v.as_i64())
-        .unwrap_or(0))
+        .ok_or_else(|| PipelineError::Other(format!("a count returned no integer: {sql}")))
 }
 
 /// Read the library's status.

@@ -85,10 +85,12 @@ and 2026): the query's `PUB_YEAR` range and the first day come from them,
 and a `bml-app` test checks that screen 4 names the same years. Changing them
 changes the query of new libraries only (a library keeps the query recorded
 when its topic was chosen), but the default first day is computed on every
-run, so it moves for an existing library without a remembered `--from` too. `FulltextSource` (`Medrxiv`, `EuropePmc`, mapped from
-`LibrarySource`) names the source for `metadata::run_window`,
-`fulltext::run`/`next_paper` and `library status`: its metadata source, its
-`fulltext_sources.source` and its name in progress lines.
+run, so it moves for an existing library without a remembered `--from` too.
+
+`FulltextSource` (`Medrxiv`, `EuropePmc`, mapped from `LibrarySource`) names
+the source for `metadata::run_window`, `fulltext::run`/`next_paper` and
+`library status`: its metadata source, its `fulltext_sources.source` and its
+name in progress lines.
 
 Full text for a Europe PMC paper (`next_europepmc_paper`: a `europepmc`
 `xml` source, and no row or an abstract-only row past its retry time;
@@ -266,10 +268,11 @@ so a scheduled run's "no answer" causes are lost there too). Output goes to
 rate limited, or another update running; `--if-older-than <days>` exits 0
 at once while the last complete update is younger; a run with `--skip` is
 never a complete update); `bml library status` (its "none offered" counts
-the papers `fulltext::offers_link` rejects, the condition `next_paper` also
-reads: no full-text link from the library's source, such as a Europe PMC
-paper without `fullTextXML` or a medRxiv record without a DOI; they are not
-tried, so "not tried yet" can reach 0); `bml library schedule weekly|every
+the papers not yet tried that `fulltext::offers_link` rejects, the condition
+`next_paper` also reads: no full-text link from the library's source, such
+as a Europe PMC paper without `fullTextXML`, a medRxiv record without a DOI
+or medRxiv links whose version is not a whole number; they are not tried, so
+"not tried yet" can reach 0); `bml library schedule weekly|every
 <days>|manual` (days 1–365). The update runs `bml_db::migrate` first, so an
 older library gains migrations 2 and 3.
 

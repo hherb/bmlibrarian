@@ -1501,7 +1501,9 @@ fn europepmc_window_sends_the_query() {
     let api = FakeHttp::new().route(&url, 200, europepmc_page(&["PMC100"], "2024-01-16"));
     let client = Arc::new(PoliteClient::new(Arc::new(api.clone()), Duration::ZERO));
     let configs = BTreeMap::from([(
-        EUROPEPMC_SOURCE.to_string(),
+        bml_library::FulltextSource::EuropePmc
+            .metadata_source()
+            .to_string(),
         BTreeMap::from([("query".to_string(), query.to_string())]),
     )]);
     let day = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
@@ -2154,19 +2156,71 @@ fn status_counts_medrxiv_papers_the_pipeline_never_fetches_as_none_offered() {
     add_version(&mut db, no_doi, 1);
     db.execute("UPDATE publications SET doi = '' WHERE id = $1", &[&no_doi])
         .unwrap();
+    // Links, but no DOI at all.
+    let null_doi = other_paper(&mut db, "10.1101/2024.01.15.000004", "Null DOI");
+    add_version(&mut db, null_doi, 1);
+    db.execute(
+        "UPDATE publications SET doi = NULL WHERE id = $1",
+        &[&null_doi],
+    )
+    .unwrap();
+    // Only an html link, which the pipeline does not fetch.
+    let html_only = other_paper(&mut db, "10.1101/2024.01.15.000005", "Html only");
+    add_link(
+        &mut db,
+        html_only,
+        "https://example.org/5.html",
+        "html",
+        Some("1"),
+    );
+    // xml links whose version is missing or not a whole number.
+    let no_version = other_paper(&mut db, "10.1101/2024.01.15.000006", "No version");
+    add_link(
+        &mut db,
+        no_version,
+        "https://example.org/6.xml",
+        "xml",
+        None,
+    );
+    let bad_version = other_paper(&mut db, "10.1101/2024.01.15.000007", "Bad version");
+    add_link(
+        &mut db,
+        bad_version,
+        "https://example.org/7.xml",
+        "xml",
+        Some("1.2"),
+    );
     let cache = FullTextCache {
         cache_dir: tmp.path().join("documents"),
     };
     let status = bml_library::status::library_status(&mut db, &cache).unwrap();
-    assert_eq!((status.not_tried, status.no_link), (1, 2), "{status:?}");
+    assert_eq!((status.not_tried, status.no_link), (1, 6), "{status:?}");
     // Only the paper status calls "not tried yet" is the one fetched.
+    let skipped = [
+        linkless,
+        no_doi,
+        null_doi,
+        html_only,
+        no_version,
+        bad_version,
+    ];
     let next = bml_library::fulltext::next_paper(&mut db, bml_library::FulltextSource::Medrxiv)
         .unwrap()
         .unwrap();
     assert!(
-        next.id != i64::from(linkless) && next.id != i64::from(no_doi),
+        !skipped.iter().any(|&id| next.id == i64::from(id)),
         "{next:?}"
     );
+}
+
+/// A medRxiv link with any `format` and `version` (NULL when `None`).
+fn add_link(db: &mut Client, id: i32, url: &str, format: &str, version: Option<&str>) {
+    db.execute(
+        "INSERT INTO fulltext_sources (publication_id, source, url, format, version, created_at) \
+         VALUES ($1, 'medrxiv', $2, $3, $4, 'now')",
+        &[&id, &url, &format, &version],
+    )
+    .unwrap();
 }
 
 #[test]
