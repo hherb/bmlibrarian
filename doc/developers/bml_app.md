@@ -21,7 +21,27 @@ Tauri 2.12 needs Rust 1.90 (`rust-version` on this crate only). The front
 end (`ui/`) is static HTML, one stylesheet (`app.css`, sizes in `rem`/`em`,
 light and dark) and vanilla JavaScript through `withGlobalTauri`. There is no
 Node build step and no inline style. `gen/` is Tauri's generated schemas and
-is git-ignored. `icons/icon.png` is required by `tauri-build`.
+is git-ignored. `icons/icon.png` (RGBA, the window icon) is required by
+`tauri-build`; `icons/icon.icns` is the macOS bundle icon. Both are
+BMLibrarian Lite's icon (`assets/AppIcon.iconset`, `assets/icon.icns`).
+
+## macOS installer
+
+`scripts/build_bmlibrarianV2_installer.sh` builds
+`rust/target/release/bundle/dmg/BMLibrarian_<version>_<arch>.dmg` (the
+version comes from `tauri.conf.json`). It builds `bml` in release, ships it
+as a Tauri `externalBin` so the bundle holds `Contents/MacOS/bml` beside
+`bml-app` (where `bml_beside` looks), and turns bundling on through
+`--config`; the committed `tauri.conf.json` keeps `bundle.active` false so
+dev builds stay fast. By default it signs with the Keychain's Developer ID
+Application certificate (`DEVELOPER_ID` overrides it), then notarizes and
+staples the DMG through the notarytool Keychain profile
+`bmlibrarian-notarize` (`NOTARY_PROFILE` overrides it; BMLibrarian Lite
+uses the same one). `--unsigned` signs ad hoc, for local testing only. The
+DMG is for the build machine's architecture only. Tauri's `bundle_dmg.sh`
+lays out the window through a Finder AppleScript that fails now and then;
+the script detaches the read-write image a failed run leaves mounted and
+retries once.
 
 ## Layout
 
