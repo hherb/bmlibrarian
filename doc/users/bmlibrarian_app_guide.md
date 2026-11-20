@@ -5,6 +5,17 @@ downloads a library of medical research on a topic you choose, and lets you
 search it by meaning. Everything runs on your computer; the only network
 traffic is the downloads.
 
+## Installing
+
+Open `BMLibrarian_<version>_<arch>.dmg` and drag **BMLibrarian** onto
+**Applications**, then start it from Applications. Do this before the first
+start: setup records where the app is, so that the database starts when you
+log in and the library keeps itself up to date. If you run the app from the
+open disk image, both stop working once the image is closed.
+
+A test build that is not notarized is blocked the first time: open it once,
+then go to System Settings > Privacy & Security and press **Open Anyway**.
+
 ## First start
 
 1. **Welcome.** What will happen. No administrator password is needed.
