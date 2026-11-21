@@ -21,7 +21,46 @@ Tauri 2.12 needs Rust 1.90 (`rust-version` on this crate only). The front
 end (`ui/`) is static HTML, one stylesheet (`app.css`, sizes in `rem`/`em`,
 light and dark) and vanilla JavaScript through `withGlobalTauri`. There is no
 Node build step and no inline style. `gen/` is Tauri's generated schemas and
-is git-ignored. `icons/icon.png` is required by `tauri-build`.
+is git-ignored. `icons/icon.png` (RGBA, the window icon) is required by
+`tauri-build`; `icons/icon.icns` is the macOS bundle icon. Both are
+BMLibrarian Lite's icon: `icon.png` is its
+`assets/AppIcon.iconset/icon_512x512.png` converted to RGBA, `icon.icns` is
+its `assets/icon.icns`.
+
+## macOS installer
+
+`scripts/build_bmlibrarianV2_installer.sh` builds
+`<target>/release/bundle/dmg/BMLibrarian_<version>_<arch>.dmg`, where
+`<target>` is `CARGO_TARGET_DIR` if set, else `rust/target` (the version
+comes from `tauri.conf.json`). It builds `bml` in release, ships it as a
+Tauri `externalBin` so the bundle holds `Contents/MacOS/bml` beside
+`bml-app` (where `bml_beside` looks), and turns bundling on through
+`--config`; the committed `tauri.conf.json` keeps `bundle.active` false so
+dev builds stay fast. By default it signs with the first Developer ID
+Application certificate in the Keychain (`DEVELOPER_ID` overrides it), then
+notarizes and staples the DMG through the notarytool Keychain profile
+`bmlibrarian-notarize` (`NOTARY_PROFILE` overrides it; BMLibrarian Lite uses
+the same one). Before the build it test-signs a scratch file and asks
+notarytool for the profile's history, so a bad certificate, locked keychain
+or missing profile fails at once with the tool's own message. It unsets
+`APPLE_SIGNING_IDENTITY`, `APPLE_CERTIFICATE` and the notarization variables
+for the Tauri build, so Tauri neither picks another identity nor notarizes.
+`--unsigned` signs ad hoc, for local testing only, and names the DMG
+`…_unsigned.dmg`. Until signing, notarization, stapling and `hdiutil verify`
+have all passed the DMG is named `….incomplete.dmg`, so a failed run never
+leaves a DMG under the release name; when only stapling fails (Apple's
+ticket can lag a few minutes), the script prints the `stapler` command to
+retry without rebuilding. The DMG is for the build machine's architecture
+only.
+
+Tauri's `bundle_dmg.sh` lays out the window through a Finder AppleScript
+that fails now and then. The script keeps the build log
+(`bundle/installer-build.log`); when a failed build reached `bundle_dmg.sh`,
+it detaches and deletes the read-write image the failed run left behind
+(only images under this build's `bundle/macos/`) and retries once, keeping
+the first attempt's log. Any other build failure stops at once. The
+notarization log is kept as `bundle/dmg/notary.log`; a rejected submission
+also prints Apple's log.
 
 ## Layout
 
