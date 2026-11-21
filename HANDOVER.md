@@ -11,21 +11,26 @@ off new work. Longer-term structural items live in
 ## Recently landed (context)
 
 - **Signed, notarized macOS DMG of the Tauri app** (PR #466, branch
-  `feat/macos-installer-script`, in review). `scripts/build_bmlibrarianV2_installer.sh
-  [--unsigned]` ships `bml` as an `externalBin` (`Contents/MacOS/bml`, where
-  `bml_beside` looks), signs with the first Developer ID (or `DEVELOPER_ID`),
-  notarizes and staples through the Keychain profile `bmlibrarian-notarize`.
-  The app has BMLibrarian Lite's icon. Final-check fixes (2026-11-20):
-  `CARGO_TARGET_DIR` is honoured (before, a set one bundled a stale
-  `rust/target/release/bml`), the preflights test-sign a scratch file and print
-  notarytool's own error, `APPLE_SIGNING_IDENTITY`/`APPLE_CERTIFICATE` are
-  unset for Tauri, only a `bundle_dmg.sh` failure is retried (first log kept),
-  leftover `rw.*.dmg` images are deleted, `notary.log` is kept beside the DMG
-  and a rejection prints Apple's log; the user guide gained "Installing" (drag
-  to Applications before setup, since setup records the app's path). Verified:
-  `shellcheck`, both preflight failures, an `--unsigned` build with a relative
+  `feat/macos-installer-script`, in review).
+  `scripts/build_bmlibrarianV2_installer.sh [--unsigned]` ships `bml` as an
+  `externalBin` (`Contents/MacOS/bml`, where `bml_beside` looks), signs with
+  the first Developer ID (or `DEVELOPER_ID`), notarizes and staples through
+  the Keychain profile `bmlibrarian-notarize`. The app has BMLibrarian Lite's
+  icon. Final-check fixes (2026-11-20): `CARGO_TARGET_DIR` is honoured
+  (before, a set one bundled a stale `rust/target/release/bml`), the
+  preflights test-sign a scratch file and print notarytool's own error,
+  `APPLE_SIGNING_IDENTITY`/`APPLE_CERTIFICATE` are unset for Tauri, only a
+  `bundle_dmg.sh` failure is retried (first log kept), leftover `rw.*.dmg`
+  images are deleted, `notary.log` is kept beside the DMG and a rejection
+  prints Apple's log; the user guide gained "Installing" (drag to Applications
+  before setup, since setup records the app's path). Verified: `shellcheck`,
+  both preflight failures, an `--unsigned` build with a relative
   `CARGO_TARGET_DIR`; the signed run was done before these fixes (notarization
-  Accepted, `spctl` Notarized Developer ID). **Not done:** the setup wizard
+  Accepted, `spctl` Notarized Developer ID). Second final check (2026-11-21):
+  the DMG is named `….incomplete.dmg` until every check passes and
+  `--unsigned` writes `…_unsigned.dmg`, so no failed or test build carries the
+  release name; a stapling failure prints the retry command; leftover-image
+  cleanup touches only this build's images. **Not done:** the setup wizard
   from the installed DMG app (owner), Intel/universal builds. The demo runbook
   still runs the cargo-built `bml-app`; the DMG is an option, not a change.
 
@@ -185,20 +190,20 @@ off new work. Longer-term structural items live in
   Linux and Windows clippy pass for `bml-pgserver` (cross-target checks,
   not run there).
 
-- **Library pipeline, piece 3 of the installer milestone** (2026-11-14,
-  PR #429; plan `docs/superpowers/plans/2026-11-14-library-pipeline.md`).
-  bmlib is pinned by **git rev** (now `6465096`, see the #790 entry). New
-  crate `rust/bml-library`: metadata (`medrxiv-details`, 30-day windows),
-  full text (Tier 0 through `PoliteClient`, 30 s spacing, the first 429 ends
-  the phase and sets `library_state.rate_limited_until`), index (abstract
-  plus JATS/PDF chunks, `halfvec` embeddings, one transaction per paper);
-  bml-db migration 2 `library_state`; CLI `bml library update|status|
-  schedule`. The workspace keeps `[profile.dev.package.mupdf-sys] opt-level
-  = 2` (MSVC runtime clash with llama.cpp). Design details and review fixes:
+- **Library pipeline, piece 3 of the installer milestone** (2026-11-14, PR
+  #429; plan `docs/superpowers/plans/2026-11-14-library-pipeline.md`). bmlib
+  is pinned by **git rev** (now `6465096`, see the #790 entry). New crate
+  `rust/bml-library`: metadata (`medrxiv-details`, 30-day windows), full text
+  (Tier 0 through `PoliteClient`, 30 s spacing, the first 429 ends the phase
+  and sets `library_state.rate_limited_until`), index (abstract plus JATS/PDF
+  chunks, `halfvec` embeddings, one transaction per paper); bml-db migration 2
+  `library_state`; CLI `bml library update|status|schedule`. The workspace
+  keeps `[profile.dev.package.mupdf-sys] opt-level = 2` (MSVC runtime clash
+  with llama.cpp). Design details and review fixes:
   `doc/developers/library_pipeline.md`, `doc/users/library_updates_guide.md`.
-  Deferred: #430, #428 (done). **Finding:** medRxiv JATS `<body>` often holds
-  only `<supplementary-material>`, so the PDF is fetched; the plan's "28 of
-  30 JATS" counted downloads, not article text. Not run: Linux/Windows
+  Deferred: #430 (#428 since fixed). **Finding:** medRxiv JATS `<body>` often
+  holds only `<supplementary-material>`, so the PDF is fetched; the plan's "28
+  of 30 JATS" counted downloads, not article text. Not run: Linux/Windows
   schedulers (cross-target clippy only).
 
 - **`bml-db` + schema, piece 2 of the installer milestone** (2026-11-13,
@@ -357,7 +362,7 @@ value — pick one, or pull an item from ROADMAP.md:
     counting the topic's days); the 2026-11-15 binary is kept beside it as
     `bml.2026-11-15`. The day ledger keeps the days completed under the old
     walk (bmlib #793, query-blind ledger). The app is built separately
-    (runbook step 2). It predates PR #465 (merged 2026-11-16), so it prints
+    (runbook step 2). It predates PR #465 (merged 2026-11-17), so it prints
     no "none offered" and counts those papers under "not tried yet": rebuild
     it from master before the rehearsal.
   - #460 (PR #459 review follow-ups) is closed by `chore/460-leftovers`

@@ -14,9 +14,11 @@
 # "bmlibrarian-notarize", shared with BMLibrarian Lite; create it with
 # `xcrun notarytool store-credentials`).
 #
-# Output: <cargo target dir>/release/bundle/dmg/BMLibrarian_<version>_<arch>.dmg, where the
-# target dir is CARGO_TARGET_DIR if set, else rust/target. The build log
-# (installer-build.log) and the notarization log (notary.log) are kept beside it.
+# Output: <cargo target dir>/release/bundle/dmg/BMLibrarian_<version>_<arch>.dmg (with
+# --unsigned: ..._unsigned.dmg), where the target dir is CARGO_TARGET_DIR if set, else
+# rust/target. Until every check has passed the DMG is named ....incomplete.dmg, so a failed
+# run never leaves one under the release name. The build log is kept as
+# bundle/installer-build.log, the notarization log as bundle/dmg/notary.log.
 
 set -euo pipefail
 
@@ -99,15 +101,20 @@ tauri_dmg() {
         -u APPLE_SIGNING_IDENTITY -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD \
         cargo tauri build --verbose --bundles dmg --config "$CONFIG") 2>&1 | tee "$BUILD_LOG"
 }
+mkdir -p "$BUNDLE_DIR"
+# hdiutil reports resolved paths (/private/tmp, not /tmp).
+RW_PREFIX="$(cd "$BUNDLE_DIR" && pwd -P)/macos/rw."
 detach_leftover_images() {
-    # A failed bundle_dmg.sh leaves its read-write image (bundle/macos/rw.*.dmg) mounted.
-    hdiutil info | awk '/^image-path/ { img = $0; sub(/^image-path *: */, "", img) } /^\/dev\/disk[0-9]+[ \t]/ && img ~ /bundle\/macos\/rw\./ { print $1; img = "" }' \
+    # A failed bundle_dmg.sh leaves its read-write image (bundle/macos/rw.*.dmg) mounted. Only
+    # this build's: another project's DMG build may be running.
+    hdiutil info | awk -v prefix="$RW_PREFIX" '/^image-path/ { img = $0; sub(/^image-path *: */, "", img) } /^\/dev\/disk[0-9]+[ \t]/ && index(img, prefix) == 1 { print $1; img = "" }' \
         | while read -r dev; do
             hdiutil detach "$dev" -force || echo "Warning: could not detach $dev (a leftover DMG image)." >&2
         done
     rm -f "$BUNDLE_DIR"/macos/rw.*.dmg
 }
 detach_leftover_images
+rm -f "$BUNDLE_DIR/installer-build.first-attempt.log"
 if ! tauri_dmg; then
     # bundle_dmg.sh's Finder AppleScript fails now and then ("Can't get disk"); retry that once.
     # Any other failure (compile, app signing) would only fail again.
@@ -122,7 +129,10 @@ fi
 DMGS=("$DMG_DIR"/*.dmg)
 [ ${#DMGS[@]} -eq 1 ] && [ -f "${DMGS[0]}" ] || {
     echo "Error: expected one DMG in $DMG_DIR, found: ${DMGS[*]}" >&2; exit 1; }
-DMG="${DMGS[0]}"
+FINAL="${DMGS[0]}"
+[ "$SIGN" = true ] || FINAL="${FINAL%.dmg}_unsigned.dmg"
+DMG="${DMGS[0]%.dmg}.incomplete.dmg"
+mv "${DMGS[0]}" "$DMG"
 
 if [ "$SIGN" = true ]; then
     echo "=== Signing the DMG ==="
@@ -142,12 +152,18 @@ if [ "$SIGN" = true ]; then
         fi
         exit 1
     fi
-    xcrun stapler staple "$DMG"
-    xcrun stapler validate "$DMG"
-    spctl --assess --type open --context context:primary-signature --verbose "$DMG"
+    { xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG"; } || {
+        echo "Error: stapling failed, though Apple accepted the DMG (the ticket can take a few" >&2
+        echo "minutes to appear). Retry without rebuilding:" >&2
+        echo "  xcrun stapler staple '$DMG' && mv '$DMG' '$FINAL'" >&2
+        exit 1; }
+    spctl --assess --type open --context context:primary-signature --verbose "$DMG" || {
+        echo "Error: Gatekeeper rejects the stapled DMG: $DMG" >&2; exit 1; }
 fi
 
 hdiutil verify "$DMG" >/dev/null
+mv "$DMG" "$FINAL"
+DMG="$FINAL"
 echo ""
 echo "DMG: $DMG ($(du -h "$DMG" | cut -f1))"
 [ "$SIGN" = true ] || echo "Unsigned build: on another Mac, open it once, then allow it in System Settings > Privacy & Security > Open Anyway."
