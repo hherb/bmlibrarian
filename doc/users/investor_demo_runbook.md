@@ -34,17 +34,25 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
      >> ~/.bml-demo/build.log 2>&1 &
    ```
 
-   The command line stops (exit 4) after a few requests in a row get no
-   answer. Europe PMC sometimes takes over 45 s to answer, so it stops even
-   when your internet is fine. To leave it running unattended, run it in a
-   loop that starts it again five minutes after each such stop:
+   The command line stops after a few requests in a row get no answer.
+   Europe PMC sometimes takes over 45 s to answer, so it stops even when your
+   internet is fine. It then exits 4, or 1 while any day of paper details
+   counts as failed (2026-11-01/02 do until early December, bmlib #793). To
+   leave it running unattended, run it in a loop that starts it again five
+   minutes after each stop, until it finishes (0) or is not set up (2):
 
    ```bash
    nohup caffeinate -i zsh -c 'while true; do
      ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update; rc=$?
-     echo "=== update exited $rc at $(date) ==="; [ $rc -eq 4 ] || break
-     sleep 300; done' >> ~/.bml-demo/build.log 2>&1 &
+     echo "=== update exited $rc at $(date) ==="
+     [ $rc -eq 0 -o $rc -eq 2 ] && break; sleep 300; done' \
+     >> ~/.bml-demo/build.log 2>&1 &
    ```
+
+   Each run starts again at the newest week and stops in full text when
+   Europe PMC's full-text service fails, so older papers can stay unfetched.
+   To get every paper's details and abstract first (searchable by abstract),
+   run once with `library update --skip fulltext`, then the loop.
 
 2. **Build the app and `bml` together** (the app needs `bml` beside it for
    its login items):

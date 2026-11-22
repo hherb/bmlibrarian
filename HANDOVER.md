@@ -362,7 +362,12 @@ value — pick one, or pull an item from ROADMAP.md:
     `bml.2026-11-17`), and from 09:35 in the retry loop now in the runbook.
     Europe PMC took 6–15 s per request that morning, sometimes over 45 s, and
     two no-answers in a row stopped a bare run after 3 minutes (log
-    `~/.bml-demo/build.log`). Under the new walk
+    `~/.bml-demo/build.log`). That first loop retried only exit 4, but the
+    failed days 2026-11-01/02 make every run exit 1, so it ended at 13:06
+    with 5,335 papers; each run also restarts at the newest week and stalls
+    in full text (Europe PMC full text answering 500/503), leaving the days
+    before ~mid-2023 unwalked. From 21:35 a `--skip fulltext` pass walks
+    them, then the loop (retrying until exit 0 or 2) runs. Under the new walk
     2026-11-01/02 fail the 50% floor against counts stored by the old walk,
     so they show as failed days for up to 33 days (bmlib #793).
   - `~/.bml-demo-bin/bml` was rebuilt from master on 2026-11-17 (release, at
