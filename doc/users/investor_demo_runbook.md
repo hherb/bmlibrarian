@@ -34,6 +34,18 @@ The two never share a folder. The prepared library uses `~/.bml-demo` and
      >> ~/.bml-demo/build.log 2>&1 &
    ```
 
+   The command line stops (exit 4) after a few requests in a row get no
+   answer. Europe PMC sometimes takes over 45 s to answer, so it stops even
+   when your internet is fine. To leave it running unattended, run it in a
+   loop that starts it again five minutes after each such stop:
+
+   ```bash
+   nohup caffeinate -i zsh -c 'while true; do
+     ~/.bml-demo-bin/bml --config-dir ~/.bml-demo library update; rc=$?
+     echo "=== update exited $rc at $(date) ==="; [ $rc -eq 4 ] || break
+     sleep 300; done' >> ~/.bml-demo/build.log 2>&1 &
+   ```
+
 2. **Build the app and `bml` together** (the app needs `bml` beside it for
    its login items):
 
