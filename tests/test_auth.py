@@ -114,6 +114,20 @@ class TestPasswordHashing:
             assert _verify_password("pw", f"{HASH_SCHEME}${count}${salt_hex}${hash_hex}") is False
         assert _verify_password("pw", f"md5$1000${salt_hex}${hash_hex}") is False
 
+    def test_verify_password_malformed_hash_returns_false(self) -> None:
+        """Non-hex salt, non-ASCII digest or a non-str value fail, never raise."""
+        _, iters, salt_hex, hash_hex = _hash_password("pw").split('$')
+        assert _verify_password("pw", f"{HASH_SCHEME}${iters}$zz${hash_hex}") is False
+        assert _verify_password("pw", f"{HASH_SCHEME}${iters}${salt_hex}$\u00e9{hash_hex}") is False
+        assert _verify_password("pw", None) is False  # type: ignore[arg-type]
+
+    def test_verify_password_logs_unrecognised_format(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A stored row this code can't read is logged, so a lockout isn't blamed on the password."""
+        with caplog.at_level("WARNING", logger="bmlibrarian.auth.user_service"):
+            assert _verify_password("pw", "pbkdf2_sha512$1000$aa$bb") is False
+        assert "unrecognised format" in caplog.text
+        assert "aa$bb" not in caplog.text
+
     def test_verify_password_empty_inputs(self) -> None:
         """Test empty inputs handling."""
         stored_hash = _hash_password("password")
@@ -172,6 +186,44 @@ class TestUserServiceValidation:
 
         with pytest.raises(InvalidCredentialsError, match="required"):
             service.authenticate("username", "")
+
+
+class TestAuthenticateStoredHashFormats:
+    """authenticate() accepts both stored hash formats (#449)."""
+
+    @staticmethod
+    def service_with_row(pwdhash: str) -> UserService:
+        """A UserService whose users query returns one row with ``pwdhash``."""
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            'id': 7, 'username': 'alice', 'email': 'a@example.com',
+            'pwdhash': pwdhash, 'firstname': None, 'surname': None,
+        }
+        return UserService(conn)
+
+    def test_new_format_hash_logs_in(self) -> None:
+        """A pbkdf2_sha256$iters$salt$hash row logs in."""
+        user, token = self.service_with_row(_hash_password("pw")).authenticate(
+            "alice", "pw", create_session=False
+        )
+        assert user.id == 7 and token is None
+
+    def test_legacy_hash_logs_in(self) -> None:
+        """A pre-#449 salt$hash row still logs in."""
+        salt = b'\x02' * SALT_LENGTH_BYTES
+        digest = hashlib.pbkdf2_hmac('sha256', b'pw', salt, LEGACY_HASH_ITERATIONS).hex()
+        user, _ = self.service_with_row(f"{salt.hex()}${digest}").authenticate(
+            "alice", "pw", create_session=False
+        )
+        assert user.username == 'alice'
+
+    def test_wrong_password_raises(self) -> None:
+        """A wrong password against a valid row raises InvalidCredentialsError."""
+        with pytest.raises(InvalidCredentialsError):
+            self.service_with_row(_hash_password("pw")).authenticate(
+                "alice", "nope", create_session=False
+            )
 
 
 class TestUserSettingsManagerValidation:

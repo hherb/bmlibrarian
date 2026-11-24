@@ -206,8 +206,7 @@ class APIKeysPage(QWizardPage):
                 # Check if API keys section already exists
                 if "# Optional API Keys" not in existing_content:
                     # Append to file
-                    with open(env_path, "a") as f:
-                        f.write(api_keys_section)
+                    write_private_text(env_path, api_keys_section, append=True)
                     logger.info(f"Appended API keys to {env_path}")
                 else:
                     # Update existing API keys section

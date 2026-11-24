@@ -58,6 +58,44 @@ class TestCookieJarFromBrowserCookies:
         assert cookie_header(jar, "https://some-mirror.example/a.pdf") is None
         assert cookie_header(jar, "http://www.publisher.com/a.pdf") is None
 
+    def test_lookalike_hosts_and_other_paths_get_no_cookie(self) -> None:
+        """Suffix lookalikes and paths outside a cookie's path get nothing."""
+        jar = cookie_jar_from_browser_cookies(BROWSER_COOKIES + [
+            {"name": "m", "value": "s3", "domain": "a.example", "path": "/members"},
+        ])
+        for url in ("https://notwww.publisher.com/a.pdf", "https://evilpublisher.com/a.pdf",
+                    "https://www.publisher.com.evil.example/a.pdf", "https://eviloa.net/x"):
+            assert cookie_header(jar, url) is None, url
+        assert cookie_header(jar, "http://a.example/members/x") == "m=s3"
+        assert cookie_header(jar, "http://a.example/other") is None
+
+    def test_redirect_to_another_host_carries_no_cookie(self) -> None:
+        """requests rebuilds the Cookie header from the jar on every hop."""
+        sent: list[tuple[str, str | None]] = []
+
+        class RedirectingAdapter(requests.adapters.BaseAdapter):
+            """Redirects the publisher URL to another host, records each request."""
+
+            def send(self, request: requests.PreparedRequest, **kwargs: object) -> requests.Response:
+                sent.append((request.url, request.headers.get("Cookie")))
+                response = requests.Response()
+                response.request, response.url = request, request.url
+                response.status_code = 302 if "publisher" in request.url else 200
+                if response.status_code == 302:
+                    response.headers["Location"] = "https://evil.example/steal"
+                response.raw = None
+                return response
+
+            def close(self) -> None:
+                """Nothing to release."""
+
+        session = requests.Session()
+        session.mount("https://", RedirectingAdapter())
+        session.get("https://www.publisher.com/a.pdf",
+                    cookies=cookie_jar_from_browser_cookies(BROWSER_COOKIES))
+        assert sent == [("https://www.publisher.com/a.pdf", "pub=s2"),
+                        ("https://evil.example/steal", None)]
+
     def test_cookie_without_domain_is_dropped(self) -> None:
         """A domain-less cookie would be sent everywhere, so it is not kept."""
         jar = cookie_jar_from_browser_cookies([

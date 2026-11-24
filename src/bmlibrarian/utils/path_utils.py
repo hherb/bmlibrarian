@@ -202,8 +202,9 @@ def write_private_text(path: Union[str, Path], text: str, append: bool = False) 
 
     A new file is created with mode 0600 (no window in which the umask's
     0644 applies). An existing file is narrowed to 0600 before it is
-    truncated or appended to, so a failed chmod (exFAT, some network homes)
-    raises instead of leaving the secret in a world-readable file.
+    truncated or appended to, so a failed chmod raises instead of leaving
+    the secret in a world-readable file. A filesystem that ignores mode bits
+    (exFAT on macOS) gives no error and no protection.
 
     Args:
         path: File to write.

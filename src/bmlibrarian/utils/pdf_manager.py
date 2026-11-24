@@ -209,7 +209,10 @@ class PDFManager:
                     # Domain-scoped jar: pdf_url comes from imported metadata (#434)
                     cookies = self.openathens_auth.get_cookie_jar()
 
-                    logger.info("Using OpenAthens authenticated session")
+                    if len(cookies):
+                        logger.info(f"Using OpenAthens authenticated session ({len(cookies)} cookies)")
+                    else:
+                        logger.warning("OpenAthens session has no usable cookies; downloading unauthenticated")
 
                 response = requests.get(
                     pdf_url,

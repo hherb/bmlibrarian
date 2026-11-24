@@ -23,9 +23,12 @@ off new work. Longer-term structural items live in
   same bug). Password hashes are `pbkdf2_sha256$<iters>$<salt>$<hash>`;
   old `salt$hash` rows verify at 100,000 (`LEGACY_HASH_ITERATIONS`), counts
   above `MAX_HASH_ITERATIONS` fail (#449). No re-hash on login and
-  `HASH_ITERATIONS` is unchanged. Verified: suite 4934 passed; the new
-  caller tests fail on the old code. Not run against a live OpenAthens
-  login.
+  `HASH_ITERATIONS` is unchanged. Checkouts older than this branch can't
+  read the new format: a user registered here can't log in from one
+  ("Invalid password"). Verified: suite 4941 passed; the new caller and
+  malformed-hash tests fail on the old code. Not run against a live
+  OpenAthens login. The browser fallback still gets the raw cookie list,
+  not the jar (#472).
 
 - **Migration runner: one transaction, one process at a time, #439**
   (2026-11-24, branch `fix/439-migration-lock`). `MigrationManager` runs each
@@ -399,7 +402,8 @@ value — pick one, or pull an item from ROADMAP.md:
        download, Rust `HttpClient::get_with_headers_stream`, ureq ≥ 3.5.
      - **Blocked on the owner, Task M0** (re-checked 2026-11-15): both AWS
        profiles (`bmlibrarian` project, `medrxiv` account 775221585284) are
-       region-locked to ap-southeast-2 by an SCP, so no signed S3 read in
+       region-locked to ap-southeast-2 (an SCP, confirmed for the project,
+       presumed for the medrxiv account), so no signed S3 read in
        us-east-1 (where `medrxiv-src-monthly` lives) can succeed; IAM
        policies won't fix it. Ways out: activate advanced features on the
        project and edit the SCP, or use a separate standard AWS account.

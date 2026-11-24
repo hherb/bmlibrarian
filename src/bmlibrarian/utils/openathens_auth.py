@@ -47,7 +47,8 @@ def cookie_jar_from_browser_cookies(cookies: List[Dict[str, Any]]) -> requests.c
             optional ``path`` and ``secure``)
 
     Returns:
-        Jar holding the valid cookies, each limited to its domain and path
+        Jar holding the valid cookies, each limited to its domain (and its
+        subdomains) and path
     """
     jar = requests.cookies.RequestsCookieJar()
     for cookie in cookies:
@@ -534,8 +535,9 @@ class OpenAthensAuth:
         """Get authentication cookies as a jar for ``requests``.
 
         Unlike a plain ``{name: value}`` dict, the jar sends each cookie only
-        to its own domain and path, and secure cookies only over HTTPS, on
-        the first request and on every redirect hop (#434).
+        to its domain (and its subdomains) and path, and secure cookies only
+        over HTTPS, on the first request and on every redirect hop (#434).
+        The browser fallback does not use the jar.
 
         Returns:
             Cookie jar, empty if not authenticated
