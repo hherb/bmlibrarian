@@ -10,8 +10,8 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Signed, notarized macOS DMG of the Tauri app** (PR #466, branch
-  `feat/macos-installer-script`, in review).
+- **Signed, notarized macOS DMG of the Tauri app** (PR #466, merged
+  2026-11-21).
   `scripts/build_bmlibrarianV2_installer.sh [--unsigned]` ships `bml` as an
   `externalBin` (`Contents/MacOS/bml`, where `bml_beside` looks), signs with
   the first Developer ID (or `DEVELOPER_ID`), notarizes and staples through
@@ -354,17 +354,37 @@ value — pick one, or pull an item from ROADMAP.md:
     command again; it resumes. It stopped on 2026-11-16 15:43 when the
     network dropped (4,954 papers, all indexed, 4,883 JATS, 45 failed days
     back to 2023-10) and was resumed on 2026-11-17 08:31 AEST; a DNS drop-out
-    stopped it again minutes later and it was restarted. Under the new walk
+    stopped it again minutes later and it was restarted. It stopped again on
+    2026-11-17 11:13 (no network) and was not restarted: on 2026-11-22 it
+    held 5,229 papers, all indexed (461,504 chunks), 5,203 JATS, 36 metadata
+    days to fetch again. On 2026-11-22 09:28 it was restarted with a `bml`
+    rebuilt from master (`a7ac0ac`; the 2026-11-17 binary is kept as
+    `bml.2026-11-17`), and from 09:35 in the retry loop now in the runbook.
+    Europe PMC took 6–15 s per request that morning, sometimes over 45 s, and
+    two no-answers in a row stopped a bare run after 3 minutes (log
+    `~/.bml-demo/build.log`). That first loop retried only exit 4, but the
+    failed days 2026-11-01/02 make every run exit 1, so it ended at 13:06
+    with 5,335 papers; each run also restarts at the newest week and stalls
+    in full text (Europe PMC full text answering 500/503), leaving the days
+    before ~mid-2023 unwalked. From 21:35 a `--skip fulltext` pass walks
+    them, then the loop (retrying until exit 0 or 2) runs. Under the new walk
     2026-11-01/02 fail the 50% floor against counts stored by the old walk,
     so they show as failed days for up to 33 days (bmlib #793).
   - `~/.bml-demo-bin/bml` was rebuilt from master on 2026-11-17 (release, at
     `d4403f6`: bmlib `6465096`, first-index-day walk, `library status`
     counting the topic's days); the 2026-11-15 binary is kept beside it as
     `bml.2026-11-15`. The day ledger keeps the days completed under the old
-    walk (bmlib #793, query-blind ledger). The app is built separately
-    (runbook step 2). It predates PR #465 (merged 2026-11-17), so it prints
-    no "none offered" and counts those papers under "not tried yet": rebuild
-    it from master before the rehearsal.
+    walk (bmlib #793, query-blind ledger).
+  - **Demo prep done 2026-11-22** (no owner needed): `rust/target/release`
+    `bml` + `bml-app` rebuilt together from `a7ac0ac` (runbook step 2); the
+    six runbook questions return on-topic trials and reviews in 3–6 s each
+    from the CLI; Ollama answers with both approved models. The leftover live
+    install from a 2026-11-18 DMG test (setup run from the mounted DMG,
+    stopped before the search model; its login item pointed at
+    `/Volumes/BMLibrarian/...`, now #467) was removed per the runbook's
+    "Afterwards", and `~/.bmlibrarian/models` (the GGUF was missing) and
+    `pgdist` are pre-copied (step 4). **Still the owner's:** hotspot test
+    (step 6) and the GUI rehearsal checks (step 7).
   - #460 (PR #459 review follow-ups) is closed by `chore/460-leftovers`
     (above).
 - **Rust installer**, design
