@@ -48,15 +48,15 @@ def test_cmd_import_exits_nonzero_when_files_failed() -> None:
         assert cli.cmd_import(args) == 1
 
 
-def run_sync(argv: List[str], download_failed: int, import_errors: int) -> int:
-    """cmd_sync with the importer mocked: each download reports ``download_failed``."""
+def run_sync(argv: List[str], update_failed: int, import_errors: int, baseline_failed: int = 0) -> int:
+    """cmd_sync with the importer mocked; each download phase reports its own failures."""
     from bmlibrarian.importers.pubmed_bulk_importer import DownloadCounts
 
     args = cli.build_parser().parse_args(["sync", "-y", *argv])
     with patch.object(cli, "PubMedBulkImporter") as importer_cls:
         importer = importer_cls.return_value
-        importer.download_updates.return_value = DownloadCounts(1, download_failed)
-        importer.download_baseline.return_value = DownloadCounts(1, download_failed)
+        importer.download_updates.return_value = DownloadCounts(1, update_failed)
+        importer.download_baseline.return_value = DownloadCounts(1, baseline_failed)
         importer.import_all_files.return_value = {
             "files_processed": 1, "total_articles": 1, "total_errors": import_errors}
         return cli.cmd_sync(args)
@@ -66,6 +66,30 @@ def run_sync(argv: List[str], download_failed: int, import_errors: int) -> int:
 def test_cmd_sync_exit_code_counts_failed_downloads_and_imports(
         download_failed: int, import_errors: int, expected: int) -> None:
     assert run_sync(["--updates-only"], download_failed, import_errors) == expected
+
+
+@pytest.mark.parametrize("argv,baseline_failed,update_failed,expected", [
+    (["--baseline-only"], 2, 0, 1),
+    (["--baseline-only"], 0, 0, 0),
+    (["--from-scratch"], 2, 0, 1),
+    (["--from-scratch"], 0, 2, 1),
+    (["--from-scratch"], 0, 0, 0),
+])
+def test_cmd_sync_exit_code_counts_failed_baseline_downloads(
+        argv: List[str], baseline_failed: int, update_failed: int, expected: int) -> None:
+    """#445: a failed baseline download must reach the exit code too."""
+    assert run_sync(argv, update_failed, 0, baseline_failed=baseline_failed) == expected
+
+
+def test_cmd_download_baseline_exits_nonzero_on_failed_files() -> None:
+    from bmlibrarian.importers.pubmed_bulk_importer import DownloadCounts
+
+    args = cli.build_parser().parse_args(["download-baseline", "-y"])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer_cls.return_value.download_baseline.return_value = DownloadCounts(5, 1)
+        assert cli.cmd_download_baseline(args) == 1
+        importer_cls.return_value.download_baseline.return_value = DownloadCounts(5, 0)
+        assert cli.cmd_download_baseline(args) == 0
 
 
 def test_cmd_download_updates_exits_nonzero_on_failed_files() -> None:

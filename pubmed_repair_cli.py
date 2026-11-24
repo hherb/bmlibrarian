@@ -279,6 +279,7 @@ def cmd_repair(args) -> int:
     all_repaired = repaired_baseline + repaired_update
 
     # Re-import if requested
+    import_errors = 0
     if args.reimport and all_repaired:
         print(f"\nRe-importing {len(all_repaired)} repaired file(s)...")
 
@@ -293,6 +294,7 @@ def cmd_repair(args) -> int:
         print(f"  Files processed: {stats['files_processed']}")
         print(f"  Articles imported: {stats['total_articles']}")
         print(f"  Errors: {stats['total_errors']}")
+        import_errors = stats['total_errors']
 
     print("\n" + "=" * 70)
     print("Repair Complete")
@@ -302,7 +304,7 @@ def cmd_repair(args) -> int:
     print(f"Failed to repair: {len(all_corrupted) - len(all_repaired)}")
     print("=" * 70)
 
-    return 0 if len(all_repaired) == len(all_corrupted) else 1
+    return 0 if len(all_repaired) == len(all_corrupted) and not import_errors else 1
 
 
 def main() -> int:

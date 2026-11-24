@@ -132,3 +132,13 @@ class TestDownloadAndImportBaseline:
             stats = importer.download_and_import_baseline(cancel_check=lambda: True)
         import_all.assert_not_called()
         assert stats["files_downloaded"] == 0 and stats["total_errors"] == 0
+
+    def test_cancel_after_the_first_download_keeps_its_count(self, tmp_path: Path) -> None:
+        dl = FakeDownloader(["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"])
+        importer = make_importer(tmp_path, dl, FakeTracker())
+        downloaded = tmp_path / "baseline" / "pubmed26n0001.xml.gz"
+        with patch.object(importer, "import_all_files") as import_all:
+            stats = importer.download_and_import_baseline(cancel_check=downloaded.exists)
+        import_all.assert_not_called()
+        assert stats["files_downloaded"] == 1
+        assert not (tmp_path / "baseline" / "pubmed26n0002.xml.gz").exists()

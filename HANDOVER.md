@@ -12,7 +12,8 @@ off new work. Longer-term structural items live in
 
 - **PubMed import fixes #445, #440, #441** (2026-11-25, branch
   `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
-  `download-updates`, `import` and `sync` exit 1 when any file failed;
+  `download-updates`, `import` and `sync` exit 1 when any file failed
+  (`import`/`sync` also when a record could not be parsed);
   `download_baseline`/`download_updates` return
   `DownloadCounts(downloaded, failed)` so sync counts failed downloads too
   (#445). The import profile accepts `1.5GB`/`2 GB`/`100B`, and `apply`
@@ -22,7 +23,12 @@ off new work. Longer-term structural items live in
   `import_all_files('baseline')`; `ImportQueue` and `_import_worker` are
   gone (#441). **Trade-off:** the wizard no longer imports while
   downloading, so a from-scratch baseline takes download + import time
-  instead of overlapping them (one worker, as before). Verified: suite 4955
+  instead of overlapping them (one worker, as before). Review follow-ups:
+  the wizard reports failed downloads/imports instead of "completed
+  successfully" and its completion page shows bulk article counts;
+  `pubmed_repair_cli.py repair --reimport` exits 1 on import errors; a
+  failed ALTER/restart in `apply`, or an unrestorable old state file,
+  raises `ImportProfileError` naming the state file. Verified: suite 4984
   passed, 75 skipped; the new tests fail on the old code (the old wizard
   path hangs). Not run against a live NCBI download or a real server.
 
@@ -466,7 +472,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **4955 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **4984 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

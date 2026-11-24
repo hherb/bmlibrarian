@@ -51,6 +51,7 @@ ALREADY_ACTIVE = "import profile already active"
 APPLIED = "import profile applied"
 RESTORED = "day-to-day profile restored"
 NOTHING_TO_RESTORE = "nothing to restore (no state file)"
+RESTORE_COMMAND = "pubmed_bulk_cli.py profile restore"
 
 Session = Tuple[str, str, int]   # (database, application_name, pid)
 
@@ -206,8 +207,9 @@ class ImportProfile:
 
         Raises:
             ImportProfileError: Without superuser rights, while other sessions
-                are connected (unless ``force``), or when a current value could
-                not be restored afterwards.
+                are connected (unless ``force``), when a current value could
+                not be restored afterwards, or when ALTER SYSTEM or the restart
+                fails (the state file is then kept for ``restore``).
         """
         if self.is_active:
             return ALREADY_ACTIVE
@@ -231,15 +233,34 @@ class ImportProfile:
                  "profile": profile, "restore": plan}
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        self._alter(profile)
+        try:
+            self._alter(profile)
+        except Exception as e:
+            # Some settings may already be changed (or the server is down after the
+            # restart); the state file holds the way back.
+            raise ImportProfileError(
+                f"applying the import profile failed ({e}). The values to restore are in "
+                f"{self.state_file}: run `{RESTORE_COMMAND}`, or if the server does not start, "
+                f"set them back in {self.data_dir / AUTO_CONF_NAME} by hand") from e
         return APPLIED
 
     def restore(self) -> str:
-        """Restore the day-to-day profile recorded in the state file."""
+        """Restore the day-to-day profile recorded in the state file.
+
+        Raises:
+            ImportProfileError: The state file holds a value ``validate_setting``
+                refuses; nothing is changed and the state file is kept.
+        """
         if not self.is_active:
             return NOTHING_TO_RESTORE
         state = json.loads(self.state_file.read_text(encoding="utf-8"))
-        self._alter(state["restore"])
+        try:
+            self._alter(state["restore"])
+        except ValueError as e:
+            # Only a state file written before apply() checked its restore values.
+            raise ImportProfileError(
+                f"{self.state_file} holds a value restore refuses ({e}); set it back in "
+                f"{self.data_dir / AUTO_CONF_NAME} by hand, then delete the state file") from e
         self.state_file.unlink()
         return RESTORED
 

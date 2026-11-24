@@ -32,7 +32,7 @@ Usage:
     importer.download_updates()
 
     # Import downloaded files
-    importer.import_files()
+    importer.import_all_files()
 """
 
 import gzip
@@ -1633,7 +1633,9 @@ class PubMedBulkImporter:
 
         Returns:
             The :meth:`import_all_files` statistics plus ``files_downloaded``;
-            ``total_errors`` includes failed downloads.
+            ``total_errors`` includes failed downloads. When cancelled during
+            the download, only ``files_processed``, ``total_articles``,
+            ``total_errors`` and ``files_downloaded``.
         """
         counts = self.download_baseline(skip_existing, progress_callback, cancel_check)
         if cancel_check and cancel_check():
