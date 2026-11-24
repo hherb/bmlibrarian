@@ -66,14 +66,14 @@ def run_apply(
     """Run ``apply_pending_migrations`` with the database calls mocked.
 
     Returns:
-        (the applied count, or the exception raised; the mocked ``_apply_sql_file``).
+        (the applied count, or the exception raised; the mocked ``_apply_migration``).
     """
     manager = MigrationManager("localhost", "5432", "u", "p", "bmlibrarian_dev")
     with patch.object(MigrationManager, "_create_migrations_table", side_effect=create_side_effect), \
          patch.object(MigrationManager, "_get_applied_migrations",
                       side_effect=applied_side_effect, return_value=[]), \
-         patch.object(MigrationManager, "_apply_sql_file") as apply_sql, \
-         patch.object(MigrationManager, "_record_migration"), \
+         patch.object(MigrationManager, "_migration_lock"), \
+         patch.object(MigrationManager, "_apply_migration", return_value=True) as apply_sql, \
          patch("builtins.print"):
         try:
             result: Any = manager.apply_pending_migrations(migrations_dir)

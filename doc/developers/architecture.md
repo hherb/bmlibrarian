@@ -39,11 +39,13 @@ The central class responsible for all migration operations.
 - `initialize_database()`: Sets up new database with baseline schema
 - `apply_pending_migrations()`: Applies unapplied migrations
 - `_database_exists()`: Checks database existence
-- `_apply_sql_file()`: Executes SQL migration files
+- `_migration_lock()`: Holds the migration lock (session advisory lock) for one run
+- `_apply_migration()`: Executes one migration and records it in the same transaction
 
 **Design Principles:**
 - **Idempotent operations**: Safe to run multiple times
-- **Atomic transactions**: Each migration is a complete unit
+- **Atomic transactions**: A migration's SQL and its record commit together
+- **One process at a time**: Concurrent runs wait for the migration lock
 - **Checksum validation**: Prevents modification of applied migrations
 - **Ordered execution**: Numeric prefixes ensure proper sequencing
 
@@ -120,7 +122,10 @@ graph TD
     C --> D[Check if Applied]
     D --> E{Already Applied?}
     E -->|Yes| F[Skip Migration]
-    E -->|No| G[Begin Transaction]
+    E -->|No| P[Take Migration Lock]
+    P --> Q{Applied Meanwhile?}
+    Q -->|Yes| F
+    Q -->|No| G[Begin Transaction]
     G --> H[Execute SQL]
     H --> I{Success?}
     I -->|Yes| J[Record Migration]
@@ -181,10 +186,30 @@ bmlibrarian migrate init --user username --password password
 
 ### Recovery Mechanisms
 
-**Atomic Transactions:**
-- Each migration runs in a transaction
-- Automatic rollback on failure
-- Database state remains consistent
+**Atomic Transactions (#439):**
+- Each migration's SQL and its `bmlibrarian_migrations` record run in one
+  transaction on one connection, so a failure leaves neither (before, the SQL
+  committed on its own connection and a failed record insert made the
+  migration re-run, which failed for good on a non-idempotent file). A file's
+  own top-level `BEGIN;` / `COMMIT;` lines are dropped; the runner owns the
+  transaction. One connection serves the whole run, so `RESET ALL` follows
+  each file's SQL: the pg_dump baseline empties `search_path` for the
+  session, which would otherwise reach the record insert and later files.
+- One process migrates at a time: the run holds a session advisory lock
+  (`MIGRATION_LOCK_KEY`), polled with `pg_try_advisory_lock` every second (a
+  waiter blocked in a statement would hold a snapshot that `CREATE INDEX
+  CONCURRENTLY` in the holder waits on). Under the lock each pending file is
+  checked again, so a second process starting at the same time skips what
+  the first applied (before, both applied it and the second failed on
+  `UNIQUE(filename)`). With nothing pending, no lock is taken.
+- `CREATE [UNIQUE] INDEX CONCURRENTLY` statements can't run in a transaction;
+  they run after the rest of the file has committed. An INVALID index left by
+  an earlier failed build is dropped first (`IF NOT EXISTS` would skip it),
+  each index must be valid afterwards, and only then is the migration
+  recorded. Such a statement must name its index. The rest of that file runs
+  again on a retry, so it must be idempotent.
+- Tests: `tests/test_migrations.py` (mocked), `tests/test_migrations_live.py`
+  (a scratch database; four concurrent runs, an INVALID index rebuilt).
 
 **Failed auto-migration is fatal (#342):**
 - `DatabaseManager` (auto-migrate on) applies pending migrations when it is

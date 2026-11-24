@@ -1,10 +1,9 @@
 """Unit tests for the migrations module."""
 
 import hashlib
-import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, call, mock_open, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -177,55 +176,51 @@ class TestMigrationManager:
         
         assert result == expected
 
-    @patch.object(MigrationManager, '_get_connection')
-    def test_apply_sql_file(self, mock_get_connection):
-        """Test applying SQL file to database."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        mock_get_connection.return_value.__enter__.return_value = mock_conn
-        
-        sql_content = "CREATE TABLE test (id INT);"
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
-            f.write(sql_content)
-            temp_path = Path(f.name)
-        
-        try:
-            self.manager._apply_sql_file(temp_path)
-            
-            mock_get_connection.assert_called_once_with("testdb")
-            mock_cursor.execute.assert_called_once_with(sql_content)
-            mock_conn.commit.assert_called_once()
-        finally:
-            temp_path.unlink()
+    @staticmethod
+    def fake_conn(recorded: bool) -> MagicMock:
+        """A connection whose "is it recorded?" query answers ``recorded``."""
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = (1,) if recorded else None
+        return conn
 
-    @patch.object(MigrationManager, '_get_connection')
-    def test_record_migration(self, mock_get_connection):
-        """Test recording migration as applied."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        mock_get_connection.return_value.__enter__.return_value = mock_conn
-        
-        self.manager._record_migration("test.sql", "abc123")
-        
-        mock_get_connection.assert_called_once_with("testdb")
-        mock_cursor.execute.assert_called_once_with(
+    def test_apply_migration_runs_sql_and_record_in_one_transaction(self):
+        """SQL and record go through one connection; the file's own BEGIN/COMMIT are dropped."""
+        conn = self.fake_conn(recorded=False)
+        content = "BEGIN;\nCREATE TABLE t (id INT);\nCOMMIT;\n"
+
+        assert self.manager._apply_migration(conn, "001_t.sql", content) is True
+
+        conn.transaction.assert_called_once()
+        executed = [c.args for c in conn.execute.call_args_list]
+        assert executed[1][0].strip() == "CREATE TABLE t (id INT);"
+        assert executed[2] == ("RESET ALL",)
+        assert executed[3] == (
             "INSERT INTO bmlibrarian_migrations (filename, checksum) VALUES (%s, %s)",
-            ("test.sql", "abc123")
+            ("001_t.sql", hashlib.sha256(content.encode("utf-8")).hexdigest()),
         )
-        mock_conn.commit.assert_called_once()
 
-    @patch.object(MigrationManager, '_record_migration')
-    @patch.object(MigrationManager, '_apply_sql_file')
+    def test_apply_migration_skips_one_already_recorded(self):
+        """Another process applied it while this one waited for the lock."""
+        conn = self.fake_conn(recorded=True)
+
+        assert self.manager._apply_migration(conn, "001_t.sql", "CREATE TABLE t (id INT);") is False
+
+        assert conn.execute.call_count == 1  # only the check
+
+    def test_unnamed_concurrent_index_is_refused(self):
+        """An index we can't name can't be checked for validity."""
+        with pytest.raises(MigrationError, match="needs an index name"):
+            self.manager._index_state(MagicMock(), "CREATE INDEX CONCURRENTLY ON t (x);")
+
+    @patch.object(MigrationManager, '_migration_lock')
+    @patch.object(MigrationManager, '_apply_migration', return_value=True)
     @patch.object(MigrationManager, '_create_migrations_table')
     @patch.object(MigrationManager, '_get_applied_migrations')
     @patch.object(MigrationManager, '_create_database')
     @patch.object(MigrationManager, '_database_exists')
-    def test_initialize_database_new_db(self, mock_db_exists, mock_create_db, 
+    def test_initialize_database_new_db(self, mock_db_exists, mock_create_db,
                                        mock_get_applied, mock_create_table,
-                                       mock_apply_sql, mock_record):
+                                       mock_apply, mock_lock):
         """Test initializing database when database doesn't exist."""
         mock_db_exists.return_value = False
         mock_get_applied.return_value = []
@@ -243,10 +238,8 @@ class TestMigrationManager:
             mock_create_db.assert_called_once_with("testdb")
             mock_create_table.assert_called_once()
             mock_get_applied.assert_called_once()
-            mock_apply_sql.assert_called_once_with(baseline_path)
-            
-            expected_checksum = hashlib.sha256(baseline_content.encode('utf-8')).hexdigest()
-            mock_record.assert_called_once_with(baseline_path.name, expected_checksum)
+            lock_conn = mock_lock.return_value.__enter__.return_value
+            mock_apply.assert_called_once_with(lock_conn, baseline_path.name, baseline_content)
             
             # Check print calls
             mock_print.assert_any_call("Checking if database 'testdb' exists...")
@@ -277,12 +270,12 @@ class TestMigrationManager:
         with pytest.raises(FileNotFoundError):
             self.manager.initialize_database(non_existent_path)
 
-    @patch.object(MigrationManager, '_record_migration')
-    @patch.object(MigrationManager, '_apply_sql_file')
+    @patch.object(MigrationManager, '_migration_lock')
+    @patch.object(MigrationManager, '_apply_migration', return_value=True)
     @patch.object(MigrationManager, '_get_applied_migrations')
     @patch.object(MigrationManager, '_create_migrations_table')
     def test_apply_pending_migrations_success(self, mock_create_table, mock_get_applied,
-                                            mock_apply_sql, mock_record):
+                                            mock_apply, mock_lock):
         """Test applying pending migrations successfully."""
         mock_get_applied.return_value = [("001_initial.sql", "abc123")]
         
@@ -306,11 +299,39 @@ class TestMigrationManager:
             mock_get_applied.assert_called_once()
             
             # Should apply migration2 and migration3 (migration1 already applied)
-            expected_calls = [call(migration2), call(migration3)]
-            mock_apply_sql.assert_has_calls(expected_calls)
-            
-            # Should record both new migrations
-            assert mock_record.call_count == 2
+            lock_conn = mock_lock.return_value.__enter__.return_value
+            mock_apply.assert_has_calls([
+                call(lock_conn, "002_new.sql", "-- Migration 2"),
+                call(lock_conn, "003_another.sql", "-- Migration 3"),
+            ])
+            assert mock_apply.call_count == 2
+
+    @patch.object(MigrationManager, '_migration_lock')
+    @patch.object(MigrationManager, '_apply_migration', side_effect=[False, True])
+    @patch.object(MigrationManager, '_get_applied_migrations', return_value=[])
+    @patch.object(MigrationManager, '_create_migrations_table')
+    def test_apply_pending_counts_only_own_applies(self, mock_create_table, mock_get_applied,
+                                                   mock_apply, mock_lock, tmp_path):
+        """A migration another process applied meanwhile is not counted."""
+        (tmp_path / "001_a.sql").write_text("-- a")
+        (tmp_path / "002_b.sql").write_text("-- b")
+
+        with patch('builtins.print') as mock_print:
+            assert self.manager.apply_pending_migrations(tmp_path) == 1
+
+        mock_print.assert_any_call("Already applied by another process: 001_a.sql")
+
+    @patch.object(MigrationManager, '_migration_lock')
+    @patch.object(MigrationManager, '_get_applied_migrations', return_value=[("001_a.sql", "x")])
+    @patch.object(MigrationManager, '_create_migrations_table')
+    def test_nothing_pending_takes_no_lock(self, mock_create_table, mock_get_applied,
+                                           mock_lock, tmp_path):
+        """The usual startup with an up-to-date schema never waits on the lock."""
+        (tmp_path / "001_a.sql").write_text("-- a")
+
+        assert self.manager.apply_pending_migrations(tmp_path, silent=True) == 0
+
+        mock_lock.assert_not_called()
 
     @patch.object(MigrationManager, '_create_migrations_table')
     def test_apply_pending_migrations_no_directory(self, mock_create_table):
@@ -325,14 +346,15 @@ class TestMigrationManager:
             mock_print.assert_any_call(f"Migrations directory does not exist: {non_existent_dir}")
             assert not non_existent_dir.exists()  # missing directory is reported, not created
 
-    @patch.object(MigrationManager, '_apply_sql_file')
+    @patch.object(MigrationManager, '_migration_lock')
+    @patch.object(MigrationManager, '_apply_migration')
     @patch.object(MigrationManager, '_get_applied_migrations')
     @patch.object(MigrationManager, '_create_migrations_table')
     def test_apply_pending_migrations_failure(self, mock_create_table, mock_get_applied,
-                                            mock_apply_sql):
+                                            mock_apply, mock_lock):
         """Test handling migration application failure."""
         mock_get_applied.return_value = []
-        mock_apply_sql.side_effect = Exception("SQL error")
+        mock_apply.side_effect = Exception("SQL error")
         
         with tempfile.TemporaryDirectory() as temp_dir:
             migrations_dir = Path(temp_dir)
