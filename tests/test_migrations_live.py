@@ -7,12 +7,12 @@ it afterwards. Run with ``BMLIBRARIAN_TEST_DB_ENV=<dev env file>``.
 import threading
 import uuid
 from pathlib import Path
-from typing import Iterator, List
+from typing import Iterator, List, Tuple
 
 import psycopg
 import pytest
 
-from bmlibrarian.migrations import MigrationError, MigrationManager
+from bmlibrarian.migrations import MIGRATION_LOCK_KEY, MigrationError, MigrationManager
 
 pytestmark = pytest.mark.requires_database
 
@@ -48,32 +48,62 @@ def recorded(manager: MigrationManager) -> List[str]:
 
 def test_concurrent_runs_apply_each_migration_once(scratch_manager: MigrationManager,
                                                    tmp_path: Path) -> None:
-    """Several processes starting at once: one applies, the others see it applied."""
+    """Runners that all saw both files pending: one applies them, the others skip them."""
     (tmp_path / "001_table.sql").write_text(CREATE_TABLE.replace("(1), (1)", "(1), (2)"))
     (tmp_path / "002_index.sql").write_text(UNIQUE_INDEX)
     counts: List[int] = []
     errors: List[BaseException] = []
-    start = threading.Barrier(THREADS)
+    # Every runner has read the applied set (nothing yet) before the lock is let go.
+    read_pending = threading.Barrier(THREADS + 1)
 
     def run() -> None:
         """Apply the directory with a manager of its own (its own connections)."""
         own = MigrationManager(scratch_manager.host, scratch_manager.port, scratch_manager.user,
                                scratch_manager.password, scratch_manager.database)
-        start.wait()
+        read = own._get_applied_migrations
+
+        def read_then_wait() -> List[Tuple[str, str]]:
+            """Read the applied set, then wait until every runner has."""
+            applied = read()
+            read_pending.wait()
+            return applied
+
+        own._get_applied_migrations = read_then_wait  # type: ignore[method-assign]
         try:
             counts.append(own.apply_pending_migrations(tmp_path, silent=True))
         except BaseException as e:  # collected so the main thread can assert
             errors.append(e)
 
     threads = [threading.Thread(target=run) for _ in range(THREADS)]
-    for t in threads:
-        t.start()
+    with scratch_manager._get_connection(scratch_manager.database) as holder:
+        holder.autocommit = True
+        holder.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
+        for t in threads:
+            t.start()
+        read_pending.wait()
+    # The holder's connection is closed: the lock is free and the runners contend for it.
     for t in threads:
         t.join()
 
     assert errors == []
-    assert sum(counts) == 2
+    assert sorted(counts) == [0] * (THREADS - 1) + [2]
     assert recorded(scratch_manager) == ["001_table.sql", "002_index.sql"]
+
+
+def test_failed_record_rolls_back_the_migration(scratch_manager: MigrationManager,
+                                                tmp_path: Path) -> None:
+    """If recording fails, the migration's SQL is rolled back with it (#439)."""
+    # The file records itself, so the runner's own record hits the UNIQUE filename.
+    (tmp_path / "001_atomic.sql").write_text(
+        "CREATE TABLE atomic_t (x INT);\n"
+        "INSERT INTO bmlibrarian_migrations (filename, checksum) VALUES ('001_atomic.sql', 'x');\n")
+
+    with pytest.raises(MigrationError, match="001_atomic.sql"):
+        scratch_manager.apply_pending_migrations(tmp_path, silent=True)
+
+    assert recorded(scratch_manager) == []
+    with scratch_manager._get_connection(scratch_manager.database) as conn:
+        assert conn.execute("SELECT to_regclass('atomic_t')").fetchone() == (None,)
 
 
 def test_invalid_concurrent_index_is_rebuilt_before_recording(scratch_manager: MigrationManager,

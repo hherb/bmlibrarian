@@ -122,13 +122,31 @@ Returns list of applied migrations with their checksums.
 
 Calculates SHA-256 checksum of migration content.
 
-##### `_apply_sql_file(sql_file_path: Path) -> None`
+##### `_migration_lock(report=logger.warning) -> Iterator[psycopg.Connection]`
 
-Executes a SQL file against the database.
+Context manager: holds the session advisory lock `MIGRATION_LOCK_KEY` on an
+autocommit connection and yields it. Polls every
+`MIGRATION_LOCK_POLL_SECONDS`, calls `report` once while waiting, and raises
+`MigrationError` if the connection fails or the lock stays held for
+`MIGRATION_LOCK_TIMEOUT_SECONDS`.
 
-##### `_record_migration(filename: str, checksum: str) -> None`
+##### `_apply_migration(conn, filename: str, content: str) -> bool`
 
-Records a migration as applied in the tracking table.
+Applies one migration and records it in the same transaction. A file with
+`CREATE INDEX CONCURRENTLY` commits its other SQL first, builds the indexes,
+then records. Returns `False` if another process had already recorded it.
+
+##### `_is_recorded(conn, filename: str) -> bool`
+
+##### `_record_migration(conn, filename: str, checksum: str) -> None`
+
+Read or insert the file's row in `bmlibrarian_migrations`, on `conn`.
+
+##### `concurrent_index_target(statement: str) -> Tuple[str, str]`
+
+Module function: the index name (folded as PostgreSQL stores it) and table of
+a `CREATE INDEX CONCURRENTLY` statement; raises `MigrationError` if it names
+no index.
 
 ## Module: `bmlibrarian.app`
 

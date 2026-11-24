@@ -50,18 +50,21 @@ Migrations are applied in numeric order based on their filename prefix. Each mig
 2. **Applied**: Executed against the database
 3. **Recorded**: Added to the tracking table with a checksum, in the same
    transaction as step 2, so a migration is either applied and recorded or
-   neither
+   neither (except for `CREATE INDEX CONCURRENTLY`, see below)
 
 Only one program applies migrations at a time. If you start two BMLibrarian
 programs at once after an update (for example the Qt app and
 `pubmed_bulk_cli.py import`), the second waits until the first has finished
-and then skips what it applied ("Waiting for another process to finish
-applying migrations" in the log).
+and then skips what it applied (it prints "Waiting for another process to
+finish applying migrations"). After an hour of waiting it gives up with an
+error rather than start on an outdated schema.
 
 `CREATE INDEX CONCURRENTLY` cannot run inside a transaction, so such
 statements run after the rest of the file. The migration is recorded only
 once every one of these indexes is built and valid; a failed build is cleaned
-up and retried on the next start.
+up and retried on the next start. The rest of such a file is already
+committed by then and runs again on the retry, so it must be idempotent. Each
+such statement must name its index.
 
 ## Creating Migrations
 
@@ -138,7 +141,9 @@ ALTER TABLE papers ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'publishe
 
 **Atomic**: Each migration should be a complete unit. The migration
 system runs each file in one transaction, so `BEGIN;` / `COMMIT;` are not
-needed (top-level `BEGIN;` and `COMMIT;` lines are ignored).
+needed: a line that is only `BEGIN;` or `COMMIT;` is ignored. Don't use
+other transaction control (`START TRANSACTION`, `ROLLBACK`, `END;`); it would
+end the runner's transaction early.
 ```sql
 -- Good: Related changes in one migration
 CREATE TABLE IF NOT EXISTS paper_categories (

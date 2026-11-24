@@ -17,19 +17,23 @@ off new work. Longer-term structural items live in
   polled with `pg_try_advisory_lock`) and re-checking each pending file
   under it, so two processes starting at once no longer both apply a
   migration (the second used to fail on `UNIQUE(filename)`), and a failed
-  record no longer leaves an applied-but-unrecorded file. A file's top-level
-  `BEGIN;`/`COMMIT;` lines are dropped, `RESET ALL` follows each file (the
-  pg_dump baseline empties `search_path` for the session). `CREATE [UNIQUE]
-  INDEX CONCURRENTLY` runs afterwards: an INVALID leftover is dropped first,
-  and the migration is recorded only once its indexes are valid. No lock is
-  taken when nothing is pending. Verified: `tests/test_migrations_live.py`
-  (scratch databases on PG18 :5532; four concurrent runs, INVALID index
-  rebuilt, settings leak) fails on the old runner and passes; baseline plus
-  all 35 migrations applied to a fresh scratch database, a second run applied
-  none, HNSW index valid. Two first-ever runs racing on `CREATE TABLE IF NOT
-  EXISTS bmlibrarian_migrations` are covered by the existing fall-through
-  (the loser's create fails once the winner commits; it then reads the
-  table).
+  record rolls back the file's SQL. The exception is a file with
+  `CREATE INDEX CONCURRENTLY`: its other SQL commits first and re-runs on a
+  retry. Lines that are only `BEGIN;`/`COMMIT;` are dropped, and
+  `RESET ALL` follows each file (the pg_dump baseline empties `search_path`
+  for the session). `CREATE [UNIQUE] INDEX CONCURRENTLY` runs afterwards:
+  its index must be named (checked before any of the file runs), an INVALID
+  leftover is dropped first, and the migration is recorded only once its
+  indexes are valid. No lock is taken when nothing is pending; failing to
+  take it (lost connection, or held for over an hour) is a `MigrationError`,
+  so startup stops. Verified: `tests/test_migrations_live.py` (scratch
+  databases on PG18 :5532; four runners contending for the lock, a failed
+  record rolled back, INVALID index rebuilt, settings leak) passes; baseline
+  plus all 35 migrations applied to a fresh scratch database, a second run
+  applied none, HNSW index valid. Two first-ever runs racing on
+  `CREATE TABLE IF NOT EXISTS bmlibrarian_migrations` are covered by the
+  existing fall-through (the loser's create fails once the winner commits;
+  it then reads the table).
 
 - **Investor demo, 2026-11-23**: held, went fine, no follow-ups. Runbook
   `doc/users/investor_demo_runbook.md`; the prepared library (`~/.bml-demo`,
@@ -450,7 +454,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-24:
-  **4875 passed, 74 skipped** in about 2.5 min (hermetic since #334;
+  **4922 passed, 75 skipped** in about 4 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

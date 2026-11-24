@@ -7,7 +7,7 @@ import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Tuple, Optional
+from typing import Callable, Iterator, List, Tuple, Optional
 
 import psycopg
 
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # purpose; the Rust bml-db library uses its own database).
 MIGRATION_LOCK_KEY = 0x626D6C5F6D696772  # "bml_migr"
 MIGRATION_LOCK_POLL_SECONDS = 1.0
+# How long to wait for another process's migrations (a CONCURRENTLY index on a
+# large table can take a while) before giving up with a MigrationError.
+MIGRATION_LOCK_TIMEOUT_SECONDS = 3600.0
 
 # A whole line that is just BEGIN; or COMMIT; (a file managing its own transaction).
 OWN_TRANSACTION_LINE = re.compile(r"^[ \t]*(BEGIN|COMMIT)[ \t]*;[ \t]*$", re.IGNORECASE | re.MULTILINE)
@@ -30,11 +33,33 @@ CONCURRENT_INDEX_NAME = re.compile(
 )
 
 
+def concurrent_index_target(statement: str) -> Tuple[str, str]:
+    """The index and table a ``CREATE INDEX CONCURRENTLY`` statement names.
+
+    Returns:
+        (the index name as stored: unquoted names folded to lower case, quoted
+        ones verbatim; the table as written, for ``to_regclass``).
+
+    Raises:
+        MigrationError: The statement names no index, so it can't be checked.
+    """
+    match = CONCURRENT_INDEX_NAME.match(statement.strip())
+    if match is None:
+        raise MigrationError(
+            f"CREATE INDEX CONCURRENTLY needs an index name to be checked: {statement[:80]}"
+        )
+    name, table = match.group("name", "table")
+    # shortcut: a "" escape inside a quoted name is not undone; no migration uses one.
+    name = name[1:-1] if name.startswith('"') else name.lower()
+    return name, table
+
+
 class MigrationError(RuntimeError):
     """A pending migration could not be read, applied or recorded.
 
-    The schema is outdated, or (if only the record failed) the migration will
-    be re-run; either way the app must not start as if it were current.
+    The schema is outdated, or (for a file with ``CREATE INDEX CONCURRENTLY``)
+    its committed SQL will run again on a retry; either way the app must not
+    start as if it were current.
     """
 
 
@@ -174,7 +199,9 @@ class MigrationManager:
         return modified_sql, concurrent_statements
 
     @contextmanager
-    def _migration_lock(self) -> Iterator[psycopg.Connection]:
+    def _migration_lock(
+        self, report: Callable[[str], None] = logger.warning
+    ) -> Iterator[psycopg.Connection]:
         """Hold the migration lock for this database; yield its connection.
 
         One process applies migrations at a time. The lock is a session
@@ -182,21 +209,43 @@ class MigrationManager:
         It is polled with ``pg_try_advisory_lock`` rather than waited for:
         a waiter blocked inside a statement keeps a snapshot, which
         ``CREATE INDEX CONCURRENTLY`` in the holder would wait on in turn.
+
+        Args:
+            report: Told once if the lock is held elsewhere and this waits.
+
+        Raises:
+            MigrationError: The lock could not be taken (connection failed,
+                or another process held it for ``MIGRATION_LOCK_TIMEOUT_SECONDS``),
+                so pending migrations stay unapplied.
         """
-        conn = self._get_connection(self.database)
+        conn: Optional[psycopg.Connection] = None
         try:
-            conn.autocommit = True
-            announced = False
-            while conn.execute(
-                "SELECT pg_try_advisory_lock(%s)", (MIGRATION_LOCK_KEY,)
-            ).fetchone() != (True,):
-                if not announced:
-                    logger.info("Waiting for another process to finish applying migrations")
-                    announced = True
-                time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+            try:
+                conn = self._get_connection(self.database)
+                conn.autocommit = True
+                deadline = time.monotonic() + MIGRATION_LOCK_TIMEOUT_SECONDS
+                announced = False
+                while conn.execute(
+                    "SELECT pg_try_advisory_lock(%s)", (MIGRATION_LOCK_KEY,)
+                ).fetchone() != (True,):
+                    if time.monotonic() >= deadline:
+                        raise MigrationError(
+                            "Another process held the migration lock for over "
+                            f"{MIGRATION_LOCK_TIMEOUT_SECONDS:.0f} s; pending migrations were not applied"
+                        )
+                    if not announced:
+                        report(
+                            "Waiting for another process to finish applying migrations "
+                            f"(giving up after {MIGRATION_LOCK_TIMEOUT_SECONDS:.0f} s)"
+                        )
+                        announced = True
+                    time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+            except psycopg.Error as e:
+                raise MigrationError(f"Could not take the migration lock: {e}") from e
             yield conn
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     @staticmethod
     def _is_recorded(conn: psycopg.Connection, filename: str) -> bool:
@@ -214,24 +263,13 @@ class MigrationManager:
         )
 
     @staticmethod
-    def _index_state(conn: psycopg.Connection, statement: str) -> Tuple[psycopg.sql.Identifier, Optional[bool]]:
-        """Find the index a ``CREATE INDEX CONCURRENTLY`` statement builds.
+    def _index_state(conn: psycopg.Connection, name: str, table: str) -> Tuple[psycopg.sql.Identifier, Optional[bool]]:
+        """Find index ``name`` on ``table`` (as from ``concurrent_index_target``).
 
         Returns:
             (the index, schema-qualified when it exists; ``True``/``False`` for
-            valid/invalid, ``None`` if it does not exist).
-
-        Raises:
-            MigrationError: The statement names no index, so it can't be checked.
+            valid/invalid, ``None`` if it does not exist on that table).
         """
-        match = CONCURRENT_INDEX_NAME.match(statement.strip())
-        if match is None:
-            raise MigrationError(
-                f"CREATE INDEX CONCURRENTLY needs an index name to be checked: {statement[:80]}"
-            )
-        # shortcut: quoted identifiers are compared without their quotes; fine for
-        # the lower-case names our migrations use.
-        name, table = (part.replace('"', '') for part in match.group("name", "table"))
         row = conn.execute(
             "SELECT n.nspname, c.relname, i.indisvalid FROM pg_index i"
             " JOIN pg_class c ON c.oid = i.indexrelid"
@@ -266,6 +304,8 @@ class MigrationManager:
         main_sql, concurrent_indexes = self._extract_concurrent_indexes(content)
         # The runner owns the transaction; a file's own BEGIN/COMMIT would end it early.
         main_sql = OWN_TRANSACTION_LINE.sub("", main_sql)
+        # Before anything runs: an index we can't name can't be checked afterwards.
+        targets = [(stmt, *concurrent_index_target(stmt)) for stmt in concurrent_indexes]
 
         with conn.transaction():
             if self._is_recorded(conn, filename):
@@ -280,18 +320,21 @@ class MigrationManager:
                 return True
 
         logger.info(f"Executing {len(concurrent_indexes)} CONCURRENT index statement(s) outside transaction")
-        for idx_stmt in concurrent_indexes:
-            index, valid = self._index_state(conn, idx_stmt)
+        for idx_stmt, name, table in targets:
+            index, valid = self._index_state(conn, name, table)
             if valid is False:
-                logger.info(f"Dropping invalid index {index.as_string(conn)} left by an earlier failed build")
+                logger.info(f"Dropping invalid index {name} left by an earlier failed build")
                 conn.execute(psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(index))
             logger.info(f"Creating concurrent index: {idx_stmt[:80]}...")
             conn.execute(idx_stmt)
-            index, valid = self._index_state(conn, idx_stmt)
-            if not valid:
+            _, valid = self._index_state(conn, name, table)
+            if valid is None:
                 raise MigrationError(
-                    f"Index {index.as_string(conn)} is not valid after CREATE INDEX CONCURRENTLY"
+                    f"Index {name} does not exist on {table} after CREATE INDEX CONCURRENTLY"
+                    " (IF NOT EXISTS skipped it for a same-named index elsewhere?)"
                 )
+            if not valid:
+                raise MigrationError(f"Index {name} is not valid after CREATE INDEX CONCURRENTLY")
 
         with conn.transaction():
             self._record_migration(conn, filename, checksum)
@@ -404,7 +447,7 @@ class MigrationManager:
         print("Applying baseline schema...")
         with open(baseline_schema_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        with self._migration_lock() as conn:
+        with self._migration_lock(print) as conn:
             if not self._apply_migration(conn, baseline_filename, content):
                 print("Baseline schema was applied by another process meanwhile.")
                 return
@@ -507,7 +550,7 @@ class MigrationManager:
         if not pending:
             return 0
         applied_count = 0
-        with self._migration_lock() as conn:
+        with self._migration_lock(logger.warning if silent else print) as conn:
             for migration_file in pending:
                 msg = f"Applying migration: {migration_file.name}"
                 if silent:
