@@ -48,7 +48,23 @@ Migrations are applied in numeric order based on their filename prefix. Each mig
 
 1. **Checked**: Verified that it hasn't been applied before
 2. **Applied**: Executed against the database
-3. **Recorded**: Added to the tracking table with a checksum
+3. **Recorded**: Added to the tracking table with a checksum, in the same
+   transaction as step 2, so a migration is either applied and recorded or
+   neither (except for `CREATE INDEX CONCURRENTLY`, see below)
+
+Only one program applies migrations at a time. If you start two BMLibrarian
+programs at once after an update (for example the Qt app and
+`pubmed_bulk_cli.py import`), the second waits until the first has finished
+and then skips what it applied (it prints "Waiting for another process to
+finish applying migrations"). After an hour of waiting it gives up with an
+error rather than start on an outdated schema.
+
+`CREATE INDEX CONCURRENTLY` cannot run inside a transaction, so such
+statements run after the rest of the file. The migration is recorded only
+once every one of these indexes is built and valid; a failed build is cleaned
+up and retried on the next start. The rest of such a file is already
+committed by then and runs again on the retry, so it must be idempotent. Each
+such statement must name its index.
 
 ## Creating Migrations
 
@@ -123,16 +139,18 @@ ALTER TABLE papers ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'publishe
 -- ALTER TABLE papers DROP COLUMN old_column;
 ```
 
-**Atomic**: Each migration should be a complete unit
+**Atomic**: Each migration should be a complete unit. The migration
+system runs each file in one transaction, so `BEGIN;` / `COMMIT;` are not
+needed: a line that is only `BEGIN;` or `COMMIT;` is ignored. Don't use
+other transaction control (`START TRANSACTION`, `ROLLBACK`, `END;`); it would
+end the runner's transaction early.
 ```sql
 -- Good: Related changes in one migration
-BEGIN;
-CREATE TABLE paper_categories (
+CREATE TABLE IF NOT EXISTS paper_categories (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE
 );
-ALTER TABLE papers ADD COLUMN category_id INTEGER REFERENCES paper_categories(id);
-COMMIT;
+ALTER TABLE papers ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES paper_categories(id);
 ```
 
 ### 3. Testing Migrations
@@ -194,7 +212,7 @@ If a migration fails:
 
 1. **Check the error message** for specific SQL issues
 2. **Fix the migration file** (you may need to increment the number)
-3. **Remove the failed migration record** from `bmlibrarian_migrations` if it was partially applied
+3. A failed migration is not recorded, so there is no record to remove
 4. **Re-run the migration**
 
 ### Migration Already Applied

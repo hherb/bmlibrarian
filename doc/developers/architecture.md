@@ -39,12 +39,15 @@ The central class responsible for all migration operations.
 - `initialize_database()`: Sets up new database with baseline schema
 - `apply_pending_migrations()`: Applies unapplied migrations
 - `_database_exists()`: Checks database existence
-- `_apply_sql_file()`: Executes SQL migration files
+- `_migration_lock()`: Holds the migration lock (session advisory lock) for one run
+- `_apply_migration()`: Executes one migration and records it in the same transaction
 
 **Design Principles:**
 - **Idempotent operations**: Safe to run multiple times
-- **Atomic transactions**: Each migration is a complete unit
-- **Checksum validation**: Prevents modification of applied migrations
+- **Atomic transactions**: A migration's SQL and its record commit together
+- **One process at a time**: Concurrent runs wait for the migration lock
+- **Checksums**: Each applied migration's SHA-256 is recorded (not yet
+  compared on later runs)
 - **Ordered execution**: Numeric prefixes ensure proper sequencing
 
 ### 2. CLI Interface (`src/bmlibrarian/cli.py`)
@@ -115,19 +118,26 @@ The baseline schema includes:
 
 ```mermaid
 graph TD
-    A[Migration Created] --> B[File Discovered]
-    B --> C[Checksum Calculated]
-    C --> D[Check if Applied]
-    D --> E{Already Applied?}
-    E -->|Yes| F[Skip Migration]
-    E -->|No| G[Begin Transaction]
-    G --> H[Execute SQL]
+    A[Migration Created] --> B[Files Discovered]
+    B --> D[Read Applied Set]
+    D --> E{Any Pending?}
+    E -->|No| M[Complete]
+    E -->|Yes| P[Take Migration Lock, once per run]
+    P --> G[Next Pending File: Begin Transaction]
+    G --> Q{Applied Meanwhile?}
+    Q -->|Yes| F[Skip File]
+    Q -->|No| H[Execute SQL]
     H --> I{Success?}
-    I -->|Yes| J[Record Migration]
     I -->|No| K[Rollback & Error]
-    J --> L[Commit Transaction]
-    F --> M[Complete]
-    L --> M
+    I -->|Yes| C{CONCURRENTLY Indexes?}
+    C -->|No| J[Record and Commit]
+    C -->|Yes| R[Commit, Build Indexes, Check Valid]
+    R --> S[Record and Commit]
+    F --> T{More Files?}
+    J --> T
+    S --> T
+    T -->|Yes| G
+    T -->|No| M
     K --> N[Exit with Error]
 ```
 
@@ -181,10 +191,35 @@ bmlibrarian migrate init --user username --password password
 
 ### Recovery Mechanisms
 
-**Atomic Transactions:**
-- Each migration runs in a transaction
-- Automatic rollback on failure
-- Database state remains consistent
+**Atomic Transactions (#439):**
+- Each migration's SQL and its `bmlibrarian_migrations` record run in one
+  transaction on one connection, so a failure leaves neither (before, the SQL
+  committed on its own connection and a failed record insert made the
+  migration re-run, which failed for good on a non-idempotent file). Any line
+  that is only `BEGIN;` or `COMMIT;` is dropped; the runner owns the
+  transaction. One connection serves the whole run, so `RESET ALL` follows
+  each file's SQL: the pg_dump baseline empties `search_path` for the
+  session, which would otherwise reach the record insert and later files.
+- One process migrates at a time: the run holds a session advisory lock
+  (`MIGRATION_LOCK_KEY`), polled with `pg_try_advisory_lock` every second (a
+  waiter blocked in a statement would hold a snapshot that `CREATE INDEX
+  CONCURRENTLY` in the holder waits on). Under the lock each pending file is
+  checked again, so a second process starting at the same time skips what
+  the first applied (before, both applied it and the second failed on
+  `UNIQUE(filename)`). With nothing pending, no lock is taken. A failure to
+  take the lock (lost connection, or held for
+  `MIGRATION_LOCK_TIMEOUT_SECONDS`) is a `MigrationError`, so startup stops
+  instead of carrying on with pending migrations.
+- `CREATE [UNIQUE] INDEX CONCURRENTLY` statements can't run in a transaction;
+  they run after the rest of the file has committed. An INVALID index left by
+  an earlier failed build is dropped first (`IF NOT EXISTS` would skip it),
+  each index must be valid afterwards, and only then is the migration
+  recorded. Such a statement must name its index, checked before any of the
+  file runs. The rest of that file runs again on a retry, so it must be
+  idempotent.
+- Tests: `tests/test_migrations.py` (mocked), `tests/test_migrations_live.py`
+  (a scratch database; four contending runs, a failed record rolling back,
+  an INVALID index rebuilt).
 
 **Failed auto-migration is fatal (#342):**
 - `DatabaseManager` (auto-migrate on) applies pending migrations when it is

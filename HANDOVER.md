@@ -10,6 +10,39 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Migration runner: one transaction, one process at a time, #439**
+  (2026-11-24, branch `fix/439-migration-lock`). `MigrationManager` runs each
+  migration's SQL and its `bmlibrarian_migrations` record in one transaction
+  on one connection, holding a session advisory lock (`MIGRATION_LOCK_KEY`,
+  polled with `pg_try_advisory_lock`) and re-checking each pending file
+  under it, so two processes starting at once no longer both apply a
+  migration (the second used to fail on `UNIQUE(filename)`), and a failed
+  record rolls back the file's SQL. The exception is a file with
+  `CREATE INDEX CONCURRENTLY`: its other SQL commits first and re-runs on a
+  retry. Lines that are only `BEGIN;`/`COMMIT;` are dropped, and
+  `RESET ALL` follows each file (the pg_dump baseline empties `search_path`
+  for the session). `CREATE [UNIQUE] INDEX CONCURRENTLY` runs afterwards:
+  its index must be named (checked before any of the file runs), an INVALID
+  leftover is dropped first, and the migration is recorded only once its
+  indexes are valid. No lock is taken when nothing is pending; failing to
+  take it (lost connection, or held for over an hour) is a `MigrationError`,
+  so startup stops. Verified: `tests/test_migrations_live.py` (scratch
+  databases on PG18 :5532; four runners contending for the lock, a failed
+  record rolled back, INVALID index rebuilt, settings leak) passes; baseline
+  plus all 35 migrations applied to a fresh scratch database, a second run
+  applied none, HNSW index valid. Two first-ever runs racing on
+  `CREATE TABLE IF NOT EXISTS bmlibrarian_migrations` are covered by the
+  existing fall-through (the loser's create fails once the winner commits;
+  it then reads the table).
+
+- **Investor demo, 2026-11-23**: held, went fine, no follow-ups. Runbook
+  `doc/users/investor_demo_runbook.md`; the prepared library (`~/.bml-demo`,
+  `~/BMLibrarian-demo`, server :5418) is still being built by the runbook's
+  retry loop (log `~/.bml-demo/build.log`). Spec and plan:
+  `docs/superpowers/specs/2026-11-15-investor-demo-europepmc-design.md`,
+  `docs/superpowers/plans/2026-11-15-investor-demo.md`. Open from that work:
+  #469 (topic rounds re-fetch unsettled days), #467 (DMG login item).
+
 - **Signed, notarized macOS DMG of the Tauri app** (PR #466, merged
   2026-11-21).
   `scripts/build_bmlibrarianV2_installer.sh [--unsigned]` ships `bml` as an
@@ -332,61 +365,6 @@ The 2026-07-19 review's imminent P1 items are done or deferred to
 ROADMAP. Candidates, in rough order of
 value — pick one, or pull an item from ROADMAP.md:
 
-- **Investor demo (current focus, meeting 2026-11-23)**: spec
-  `docs/superpowers/specs/2026-11-15-investor-demo-europepmc-design.md`,
-  plan `docs/superpowers/plans/2026-11-15-investor-demo.md`. PR #459
-  (Europe PMC topic libraries, `bml search`, the Tauri app) merged
-  2026-11-16. It replaces the MECA route: both AWS accounts are
-  region-locked "projects" that cannot read us-east-1 S3. **Left: the
-  owner's rehearsal** (plan Task 16, by 2026-11-22), following
-  `doc/users/investor_demo_runbook.md` and its rehearsal checks.
-  - **Measured 2026-11-15** (demo Mac, Europe PMC from Australia, topic
-    "Depression & anxiety", trials and reviews 2021–2026, 8,372 papers): the
-    paper-details search takes ~3.5 s per day (2,140 days, ~0.9 s per paper).
-    Full text came back as JATS for 46 of 46 papers, ~6 s each. Each paper
-    makes ~93 passages, embedded at ~30 passages/s (~3.1 s per paper). That
-    is ~10 s per paper in all, **~23 h for the whole topic**. Disk: ~0.2 MB
-    of documents and ~1 MB of database per paper.
-  - The prepared library: config `~/.bml-demo`, library `~/BMLibrarian-demo`,
-    server on :5418, no login items, schedule manual. Built detached
-    (`nohup caffeinate -i ~/.bml-demo-bin/bml --config-dir ~/.bml-demo
-    library update`, log `~/.bml-demo/build.log`); if it stops, run the same
-    command again; it resumes. It stopped on 2026-11-16 15:43 when the
-    network dropped (4,954 papers, all indexed, 4,883 JATS, 45 failed days
-    back to 2023-10) and was resumed on 2026-11-17 08:31 AEST; a DNS drop-out
-    stopped it again minutes later and it was restarted. It stopped again on
-    2026-11-17 11:13 (no network) and was not restarted: on 2026-11-22 it
-    held 5,229 papers, all indexed (461,504 chunks), 5,203 JATS, 36 metadata
-    days to fetch again. On 2026-11-22 09:28 it was restarted with a `bml`
-    rebuilt from master (`a7ac0ac`; the 2026-11-17 binary is kept as
-    `bml.2026-11-17`), and from 09:35 in the retry loop now in the runbook.
-    Europe PMC took 6–15 s per request that morning, sometimes over 45 s, and
-    two no-answers in a row stopped a bare run after 3 minutes (log
-    `~/.bml-demo/build.log`). That first loop retried only exit 4, but the
-    failed days 2026-11-01/02 make every run exit 1, so it ended at 13:06
-    with 5,335 papers; each run also restarts at the newest week and stalls
-    in full text (Europe PMC full text answering 500/503), leaving the days
-    before ~mid-2023 unwalked. From 21:35 a `--skip fulltext` pass walks
-    them, then the loop (retrying until exit 0 or 2) runs. Under the new walk
-    2026-11-01/02 fail the 50% floor against counts stored by the old walk,
-    so they show as failed days for up to 33 days (bmlib #793).
-  - `~/.bml-demo-bin/bml` was rebuilt from master on 2026-11-17 (release, at
-    `d4403f6`: bmlib `6465096`, first-index-day walk, `library status`
-    counting the topic's days); the 2026-11-15 binary is kept beside it as
-    `bml.2026-11-15`. The day ledger keeps the days completed under the old
-    walk (bmlib #793, query-blind ledger).
-  - **Demo prep done 2026-11-22** (no owner needed): `rust/target/release`
-    `bml` + `bml-app` rebuilt together from `a7ac0ac` (runbook step 2); the
-    six runbook questions return on-topic trials and reviews in 3–6 s each
-    from the CLI; Ollama answers with both approved models. The leftover live
-    install from a 2026-11-18 DMG test (setup run from the mounted DMG,
-    stopped before the search model; its login item pointed at
-    `/Volumes/BMLibrarian/...`, now #467) was removed per the runbook's
-    "Afterwards", and `~/.bmlibrarian/models` (the GGUF was missing) and
-    `pgdist` are pre-copied (step 4). **Still the owner's:** hotspot test
-    (step 6) and the GUI rehearsal checks (step 7).
-  - #460 (PR #459 review follow-ups) is closed by `chore/460-leftovers`
-    (above).
 - **Rust installer**, design
   `docs/superpowers/specs/2026-11-11-installer-walking-skeleton-design.md`:
   pieces 1 (pgdist), 2 (`bml-db`) and 3 (library pipeline) are done.
@@ -427,10 +405,9 @@ value — pick one, or pull an item from ROADMAP.md:
   bml-library: #430, #433.
 
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #435, #436,
-  #437, #443, #447, #448, #452 fixed). Installer: #451 (setup replaces
+  #437, #439, #443, #447, #448, #452 fixed). Installer: #451 (setup replaces
   another config folder's login entry), #453 (rust.yml permissions,
-  SHA-pinned checkout). Data loss: #439 (MigrationManager commit/lock).
-  Security: #434 (session cookies sent to any host), #450 (token files
+  SHA-pinned checkout). Security: #434 (session cookies sent to any host), #450 (token files
   restricted after writing), #449 (PBKDF2 iteration count).
   Broken: #441, #445, #446, #438, #440, #442, #444.
 
@@ -476,8 +453,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-15:
-  **4872 passed, 71 skipped** in about 3.5 min (hermetic since #334;
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-24:
+  **4922 passed, 75 skipped** in about 4 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
