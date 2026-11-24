@@ -5,9 +5,13 @@ which protects every tar/zip importer against path-traversal ("zip slip")
 attacks. These tests are hermetic — no filesystem, network, or DB access.
 """
 
+import os
+import stat
+from unittest.mock import patch
+
 import pytest
 
-from bmlibrarian.utils.path_utils import is_safe_archive_member
+from bmlibrarian.utils.path_utils import is_safe_archive_member, write_private_text
 
 
 class TestIsSafeArchiveMember:
@@ -59,3 +63,52 @@ class TestIsSafeArchiveMember:
         with caplog.at_level("WARNING"):
             assert is_safe_archive_member("../evil") is False
         assert any("traversal" in rec.message.lower() for rec in caplog.records)
+
+
+def _mode(path) -> int:
+    """Return the permission bits of ``path``."""
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+class TestWritePrivateText:
+    """write_private_text never leaves a secret readable by others (#450)."""
+
+    def test_new_file_is_0600_even_with_open_umask(self, tmp_path) -> None:
+        """A new file is created 0600, whatever the umask."""
+        target = tmp_path / "token"
+        old = os.umask(0)
+        try:
+            write_private_text(target, "secret")
+        finally:
+            os.umask(old)
+        assert target.read_text() == "secret"
+        assert _mode(target) == 0o600
+
+    def test_existing_readable_file_is_narrowed_and_replaced(self, tmp_path) -> None:
+        """A pre-existing 0644 file is narrowed to 0600 and its content replaced."""
+        target = tmp_path / ".env"
+        target.write_text("old content that is longer")
+        target.chmod(0o644)
+        write_private_text(target, "new")
+        assert target.read_text() == "new"
+        assert _mode(target) == 0o600
+
+    def test_append_keeps_content(self, tmp_path) -> None:
+        """append=True adds to the end and still narrows the mode."""
+        target = tmp_path / ".env"
+        target.write_text("A=1\n")
+        target.chmod(0o644)
+        write_private_text(target, "B=2\n", append=True)
+        assert target.read_text() == "A=1\nB=2\n"
+        assert _mode(target) == 0o600
+
+    def test_failed_chmod_raises_before_writing(self, tmp_path) -> None:
+        """If the mode cannot be narrowed, nothing is written and OSError propagates."""
+        target = tmp_path / ".env"
+        target.write_text("old")
+        target.chmod(0o644)
+        with patch("bmlibrarian.utils.path_utils.os.fchmod", side_effect=OSError("exFAT")):
+            with pytest.raises(OSError):
+                write_private_text(target, "secret")
+        assert target.read_text() == "old"

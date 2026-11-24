@@ -20,12 +20,12 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 
+from ....utils.path_utils import write_private_text
 from ..resources.styles.dpi_scale import get_font_scale
 from .utils import (
     find_project_root,
     create_frame_stylesheet,
     create_muted_label_stylesheet,
-    ENV_FILE_PERMISSIONS,
 )
 from .constants import COLOR_MUTED, FRAME_NOTE_BG, FRAME_NOTE_BORDER
 
@@ -206,8 +206,7 @@ class APIKeysPage(QWizardPage):
                 # Check if API keys section already exists
                 if "# Optional API Keys" not in existing_content:
                     # Append to file
-                    with open(env_path, "a") as f:
-                        f.write(api_keys_section)
+                    write_private_text(env_path, api_keys_section, append=True)
                     logger.info(f"Appended API keys to {env_path}")
                 else:
                     # Update existing API keys section
@@ -235,8 +234,7 @@ class APIKeysPage(QWizardPage):
 
                     # Add API keys section at the end
                     new_content = "\n".join(new_lines).rstrip() + api_keys_section
-                    env_path.write_text(new_content)
-                    env_path.chmod(ENV_FILE_PERMISSIONS)
+                    write_private_text(env_path, new_content)
                     logger.info(f"Updated API keys in {env_path}")
 
                 # Also update project .env if it exists (and not using custom env)
@@ -246,9 +244,7 @@ class APIKeysPage(QWizardPage):
                         try:
                             project_content = project_env.read_text()
                             if "# Optional API Keys" not in project_content:
-                                with open(project_env, "a") as f:
-                                    f.write(api_keys_section)
-                                project_env.chmod(ENV_FILE_PERMISSIONS)
+                                write_private_text(project_env, api_keys_section, append=True)
                                 logger.info(f"Appended API keys to {project_env}")
                         except PermissionError as e:
                             logger.warning(f"Could not update project .env: {e}")

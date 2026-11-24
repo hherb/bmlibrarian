@@ -791,7 +791,7 @@ class FullTextFinder:
 
         # Prepare headers and cookies for HTTP download
         headers = dict(self.session.headers)
-        cookies = {}
+        cookies = None
 
         # Use OpenAthens auth if available and source is institutional
         if (source.source_type == SourceType.OPENATHENS or
@@ -802,11 +802,14 @@ class FullTextFinder:
                 if session_ua:
                     headers['User-Agent'] = session_ua
 
-                # Get cookies
-                for cookie in self.openathens_auth.get_cookies():
-                    cookies[cookie['name']] = cookie['value']
+                # Domain-scoped jar, never a flat dict: the URL and its
+                # redirects may lead to any host (#434)
+                cookies = self.openathens_auth.get_cookie_jar()
 
-                logger.info("Using OpenAthens authenticated session")
+                if len(cookies):
+                    logger.info(f"Using OpenAthens authenticated session ({len(cookies)} cookies)")
+                else:
+                    logger.warning("OpenAthens session has no usable cookies; downloading unauthenticated")
 
         # Attempt download with retries. All writes go to a temporary .part
         # sibling of output_path; error handlers discard only that partial

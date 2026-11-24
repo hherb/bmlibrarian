@@ -15,6 +15,8 @@ from datetime import datetime
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # Exceptions
@@ -98,6 +100,28 @@ HASH_ITERATIONS = 100000
 # Hash algorithm for PBKDF2
 HASH_ALGORITHM = "sha256"
 
+# Scheme tag stored as the first field: "pbkdf2_sha256$<iterations>$<salt>$<hash>"
+HASH_SCHEME = f"pbkdf2_{HASH_ALGORITHM}"
+
+# Scheme tags this code can verify, mapped to their PBKDF2 algorithm. A fixed
+# table (not derived from HASH_ALGORITHM) so changing the algorithm for new
+# hashes keeps old rows verifiable.
+SUPPORTED_HASH_SCHEMES = {"pbkdf2_sha256": "sha256"}
+
+# Number of "$"-separated fields in a tagged hash and in a legacy hash
+TAGGED_HASH_FIELDS = 4
+LEGACY_HASH_FIELDS = 2
+
+# Longest scheme-tag prefix echoed into a log line for an unreadable hash
+MAX_LOGGED_SCHEME_CHARS = 32
+
+# Hashes written before the scheme tag existed ("<salt>$<hash>") used this count
+LEGACY_HASH_ITERATIONS = 100000
+LEGACY_HASH_ALGORITHM = "sha256"
+
+# Upper bound on a stored iteration count, so a corrupt row cannot stall login
+MAX_HASH_ITERATIONS = 10_000_000
+
 # ============================================================================
 # Password Policy Configuration
 # ============================================================================
@@ -106,29 +130,45 @@ HASH_ALGORITHM = "sha256"
 MIN_PASSWORD_LENGTH = 4
 
 
-def _hash_password(password: str, salt: Optional[bytes] = None) -> str:
+def _pbkdf2_hex(
+    password: str, salt: bytes, iterations: int, algorithm: str = HASH_ALGORITHM
+) -> str:
+    """Return the hex PBKDF2 digest of ``password``.
+
+    Args:
+        password: The plaintext password.
+        salt: Salt bytes.
+        iterations: PBKDF2 iteration count.
+        algorithm: hashlib name of the PBKDF2 hash.
+
+    Returns:
+        Hex-encoded derived key.
+    """
+    return hashlib.pbkdf2_hmac(algorithm, password.encode('utf-8'), salt, iterations).hex()
+
+
+def _hash_password(
+    password: str,
+    salt: Optional[bytes] = None,
+    iterations: int = HASH_ITERATIONS,
+) -> str:
     """Hash a password using PBKDF2 with SHA-256.
+
+    The iteration count is stored with the hash, so raising
+    ``HASH_ITERATIONS`` later leaves existing passwords verifiable (#449).
 
     Args:
         password: The plaintext password to hash.
         salt: Optional salt bytes. If None, a new salt is generated.
+        iterations: PBKDF2 iteration count.
 
     Returns:
-        A string in format "salt$hash" where both are hex-encoded.
+        A string "pbkdf2_sha256$<iterations>$<salt>$<hash>", salt and hash
+        hex-encoded.
     """
     if salt is None:
         salt = secrets.token_bytes(SALT_LENGTH_BYTES)
-
-    # Use PBKDF2 for secure password hashing
-    dk = hashlib.pbkdf2_hmac(
-        HASH_ALGORITHM,
-        password.encode('utf-8'),
-        salt,
-        HASH_ITERATIONS
-    )
-
-    # Store as "salt$hash" in hex format
-    return f"{salt.hex()}${dk.hex()}"
+    return f"{HASH_SCHEME}${iterations}${salt.hex()}${_pbkdf2_hex(password, salt, iterations)}"
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
@@ -136,22 +176,40 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
     Args:
         password: The plaintext password to verify.
-        stored_hash: The stored hash in "salt$hash" format.
+        stored_hash: "pbkdf2_sha256$<iterations>$<salt>$<hash>", or the
+            legacy "<salt>$<hash>" (``LEGACY_HASH_ITERATIONS``).
 
     Returns:
-        True if the password matches, False otherwise.
+        True if the password matches, False otherwise (also for a malformed
+        hash or an iteration count outside 1..MAX_HASH_ITERATIONS).
     """
     try:
-        salt_hex, hash_hex = stored_hash.split('$')
-        salt = bytes.fromhex(salt_hex)
-
-        # Hash the provided password with the same salt
-        new_hash = _hash_password(password, salt)
+        parts = stored_hash.split('$')
+        if len(parts) == LEGACY_HASH_FIELDS:
+            algorithm = LEGACY_HASH_ALGORITHM
+            iterations = LEGACY_HASH_ITERATIONS
+            salt_hex, hash_hex = parts
+        elif len(parts) == TAGGED_HASH_FIELDS and parts[0] in SUPPORTED_HASH_SCHEMES:
+            algorithm = SUPPORTED_HASH_SCHEMES[parts[0]]
+            iterations = int(parts[1])
+            salt_hex, hash_hex = parts[2], parts[3]
+        else:
+            # Never log the hash itself, only its shape
+            logger.warning(
+                "Stored password hash has an unrecognised format "
+                f"({len(parts)} fields, scheme {parts[0][:MAX_LOGGED_SCHEME_CHARS]!r})"
+            )
+            return False
+        if not 0 < iterations <= MAX_HASH_ITERATIONS:
+            logger.warning(f"Stored password hash has an invalid iteration count: {iterations}")
+            return False
+        new_hash = _pbkdf2_hex(password, bytes.fromhex(salt_hex), iterations, algorithm)
 
         # Compare in constant time to prevent timing attacks
-        return secrets.compare_digest(new_hash, stored_hash)
-    except (ValueError, AttributeError):
-        # Invalid hash format
+        return secrets.compare_digest(new_hash, hash_hex.lower())
+    except (ValueError, AttributeError, TypeError) as e:
+        # Bad iteration field, non-hex salt, non-ASCII digest or a non-str value
+        logger.warning(f"Stored password hash is malformed: {type(e).__name__}")
         return False
 
 

@@ -101,9 +101,13 @@ with db_manager.get_connection() as conn:
 
 **Password Hashing:**
 - Algorithm: PBKDF2-HMAC-SHA256
-- Iterations: 100,000
+- Iterations: 100,000 (`HASH_ITERATIONS`), stored with each hash
 - Salt: 256-bit random (per password)
-- Format: `{salt_hex}${hash_hex}`
+- Format: `pbkdf2_sha256${iterations}${salt_hex}${hash_hex}`, so raising
+  `HASH_ITERATIONS` leaves existing passwords verifiable (#449). Rows in the
+  older `{salt_hex}${hash_hex}` form verify with 100,000 iterations
+  (`LEGACY_HASH_ITERATIONS`); a stored count above `MAX_HASH_ITERATIONS`
+  fails verification. Passwords are not re-hashed on login.
 
 #### src/bmlibrarian/auth/user_settings.py
 

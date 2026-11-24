@@ -7,12 +7,13 @@ Contains shared pure functions used across wizard pages.
 import logging
 from pathlib import Path
 
+from ....utils.path_utils import PRIVATE_FILE_MODE
 from ..resources.styles.stylesheet_generator import StylesheetGenerator
 
 logger = logging.getLogger(__name__)
 
 # File permission constant for secure .env files (owner read/write only)
-ENV_FILE_PERMISSIONS = 0o600
+ENV_FILE_PERMISSIONS = PRIVATE_FILE_MODE
 
 # Default database name and application user
 DEFAULT_DATABASE_NAME = "bmlibrarian"

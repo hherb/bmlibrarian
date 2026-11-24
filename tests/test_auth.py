@@ -3,6 +3,8 @@
 Tests password hashing, user service, and settings manager functionality.
 """
 
+import hashlib
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
@@ -21,6 +23,9 @@ from bmlibrarian.auth.user_service import (
     MIN_PASSWORD_LENGTH,
     HASH_ITERATIONS,
     HASH_ALGORITHM,
+    HASH_SCHEME,
+    LEGACY_HASH_ITERATIONS,
+    MAX_HASH_ITERATIONS,
 )
 from bmlibrarian.auth.user_settings import (
     UserSettingsManager,
@@ -36,11 +41,10 @@ class TestPasswordHashing:
         password = "test_password_123"
         result = _hash_password(password)
 
-        # Should contain exactly one $ separator
-        assert result.count('$') == 1
-
-        # Should have two hex-encoded parts
-        salt_hex, hash_hex = result.split('$')
+        # scheme$iterations$salt$hash
+        scheme, iterations, salt_hex, hash_hex = result.split('$')
+        assert scheme == HASH_SCHEME
+        assert int(iterations) == HASH_ITERATIONS
         assert len(salt_hex) == SALT_LENGTH_BYTES * 2  # Hex encoding doubles length
         assert len(hash_hex) > 0
 
@@ -87,6 +91,42 @@ class TestPasswordHashing:
         assert _verify_password("password", "invalid_hash_format") is False
         assert _verify_password("password", "") is False
         assert _verify_password("password", "no_separator") is False
+
+    def test_verify_password_uses_stored_iteration_count(self) -> None:
+        """A hash made with another iteration count still verifies (#449)."""
+        stored_hash = _hash_password("pw", iterations=1000)
+        assert stored_hash.split('$')[1] == "1000"
+        assert _verify_password("pw", stored_hash) is True
+        assert _verify_password("other", stored_hash) is False
+
+    def test_verify_password_legacy_two_part_hash(self) -> None:
+        """A legacy "salt$hash" row verifies with LEGACY_HASH_ITERATIONS."""
+        salt = b'\x01' * SALT_LENGTH_BYTES
+        digest = hashlib.pbkdf2_hmac('sha256', b'pw', salt, LEGACY_HASH_ITERATIONS).hex()
+        legacy = f"{salt.hex()}${digest}"
+        assert _verify_password("pw", legacy) is True
+        assert _verify_password("other", legacy) is False
+
+    def test_verify_password_rejects_bad_iteration_counts(self) -> None:
+        """Zero, negative, huge or non-numeric counts and unknown schemes fail."""
+        _, _, salt_hex, hash_hex = _hash_password("pw").split('$')
+        for count in ("0", "-5", str(MAX_HASH_ITERATIONS + 1), "many"):
+            assert _verify_password("pw", f"{HASH_SCHEME}${count}${salt_hex}${hash_hex}") is False
+        assert _verify_password("pw", f"md5$1000${salt_hex}${hash_hex}") is False
+
+    def test_verify_password_malformed_hash_returns_false(self) -> None:
+        """Non-hex salt, non-ASCII digest or a non-str value fail, never raise."""
+        _, iters, salt_hex, hash_hex = _hash_password("pw").split('$')
+        assert _verify_password("pw", f"{HASH_SCHEME}${iters}$zz${hash_hex}") is False
+        assert _verify_password("pw", f"{HASH_SCHEME}${iters}${salt_hex}$\u00e9{hash_hex}") is False
+        assert _verify_password("pw", None) is False  # type: ignore[arg-type]
+
+    def test_verify_password_logs_unrecognised_format(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A stored row this code can't read is logged, so a lockout isn't blamed on the password."""
+        with caplog.at_level("WARNING", logger="bmlibrarian.auth.user_service"):
+            assert _verify_password("pw", "pbkdf2_sha512$1000$aa$bb") is False
+        assert "unrecognised format" in caplog.text
+        assert "aa$bb" not in caplog.text
 
     def test_verify_password_empty_inputs(self) -> None:
         """Test empty inputs handling."""
@@ -146,6 +186,44 @@ class TestUserServiceValidation:
 
         with pytest.raises(InvalidCredentialsError, match="required"):
             service.authenticate("username", "")
+
+
+class TestAuthenticateStoredHashFormats:
+    """authenticate() accepts both stored hash formats (#449)."""
+
+    @staticmethod
+    def service_with_row(pwdhash: str) -> UserService:
+        """A UserService whose users query returns one row with ``pwdhash``."""
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            'id': 7, 'username': 'alice', 'email': 'a@example.com',
+            'pwdhash': pwdhash, 'firstname': None, 'surname': None,
+        }
+        return UserService(conn)
+
+    def test_new_format_hash_logs_in(self) -> None:
+        """A pbkdf2_sha256$iters$salt$hash row logs in."""
+        user, token = self.service_with_row(_hash_password("pw")).authenticate(
+            "alice", "pw", create_session=False
+        )
+        assert user.id == 7 and token is None
+
+    def test_legacy_hash_logs_in(self) -> None:
+        """A pre-#449 salt$hash row still logs in."""
+        salt = b'\x02' * SALT_LENGTH_BYTES
+        digest = hashlib.pbkdf2_hmac('sha256', b'pw', salt, LEGACY_HASH_ITERATIONS).hex()
+        user, _ = self.service_with_row(f"{salt.hex()}${digest}").authenticate(
+            "alice", "pw", create_session=False
+        )
+        assert user.username == 'alice'
+
+    def test_wrong_password_raises(self) -> None:
+        """A wrong password against a valid row raises InvalidCredentialsError."""
+        with pytest.raises(InvalidCredentialsError):
+            self.service_with_row(_hash_password("pw")).authenticate(
+                "alice", "nope", create_session=False
+            )
 
 
 class TestUserSettingsManagerValidation:
