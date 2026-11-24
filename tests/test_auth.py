@@ -3,6 +3,8 @@
 Tests password hashing, user service, and settings manager functionality.
 """
 
+import hashlib
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
@@ -21,6 +23,9 @@ from bmlibrarian.auth.user_service import (
     MIN_PASSWORD_LENGTH,
     HASH_ITERATIONS,
     HASH_ALGORITHM,
+    HASH_SCHEME,
+    LEGACY_HASH_ITERATIONS,
+    MAX_HASH_ITERATIONS,
 )
 from bmlibrarian.auth.user_settings import (
     UserSettingsManager,
@@ -36,11 +41,10 @@ class TestPasswordHashing:
         password = "test_password_123"
         result = _hash_password(password)
 
-        # Should contain exactly one $ separator
-        assert result.count('$') == 1
-
-        # Should have two hex-encoded parts
-        salt_hex, hash_hex = result.split('$')
+        # scheme$iterations$salt$hash
+        scheme, iterations, salt_hex, hash_hex = result.split('$')
+        assert scheme == HASH_SCHEME
+        assert int(iterations) == HASH_ITERATIONS
         assert len(salt_hex) == SALT_LENGTH_BYTES * 2  # Hex encoding doubles length
         assert len(hash_hex) > 0
 
@@ -87,6 +91,28 @@ class TestPasswordHashing:
         assert _verify_password("password", "invalid_hash_format") is False
         assert _verify_password("password", "") is False
         assert _verify_password("password", "no_separator") is False
+
+    def test_verify_password_uses_stored_iteration_count(self) -> None:
+        """A hash made with another iteration count still verifies (#449)."""
+        stored_hash = _hash_password("pw", iterations=1000)
+        assert stored_hash.split('$')[1] == "1000"
+        assert _verify_password("pw", stored_hash) is True
+        assert _verify_password("other", stored_hash) is False
+
+    def test_verify_password_legacy_two_part_hash(self) -> None:
+        """A legacy "salt$hash" row verifies with LEGACY_HASH_ITERATIONS."""
+        salt = b'\x01' * SALT_LENGTH_BYTES
+        digest = hashlib.pbkdf2_hmac('sha256', b'pw', salt, LEGACY_HASH_ITERATIONS).hex()
+        legacy = f"{salt.hex()}${digest}"
+        assert _verify_password("pw", legacy) is True
+        assert _verify_password("other", legacy) is False
+
+    def test_verify_password_rejects_bad_iteration_counts(self) -> None:
+        """Zero, negative, huge or non-numeric counts and unknown schemes fail."""
+        _, _, salt_hex, hash_hex = _hash_password("pw").split('$')
+        for count in ("0", "-5", str(MAX_HASH_ITERATIONS + 1), "many"):
+            assert _verify_password("pw", f"{HASH_SCHEME}${count}${salt_hex}${hash_hex}") is False
+        assert _verify_password("pw", f"md5$1000${salt_hex}${hash_hex}") is False
 
     def test_verify_password_empty_inputs(self) -> None:
         """Test empty inputs handling."""

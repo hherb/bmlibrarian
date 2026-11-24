@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, TYPE_CHECKING
 
+from ..utils.path_utils import write_private_text
+
 if TYPE_CHECKING:
     from psycopg import Connection
 
@@ -160,9 +162,7 @@ def save_session_token(token: str) -> bool:
     """
     try:
         SESSION_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_TOKEN_FILE.write_text(token)
-        # Set restrictive permissions (owner read/write only)
-        SESSION_TOKEN_FILE.chmod(0o600)
+        write_private_text(SESSION_TOKEN_FILE, token)
         logger.debug("Saved session token")
         return True
     except Exception as e:

@@ -14,7 +14,6 @@ Supports two OpenAthens URL formats:
 
 import json
 import logging
-import stat
 import re
 import asyncio
 from pathlib import Path
@@ -22,6 +21,8 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, quote
 import requests
+
+from .path_utils import write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,41 @@ REDIRECTOR_PATH_PREFIX = "/redirector/"
 # Test URL for triggering redirector authentication
 # Using PubMed as it's widely accessible and triggers institutional auth
 REDIRECTOR_TEST_TARGET = "https://pubmed.ncbi.nlm.nih.gov/"
+
+
+def cookie_jar_from_browser_cookies(cookies: List[Dict[str, Any]]) -> requests.cookies.RequestsCookieJar:
+    """Build a ``requests`` cookie jar that keeps each browser cookie's scope.
+
+    Cookies come from Playwright (or a session file on disk), so they are
+    checked: one without a name, value or domain is dropped, since a cookie
+    with no domain would be sent to every host.
+
+    Args:
+        cookies: Playwright-style dicts (``name``, ``value``, ``domain``,
+            optional ``path`` and ``secure``)
+
+    Returns:
+        Jar holding the valid cookies, each limited to its domain and path
+    """
+    jar = requests.cookies.RequestsCookieJar()
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            logger.warning("Dropping malformed session cookie (not a mapping)")
+            continue
+        name, value, domain = cookie.get('name'), cookie.get('value'), cookie.get('domain')
+        if not (isinstance(name, str) and name and isinstance(value, str)
+                and isinstance(domain, str) and domain):
+            logger.warning(f"Dropping session cookie {name!r}: no name, value or domain")
+            continue
+        path = cookie.get('path')
+        jar.set(
+            name,
+            value,
+            domain=domain,
+            path=path if isinstance(path, str) and path else '/',
+            secure=bool(cookie.get('secure', False)),
+        )
+    return jar
 
 
 class OpenAthensConfig:
@@ -328,12 +364,8 @@ class OpenAthensAuth:
             # Serialize session data
             serialized_data = self._serialize_session_data(self.session_data)
 
-            # Write to file
-            with open(self.session_file, 'w') as f:
-                json.dump(serialized_data, f, indent=2)
-
-            # Set restrictive file permissions (600 = owner read/write only)
-            self.session_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            # Created 0600 before the cookies are written (#450)
+            write_private_text(self.session_file, json.dumps(serialized_data, indent=2))
 
             logger.info(f"Saved session to {self.session_file} with secure permissions")
 
@@ -497,6 +529,18 @@ class OpenAthensAuth:
             return []
 
         return self.session_data.get('cookies', [])
+
+    def get_cookie_jar(self) -> requests.cookies.RequestsCookieJar:
+        """Get authentication cookies as a jar for ``requests``.
+
+        Unlike a plain ``{name: value}`` dict, the jar sends each cookie only
+        to its own domain and path, and secure cookies only over HTTPS, on
+        the first request and on every redirect hop (#434).
+
+        Returns:
+            Cookie jar, empty if not authenticated
+        """
+        return cookie_jar_from_browser_cookies(self.get_cookies())
 
     def get_user_agent(self) -> Optional[str]:
         """Get user agent from session.

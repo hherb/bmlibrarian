@@ -191,3 +191,36 @@ def ensure_config_directory() -> Path:
             raise
 
     return config_dir
+
+
+PRIVATE_FILE_MODE = 0o600
+"""Owner read/write only, for files holding passwords, tokens or cookies."""
+
+
+def write_private_text(path: Union[str, Path], text: str, append: bool = False) -> None:
+    """Write text to a file only its owner can read, before any secret lands in it.
+
+    A new file is created with mode 0600 (no window in which the umask's
+    0644 applies). An existing file is narrowed to 0600 before it is
+    truncated or appended to, so a failed chmod (exFAT, some network homes)
+    raises instead of leaving the secret in a world-readable file.
+
+    Args:
+        path: File to write.
+        text: Content (UTF-8).
+        append: Add to the end instead of replacing the content.
+
+    Raises:
+        OSError: The file cannot be opened, restricted or written.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else 0), PRIVATE_FILE_MODE)
+    try:
+        if hasattr(os, "fchmod"):  # absent on Windows before Python 3.13; mode bits mean little there
+            os.fchmod(fd, PRIVATE_FILE_MODE)
+        if not append:
+            os.ftruncate(fd, 0)
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)

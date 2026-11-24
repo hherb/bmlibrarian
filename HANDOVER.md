@@ -10,6 +10,23 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Security audit fixes #434, #449, #450** (2026-11-25, branch
+  `fix/security-434-449-450`). OpenAthens cookies go to `requests` as a
+  `RequestsCookieJar` keeping each cookie's domain, path and secure flag
+  (`openathens_auth.cookie_jar_from_browser_cookies`, `get_cookie_jar()`),
+  in `PDFManager.download_pdf` and `FullTextFinder._download_from_source`;
+  a cookie without a domain is dropped (it would go to every host) (#434).
+  `utils/path_utils.write_private_text` creates files 0600, or narrows an
+  existing one before truncating, and raises if it can't; used for the
+  OpenAthens session file, the CLI session token and the setup wizard's
+  `.env` writes (#450; the wizard files hold DB passwords and API keys, the
+  same bug). Password hashes are `pbkdf2_sha256$<iters>$<salt>$<hash>`;
+  old `salt$hash` rows verify at 100,000 (`LEGACY_HASH_ITERATIONS`), counts
+  above `MAX_HASH_ITERATIONS` fail (#449). No re-hash on login and
+  `HASH_ITERATIONS` is unchanged. Verified: suite 4934 passed; the new
+  caller tests fail on the old code. Not run against a live OpenAthens
+  login.
+
 - **Migration runner: one transaction, one process at a time, #439**
   (2026-11-24, branch `fix/439-migration-lock`). `MigrationManager` runs each
   migration's SQL and its `bmlibrarian_migrations` record in one transaction
@@ -380,36 +397,32 @@ value — pick one, or pull an item from ROADMAP.md:
        `bmlib.fulltext.meca` / `bmlib::fulltext::meca`, feature `meca`):
        SigV4, ListObjectsV2, plain-language S3 errors, verified atomic
        download, Rust `HttpClient::get_with_headers_stream`, ureq ≥ 3.5.
-     - **Blocked on the owner, Task M0** (re-checked 2026-11-15): the
-       `medrxiv` profile (IAM user `bmlib`, account 775221585284) still gets
-       `AccessDenied` on `medrxiv-src-monthly`, and also on arXiv's public
-       requester-pays bucket `arxiv`, so the cause is on our account, not
-       medRxiv's. S3 answered with `x-amz-request-charged: requester`. The
-       user cannot read its own IAM policies either. Fix: attach a policy
-       allowing `s3:ListBucket` on `arn:aws:s3:::medrxiv-src-monthly` and
-       `s3:GetObject` on `.../*`, and check that the account has a payment
-       method. Then measure: count, size, manifest shape, JATS body rate
-       (the first half of item 1) and licensed fixture packages. B4 (the
-       package reader) waits for M0.
+     - **Blocked on the owner, Task M0** (re-checked 2026-11-15): both AWS
+       profiles (`bmlibrarian` project, `medrxiv` account 775221585284) are
+       region-locked to ap-southeast-2 by an SCP, so no signed S3 read in
+       us-east-1 (where `medrxiv-src-monthly` lives) can succeed; IAM
+       policies won't fix it. Ways out: activate advanced features on the
+       project and edit the SCP, or use a separate standard AWS account.
+       Then measure: count, size, manifest shape, JATS body rate (the first
+       half of item 1) and licensed fixture packages. B4 (the package
+       reader) waits for M0.
        `scripts/download_medrxiv_meca_sample.py` (untracked) is the owner's;
        leave it alone.
      - Then L1–L5: the bulk route in `bml-library` (pin past B4, migration 4
        `meca_packages`, AWS keys file, bulk phase only for an "All of
        medRxiv" library, CLI).
-     After 3c: 3b (medRxiv HTML page, bmlib), piece 4 (hybrid search,
-     `bml search`), 5 (Tauri wizard), 6 (signed Mac `.dmg`).
+     After 3c: 3b (medRxiv HTML page, bmlib). Pieces 4 (`bml search`),
+     5 (Tauri app) and 6 (signed Mac DMG) have landed.
   3. bmlib is pinned by git rev; move to a tagged release (or crates.io,
      #401) once one contains #760 and #770 (v0.13.0 has neither).
   `bml-pgserver` leftovers: #397 (needs Windows), #399 (owner decision on a
   port taken after init); bml-db review follow-ups: #424;
   bml-library: #430, #433.
 
-- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #435, #436,
-  #437, #439, #443, #447, #448, #452 fixed). Installer: #451 (setup replaces
+- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #434–#437,
+  #439, #443, #447–#450, #452 fixed). Installer: #451 (setup replaces
   another config folder's login entry), #453 (rust.yml permissions,
-  SHA-pinned checkout). Security: #434 (session cookies sent to any host), #450 (token files
-  restricted after writing), #449 (PBKDF2 iteration count).
-  Broken: #441, #445, #446, #438, #440, #442, #444.
+  SHA-pinned checkout). Broken: #441, #445, #446, #438, #440, #442, #444.
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -453,8 +466,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-24:
-  **4922 passed, 75 skipped** in about 4 min (hermetic since #334;
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
+  **4934 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

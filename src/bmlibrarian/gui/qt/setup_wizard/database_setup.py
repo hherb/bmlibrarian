@@ -19,11 +19,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, QThread
 
+from ....utils.path_utils import write_private_text
 from ..resources.styles.dpi_scale import get_font_scale
 from .utils import (
     find_project_root,
     create_frame_stylesheet,
-    ENV_FILE_PERMISSIONS,
     DEFAULT_DATABASE_NAME,
     DEFAULT_APP_USER,
 )
@@ -280,8 +280,7 @@ OLLAMA_HOST=http://localhost:11434
             # Write ONLY to the custom env file, skip default locations
             custom_env_path = Path(custom_env_file)
             custom_env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            custom_env_path.write_text(env_content)
-            custom_env_path.chmod(ENV_FILE_PERMISSIONS)
+            write_private_text(custom_env_path, env_content)
             logger.info(
                 f"Created custom .env file at {custom_env_path} (mode 0o600) - "
                 "skipping default locations"
@@ -291,16 +290,14 @@ OLLAMA_HOST=http://localhost:11434
             config_dir = Path.home() / ".bmlibrarian"
             config_dir.mkdir(mode=0o700, exist_ok=True)  # Secure directory permissions
             user_env_path = config_dir / ".env"
-            user_env_path.write_text(env_content)
-            user_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
+            write_private_text(user_env_path, env_content)
             logger.info(f"Created primary .env file at {user_env_path} (mode 0o600)")
 
             # SECONDARY: Write to project root for development convenience
             project_root = find_project_root()
             project_env_path = project_root / ".env"
             try:
-                project_env_path.write_text(env_content)
-                project_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
+                write_private_text(project_env_path, env_content)
                 logger.info(
                     f"Created project .env file at {project_env_path} (mode 0o600)"
                 )

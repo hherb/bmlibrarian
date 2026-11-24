@@ -21,7 +21,8 @@ The OpenAthens authentication module implements multiple security layers to prot
 | Threat | Mitigation | Implementation |
 |--------|-----------|----------------|
 | **Code Injection** | JSON serialization instead of pickle | `_serialize_session_data()` |
-| **File Access** | Restrictive permissions (600) | `chmod(S_IRUSR \| S_IWUSR)` |
+| **File Access** | Created with mode 600 before any cookie is written | `path_utils.write_private_text()` |
+| **Cookie Leakage** | Cookies sent only to their own domain/path, secure ones only over HTTPS, redirects included | `get_cookie_jar()` |
 | **Session Hijacking** | Secure file storage, HTTPS enforcement | `_validate_url()` |
 | **Credential Exposure** | Never store passwords, only cookies | Session data structure |
 | **MITM Attacks** | HTTPS-only requirement | URL validation |
@@ -89,11 +90,17 @@ with open(self.session_file, 'w') as f:
 
 **Implementation**:
 ```python
-import stat
+from bmlibrarian.utils.path_utils import write_private_text
 
-# Set permissions: 600 (owner read/write only)
-self.session_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+# Created 0600 (os.open with mode), or narrowed to 0600 before an existing
+# file is truncated; a failed chmod raises instead of writing the secret
+write_private_text(self.session_file, json.dumps(serialized_data, indent=2))
 ```
+
+Writing first and calling `chmod` afterwards (the old code) left a window in
+which the umask's 0644 applied, and left the file world-readable where
+`chmod` fails (exFAT, some network homes) (#450). The CLI session token and
+the setup wizard's `.env` files use the same helper.
 
 **Verification**:
 ```bash
@@ -389,12 +396,14 @@ except Exception as e:
 2. If auth available:
    ├─ Check is_authenticated() [cached]
    ├─ Get user agent
-   └─ Get cookies
+   └─ get_cookie_jar(): a RequestsCookieJar keeping each cookie's
+      domain, path and secure flag (cookies without a domain are dropped)
 
 3. Prepare HTTP Request
    ├─ Add User-Agent header
-   ├─ Add cookies
-   └─ HTTPS URL
+   └─ Pass the jar, never a flat {name: value} dict: pdf_url comes from
+      imported metadata, and a dict would send every cookie to that host and
+      every redirect hop, over plain HTTP too (#434)
 
 4. Execute Download
    ├─ requests.get() with auth
