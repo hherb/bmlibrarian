@@ -72,7 +72,7 @@ class TestDownloadBaseline:
         dl = FakeDownloader(["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"])
         tracker = FakeTracker()
         importer = make_importer(tmp_path, dl, tracker)
-        assert importer.download_baseline() == 2
+        assert importer.download_baseline().downloaded == 2
         assert dl.listed == ["https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/"]
         assert dl.downloads[0] == "https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/pubmed26n0001.xml.gz"
         assert (tmp_path / "baseline" / "pubmed26n0002.xml.gz").exists()
@@ -82,19 +82,19 @@ class TestDownloadBaseline:
         dl = FakeDownloader(["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"])
         importer = make_importer(tmp_path, dl, FakeTracker({"pubmed26n0001.xml.gz"}))
         (tmp_path / "baseline" / "pubmed26n0001.xml.gz").write_bytes(b"data")
-        assert importer.download_baseline() == 1
+        assert importer.download_baseline().downloaded == 1
         assert [u.rsplit("/", 1)[-1] for u in dl.downloads] == ["pubmed26n0002.xml.gz"]
 
     def test_tracked_but_missing_file_is_downloaded_again(self, tmp_path: Path) -> None:
         dl = FakeDownloader(["pubmed26n0001.xml.gz"])
         importer = make_importer(tmp_path, dl, FakeTracker({"pubmed26n0001.xml.gz"}))
-        assert importer.download_baseline() == 1
+        assert importer.download_baseline().downloaded == 1
 
     def test_failed_file_is_not_tracked_and_others_continue(self, tmp_path: Path) -> None:
         dl = FakeDownloader(["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"], fail={"pubmed26n0001.xml.gz"})
         tracker = FakeTracker()
         importer = make_importer(tmp_path, dl, tracker)
-        assert importer.download_baseline() == 1
+        assert importer.download_baseline() == (1, 1)
         assert "pubmed26n0001.xml.gz" not in tracker.downloaded
         assert not (tmp_path / "baseline" / "pubmed26n0001.xml.gz").exists()
 
@@ -106,7 +106,29 @@ class TestDownloadUpdates:
         dl = FakeDownloader(["pubmed26n1335.xml.gz"])
         tracker = FakeTracker()
         importer = make_importer(tmp_path, dl, tracker)
-        assert importer.download_updates() == 1
+        assert importer.download_updates().downloaded == 1
         assert dl.listed == ["https://ftp.ncbi.nlm.nih.gov/pubmed/updatefiles/"]
         assert (tmp_path / "updatefiles" / "pubmed26n1335.xml.gz").exists()
         assert tracker.downloaded["pubmed26n1335.xml.gz"][0] == "update"
+
+
+class TestDownloadAndImportBaseline:
+    """The wizard's baseline run downloads everything, then imports (#441)."""
+
+    def test_failed_download_is_an_error_and_the_rest_is_imported(self, tmp_path: Path) -> None:
+        dl = FakeDownloader(["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"], fail={"pubmed26n0001.xml.gz"})
+        importer = make_importer(tmp_path, dl, FakeTracker())
+        imported = {"files_processed": 1, "total_articles": 30, "total_errors": 0}
+        with patch.object(importer, "import_all_files", return_value=imported) as import_all:
+            stats = importer.download_and_import_baseline()
+        assert import_all.call_args.args[0] == "baseline"
+        assert stats["files_downloaded"] == 1
+        assert stats["files_processed"] == 1
+        assert stats["total_errors"] == 1
+
+    def test_cancel_during_download_skips_the_import(self, tmp_path: Path) -> None:
+        importer = make_importer(tmp_path, FakeDownloader(["pubmed26n0001.xml.gz"]), FakeTracker())
+        with patch.object(importer, "import_all_files") as import_all:
+            stats = importer.download_and_import_baseline(cancel_check=lambda: True)
+        import_all.assert_not_called()
+        assert stats["files_downloaded"] == 0 and stats["total_errors"] == 0

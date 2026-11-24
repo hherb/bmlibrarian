@@ -177,13 +177,10 @@ class ImportWorker(QThread):
         self.progress_percent.emit(PROGRESS_COMPLETE)
 
     def _run_pubmed_full(self, stats: dict) -> None:
-        """Run full PubMed baseline import with parallel download/import.
+        """Run the full PubMed baseline download, then import it.
 
-        Uses the new parallel download/import method which:
-        - Downloads files in one thread while importing in another
-        - Ensures sequential import order (critical for corrections/retractions)
-        - Provides real-time progress feedback
-        - Handles pre-existing downloaded files
+        Files already downloaded or imported are skipped, so a re-run resumes;
+        a failed download counts as an error and the other files go on.
         """
         self.progress.emit("Starting full PubMed baseline download and import...")
         self.progress_percent.emit(0)
@@ -193,7 +190,6 @@ class ImportWorker(QThread):
 
             importer = PubMedBulkImporter()
 
-            # Use the new parallel download/import method with callbacks
             pubmed_stats = importer.download_and_import_baseline(
                 progress_callback=self._progress_callback,
                 cancel_check=self.is_cancelled,

@@ -25,10 +25,16 @@ Background and measurements: `doc/planning/rust/implementation_plan.md`
 - The session and the sleep function are injected, and tests use a fake
   session (`tests/test_ncbi_https.py`).
 
-Importer side: `_download_directory()` (shared by `download_baseline`,
-`download_updates` and `download_and_import_baseline`) and `_download_one()`.
-A file is skipped only if the tracker records it **and** it exists on disk.
-The tracker's checksum column now stores NCBI's MD5.
+Importer side: `_download_directory()` (shared by `download_baseline` and
+`download_updates`, which return `DownloadCounts(downloaded, failed)`) and
+`_download_one()`. A file is skipped only if the tracker records it **and** it
+exists on disk. The tracker's checksum column now stores NCBI's MD5. The
+setup wizard's `download_and_import_baseline` is `download_baseline` followed
+by `import_all_files('baseline')`, with failed downloads added to
+`total_errors` (#441). It used to import while downloading, releasing files
+strictly by number, so one failed download stalled the import forever; the
+revision-aware merge makes file order irrelevant. The CLI's `download-*`,
+`import` and `sync` exit 1 when any file failed (#445).
 
 **Why not FTP:** in October 2026 the NCBI FTP data stream was observed to
 rewind mid-transfer. In a 35.5 MB file, the stream jumped from 6.5 MB back to
@@ -173,14 +179,18 @@ which is intended for existing references.
 callables; `for_server(conninfo)` builds the real ones.
 
 - **apply:**
-  1. Validate names (allow-list) and values (`^[0-9]+(kB|MB|GB|TB)?$`).
+  1. Validate names (allow-list) and values
+     (`^[0-9]+(\.[0-9]+)? ?(B|kB|MB|GB|TB)?$`, so `1.5GB` and `2 GB` pass).
      `ALTER SYSTEM` cannot bind parameters.
   2. Require a superuser.
   3. Refuse while other `client backend` sessions exist (unless forced).
-  4. Write the state file (the previous `postgresql.auto.conf` values per
-     setting, None = RESET).
-  5. Run `ALTER SYSTEM`, then `pg_reload_conf()`.
-  6. `pg_ctl restart` if any managed setting has `pending_restart`.
+  4. Validate the values to restore (the previous `postgresql.auto.conf`
+     values per setting, None = RESET) the same way, and refuse before
+     changing anything if one fails; otherwise `restore` would refuse it
+     later and leave the server in the import profile (#440).
+  5. Write the state file with those values.
+  6. Run `ALTER SYSTEM`, then `pg_reload_conf()`.
+  7. `pg_ctl restart` if any managed setting has `pending_restart`.
 - **restore:** the same, using the state file, which is then deleted.
 - `pg_ctl` comes from the binary path in `postmaster.opts` (Postgres.app
   writes it unquoted, with spaces).

@@ -30,7 +30,8 @@ from typing import Callable, Dict, Iterator, List, Mapping, Optional, Sequence, 
 import psycopg
 
 ALLOWED_SETTINGS = frozenset({"shared_buffers", "max_wal_size", "min_wal_size"})
-VALUE_PATTERN = re.compile(r"[0-9]+(kB|MB|GB|TB)?")
+# PostgreSQL also accepts fractions and a space before the unit ('1.5GB', '2 GB').
+VALUE_PATTERN = re.compile(r"[0-9]+(\.[0-9]+)? ?(B|kB|MB|GB|TB)?")
 DEFAULT_IMPORT_PROFILE: Dict[str, str] = {
     "shared_buffers": "32GB",   # restart-only; the one setting that costs RAM
     "max_wal_size": "64GB",     # disk, not RAM: no checkpoint storm during merges
@@ -204,8 +205,9 @@ class ImportProfile:
         """Apply the import profile (no-op while the state file exists).
 
         Raises:
-            ImportProfileError: Without superuser rights, or while other sessions
-                are connected (unless ``force``).
+            ImportProfileError: Without superuser rights, while other sessions
+                are connected (unless ``force``), or when a current value could
+                not be restored afterwards.
         """
         if self.is_active:
             return ALREADY_ACTIVE
@@ -216,8 +218,17 @@ class ImportProfile:
             raise ImportProfileError("the import profile needs a superuser connection (ALTER SYSTEM)")
         check_no_other_sessions(self.other_sessions(), force)
         auto_conf = parse_auto_conf((self.data_dir / AUTO_CONF_NAME).read_text(encoding="utf-8"))
+        plan = restore_plan(profile, auto_conf)
+        for name, previous in plan.items():
+            try:
+                validate_setting(name, previous)
+            except ValueError as e:
+                # restore() would refuse it, leaving the server in the import profile.
+                raise ImportProfileError(
+                    f"cannot restore {name} = {previous!r} from {AUTO_CONF_NAME} afterwards; "
+                    "set it to a plain size such as '8GB' first") from e
         state = {"data_directory": str(self.data_dir), "applied_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                 "profile": profile, "restore": restore_plan(profile, auto_conf)}
+                 "profile": profile, "restore": plan}
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
         self._alter(profile)

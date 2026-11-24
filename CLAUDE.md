@@ -114,7 +114,7 @@ Since this project uses `uv` for package management:
   - `cargo run -p bml-cli -- [--config-dir DIR] search "question" [--limit N]` - Hybrid search of the library (vectors + BM25/tsvector, weighted RRF, one hit per paper, reference lists filtered out; `rust/bml-search`, see `doc/developers/search.md`)
   - `cd rust && cargo build -p bml-cli -p bml-app && ./target/debug/bml-app` - The Tauri app (setup wizard, topic library, search; `BML_CONFIG_DIR` picks another config folder; not a default workspace member, so CI never builds it; see `doc/developers/bml_app.md`, `doc/users/bmlibrarian_app_guide.md`)
   - `scripts/build_bmlibrarianV2_installer.sh [--unsigned]` - Build the macOS DMG of the Tauri app with `bml` inside the bundle; Developer ID signed, notarized and stapled by default (Keychain profile `bmlibrarian-notarize`); see `doc/developers/bml_app.md`
-  - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
+  - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync); `download-*`, `import` and `sync` exit 1 if any file failed to download or import
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
   - `uv run python pubmed_repair_cli.py scan` - Scan downloaded PubMed files for gzip corruption
   - `uv run python pubmed_repair_cli.py scan --type update` - Scan only update files for corruption

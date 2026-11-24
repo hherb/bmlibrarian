@@ -151,6 +151,8 @@ retraction cross-references.
 | `BMLIBRARIAN_ENV_FILE=… does not exist` | The named env file is missing; fix the path (there is deliberately no fallback). |
 | `other client session(s) would be dropped by the restart` | Another application is connected to the server; close it, or use `--force-profile`. |
 | `the import profile needs a superuser connection` | Use a superuser role, or import without `--import-profile`. |
+| `cannot restore shared_buffers = '…' … afterwards` | The server's current value is in a form the profile can't write back (it accepts plain sizes such as `8GB`, `1.5GB` or `16384`). Set it to a plain size with `ALTER SYSTEM`, or import without `--import-profile`. Nothing was changed. |
+| `download-*`, `import` or `sync` exits with status 1 | Some files failed (download after all retries, or import); the summary says how many. Re-run the same command: finished files are skipped. Scheduled syncs can check the exit status. |
 | `MD5 mismatch after transfer` in the download log | The transfer was damaged; it is retried automatically (up to five times per file). |
 | `XML parsing error` / gzip error during import | The file is incomplete or damaged; nothing from it was stored. Run the download again (it replaces files that fail the MD5 check), then the import. |
 | Import restarts files you thought were done | Only files whose transaction committed are in `ingest.ledger`; files that were in progress are redone, as designed. |

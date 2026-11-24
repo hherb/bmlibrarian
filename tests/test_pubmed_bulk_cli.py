@@ -39,6 +39,46 @@ def test_cmd_import_passes_workers_to_importer() -> None:
     assert importer.import_all_files.call_args.kwargs["file_type"] == "update"
 
 
+def test_cmd_import_exits_nonzero_when_files_failed() -> None:
+    """#445: per-file errors must reach the exit code."""
+    args = cli.build_parser().parse_args(["import"])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer_cls.return_value.import_all_files.return_value = {
+            "files_processed": 4, "files_skipped": 0, "total_articles": 9, "total_errors": 2}
+        assert cli.cmd_import(args) == 1
+
+
+def run_sync(argv: List[str], download_failed: int, import_errors: int) -> int:
+    """cmd_sync with the importer mocked: each download reports ``download_failed``."""
+    from bmlibrarian.importers.pubmed_bulk_importer import DownloadCounts
+
+    args = cli.build_parser().parse_args(["sync", "-y", *argv])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer = importer_cls.return_value
+        importer.download_updates.return_value = DownloadCounts(1, download_failed)
+        importer.download_baseline.return_value = DownloadCounts(1, download_failed)
+        importer.import_all_files.return_value = {
+            "files_processed": 1, "total_articles": 1, "total_errors": import_errors}
+        return cli.cmd_sync(args)
+
+
+@pytest.mark.parametrize("download_failed,import_errors,expected", [(0, 0, 0), (3, 0, 1), (0, 1, 1)])
+def test_cmd_sync_exit_code_counts_failed_downloads_and_imports(
+        download_failed: int, import_errors: int, expected: int) -> None:
+    assert run_sync(["--updates-only"], download_failed, import_errors) == expected
+
+
+def test_cmd_download_updates_exits_nonzero_on_failed_files() -> None:
+    from bmlibrarian.importers.pubmed_bulk_importer import DownloadCounts
+
+    args = cli.build_parser().parse_args(["download-updates"])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer_cls.return_value.download_updates.return_value = DownloadCounts(5, 1)
+        assert cli.cmd_download_updates(args) == 1
+        importer_cls.return_value.download_updates.return_value = DownloadCounts(5, 0)
+        assert cli.cmd_download_updates(args) == 0
+
+
 def test_import_profile_flags_parse() -> None:
     args = cli.build_parser().parse_args(["import", "--import-profile", "--force-profile"])
     assert args.import_profile is True and args.force_profile is True

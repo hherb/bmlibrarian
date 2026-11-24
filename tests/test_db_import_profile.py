@@ -26,6 +26,10 @@ class TestValidation:
         with pytest.raises(ValueError):
             dip.validate_setting("listen_addresses", "*")
 
+    @pytest.mark.parametrize("value", ["1.5GB", "2 GB", "16384", "512kB", "100B"])
+    def test_sizes_postgresql_accepts_pass(self, value: str) -> None:
+        dip.validate_setting("shared_buffers", value)
+
     def test_injection_value_is_rejected(self) -> None:
         with pytest.raises(ValueError):
             dip.validate_setting("shared_buffers", "1GB'; DROP TABLE x; --")
@@ -128,6 +132,23 @@ class TestApplyRestore:
         with pytest.raises(dip.ImportProfileError):
             profile.apply({"max_wal_size": "64GB"})
         assert not (tmp_path / "state.json").exists()
+
+    def test_apply_refuses_a_value_restore_would_reject(self, tmp_path: Path) -> None:
+        """#440: refuse before changing anything, not at restore time."""
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server, auto_conf="shared_buffers = '1.5 GiB'\n")
+        with pytest.raises(dip.ImportProfileError, match="shared_buffers"):
+            profile.apply({"shared_buffers": "32GB"})
+        assert not (tmp_path / "state.json").exists()
+        assert server.statements == []
+
+    def test_fractional_previous_value_round_trips(self, tmp_path: Path) -> None:
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server, auto_conf="shared_buffers = '1.5GB'\n")
+        profile.apply({"shared_buffers": "32GB"})
+        server.statements.clear()
+        assert profile.restore() == dip.RESTORED
+        assert "ALTER SYSTEM SET shared_buffers = '1.5GB'" in server.statements
 
 
 class TestStartOptions:
