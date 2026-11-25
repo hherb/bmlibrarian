@@ -13,9 +13,7 @@ Example usage:
 """
 
 import logging
-import time
-from typing import List, Dict, Any, Optional, Tuple
-from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 from bmlibrarian.config import get_ollama_host
 from bmlibrarian.database import get_db_manager
@@ -203,19 +201,25 @@ class DocumentEmbedder:
             return []
 
     def _get_documents_without_embeddings(self, source_name: Optional[str] = None,
-                                         limit: Optional[int] = None) -> List[Dict[str, Any]]:
+                                         limit: Optional[int] = None,
+                                         after_id: int = 0) -> List[Dict[str, Any]]:
         """
-        Get documents that don't have embeddings yet.
+        Get one page of documents that don't have embeddings yet.
+
+        Returns documents after ``after_id`` in ID order (keyset paging); the
+        caller passes a page size as ``limit``, so only one page is in memory.
+        Only the columns that are embedded are fetched (no full text).
 
         Args:
             source_name: Filter by source name (e.g., 'medrxiv', 'pubmed')
-            limit: Maximum number of documents to return
+            limit: Maximum number of documents to return (None for all)
+            after_id: Only return documents with an ID greater than this
 
         Returns:
-            List of document dictionaries
+            List of document dictionaries, ordered by ID
         """
         query = """
-            SELECT DISTINCT d.id, d.title, d.abstract, d.full_text, s.name as source_name
+            SELECT DISTINCT d.id, d.title, d.abstract, s.name as source_name
             FROM document d
             LEFT JOIN sources s ON d.source_id = s.id
             LEFT JOIN chunks c ON d.id = c.document_id
@@ -223,9 +227,10 @@ class DocumentEmbedder:
             WHERE d.abstract IS NOT NULL
             AND d.abstract != ''
             AND eb.id IS NULL
+            AND d.id > %s
         """
 
-        params = [self.model_id]
+        params: List[Any] = [self.model_id, after_id]
 
         if source_name:
             query += " AND LOWER(s.name) LIKE %s"
@@ -241,10 +246,7 @@ class DocumentEmbedder:
             with conn.cursor() as cur:
                 cur.execute(query, tuple(params))
                 columns = [desc[0] for desc in cur.description]
-                results = []
-                for row in cur.fetchall():
-                    results.append(dict(zip(columns, row)))
-                return results
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     def _store_chunk_and_embedding(self, document_id: int, document_title: str,
                                    text: str, embedding: List[float]) -> Optional[int]:
@@ -333,74 +335,90 @@ class DocumentEmbedder:
 
         Args:
             source_name: Filter by source name (e.g., 'medrxiv', 'pubmed')
-            limit: Maximum number of documents to embed
-            batch_size: Number of documents to process before committing
+            limit: Maximum number of documents to process (embedded or failed);
+                None for all
+            batch_size: Number of documents fetched from the database per page
 
         Returns:
             Dictionary with statistics: {'total_processed': int, 'embedded_count': int, 'failed_count': int}
         """
-        documents = self._get_documents_without_embeddings(source_name, limit)
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be at least 1 (or None for all), got {limit}")
 
-        if not documents:
-            logger.info("No documents found that need embedding")
-            return {'total_processed': 0, 'embedded_count': 0, 'failed_count': 0}
-
-        logger.info(f"Found {len(documents)} documents to embed")
-
+        total_processed = 0
         embedded_count = 0
         failed_count = 0
+        last_id = 0
+        progress = tqdm(total=limit, desc="Embedding documents", unit="doc") if tqdm else None
 
-        if tqdm:
-            progress = tqdm(documents, desc="Embedding documents", unit="doc")
+        try:
+            while limit is None or total_processed < limit:
+                page_size = batch_size if limit is None else min(batch_size, limit - total_processed)
+                documents = self._get_documents_without_embeddings(
+                    source_name, page_size, after_id=last_id
+                )
+                if not documents:
+                    break
+                # Failed documents stay "without embeddings"; moving past their IDs
+                # means they are retried on the next run, not in an endless loop.
+                last_id = documents[-1]['id']
+
+                for doc in documents:
+                    total_processed += 1
+                    if self._embed_document(doc):
+                        embedded_count += 1
+                    else:
+                        failed_count += 1
+                    if progress is not None:
+                        progress.update(1)
+                        progress.set_postfix({'embedded': embedded_count, 'failed': failed_count})
+        finally:
+            if progress is not None:
+                progress.close()
+
+        if total_processed == 0:
+            logger.info("No documents found that need embedding")
         else:
-            progress = documents
-
-        for doc in progress:
-            doc_id = doc['id']
-            title = doc.get('title', '')
-            abstract = doc.get('abstract', '')
-
-            if not abstract or abstract.strip() == '':
-                logger.debug(f"Skipping document {doc_id}: no abstract")
-                failed_count += 1
-                continue
-
-            try:
-                # Generate embedding
-                start_time = time.time()
-                embedding = self.create_embedding(abstract)
-                embedding_time = time.time() - start_time
-
-                if not embedding:
-                    logger.warning(f"Failed to create embedding for document {doc_id}")
-                    failed_count += 1
-                    continue
-
-                # Store chunk and embedding
-                chunk_id = self._store_chunk_and_embedding(doc_id, title, abstract, embedding)
-
-                if chunk_id:
-                    embedded_count += 1
-                    if tqdm:
-                        progress.set_postfix({
-                            'embedded': embedded_count,
-                            'failed': failed_count,
-                            'time': f'{embedding_time:.2f}s'
-                        })
-                else:
-                    failed_count += 1
-
-            except Exception as e:
-                logger.error(f"Error embedding document {doc_id}: {e}")
-                failed_count += 1
-
-        logger.info(f"Embedding complete: {embedded_count} embedded, {failed_count} failed out of {len(documents)} total")
+            logger.info(
+                f"Embedding complete: {embedded_count} embedded, {failed_count} failed "
+                f"out of {total_processed} total"
+            )
 
         return {
-            'total_processed': len(documents),
+            'total_processed': total_processed,
             'embedded_count': embedded_count,
             'failed_count': failed_count
         }
+
+    def _embed_document(self, doc: Dict[str, Any]) -> bool:
+        """
+        Embed one document's abstract and store it.
+
+        Args:
+            doc: Document dictionary with 'id', 'title' and 'abstract'
+
+        Returns:
+            True if the embedding was stored, False otherwise (logged)
+        """
+        doc_id = doc['id']
+        title = doc.get('title') or ''
+        abstract = doc.get('abstract') or ''
+
+        if not abstract.strip():
+            logger.debug(f"Skipping document {doc_id}: no abstract")
+            return False
+
+        try:
+            embedding = self.create_embedding(abstract)
+            if not embedding:
+                logger.warning(f"Failed to create embedding for document {doc_id}")
+                return False
+            return self._store_chunk_and_embedding(doc_id, title, abstract, embedding) is not None
+        except Exception as e:
+            logger.error(f"Error embedding document {doc_id}: {e}")
+            return False
 
     def count_documents_without_embeddings(self, source_name: Optional[str] = None) -> int:
         """

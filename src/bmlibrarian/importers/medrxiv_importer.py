@@ -21,6 +21,7 @@ Example usage:
 """
 
 import os
+import re
 import sys
 import time
 import logging
@@ -64,6 +65,43 @@ DEFAULT_EXTRACTION_PRIORITY = ['text', 'html', 'jats_xml', 'pdf']
 # SAVEPOINT name used to isolate each paper's writes within a batch
 # transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
 MEDRXIV_PAPER_SAVEPOINT = "medrxiv_paper_record"
+
+# Version suffix in a stored medRxiv pdf_url, e.g. ".../2024.01.01.24300001v2.full.pdf"
+_PDF_URL_VERSION_RE = re.compile(r"v(\d+)\.full\.pdf$")
+
+
+def parse_preprint_version(value: Any) -> Optional[int]:
+    """Parse a medRxiv API version field ("1", "2", 3) into a positive int.
+
+    Args:
+        value: The raw ``version`` value from the API
+
+    Returns:
+        The version number, or None if it is missing or not a positive integer
+    """
+    try:
+        version = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return version if version > 0 else None
+
+
+def stored_preprint_version(pdf_url: Optional[str]) -> Optional[int]:
+    """Return the version recorded in a stored medRxiv ``pdf_url``.
+
+    Args:
+        pdf_url: The document's stored pdf_url (may be None)
+
+    Returns:
+        The version number; 1 when the URL carries no version (older rows); None
+        when there is no pdf_url at all (e.g. MECA imports), so the version is
+        unknown
+    """
+    if not pdf_url:
+        return None
+    match = _PDF_URL_VERSION_RE.search(pdf_url)
+    return int(match.group(1)) if match else 1
+
 
 # Use 'spawn' start method on macOS to avoid fork-related issues
 # This must be set before any multiprocessing operations
@@ -473,10 +511,12 @@ class MedRxivImporter:
             - was_downloaded is True if newly downloaded, False if already existed
         """
         doi = paper.get('doi', '')
-        version = paper.get('version', '1')
+        version = parse_preprint_version(paper.get('version', '1')) or 1
 
-        # Create safe filename from DOI
-        safe_filename = doi.replace('/', '_') + '.pdf'
+        # Safe filename from DOI; v1 keeps the historical unversioned name so
+        # existing files are still found, later versions get their own file.
+        version_suffix = '' if version == 1 else f'v{version}'
+        safe_filename = doi.replace('/', '_') + version_suffix + '.pdf'
         local_path = self.pdf_base_dir / safe_filename
 
         # Skip if already downloaded
@@ -688,16 +728,46 @@ class MedRxivImporter:
                             if tqdm:
                                 progress.set_description(f"Processing {doi}")
 
-                            # Check if already exists
+                            # The API returns one row per version under the same DOI:
+                            # skip versions we already have, update to newer ones.
                             cur.execute(
-                                "SELECT id FROM document WHERE source_id = %s AND doi = %s",
+                                "SELECT id, pdf_url FROM document WHERE source_id = %s AND doi = %s",
                                 (self.source_id, doi)
                             )
                             existing = cur.fetchone()
+                            incoming_version = parse_preprint_version(paper.get('version', '1'))
+                            if incoming_version is None:
+                                if existing:
+                                    logger.warning(
+                                        f"Skipping {doi}: invalid version {paper.get('version')!r}"
+                                    )
+                                    continue
+                                # A new paper is still stored, as v1 (like download_pdf).
+                                logger.warning(
+                                    f"Invalid version {paper.get('version')!r} for {doi}; storing as v1"
+                                )
+                                incoming_version = 1
 
+                            existing_id = None
                             if existing:
-                                logger.debug(f"Paper already exists: {doi}")
-                                continue
+                                stored_version = stored_preprint_version(existing[1])
+                                if stored_version is None:
+                                    # No pdf_url (e.g. a MECA import): the stored version
+                                    # is unknown and may be newer, so don't overwrite it.
+                                    logger.info(
+                                        f"Not updating {doi} to v{incoming_version}: "
+                                        "stored version unknown"
+                                    )
+                                    continue
+                                if incoming_version <= stored_version:
+                                    logger.debug(
+                                        f"Paper already exists: {doi} v{stored_version}"
+                                    )
+                                    continue
+                                existing_id = existing[0]
+                                logger.info(
+                                    f"Updating {doi} from v{stored_version} to v{incoming_version}"
+                                )
 
                             # Handle authors
                             authors_list = paper.get('authors', [])
@@ -715,7 +785,7 @@ class MedRxivImporter:
                             # Download PDF and extract text based on strategy
                             pdf_filename = ""
                             full_text = ""
-                            version = paper.get('version', '1')
+                            version = str(incoming_version)
                             jats_xml_path = paper.get('jatsxml', None)  # API may provide this
 
                             if download_pdfs:
@@ -746,6 +816,30 @@ class MedRxivImporter:
 
                             pdf_url = f"https://www.medrxiv.org/content/{doi}v{version}.full.pdf"
                             url = f"https://www.medrxiv.org/content/{doi}"
+
+                            if existing_id is not None:
+                                # Keep the old full text if this version's was not
+                                # fetched (data loss is worse), but unlink the old
+                                # version's PDF so fetch-pdfs fetches this version.
+                                if not full_text:
+                                    logger.warning(
+                                        f"No v{incoming_version} full text for {doi}; keeping "
+                                        "the stored text (run fetch-pdfs to fetch this version)"
+                                    )
+                                cur.execute("""
+                                    UPDATE document SET
+                                        title = %s, abstract = %s, authors = %s,
+                                        pdf_url = %s,
+                                        pdf_filename = %s,
+                                        full_text = COALESCE(NULLIF(%s, ''), full_text),
+                                        updated_date = CURRENT_TIMESTAMP
+                                    WHERE id = %s
+                                """, (
+                                    title, abstract, authors, pdf_url,
+                                    pdf_filename, full_text, existing_id
+                                ))
+                                success_count += 1
+                                continue
 
                             # Insert document
                             cur.execute("""
@@ -1018,13 +1112,7 @@ class MedRxivImporter:
             if tqdm:
                 progress.set_description(f"Processing {doi}")
 
-            # Extract version from PDF URL
-            version = "1"
-            try:
-                if pdf_url and "v" in pdf_url:
-                    version = pdf_url.split("v")[-1].split(".")[0]
-            except:
-                pass
+            version = str(stored_preprint_version(pdf_url) or 1)
 
             paper = {
                 'doi': doi,
@@ -1047,7 +1135,9 @@ class MedRxivImporter:
                         with conn.cursor() as cur:
                             cur.execute("""
                                 UPDATE document
-                                SET pdf_filename = %s, full_text = %s, updated_date = CURRENT_TIMESTAMP
+                                SET pdf_filename = %s,
+                                    full_text = COALESCE(NULLIF(%s, ''), full_text),
+                                    updated_date = CURRENT_TIMESTAMP
                                 WHERE source_id = %s AND doi = %s
                             """, (filename, full_text, self.source_id, doi))
 

@@ -64,8 +64,12 @@ uv run python embed_documents_cli.py embed [OPTIONS]
 
 **Options:**
 - `--source NAME`: Filter by source name (e.g., medrxiv, pubmed)
-- `--limit N`: Maximum number of documents to embed
-- `--batch-size N`: Documents per batch (default: 100)
+- `--limit N`: Maximum number of documents to process, embedded or failed
+  (at least 1)
+- `--batch-size N`: Documents fetched from the database at a time (default:
+  100). Only one batch is held in memory, so a run without `--limit` over a
+  whole source is safe. A document that fails to embed is retried on the next
+  run.
 - `--model NAME`: Ollama model to use (default: snowflake-arctic-embed2:latest)
 - `-v, --verbose`: Enable verbose logging
 

@@ -321,9 +321,17 @@ Use `--no-update` to only insert new articles without modifying existing ones.
 
 Articles are matched using:
 1. **PMCID + Source**: Primary matching key (Europe PMC source)
-2. **DOI**: Cross-source matching to add full text to existing records
+2. **DOI**: Cross-source matching to add full text to existing records. The
+   DOI is read from the article's own front matter, never from a
+   `<sub-article>` (such as an eLife decision letter, `...eLife.12345.sa1`).
+   DOIs are case-insensitive, so `10.1016/S0140-…` and `10.1016/s0140-…`
+   match (an index on `lower(doi)` keeps this fast, migrations 038/039).
+3. **PMID**: Articles without a matching DOI (for example older ones with no
+   DOI) are matched to the PubMed record with the same PMID
 
-This means if you have articles from PubMed or medRxiv, importing Europe PMC data will add full text to those existing records.
+This means if you have articles from PubMed or medRxiv, importing Europe PMC
+data will add full text to those existing records instead of creating a
+second copy. An existing record that already has full text is left as it is.
 
 ## Programmatic Usage - Import
 

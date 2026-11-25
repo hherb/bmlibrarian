@@ -436,7 +436,19 @@ uv pip install pymupdf4llm
 **Solution:**
 - The importer checks for existing DOIs before insertion
 - Running the same date range multiple times is safe
-- Existing papers are skipped automatically
+- Existing papers are skipped automatically, unless the API returns a newer
+  version of the preprint: then the title, abstract, authors and PDF link are
+  updated to that version, and its full text replaces the old one. If the new
+  version's full text was not fetched (it failed, or PDF downloads are off),
+  the old full text is kept and a warning is logged; the old version's PDF is
+  unlinked, so `fetch-pdfs` downloads the new one later
+- Papers imported from MECA packages record no version, so the API never
+  overwrites them
+- The search index still holds the old abstract after a version update
+  (issue #475)
+- PDFs are saved under the DOI with `/` replaced by `_`: version 1 as
+  `10.1101_2024.01.01.24300001.pdf`, later versions with `v2`, `v3`… before
+  `.pdf`
 
 ## AWS MECA Bulk Sync (Optional)
 
