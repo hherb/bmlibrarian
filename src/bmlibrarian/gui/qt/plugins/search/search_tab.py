@@ -16,7 +16,9 @@ import psycopg
 import re
 from datetime import datetime
 
-from bmlibrarian.config import get_config, get_model, get_ollama_host
+from bmlibrarian.config import (
+    get_agent_config, get_config, get_model, get_ollama_host,
+)
 from bmlibrarian.agents.query_agent import QueryAgent
 from bmlibrarian.database import search_hybrid
 from ...qt_document_card_factory import QtDocumentCardFactory
@@ -275,8 +277,12 @@ class SearchWorker(QThread):
             if needs_fulltext_query:
                 # Generate PostgreSQL tsquery using QueryAgent
                 # Note: QueryAgent.convert_question() already performs additional validation
+                agent_config = get_agent_config('query')
                 query_agent = QueryAgent(
                     model=get_model('query_agent'), host=get_ollama_host(),
+                    show_model_info=False,
+                    **{k: agent_config[k] for k in ('temperature', 'top_p')
+                       if k in agent_config},
                 )
                 query_text = query_agent.convert_question(search_text)
 

@@ -63,25 +63,41 @@ def split_inline_thinking(
     """
     Move reasoning a Gemma-family model wrote inline out of the content.
 
-    medgemma emits ``<unused94>reasoning<unused95>answer`` as plain text.
-    Without the closing marker the model never reached its answer, so the
-    content is empty (callers then refuse it as an empty response).
+    medgemma emits ``<unused94>reasoning<unused95>answer`` as plain text,
+    possibly several blocks. Everything after an unclosed start marker is
+    trace: the model never reached its answer, so medgemma's content ends
+    up empty (callers then refuse it as an empty response). An end marker
+    with no start marker before it (a template that pre-fills the start)
+    closes a trace that began at the top of the content.
 
     Args:
         content: The response content as the provider returned it.
         thinking: A trace the provider already separated, if any.
 
     Returns:
-        (content, thinking) with the inline trace moved to thinking.
+        (content, thinking): the text outside the traces, joined by spaces,
+        and the provider's trace followed by the inline ones (None if all
+        are empty).
     """
-    head, start, rest = content.partition(GEMMA_THINKING_START)
-    if not start:
+    if GEMMA_THINKING_START not in content and GEMMA_THINKING_END not in content:
         return content, thinking
-    trace, end, answer = rest.partition(GEMMA_THINKING_END)
-    trace = trace.strip()
-    if thinking:
-        trace = f"{thinking}\n{trace}"
-    return (head + answer).strip() if end else head.strip(), trace
+    traces = [thinking or ""]
+    answers: list[str] = []
+    rest = content
+    first_end = rest.find(GEMMA_THINKING_END)
+    first_start = rest.find(GEMMA_THINKING_START)
+    if first_end != -1 and (first_start == -1 or first_end < first_start):
+        trace, _, rest = rest.partition(GEMMA_THINKING_END)
+        traces.append(trace)
+    while rest:
+        head, start, rest = rest.partition(GEMMA_THINKING_START)
+        answers.append(head)
+        if start:
+            trace, _, rest = rest.partition(GEMMA_THINKING_END)
+            traces.append(trace)
+    answer = " ".join(a.strip() for a in answers if a.strip())
+    trace_text = "\n".join(t.strip() for t in traces if t.strip())
+    return answer, trace_text or None
 
 
 class LLMClient:
