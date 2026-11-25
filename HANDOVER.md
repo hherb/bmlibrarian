@@ -25,14 +25,20 @@ off new work. Longer-term structural items live in
   for `LOWER(doi) = … ORDER BY id LIMIT 1`. Every `LOWER(doi)` lookup
   (pdf_matcher, verification prompt, paper reviewer, benchmark test) now
   uses the index; the DOI part of #333 is done. Both migrations run on the
-  next connection to `knowledgebase` too (owner approved, 2026-11-25). The medRxiv importer updates a stored preprint
-  when the API offers a newer version (title, abstract, authors, `pdf_url`;
-  full text and PDF only if the new ones were fetched), PDFs for v2+ are
-  saved as `<doi>v<n>.pdf`, and `fetch-pdfs` no longer blanks existing full
-  text when the PDF was already on disk (#446). Verified: suite 5014
-  passed, 75 skipped; no new ruff/mypy findings; 038/039 applied on
-  `bmlibrarian_dev` (index valid, re-run applies nothing, plans checked).
-  Importers not run against medRxiv/Europe PMC.
+  next connection to `knowledgebase` too (owner approved, 2026-11-25). The
+  medRxiv importer updates a stored preprint when the API offers a newer
+  version (title, abstract, authors, `pdf_url`; full text only if the new
+  one was fetched, else the old is kept with a warning; the old PDF is
+  unlinked so `fetch-pdfs` fetches the new one). Rows without a `pdf_url`
+  (MECA) have an unknown version and are never overwritten; a new paper with
+  an invalid version is stored as v1. PDFs for v2+ are saved as
+  `<doi with / → _>v<n>.pdf`, and `fetch-pdfs` no longer blanks existing full
+  text when the PDF was already on disk (#446). Open follow-up: abstract
+  updates leave the old abstract chunk/embedding in place (#475, all
+  importers). Verified: suite 5026 passed, 75 skipped; no new ruff/mypy
+  findings; 038/039 applied on `bmlibrarian_dev` (index valid, re-run
+  applies nothing, plans checked). Importers not run against
+  medRxiv/Europe PMC.
 
 - **PubMed import fixes #445, #440, #441** (2026-11-25, branch
   `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
@@ -442,7 +448,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **5014 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **5026 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

@@ -206,9 +206,9 @@ class DocumentEmbedder:
         """
         Get one page of documents that don't have embeddings yet.
 
-        Pages by document ID (keyset paging), so a full-corpus run never holds
-        more than one page in memory. Only the columns that are embedded are
-        fetched (no full text).
+        Returns documents after ``after_id`` in ID order (keyset paging); the
+        caller passes a page size as ``limit``, so only one page is in memory.
+        Only the columns that are embedded are fetched (no full text).
 
         Args:
             source_name: Filter by source name (e.g., 'medrxiv', 'pubmed')
@@ -335,7 +335,8 @@ class DocumentEmbedder:
 
         Args:
             source_name: Filter by source name (e.g., 'medrxiv', 'pubmed')
-            limit: Maximum number of documents to embed
+            limit: Maximum number of documents to process (embedded or failed);
+                None for all
             batch_size: Number of documents fetched from the database per page
 
         Returns:
@@ -343,6 +344,8 @@ class DocumentEmbedder:
         """
         if batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be at least 1 (or None for all), got {limit}")
 
         total_processed = 0
         embedded_count = 0

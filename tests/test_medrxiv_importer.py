@@ -161,27 +161,37 @@ class TestPreprintVersions:
         ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001v2.full.pdf", 2),
         ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001v12.full.pdf", 12),
         ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001", 1),
-        (None, 1),
+        (None, None),
+        ("", None),
     ])
     def test_stored_preprint_version(self, url, expected):
         assert stored_preprint_version(url) == expected
 
     @staticmethod
-    def _run(existing, version):
-        """Process one paper against a stored row ``existing``; return executed SQL."""
-        cur = MagicMock()
-        cur.fetchone.side_effect = [existing, (99,)]
+    def _paper(version: str) -> dict:
+        """Return an API paper row for DOI 10.1101/x at ``version``."""
+        return {
+            "doi": "10.1101/x", "title": f"Title v{version}", "abstract": "New abstract",
+            "authors": [], "date": "2024-02-01", "version": version,
+        }
+
+    @staticmethod
+    def _importer(cur: MagicMock) -> MedRxivImporter:
+        """Return an importer whose database connection yields ``cur``."""
         importer = object.__new__(MedRxivImporter)
         importer.db_manager = MagicMock()
         conn = importer.db_manager.get_connection.return_value.__enter__.return_value
         conn.cursor.return_value.__enter__.return_value = cur
         importer.source_id = 1
         importer.extraction_strategy = "pdf_only"  # no network extraction
-        paper = {
-            "doi": "10.1101/x", "title": "New title", "abstract": "New abstract",
-            "authors": [], "date": "2024-02-01", "version": version,
-        }
-        count = importer._process_papers([paper], download_pdfs=False)
+        return importer
+
+    @classmethod
+    def _run(cls, existing, version: str):
+        """Process one paper against a stored row ``existing``; return executed SQL."""
+        cur = MagicMock()
+        cur.fetchone.side_effect = [existing, (99,)]
+        count = cls._importer(cur)._process_papers([cls._paper(version)], download_pdfs=False)
         sqls = [c.args[0] for c in cur.execute.call_args_list]
         return count, sqls, cur
 
@@ -190,10 +200,16 @@ class TestPreprintVersions:
         assert count == 1
         update = [c for c in cur.execute.call_args_list if "UPDATE document" in c.args[0]]
         assert len(update) == 1
-        params = update[0].args[1]
-        assert params[0] == "New title"
+        sql, params = update[0].args
+        assert params[0] == "Title v2"
         assert params[3] == "https://www.medrxiv.org/content/10.1101/xv2.full.pdf"
         assert params[-1] == 5
+        # Old full text is kept when the new version's was not fetched ...
+        assert "full_text = COALESCE(NULLIF(%s, ''), full_text)" in sql
+        assert params[5] == ""
+        # ... but the old version's PDF is unlinked, so fetch-pdfs fetches v2.
+        assert "pdf_filename = %s," in sql
+        assert params[4] == ""
         assert not any("INSERT INTO document" in s for s in sqls)
 
     def test_same_or_older_version_is_skipped(self):
@@ -207,10 +223,63 @@ class TestPreprintVersions:
         assert count == 1
         assert any("INSERT INTO document" in s for s in sqls)
 
-    def test_invalid_version_is_skipped(self):
-        count, sqls, _ = self._run(None, "abc")
+    def test_invalid_version_of_new_paper_is_inserted_as_v1(self):
+        count, sqls, cur = self._run(None, "abc")
+        assert count == 1
+        insert = [c for c in cur.execute.call_args_list if "INSERT INTO document" in c.args[0]]
+        assert len(insert) == 1
+        assert insert[0].args[1][9] == "https://www.medrxiv.org/content/10.1101/xv1.full.pdf"
+
+    def test_invalid_version_of_stored_paper_is_skipped(self):
+        count, sqls, _ = self._run((5, "https://www.medrxiv.org/content/10.1101/xv1.full.pdf"), "abc")
         assert count == 0
-        assert not any("INSERT INTO document" in s for s in sqls)
+        assert not any("UPDATE document" in s or "INSERT INTO document" in s for s in sqls)
+
+    def test_row_without_recorded_version_is_not_overwritten(self):
+        # MECA imports store no pdf_url: their version is unknown, maybe newer.
+        count, sqls, _ = self._run((5, None), "2")
+        assert count == 0
+        assert not any("UPDATE document" in s or "INSERT INTO document" in s for s in sqls)
+
+    @pytest.mark.parametrize("order", [("1", "2"), ("2", "1")])
+    def test_several_versions_in_one_batch(self, order):
+        cur = MagicMock()
+        v1_url = "https://www.medrxiv.org/content/10.1101/xv1.full.pdf"
+        v2_url = "https://www.medrxiv.org/content/10.1101/xv2.full.pdf"
+        if order == ("1", "2"):
+            cur.fetchone.side_effect = [None, (99,), (99, v1_url)]
+        else:
+            cur.fetchone.side_effect = [None, (99,), (99, v2_url)]
+        papers = [self._paper(v) for v in order]
+        count = self._importer(cur)._process_papers(papers, download_pdfs=False)
+        sqls = [c.args[0] for c in cur.execute.call_args_list]
+        assert sum("INSERT INTO document" in s for s in sqls) == 1
+        assert sum("UPDATE document" in s for s in sqls) == (1 if order == ("1", "2") else 0)
+        assert count == (2 if order == ("1", "2") else 1)
+
+    def test_fetch_missing_pdfs_keeps_text_and_uses_stored_version(self):
+        cur = MagicMock()
+        importer = self._importer(cur)
+        importer.get_preprints_without_pdfs = MagicMock(return_value=[{
+            "doi": "10.1101/x", "title": "T", "publication_date": "2024-02-01",
+            "pdf_url": "https://www.medrxiv.org/content/10.1101/xv2.full.pdf",
+        }])
+        importer.download_pdf = MagicMock(return_value=("10.1101_xv2.pdf", False))
+        assert importer.fetch_missing_pdfs() == 1
+        assert importer.download_pdf.call_args.args[0]["version"] == "2"
+        sql, params = cur.execute.call_args.args
+        assert "full_text = COALESCE(NULLIF(%s, ''), full_text)" in sql
+        assert params[:2] == ("10.1101_xv2.pdf", "")
+
+    def test_fetch_missing_pdfs_treats_unversioned_row_as_v1(self):
+        cur = MagicMock()
+        importer = self._importer(cur)
+        importer.get_preprints_without_pdfs = MagicMock(return_value=[{
+            "doi": "10.1101/x", "title": "T", "publication_date": "2024-02-01", "pdf_url": None,
+        }])
+        importer.download_pdf = MagicMock(return_value=(None, False))
+        assert importer.fetch_missing_pdfs() == 0
+        assert importer.download_pdf.call_args.args[0]["version"] == "1"
 
     def test_pdf_filename_carries_version_after_v1(self, tmp_path):
         importer = object.__new__(MedRxivImporter)

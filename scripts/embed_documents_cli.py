@@ -22,7 +22,6 @@ Usage:
 import argparse
 import logging
 import sys
-from datetime import datetime
 
 from src.bmlibrarian.embeddings import DocumentEmbedder
 
@@ -204,7 +203,7 @@ def main():
     embed_parser.add_argument(
         '--limit',
         type=int,
-        help='Maximum number of documents to embed'
+        help='Maximum number of documents to process (embedded or failed)'
     )
     embed_parser.add_argument(
         '--batch-size',

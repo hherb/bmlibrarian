@@ -133,8 +133,11 @@ class TestEmbedDocumentsPaging:
     """embed_documents pages through candidates instead of loading them all (#442)."""
 
     @staticmethod
-    def _embedder(pages):
-        """Build a DocumentEmbedder without a database, fed from ``pages``."""
+    def _embedder(pages: list) -> tuple:
+        """Build a DocumentEmbedder without a database, fed from ``pages``.
+
+        Returns the embedder and the list of ``(limit, after_id)`` page requests.
+        """
         embedder = DocumentEmbedder.__new__(DocumentEmbedder)
         calls = []
 
@@ -148,7 +151,8 @@ class TestEmbedDocumentsPaging:
         return embedder, calls
 
     @staticmethod
-    def _docs(*ids):
+    def _docs(*ids: int) -> list:
+        """Return candidate document rows with the given IDs."""
         return [{'id': i, 'title': f't{i}', 'abstract': f'a{i}'} for i in ids]
 
     def test_pages_by_last_id_until_empty(self):
@@ -169,6 +173,26 @@ class TestEmbedDocumentsPaging:
         stats = embedder.embed_documents(batch_size=2)
         assert stats == {'total_processed': 2, 'embedded_count': 1, 'failed_count': 1}
 
+    def test_raising_document_is_counted_and_paging_continues(self):
+        embedder, calls = self._embedder([self._docs(1, 2), self._docs(3), []])
+
+        def create(text: str) -> list:
+            """Fail loudly for the first document only."""
+            if text == 'a1':
+                raise RuntimeError("model down")
+            return [0.1]
+
+        embedder.create_embedding = create
+        stats = embedder.embed_documents(batch_size=2)
+        assert calls == [(2, 0), (2, 2), (2, 3)]
+        assert stats == {'total_processed': 3, 'embedded_count': 2, 'failed_count': 1}
+
+    def test_store_failure_is_counted(self):
+        embedder, _ = self._embedder([self._docs(1), []])
+        embedder._store_chunk_and_embedding = lambda *args: None
+        stats = embedder.embed_documents(batch_size=2)
+        assert stats == {'total_processed': 1, 'embedded_count': 0, 'failed_count': 1}
+
     def test_query_has_no_full_text_and_uses_keyset(self):
         embedder = DocumentEmbedder.__new__(DocumentEmbedder)
         embedder.model_id = 3
@@ -185,6 +209,8 @@ class TestEmbedDocumentsPaging:
         sql, params = cursor.execute.call_args[0]
         assert 'full_text' not in sql
         assert 'd.id > %s' in sql
+        # Keyset paging relies on rows sorted by ID: last_id is the page's last row.
+        assert sql.rstrip().endswith('ORDER BY d.id LIMIT %s')
         assert params == (3, 10, '%pubmed%', 50)
         assert rows == [{'id': 4, 'title': 't', 'abstract': 'a', 'source_name': 'pubmed'}]
 
@@ -192,6 +218,11 @@ class TestEmbedDocumentsPaging:
         embedder, _ = self._embedder([])
         with pytest.raises(ValueError):
             embedder.embed_documents(batch_size=0)
+
+    def test_rejects_zero_limit(self):
+        embedder, _ = self._embedder([])
+        with pytest.raises(ValueError):
+            embedder.embed_documents(limit=0)
 
 
 def test_module_constants():

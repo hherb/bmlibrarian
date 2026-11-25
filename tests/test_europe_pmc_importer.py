@@ -116,3 +116,22 @@ def test_upsert_inserts_when_no_twin(tmp_path: Path) -> None:
     article = ArticleMetadata(pmcid="PMC1", pmid="222", doi="10.1/x")
     assert importer._upsert_article(cursor, article, 9) == "inserted"
     assert "INSERT INTO document" in cursor.queries[-1][0]
+
+
+def test_ids_fall_back_to_whole_article_without_front_matter() -> None:
+    """An article with no front-matter IDs still gets its PMCID."""
+    article = ET.fromstring(
+        '<article><article-id pub-id-type="pmcid">PMC9</article-id></article>'
+    )
+    ids = EuropePMCXMLParser._front_article_ids(article)
+    assert [e.text for e in ids] == ["PMC9"]
+
+
+def test_upsert_skips_twin_when_updates_disabled(tmp_path: Path) -> None:
+    """With updates disabled a matched twin is left alone and nothing is written."""
+    importer = _importer(tmp_path)
+    importer.update_existing = False
+    cursor = FakeCursor([None, (77,)])
+    article = ArticleMetadata(pmcid="PMC1", pmid="222", full_text="# Full text")
+    assert importer._upsert_article(cursor, article, 9) == "skipped"
+    assert not any("UPDATE" in sql or "INSERT" in sql for sql, _ in cursor.queries)

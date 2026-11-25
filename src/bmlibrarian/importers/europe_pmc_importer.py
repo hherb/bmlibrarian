@@ -40,6 +40,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Iterator
 
+import psycopg
+
 from bmlibrarian.discovery.nxml_parser import NXMLParser
 from bmlibrarian.importers.transaction_utils import record_savepoint
 
@@ -1070,14 +1072,15 @@ class EuropePMCImporter:
 
     @staticmethod
     def _find_cross_source_match(
-        cursor,
+        cursor: psycopg.Cursor,
         article: ArticleMetadata,
         source_id: int
     ) -> Optional[int]:
         """Find an existing record of this article from another source.
 
-        Matches by DOI first (case-insensitive), then by PMID against the PubMed source, so
-        DOI-less older articles still find their PubMed record.
+        Matches by DOI first (case-insensitive), then by PMID against the
+        PubMed source, so DOI-less older articles still find their PubMed
+        record.
 
         Args:
             cursor: Database cursor
@@ -1193,6 +1196,11 @@ class EuropePMCImporter:
                 )
                 if cursor.rowcount:
                     return 'updated'
+            logger.info(
+                f"{article.pmcid}: matches existing document {match_id}; "
+                "its full text was not attached (record already has full text, "
+                "updates disabled, or no full text parsed)"
+            )
             return 'skipped'
 
         # Insert new record
