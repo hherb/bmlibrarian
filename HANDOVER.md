@@ -17,16 +17,22 @@ off new work. Longer-term structural items live in
   tqdm-without-total truthiness crash this exposed is fixed too). The
   Europe PMC importer reads IDs from `front/article-meta` only (no more
   eLife `….sa1` sub-article DOIs) and matches existing records by DOI
-  (exact/lower/upper variants, so `idx_document_doi` is still used; a
-  mixed-case-only mismatch waits on #333), then by PMID against the PubMed
-  source, before inserting; a guarded UPDATE that changes no row now
-  reports `skipped` (#444). The medRxiv importer updates a stored preprint
+  (case-insensitive), then by PMID against the PubMed source, before
+  inserting; a guarded UPDATE that changes no row now reports `skipped`
+  (#444). Migration 038 adds `idx_document_doi_lower` (`CONCURRENTLY`; 183 s
+  on `bmlibrarian_dev`) and 039 runs `ANALYZE document`: without expression
+  statistics the planner estimated 206 k matches and walked the primary key
+  for `LOWER(doi) = … ORDER BY id LIMIT 1`. Every `LOWER(doi)` lookup
+  (pdf_matcher, verification prompt, paper reviewer, benchmark test) now
+  uses the index; the DOI part of #333 is done. Both migrations run on the
+  next connection to `knowledgebase` too (owner approved, 2026-11-25). The medRxiv importer updates a stored preprint
   when the API offers a newer version (title, abstract, authors, `pdf_url`;
   full text and PDF only if the new ones were fetched), PDFs for v2+ are
   saved as `<doi>v<n>.pdf`, and `fetch-pdfs` no longer blanks existing full
-  text when the PDF was already on disk (#446). Verified: suite 5012
-  passed, 75 skipped; no new ruff/mypy findings. Not run against a live
-  database or the medRxiv/Europe PMC services.
+  text when the PDF was already on disk (#446). Verified: suite 5014
+  passed, 75 skipped; no new ruff/mypy findings; 038/039 applied on
+  `bmlibrarian_dev` (index valid, re-run applies nothing, plans checked).
+  Importers not run against medRxiv/Europe PMC.
 
 - **PubMed import fixes #445, #440, #441** (2026-11-25, branch
   `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
@@ -436,7 +442,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **5012 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **5014 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

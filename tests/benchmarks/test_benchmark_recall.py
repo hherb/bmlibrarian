@@ -216,12 +216,9 @@ def check_papers_in_database(
         if not found and paper.doi:
             norm_doi = normalize_doi(paper.doi)
             if norm_doi:
-                # shortcut: exact-match case variants so the doi index is used
-                # (LOWER(doi) seq-scans the whole table, ~1-2 min on a full
-                # PubMed import); misses DOIs stored in some other mixed case.
-                query = "SELECT id, title FROM document WHERE doi = ANY(%s) LIMIT 1"
-                candidates = list({norm_doi, norm_doi.upper(), paper.doi.strip()})
-                result = _fetch_all(db_manager, query, (candidates,))
+                # Case-insensitive; idx_document_doi_lower (migration 038).
+                query = "SELECT id, title FROM document WHERE LOWER(doi) = LOWER(%s) LIMIT 1"
+                result = _fetch_all(db_manager, query, (norm_doi,))
                 if result:
                     found_papers.append({
                         "ground_truth": paper.to_dict(),

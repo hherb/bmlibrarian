@@ -1076,7 +1076,7 @@ class EuropePMCImporter:
     ) -> Optional[int]:
         """Find an existing record of this article from another source.
 
-        Matches by DOI first, then by PMID against the PubMed source, so
+        Matches by DOI first (case-insensitive), then by PMID against the PubMed source, so
         DOI-less older articles still find their PubMed record.
 
         Args:
@@ -1088,15 +1088,12 @@ class EuropePMCImporter:
             The matching document ID, or None
         """
         if article.doi:
-            doi = article.doi.strip()
-            # shortcut: exact/lower/upper variants keep idx_document_doi usable
-            # (LOWER(doi) would scan the table per article); a mixed-case
-            # mismatch is missed until there is an index on LOWER(doi) (#333).
-            variants = list(dict.fromkeys([doi, doi.lower(), doi.upper()]))
+            # DOIs are case-insensitive; idx_document_doi_lower (migration 038)
+            # keeps this an index lookup.
             cursor.execute(
-                "SELECT id FROM document WHERE doi = ANY(%s) AND source_id != %s "
+                "SELECT id FROM document WHERE LOWER(doi) = LOWER(%s) AND source_id != %s "
                 "ORDER BY id LIMIT 1",
-                (variants, source_id)
+                (article.doi.strip(), source_id)
             )
             row = cursor.fetchone()
             if row:

@@ -62,19 +62,14 @@ def test_sub_article_doi_does_not_replace_article_doi() -> None:
     assert meta.doi == "10.7554/eLife.12345"
 
 
-def test_doi_match_tries_case_variants() -> None:
-    """A DOI stored in another case still matches, through the DOI index."""
+def test_doi_match_is_case_insensitive() -> None:
+    """The DOI is compared with LOWER() on both sides (DOIs ignore case)."""
     cursor = FakeCursor([(42,)])
-    article = ArticleMetadata(pmcid="PMC1", doi="10.1016/S0140-6736(20)30001-X")
+    article = ArticleMetadata(pmcid="PMC1", doi=" 10.1016/S0140-6736(20)30001-X ")
     assert EuropePMCImporter._find_cross_source_match(cursor, article, 9) == 42
     sql, params = cursor.queries[0]
-    assert "doi = ANY(%s)" in sql
-    assert set(params[0]) == {
-        "10.1016/S0140-6736(20)30001-X",
-        "10.1016/s0140-6736(20)30001-x",
-        "10.1016/S0140-6736(20)30001-X".upper(),
-    }
-    assert params[1] == 9
+    assert "LOWER(doi) = LOWER(%s)" in sql
+    assert params == ("10.1016/S0140-6736(20)30001-X", 9)
 
 
 def test_pmid_match_when_doi_misses() -> None:

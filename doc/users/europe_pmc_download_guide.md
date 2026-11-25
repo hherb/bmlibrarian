@@ -324,8 +324,8 @@ Articles are matched using:
 2. **DOI**: Cross-source matching to add full text to existing records. The
    DOI is read from the article's own front matter, never from a
    `<sub-article>` (such as an eLife decision letter, `...eLife.12345.sa1`).
-   A DOI stored in all lower or all upper case still matches; a DOI that
-   differs only in mixed case does not yet.
+   DOIs are case-insensitive, so `10.1016/S0140-…` and `10.1016/s0140-…`
+   match (an index on `lower(doi)` keeps this fast, migrations 038/039).
 3. **PMID**: Articles without a matching DOI (for example older ones with no
    DOI) are matched to the PubMed record with the same PMID
 
