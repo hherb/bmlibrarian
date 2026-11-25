@@ -308,6 +308,79 @@ class TestBMLibrarianConfigSyncOperations:
         assert config.get('models.query_agent') == 'from-db'
         manager.get_all.assert_not_called()  # get_all() includes the seeded defaults
 
+    def test_save_writes_database_value_under_env_override(
+        self,
+        config: BMLibrarianConfig,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Save stores the user's row, not the BMLIB_* value over it (#477)."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        manager = MagicMock()
+        manager.get_own_settings.return_value = {'ollama': {'host': 'http://mine:11434'}}
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.sync_to_database() is True
+        saved = dict(c.args for c in manager.set.call_args_list)
+        assert saved['ollama']['host'] == 'http://mine:11434'
+        assert config.get('ollama.host') == 'http://gpu:11434'  # still in effect
+
+    def test_reload_from_database_replaces_value_under_override(
+        self,
+        config: BMLibrarianConfig,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second load takes the new row as the value underneath the override."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        manager = MagicMock()
+        manager.get_own_settings.side_effect = [
+            {}, {'ollama': {'host': 'http://later:11434'}},
+        ]
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+        config._sync_from_database()
+
+        assert config.get('ollama.host') == 'http://gpu:11434'
+        config.sync_to_database()
+        saved = dict(c.args for c in manager.set.call_args_list)
+        assert saved['ollama']['host'] == 'http://later:11434'
+
+    def test_failed_reload_keeps_env_override(
+        self,
+        config: BMLibrarianConfig,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed load still leaves the BMLIB_* value in effect."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        manager = MagicMock()
+        manager.get_own_settings.side_effect = RuntimeError("connection lost")
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.get('ollama.host') == 'http://gpu:11434'
+
+    def test_json_save_leaves_env_overrides_out(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path
+    ) -> None:
+        """config.json gets the value underneath; a value the user set is kept."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        monkeypatch.setenv('BMLIB_QUERY_MODEL', 'env-model')
+        monkeypatch.setenv('BMLIB_OLLAMA_TIMEOUT', '999')
+        monkeypatch.delitem(DEFAULT_CONFIG['ollama'], 'timeout')
+        config = BMLibrarianConfig()
+        config.set('models.query_agent', 'user-choice')
+
+        for save in (config.export_to_json, config.save_config):
+            target = tmp_path / f"{save.__name__}.json"
+            save(target)
+            saved = json.loads(target.read_text())
+            assert saved['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+            assert saved['models']['query_agent'] == 'user-choice'
+            assert 'timeout' not in saved['ollama']  # the override created it
+        assert config.get('ollama.host') == 'http://gpu:11434'
+
     def test_login_merges_saved_category_missing_from_defaults(
         self,
         config: BMLibrarianConfig

@@ -10,6 +10,16 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Env overrides no longer saved, #477** (2026-11-26, branch
+  `fix/477-env-overrides-not-saved`). `BMLibrarianConfig` records each
+  applied `BMLIB_*` override with the value underneath it
+  (`_env_applied`); `sync_to_database()`, `save_config()` and
+  `export_to_json()` save `_persistable_config()` (env values put back, a
+  key the override created dropped; a key the user changed since is saved
+  as is). `_sync_from_database()` takes the overrides out before merging
+  and re-applies them in a `finally`. Verified: suite 5048 passed, 73
+  skipped; the 4 new tests fail on the old code. Not run in the Qt app.
+
 - **Login settings order #438, pdf_matcher #456** (2026-11-25, branch
   `fix/settings-pdfmatcher-438-456`). At login `_sync_from_database` merges
   only the user's own `bmlsettings.user_settings` rows
@@ -31,9 +41,7 @@ off new work. Longer-term structural items live in
   instead of falling back to title matching or ending a directory batch.
   Title matches now pick the best score, not the lowest document id; a
   dry-run directory import no longer counts `would_import` as failed. Not
-  run against a live login or a real PDF import. Still open: Save after
-  login writes env-overridden values into the user's rows (pre-existing,
-  #477).
+  run against a live login or a real PDF import.
 
 - **Import/embedding fixes #442, #444, #446** (2026-11-25, branch
   `fix/import-embed-442-444-446`). `DocumentEmbedder.embed_documents` pages
@@ -164,62 +172,19 @@ off new work. Longer-term structural items live in
   from the installed DMG app (owner), Intel/universal builds. The demo runbook
   still runs the cargo-built `bml-app`; the DMG is an option, not a change.
 
-- **#460 leftovers: `FulltextSource`, topic years, "none offered"**
-  (2026-11-17, branch `chore/460-leftovers`). `bml_library::FulltextSource
-  { Medrxiv, EuropePmc }` (from `LibrarySource`) replaces the source strings
-  in `Paper.source`, `fulltext::run`/`next_paper`, `metadata::run_window` and
-  `status`. `topics::TOPIC_FIRST_YEAR`/`TOPIC_LAST_YEAR` (2021, 2026) build
-  the query's `PUB_YEAR` range and `europepmc_first_day()`
-  (`EUROPEPMC_FIRST_DAY` is gone); a `bml-app` test checks screen 4 names the
-  same years (static text, `shortcut:`). `library status` counts papers with
-  no full-text link apart ("N none offered", `LibraryStatus::no_link`) by the
-  same condition `next_paper` reads (`fulltext::offers_link`), so "not tried
-  yet" reaches 0. New tests: `update_topic` with full text down
-  mid-rounds, a complete topic update stamps `last_update_at`, the status
-  split, and (PR #465 review) the medRxiv split and a full text indexed before
-  the network goes. Final check: one shared format constant per source in
-  `fulltext.rs`, `offers_link` is `pub(crate)`, `status` errors instead of
-  counting a non-integer as 0, and the medRxiv split test also covers a NULL
-  DOI, an html-only link and a NULL or non-numeric version. This closes #460
-  (its short-walk item was settled by the #790 re-pin). Verified: `cargo test
-  -- --include-ignored` 360 passed with pg_search, `-p bml-app --
-  --include-ignored` 25, Python 4871 passed (the one failure,
-  `test_browser_download.py::test_simple_pdf`, a live-URL timeout, passed on
-  rerun).
-
-- **A window closed mid-setup reopens the wizard, #462** (2026-11-16,
-  branch `fix/462-reopen-mid-setup`). `bml-app` `state::start_screen` opens
-  on Search only when a library is recorded **and** the embedding GGUF is at
-  `bml_setup::gguf_path` (setup records the library in step 2 but downloads
-  the GGUF last; bmlib renames the download into place only once verified).
-  Otherwise it opens on Welcome and setup, re-run, skips the steps already
-  done (a cut-off download starts again). The prepared demo config
-  `~/.bml-demo` has the GGUF, so it still opens on Search. Verified:
-  `cargo test -- --include-ignored` 357 passed with pg_search,
-  `cargo test -p bml-app -- --include-ignored` 24 passed (tests for a
-  leftover `.part` file and an unreadable library record added in review);
-  Python suite 4872 passed. Not checked by hand in the app. Screen 2
-  (`library_folder`) now shows the saved library folder when setup already
-  recorded one (a CLI setup with `--library-dir` that stopped before the
-  GGUF), not always `~/BMLibrarian`.
-
-- **bmlib #790 re-pin and two #460 items** (2026-11-16). bmlib pinned at
-  `6465096` (Europe PMC walk by `FIRST_IDATE`, 3-day settle, short walks
-  fail the day); a 200 HTML page in place of JATS/PDF
-  (`RequestOutcome::WebPage`) is never cached as full text, three in a row
-  end the phase as no network; `open_db` runs the `bml-db` migrations. Not
-  checked: Windows build with the re-picked `windows-sys` versions.
-
-- **Demo polish from #460** (2026-11-16, PR #461): search model warms in
-  the background (`warm_search`); ⌘Q/close waits up to 15 s for the update
-  to stop after the paper in flight (`pause_before_exit`); an empty
-  topic-less library reopens on screen 4 (`LibraryCounts::needs_topic`).
-  **Not verified by hand:** ⌘Q during an update and the screen-4 return
-  (rehearsal checks in `doc/users/investor_demo_runbook.md`).
+- **Mid-November Rust app/library slices** (2026-11-16/17; details in git
+  history, `doc/developers/library_pipeline.md`, `bml_app.md`):
+  `bml_library::FulltextSource`, topic years from `TOPIC_FIRST_YEAR`/
+  `TOPIC_LAST_YEAR`, `library status` counts "none offered" apart (closes
+  #460); a window closed mid-setup reopens the wizard until the GGUF is in
+  place (#462); bmlib pinned at `6465096` (#790 Europe PMC walk; a 200 HTML
+  page is never cached as full text); search model warms in the background,
+  ⌘Q waits up to 15 s for the update (PR #461). **Not verified by hand:** ⌘Q
+  during an update, the screen-4 return, the Windows build.
 
 - **Mid-November audit fixes** (2026-11-15; details in git history and the
   issues): a failed settings load at login blocks `sync_to_database` until a
-  load succeeds (#437; #438 still open); `ChunkEmbedder` keeps old chunks
+  load succeeds (#437); `ChunkEmbedder` keeps old chunks
   until the new ones are embedded (#435); `pdf_matcher` never replaces a
   different PDF at the target and the DOI/PMID fast path works (#443, #436;
   follow-ups #456); `bml server init`/`setup` accept a moved PostgreSQL bin
@@ -472,8 +437,8 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
-  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **5034 passed, 75 skipped** in about 3 min (hermetic since #334;
+  run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
+  **5048 passed, 73 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

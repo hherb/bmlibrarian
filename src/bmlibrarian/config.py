@@ -9,7 +9,7 @@ import json
 import os
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, TypedDict, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Tuple, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
 from .utils.transient_retry import (
@@ -79,6 +79,9 @@ ENV_OVERRIDES: Dict[str, List[str]] = {
     "BMLIB_OLLAMA_HOST": ["ollama", "host"],
     "BMLIB_OLLAMA_TIMEOUT": ["ollama", "timeout"],
 }
+
+# Marks a config key that did not exist before an env override set it.
+_UNSET = object()
 
 
 # =============================================================================
@@ -693,6 +696,9 @@ class BMLibrarianConfig:
         # in-memory values are then JSON/defaults, and saving them would
         # overwrite the stored settings (#437).
         self._db_load_failed: bool = False
+        # Config path -> (value underneath, env value) for each applied
+        # BMLIB_* override, so saving never stores the env value (#477).
+        self._env_applied: Dict[Tuple[str, ...], Tuple[Any, Any]] = {}
         self._load_config()
     
     def _load_config(self):
@@ -741,8 +747,42 @@ class BMLibrarianConfig:
                         logger.warning(f"Invalid integer value for {env_var}: {value}")
                         continue
                 
+                self._env_applied[tuple(config_path)] = (
+                    current.get(config_path[-1], _UNSET), value
+                )
                 current[config_path[-1]] = value
                 logger.info(f"Environment override: {env_var} = {value}")
+
+    def _remove_env_overrides(self, config: Dict[str, Any]) -> None:
+        """Put back, in place, the values the BMLIB_* overrides replaced.
+
+        A key the user changed since the override was applied keeps the
+        user's value; a key the override created is removed.
+
+        Args:
+            config: A configuration dict shaped like self._config.
+        """
+        for path, (underneath, env_value) in self._env_applied.items():
+            parent: Any = config
+            for key in path[:-1]:
+                parent = parent.get(key) if isinstance(parent, dict) else None
+            if not isinstance(parent, dict) or parent.get(path[-1], _UNSET) != env_value:
+                continue
+            if underneath is _UNSET:
+                del parent[path[-1]]
+            else:
+                parent[path[-1]] = underneath
+
+    def _persistable_config(self) -> Dict[str, Any]:
+        """Return a copy of the configuration to save, without env overrides.
+
+        Returns:
+            Deep copy of the configuration with each BMLIB_* value replaced
+            by the value underneath it (#477).
+        """
+        config = self._deep_copy_config(self._config)
+        self._remove_env_overrides(config)
+        return config
 
     @staticmethod
     def _deep_copy_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -831,6 +871,7 @@ class BMLibrarianConfig:
 
         # Reload from JSON/defaults
         self._config = self._deep_copy_config(DEFAULT_CONFIG)
+        self._env_applied = {}
         self._config_loaded = False
         self._load_config()
 
@@ -962,7 +1003,7 @@ class BMLibrarianConfig:
             file_path = Path(file_path)
 
         try:
-            save_json_config(self._config, file_path)
+            save_json_config(self._persistable_config(), file_path)
             print(f"📁 Configuration saved to: {file_path}")  # Debug output
         except IOError as e:
             print(f"❌ Failed to save configuration: {e}")  # Debug output
@@ -1014,6 +1055,8 @@ class BMLibrarianConfig:
         user saved (not the database's default_settings rows, which would
         override config.json) into the in-memory configuration, then applies
         the BMLIB_* environment overrides again so they still win (#438).
+        The overrides are taken out first, so the database values become the
+        values underneath them that saving writes back (#477).
 
         While a load has failed, sync_to_database() refuses to save; a later
         successful load lifts that.
@@ -1029,6 +1072,8 @@ class BMLibrarianConfig:
             logger.warning("Cannot sync from database: no user context set")
             return
 
+        self._remove_env_overrides(self._config)
+        self._env_applied = {}
         try:
             db_settings = self._settings_manager.get_own_settings()
             # get_own_settings() keeps only valid categories; one missing
@@ -1039,7 +1084,8 @@ class BMLibrarianConfig:
         except Exception:
             self._db_load_failed = True
             raise
-        self._load_env_overrides()
+        finally:
+            self._load_env_overrides()
         self._db_load_failed = False
         logger.debug("Synced settings from database to in-memory config")
 
@@ -1073,11 +1119,12 @@ class BMLibrarianConfig:
                 "again), then save."
             )
 
+        config = self._persistable_config()
         success = True
         for category in VALID_SETTINGS_CATEGORIES:
-            if category in self._config:
+            if category in config:
                 try:
-                    self._settings_manager.set(category, self._config[category])
+                    self._settings_manager.set(category, config[category])
                 except Exception as e:
                     logger.error(f"Failed to sync category '{category}' to database: {e}")
                     success = False
@@ -1089,8 +1136,9 @@ class BMLibrarianConfig:
     def export_to_json(self, file_path: Path) -> None:
         """Export current configuration to a JSON file.
 
-        Exports the effective configuration (merged user settings + defaults).
-        Useful for backing up settings or sharing configuration.
+        Exports the merged configuration (user settings + defaults), with
+        BMLIB_* environment overrides left out (#477). Useful for backing up
+        settings or sharing configuration.
 
         Args:
             file_path: Path to the JSON file to create/overwrite.
@@ -1103,7 +1151,7 @@ class BMLibrarianConfig:
         from .utils.path_utils import expand_path
 
         expanded_path = expand_path(str(file_path))
-        save_json_config(self._config, expanded_path)
+        save_json_config(self._persistable_config(), expanded_path)
         logger.info(f"Exported configuration to: {expanded_path}")
 
     def import_from_json(self, file_path: Path, sync_to_db: bool = True) -> None:
