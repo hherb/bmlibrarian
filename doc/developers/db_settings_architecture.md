@@ -137,6 +137,20 @@ vars on every login. `get()`/`get_all()` still fall back to it; the Qt
 post-login "Sync to Database" notice and `migrate_config_to_db.py`
 merge/export use `get_own_settings()`.
 
+Each applied override is recorded in `_env_applied` (path → value
+underneath, env value). `sync_to_database()`, `save_config()` and
+`export_to_json()` save `_persistable_config()`, a copy with each env value
+put back to the value underneath (a key the override created is dropped), so
+an env value never becomes a saved setting (#477). A key whose value no
+longer equals the env value was changed by the user and is saved as is;
+changes are told apart by value only, so a value set equal to the env value
+is not saved. `_sync_from_database()`, `import_from_json()` and
+`reset_to_defaults()` change the configuration inside
+`_env_overrides_lifted()` (as does the Settings tab's Reset): the overrides
+are taken out first, so the loaded, imported or default values become the
+new values underneath, and they are applied again afterwards, even when the
+load fails.
+
 The original design sketch below planned this priority chain:
 
 ```python

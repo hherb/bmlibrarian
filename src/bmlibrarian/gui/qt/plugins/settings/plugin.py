@@ -5,6 +5,7 @@ Integrates configuration functionality into the Research GUI as a nested tab int
 within a single Settings tab. Mirrors functionality from bmlibrarian/gui/settings_tab.py
 """
 
+import copy
 import os
 from pathlib import Path
 from PySide6.QtWidgets import (
@@ -448,8 +449,9 @@ class SettingsWidget(QWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                # Reset to defaults
-                self.config._config = DEFAULT_CONFIG.copy()
+                # Reset to defaults; BMLIB_* overrides still apply over them (#477)
+                with self.config._env_overrides_lifted():
+                    self.config._config = copy.deepcopy(DEFAULT_CONFIG)
                 self.agents_need_reinit.emit()
                 self._refresh_all_tabs()
 
