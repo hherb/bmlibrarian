@@ -436,7 +436,11 @@ uv pip install pymupdf4llm
 **Solution:**
 - The importer checks for existing DOIs before insertion
 - Running the same date range multiple times is safe
-- Existing papers are skipped automatically
+- Existing papers are skipped automatically, unless the API returns a newer
+  version of the preprint: then the title, abstract, authors and PDF link are
+  updated to that version, and its full text replaces the old one (the old
+  full text and PDF are kept if the new version's could not be fetched)
+- Version 1 PDFs are saved as `<doi>.pdf`, later versions as `<doi>v2.pdf` and so on
 
 ## AWS MECA Bulk Sync (Optional)
 

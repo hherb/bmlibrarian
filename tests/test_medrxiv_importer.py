@@ -7,7 +7,11 @@ These tests verify the basic functionality of the MedRxiv importer module.
 import pytest
 from datetime import datetime
 from unittest.mock import Mock, MagicMock, patch
-from src.bmlibrarian.importers.medrxiv_importer import MedRxivImporter
+from src.bmlibrarian.importers.medrxiv_importer import (
+    MedRxivImporter,
+    parse_preprint_version,
+    stored_preprint_version,
+)
 
 
 class TestMedRxivImporter:
@@ -142,6 +146,79 @@ class TestMedRxivImporter:
 
             # Should expand the tilde
             assert importer.pdf_base_dir == tmp_path / 'test_pdfs'
+
+
+class TestPreprintVersions:
+    """Newer preprint versions replace older ones (#446)."""
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("2", 2), (3, 3), (" 1 ", 1), ("0", None), ("-1", None), ("v2", None), (None, None),
+    ])
+    def test_parse_preprint_version(self, raw, expected):
+        assert parse_preprint_version(raw) == expected
+
+    @pytest.mark.parametrize("url, expected", [
+        ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001v2.full.pdf", 2),
+        ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001v12.full.pdf", 12),
+        ("https://www.medrxiv.org/content/10.1101/2024.01.01.24300001", 1),
+        (None, 1),
+    ])
+    def test_stored_preprint_version(self, url, expected):
+        assert stored_preprint_version(url) == expected
+
+    @staticmethod
+    def _run(existing, version):
+        """Process one paper against a stored row ``existing``; return executed SQL."""
+        cur = MagicMock()
+        cur.fetchone.side_effect = [existing, (99,)]
+        importer = object.__new__(MedRxivImporter)
+        importer.db_manager = MagicMock()
+        conn = importer.db_manager.get_connection.return_value.__enter__.return_value
+        conn.cursor.return_value.__enter__.return_value = cur
+        importer.source_id = 1
+        importer.extraction_strategy = "pdf_only"  # no network extraction
+        paper = {
+            "doi": "10.1101/x", "title": "New title", "abstract": "New abstract",
+            "authors": [], "date": "2024-02-01", "version": version,
+        }
+        count = importer._process_papers([paper], download_pdfs=False)
+        sqls = [c.args[0] for c in cur.execute.call_args_list]
+        return count, sqls, cur
+
+    def test_newer_version_updates_existing_row(self):
+        count, sqls, cur = self._run((5, "https://www.medrxiv.org/content/10.1101/xv1.full.pdf"), "2")
+        assert count == 1
+        update = [c for c in cur.execute.call_args_list if "UPDATE document" in c.args[0]]
+        assert len(update) == 1
+        params = update[0].args[1]
+        assert params[0] == "New title"
+        assert params[3] == "https://www.medrxiv.org/content/10.1101/xv2.full.pdf"
+        assert params[-1] == 5
+        assert not any("INSERT INTO document" in s for s in sqls)
+
+    def test_same_or_older_version_is_skipped(self):
+        for version in ("1", "2"):
+            count, sqls, _ = self._run((5, "https://www.medrxiv.org/content/10.1101/xv2.full.pdf"), version)
+            assert count == 0
+            assert not any("UPDATE document" in s or "INSERT INTO document" in s for s in sqls)
+
+    def test_new_paper_is_inserted(self):
+        count, sqls, _ = self._run(None, "1")
+        assert count == 1
+        assert any("INSERT INTO document" in s for s in sqls)
+
+    def test_invalid_version_is_skipped(self):
+        count, sqls, _ = self._run(None, "abc")
+        assert count == 0
+        assert not any("INSERT INTO document" in s for s in sqls)
+
+    def test_pdf_filename_carries_version_after_v1(self, tmp_path):
+        importer = object.__new__(MedRxivImporter)
+        importer.pdf_base_dir = tmp_path
+        (tmp_path / "10.1101_x.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "10.1101_xv2.pdf").write_bytes(b"%PDF-1.4")
+        assert importer.download_pdf({"doi": "10.1101/x", "version": "1"}) == ("10.1101_x.pdf", False)
+        assert importer.download_pdf({"doi": "10.1101/x", "version": "2"}) == ("10.1101_xv2.pdf", False)
 
 
 def test_module_constants():

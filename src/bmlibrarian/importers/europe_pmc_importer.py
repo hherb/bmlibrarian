@@ -38,7 +38,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable, Iterator, Tuple
+from typing import Optional, List, Dict, Any, Callable, Iterator
 
 from bmlibrarian.discovery.nxml_parser import NXMLParser
 from bmlibrarian.importers.transaction_utils import record_savepoint
@@ -229,7 +229,7 @@ class EuropePMCXMLParser:
             except Exception as e:
                 # Try to get PMCID for error logging
                 pmcid = "unknown"
-                for article_id in article_elem.findall('.//article-id'):
+                for article_id in self._front_article_ids(article_elem):
                     if article_id.get('pub-id-type') == 'pmcid':
                         pmcid = article_id.text or "unknown"
                         break
@@ -267,7 +267,7 @@ class EuropePMCXMLParser:
                 except Exception as e:
                     # Try to get PMCID for error logging
                     pmcid = "unknown"
-                    for article_id in elem.findall('.//article-id'):
+                    for article_id in self._front_article_ids(elem):
                         if article_id.get('pub-id-type') == 'pmcid':
                             pmcid = article_id.text or "unknown"
                             break
@@ -280,6 +280,25 @@ class EuropePMCXMLParser:
         if article_count == 0:
             logger.warning("No articles found in package")
 
+    @staticmethod
+    def _front_article_ids(article: ET.Element) -> List[ET.Element]:
+        """Return the article's own <article-id> elements.
+
+        Reads ``front/article-meta`` only: a ``.//article-id`` search also
+        finds the IDs of <sub-article> stubs (eLife decision letters carry
+        DOIs like ``10.7554/eLife.NNNNN.sa1``), and the last one would win.
+        Falls back to a document-wide search only when the article has no
+        front matter IDs at all.
+
+        Args:
+            article: XML Element for the article
+
+        Returns:
+            List of <article-id> elements
+        """
+        ids = article.findall('front/article-meta/article-id')
+        return ids if ids else article.findall('.//article-id')
+
     def _parse_article(self, article: ET.Element) -> Optional[ArticleMetadata]:
         """Parse a single article element.
 
@@ -291,7 +310,7 @@ class EuropePMCXMLParser:
         """
         # Extract PMCID (required)
         pmcid = None
-        for article_id in article.findall('.//article-id'):
+        for article_id in self._front_article_ids(article):
             pub_id_type = article_id.get('pub-id-type')
             if pub_id_type == 'pmcid':
                 pmcid = article_id.text
@@ -301,7 +320,7 @@ class EuropePMCXMLParser:
 
         if not pmcid:
             # Try pmc type
-            for article_id in article.findall('.//article-id'):
+            for article_id in self._front_article_ids(article):
                 if article_id.get('pub-id-type') == 'pmc':
                     pmcid = f"PMC{article_id.text}"
                     break
@@ -313,7 +332,7 @@ class EuropePMCXMLParser:
         metadata = ArticleMetadata(pmcid=pmcid)
 
         # Extract other IDs
-        for article_id in article.findall('.//article-id'):
+        for article_id in self._front_article_ids(article):
             pub_id_type = article_id.get('pub-id-type')
             if pub_id_type == 'pmid' and article_id.text:
                 metadata.pmid = article_id.text
@@ -403,7 +422,6 @@ class EuropePMCXMLParser:
             metadata.figures.append(fig_info)
 
         # Convert article to Markdown full text using enhanced parser
-        article_xml = ET.tostring(article, encoding='unicode')
         metadata.full_text = self._parse_to_markdown(article, metadata.figures)
 
         return metadata
@@ -1050,6 +1068,56 @@ class EuropePMCImporter:
 
         return stats
 
+    @staticmethod
+    def _find_cross_source_match(
+        cursor,
+        article: ArticleMetadata,
+        source_id: int
+    ) -> Optional[int]:
+        """Find an existing record of this article from another source.
+
+        Matches by DOI first, then by PMID against the PubMed source, so
+        DOI-less older articles still find their PubMed record.
+
+        Args:
+            cursor: Database cursor
+            article: Article metadata
+            source_id: Europe PMC source ID (excluded from the DOI match)
+
+        Returns:
+            The matching document ID, or None
+        """
+        if article.doi:
+            doi = article.doi.strip()
+            # shortcut: exact/lower/upper variants keep idx_document_doi usable
+            # (LOWER(doi) would scan the table per article); a mixed-case
+            # mismatch is missed until there is an index on LOWER(doi) (#333).
+            variants = list(dict.fromkeys([doi, doi.lower(), doi.upper()]))
+            cursor.execute(
+                "SELECT id FROM document WHERE doi = ANY(%s) AND source_id != %s "
+                "ORDER BY id LIMIT 1",
+                (variants, source_id)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+
+        if article.pmid and article.pmid.strip().isdigit():
+            cursor.execute(
+                """
+                SELECT d.id FROM document d
+                JOIN sources s ON s.id = d.source_id
+                WHERE d.external_id = %s AND LOWER(s.name) LIKE '%%pubmed%%'
+                ORDER BY d.id LIMIT 1
+                """,
+                (article.pmid.strip(),)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+
+        return None
+
     def _upsert_article(
         self,
         cursor,
@@ -1112,27 +1180,23 @@ class EuropePMCImporter:
 
             return 'skipped'
 
-        # Also check by DOI if available (may exist from another source)
-        if article.doi:
-            cursor.execute(
-                "SELECT id FROM document WHERE doi = %s AND source_id != %s",
-                (article.doi, source_id)
-            )
-            doi_match = cursor.fetchone()
-            if doi_match:
-                # Update the existing record with Europe PMC full text
-                if self.update_existing and article.full_text:
-                    cursor.execute(
-                        """
-                        UPDATE document SET
-                            full_text = COALESCE(%s, full_text),
-                            updated_date = CURRENT_TIMESTAMP
-                        WHERE id = %s AND (full_text IS NULL OR full_text = '')
-                        """,
-                        (article.full_text, doi_match[0])
-                    )
+        # The article may already exist from another source (usually PubMed)
+        match_id = self._find_cross_source_match(cursor, article, source_id)
+        if match_id is not None:
+            # Attach the Europe PMC full text to the existing record
+            if self.update_existing and article.full_text:
+                cursor.execute(
+                    """
+                    UPDATE document SET
+                        full_text = %s,
+                        updated_date = CURRENT_TIMESTAMP
+                    WHERE id = %s AND (full_text IS NULL OR full_text = '')
+                    """,
+                    (article.full_text, match_id)
+                )
+                if cursor.rowcount:
                     return 'updated'
-                return 'skipped'
+            return 'skipped'
 
         # Insert new record
         cursor.execute(

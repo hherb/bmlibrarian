@@ -10,6 +10,24 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Import/embedding fixes #442, #444, #446** (2026-11-25, branch
+  `fix/import-embed-442-444-446`). `DocumentEmbedder.embed_documents` pages
+  by document ID in `batch_size` pages and no longer selects `full_text`, so
+  a full-source run without `--limit` holds one page in memory (#442; the
+  tqdm-without-total truthiness crash this exposed is fixed too). The
+  Europe PMC importer reads IDs from `front/article-meta` only (no more
+  eLife `….sa1` sub-article DOIs) and matches existing records by DOI
+  (exact/lower/upper variants, so `idx_document_doi` is still used; a
+  mixed-case-only mismatch waits on #333), then by PMID against the PubMed
+  source, before inserting; a guarded UPDATE that changes no row now
+  reports `skipped` (#444). The medRxiv importer updates a stored preprint
+  when the API offers a newer version (title, abstract, authors, `pdf_url`;
+  full text and PDF only if the new ones were fetched), PDFs for v2+ are
+  saved as `<doi>v<n>.pdf`, and `fetch-pdfs` no longer blanks existing full
+  text when the PDF was already on disk (#446). Verified: suite 5012
+  passed, 75 skipped; no new ruff/mypy findings. Not run against a live
+  database or the medRxiv/Europe PMC services.
+
 - **PubMed import fixes #445, #440, #441** (2026-11-25, branch
   `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
   `download-updates`, `import` and `sync` exit 1 when any file failed
@@ -162,68 +180,14 @@ off new work. Longer-term structural items live in
   **Not verified by hand:** ⌘Q during an update and the screen-4 return
   (rehearsal checks in `doc/users/investor_demo_runbook.md`).
 
-- **Failed settings load no longer lets Save overwrite settings, #437**
-  (2026-11-15). If `_sync_from_database` fails at login, login goes on with
-  JSON/default settings, but `sync_to_database` raises `RuntimeError` until
-  a later load succeeds (`_db_load_failed`, public `settings_load_failed()`).
-  A failure anywhere in the load, including the merge of a malformed reply,
-  sets the block. `_sync_from_database` now raises, so the "load from
-  database" buttons report failures, and the Qt app shows a warning toast at
-  login. The Qt callers (config tab Save and Sync, profile widget, JSON
-  import offer) and `import_from_json` check the `False` that
-  `sync_to_database` returns on a partial failure; a config-tab Save whose
-  database part fails shows "Saved Locally Only", not "Success". Tests in
-  `tests/test_config_user_context.py` and
-  `tests/test_gui_db_settings_integration.py`. Not run against a live
-  database. #438 (seed defaults override config.json/env after login) is
-  still open.
-
-- **Chunk embedder keeps old chunks on failure, #435** (2026-11-15).
-  `ChunkEmbedder.chunk_and_embed` embeds every chunk first, then deletes the
-  old chunks and inserts the new ones in one transaction; a missing embedding
-  or a failed insert raises `ChunkEmbeddingError` (the per-chunk savepoints
-  from #366 are gone). The stored chunks stay only if their positions still
-  match the current `full_text`; chunks are offsets into the text, so after
-  a text change they are deleted (`_settle_old_chunks`; a same-length edit
-  that keeps every boundary is not detected). `process_queue` keeps the
-  document queued with the error; `rechunk_all`/`chunk_document_list` return
-  `failed_ids`, printed by `scripts/rechunk_semantic_chunks.py`. Every other
-  caller already caught exceptions. Tests in `tests/test_chunk_embedder.py`;
-  not run against a live database or Ollama.
-
-- **pdf_matcher fixes #443, #436** (2026-11-15). `import_pdf_for_document`
-  never replaces a different PDF already at the target (status `skipped`,
-  reason names the stored file; it used to keep the newer file by mtime, so
-  supplementary material carrying the article's DOI could replace the
-  article). The same holds when the document's recorded `pdf_filename` is a
-  different file at another path. The copy goes to `<name>.partial` and is
-  renamed into place. A failure removes only our own copy, never one the
-  database already points at, and a failed delete is logged, not raised.
-  `check_document_status` no longer selects the nonexistent `document.pmid`
-  column, so the regex DOI/PMID fast path works instead of failing silently.
-  Tests are in `tests/test_pdf_matcher_agent.py`. Not run against a live
-  database. The missing `lower(doi)` index is still #333. Follow-ups from
-  the review (an orphan file reads as `duplicate`, the status lookup
-  swallows SQL errors) are in #456.
-
-- **Installer audit fixes #447, #448, #452** (2026-11-15). `bml server init`
-  / `bml setup --pg-bindir` accept a moved PostgreSQL bin folder whose major
-  version equals the data folder's `PG_VERSION` and save it (another major
-  is `DataDirVersion`); re-running with a saved bin folder that is gone is
-  `BinDirGone`, whose message says to pass the new one and repeat
-  `--extension-dir`; `server start/stop/status` report it too (#447). The
-  Database step moves a resumed server onto the pinned bundle (downloading
-  it) when the bundle folder it ran from is gone, whatever its version
-  (`bundle_missing`; a folder still present is left to `init`) (#448).
-  `bml setup` removes `BML_PG_SUPERUSER_PASSWORD` from its environment once
-  read, refuses `--password-stdin` from a terminal and says when the
-  variable is not UTF-8 (#452). Verified: `cargo test
-  -- --include-ignored` 307 passed with pg_search; by hand with the real
-  bundle in a temp config folder: deleted `pgdist/18.6-r1` → setup
-  downloaded it again and resumed (status exit 0, vector + pg_search);
-  moved the bundle → `server init --bindir <moved>` started the old data
-  and saved the new path. Not run: Linux/Windows; the terminal refusal
-  (no tty in tests).
+- **Mid-November audit fixes** (2026-11-15; details in git history and the
+  issues): a failed settings load at login blocks `sync_to_database` until a
+  load succeeds (#437; #438 still open); `ChunkEmbedder` keeps old chunks
+  until the new ones are embedded (#435); `pdf_matcher` never replaces a
+  different PDF at the target and the DOI/PMID fast path works (#443, #436;
+  follow-ups #456); `bml server init`/`setup` accept a moved PostgreSQL bin
+  folder, re-download a missing bundle, and handle the superuser password
+  more carefully (#447, #448, #452).
 
 - **bml-library minors from the piece 3 review** (2026-11-14, #428). bml-db
   **migration 3** adds `publication_fulltext.version_tried`: a newly posted
@@ -424,9 +388,9 @@ value — pick one, or pull an item from ROADMAP.md:
   bml-library: #430, #433.
 
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #434–#437,
-  #439–#441, #443, #445, #447–#450, #452 fixed). Installer: #451 (setup
-  replaces another config folder's login entry), #453 (rust.yml
-  permissions, SHA-pinned checkout). Broken: #446, #438, #442, #444. Also
+  #439–#450, #452 fixed). Installer: #451 (setup replaces another config
+  folder's login entry), #453 (rust.yml permissions, SHA-pinned checkout).
+  Broken: #438 (seed defaults override config.json/env after login). Also
   #472 (secret-save failures only logged, browser-fallback cookies).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
@@ -472,7 +436,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **4984 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **5012 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

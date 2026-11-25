@@ -129,6 +129,71 @@ class TestDocumentEmbedder:
         assert len(embedding) == 1024
 
 
+class TestEmbedDocumentsPaging:
+    """embed_documents pages through candidates instead of loading them all (#442)."""
+
+    @staticmethod
+    def _embedder(pages):
+        """Build a DocumentEmbedder without a database, fed from ``pages``."""
+        embedder = DocumentEmbedder.__new__(DocumentEmbedder)
+        calls = []
+
+        def fake_get(source_name=None, limit=None, after_id=0):
+            calls.append((limit, after_id))
+            return pages.pop(0) if pages else []
+
+        embedder._get_documents_without_embeddings = fake_get
+        embedder.create_embedding = lambda text: [0.1] * 4
+        embedder._store_chunk_and_embedding = lambda *args: 7
+        return embedder, calls
+
+    @staticmethod
+    def _docs(*ids):
+        return [{'id': i, 'title': f't{i}', 'abstract': f'a{i}'} for i in ids]
+
+    def test_pages_by_last_id_until_empty(self):
+        embedder, calls = self._embedder([self._docs(1, 2), self._docs(5, 9), []])
+        stats = embedder.embed_documents(batch_size=2)
+        assert calls == [(2, 0), (2, 2), (2, 9)]
+        assert stats == {'total_processed': 4, 'embedded_count': 4, 'failed_count': 0}
+
+    def test_limit_shrinks_last_page(self):
+        embedder, calls = self._embedder([self._docs(1, 2), self._docs(3)])
+        stats = embedder.embed_documents(limit=3, batch_size=2)
+        assert calls == [(2, 0), (1, 2)]
+        assert stats['total_processed'] == 3
+
+    def test_failed_document_is_counted_and_skipped(self):
+        embedder, calls = self._embedder([self._docs(1, 2), []])
+        embedder.create_embedding = lambda text: [] if text == 'a1' else [0.1]
+        stats = embedder.embed_documents(batch_size=2)
+        assert stats == {'total_processed': 2, 'embedded_count': 1, 'failed_count': 1}
+
+    def test_query_has_no_full_text_and_uses_keyset(self):
+        embedder = DocumentEmbedder.__new__(DocumentEmbedder)
+        embedder.model_id = 3
+        cursor = MagicMock()
+        cursor.description = [('id',), ('title',), ('abstract',), ('source_name',)]
+        cursor.fetchall.return_value = [(4, 't', 'a', 'pubmed')]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        embedder.db_manager = MagicMock()
+        embedder.db_manager.get_connection.return_value.__enter__.return_value = conn
+
+        rows = embedder._get_documents_without_embeddings('PubMed', 50, after_id=10)
+
+        sql, params = cursor.execute.call_args[0]
+        assert 'full_text' not in sql
+        assert 'd.id > %s' in sql
+        assert params == (3, 10, '%pubmed%', 50)
+        assert rows == [{'id': 4, 'title': 't', 'abstract': 'a', 'source_name': 'pubmed'}]
+
+    def test_rejects_zero_batch_size(self):
+        embedder, _ = self._embedder([])
+        with pytest.raises(ValueError):
+            embedder.embed_documents(batch_size=0)
+
+
 def test_module_constants():
     """Test that module can be imported."""
     from src.bmlibrarian.embeddings import DocumentEmbedder
