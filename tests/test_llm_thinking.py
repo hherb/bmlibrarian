@@ -151,3 +151,40 @@ class TestStopReasonOnResponse:
             )
 
         assert response.stop_reason == "length"
+
+
+class TestInlineGemmaThinking:
+    """
+    medgemma writes its reasoning into content between ``<unused94>`` and
+    ``<unused95>``. Left there it reached callers as the answer: the
+    search tab sent it to to_tsquery and keyword/BM25 search found nothing.
+    """
+
+    def _chat(self, client: LLMClient, content: str):
+        """Send one request whose provider returns ``content``."""
+        with patch.object(
+            _bmlib_llm_client.LLMClient, "chat", return_value=_response(content)
+        ):
+            return client.chat(
+                messages=[LLMMessage(role="user", content="q")], model=MODEL
+            )
+
+    def test_trace_is_moved_out_of_content(self, client: LLMClient) -> None:
+        """Only the text after the closing marker is the answer."""
+        response = self._chat(
+            client, "<unused94>thought The user wants HERV.<unused95>HERV & retrovirus"
+        )
+
+        assert response.content == "HERV & retrovirus"
+        assert response.thinking == "thought The user wants HERV."
+
+    def test_unfinished_trace_leaves_no_answer(self, client: LLMClient) -> None:
+        """A trace cut off before its end marker is not an answer."""
+        response = self._chat(client, "<unused94>thought still thinking")
+
+        assert response.content == ""
+        assert response.thinking == "thought still thinking"
+
+    def test_plain_content_is_untouched(self, client: LLMClient) -> None:
+        """Responses without the markers pass through unchanged."""
+        assert self._chat(client, "HERV").content == "HERV"

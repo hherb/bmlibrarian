@@ -50,9 +50,38 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     OLLAMA_UNLIMITED_MAX_TOKENS,
     DEFAULT_RETRY_DELAY,
+    GEMMA_THINKING_START,
+    GEMMA_THINKING_END,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def split_inline_thinking(
+    content: str, thinking: Optional[str]
+) -> tuple[str, Optional[str]]:
+    """
+    Move reasoning a Gemma-family model wrote inline out of the content.
+
+    medgemma emits ``<unused94>reasoning<unused95>answer`` as plain text.
+    Without the closing marker the model never reached its answer, so the
+    content is empty (callers then refuse it as an empty response).
+
+    Args:
+        content: The response content as the provider returned it.
+        thinking: A trace the provider already separated, if any.
+
+    Returns:
+        (content, thinking) with the inline trace moved to thinking.
+    """
+    head, start, rest = content.partition(GEMMA_THINKING_START)
+    if not start:
+        return content, thinking
+    trace, end, answer = rest.partition(GEMMA_THINKING_END)
+    trace = trace.strip()
+    if thinking:
+        trace = f"{thinking}\n{trace}"
+    return (head + answer).strip() if end else head.strip(), trace
 
 
 class LLMClient:
@@ -127,17 +156,20 @@ class LLMClient:
         """
         spec = parse_model_string(model_str)
         duration = time.time() - start_time
+        # Providers without reasoning support omit the thinking attribute.
+        content, thinking = split_inline_thinking(
+            bmlib_resp.content or "", getattr(bmlib_resp, "thinking", None)
+        )
 
         return LLMResponse(
-            content=bmlib_resp.content,
+            content=content,
             model=bmlib_resp.model or spec.model_name,
             provider=spec.provider,
             prompt_tokens=bmlib_resp.input_tokens,
             completion_tokens=bmlib_resp.output_tokens,
             total_tokens=bmlib_resp.total_tokens,
             duration_seconds=duration,
-            # Providers without reasoning support omit this attribute.
-            thinking=getattr(bmlib_resp, "thinking", None),
+            thinking=thinking,
             stop_reason=getattr(bmlib_resp, "stop_reason", None),
         )
 
