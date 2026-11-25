@@ -50,9 +50,54 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     OLLAMA_UNLIMITED_MAX_TOKENS,
     DEFAULT_RETRY_DELAY,
+    GEMMA_THINKING_START,
+    GEMMA_THINKING_END,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def split_inline_thinking(
+    content: str, thinking: Optional[str]
+) -> tuple[str, Optional[str]]:
+    """
+    Move reasoning a Gemma-family model wrote inline out of the content.
+
+    medgemma emits ``<unused94>reasoning<unused95>answer`` as plain text,
+    possibly several blocks. Everything after an unclosed start marker is
+    trace: the model never reached its answer, so medgemma's content ends
+    up empty (callers then refuse it as an empty response). An end marker
+    with no start marker before it (a template that pre-fills the start)
+    closes a trace that began at the top of the content.
+
+    Args:
+        content: The response content as the provider returned it.
+        thinking: A trace the provider already separated, if any.
+
+    Returns:
+        (content, thinking): the text outside the traces, joined by spaces,
+        and the provider's trace followed by the inline ones (None if all
+        are empty).
+    """
+    if GEMMA_THINKING_START not in content and GEMMA_THINKING_END not in content:
+        return content, thinking
+    traces = [thinking or ""]
+    answers: list[str] = []
+    rest = content
+    first_end = rest.find(GEMMA_THINKING_END)
+    first_start = rest.find(GEMMA_THINKING_START)
+    if first_end != -1 and (first_start == -1 or first_end < first_start):
+        trace, _, rest = rest.partition(GEMMA_THINKING_END)
+        traces.append(trace)
+    while rest:
+        head, start, rest = rest.partition(GEMMA_THINKING_START)
+        answers.append(head)
+        if start:
+            trace, _, rest = rest.partition(GEMMA_THINKING_END)
+            traces.append(trace)
+    answer = " ".join(a.strip() for a in answers if a.strip())
+    trace_text = "\n".join(t.strip() for t in traces if t.strip())
+    return answer, trace_text or None
 
 
 class LLMClient:
@@ -127,17 +172,20 @@ class LLMClient:
         """
         spec = parse_model_string(model_str)
         duration = time.time() - start_time
+        # Providers without reasoning support omit the thinking attribute.
+        content, thinking = split_inline_thinking(
+            bmlib_resp.content or "", getattr(bmlib_resp, "thinking", None)
+        )
 
         return LLMResponse(
-            content=bmlib_resp.content,
+            content=content,
             model=bmlib_resp.model or spec.model_name,
             provider=spec.provider,
             prompt_tokens=bmlib_resp.input_tokens,
             completion_tokens=bmlib_resp.output_tokens,
             total_tokens=bmlib_resp.total_tokens,
             duration_seconds=duration,
-            # Providers without reasoning support omit this attribute.
-            thinking=getattr(bmlib_resp, "thinking", None),
+            thinking=thinking,
             stop_reason=getattr(bmlib_resp, "stop_reason", None),
         )
 

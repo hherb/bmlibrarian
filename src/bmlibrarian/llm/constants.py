@@ -34,3 +34,8 @@ DEFAULT_REQUEST_TIMEOUT = 120.0
 
 # Nanoseconds per second for timing conversions
 NANOSECONDS_PER_SECOND = 1_000_000_000
+
+# Markers Gemma-family models (medgemma) put around reasoning written inline
+# in the content, ahead of the answer.
+GEMMA_THINKING_START = "<unused94>"
+GEMMA_THINKING_END = "<unused95>"

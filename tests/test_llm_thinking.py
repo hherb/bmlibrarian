@@ -18,6 +18,7 @@ import bmlib.llm.client as _bmlib_llm_client
 from bmlib.llm import LLMResponse as BmlibLLMResponse
 
 from bmlibrarian.llm import LLMClient, LLMMessage
+from bmlibrarian.llm.client import split_inline_thinking
 
 MODEL = "gpt-oss:20b"
 
@@ -28,7 +29,7 @@ def client() -> LLMClient:
     return LLMClient(track_usage=False)
 
 
-def _response(content: str, thinking: str | None = None) -> BmlibLLMResponse:
+def _response(content: str | None, thinking: str | None = None) -> BmlibLLMResponse:
     """Build a provider response, optionally carrying a reasoning trace."""
     return BmlibLLMResponse(content=content, model=MODEL, thinking=thinking)
 
@@ -151,3 +152,83 @@ class TestStopReasonOnResponse:
             )
 
         assert response.stop_reason == "length"
+
+
+class TestInlineGemmaThinking:
+    """
+    medgemma writes its reasoning into content between ``<unused94>`` and
+    ``<unused95>``. Left there it reached callers as the answer: the
+    search tab sent it to to_tsquery and keyword/BM25 search found nothing.
+    """
+
+    def _chat(self, client: LLMClient, content: str):
+        """Send one request whose provider returns ``content``."""
+        with patch.object(
+            _bmlib_llm_client.LLMClient, "chat", return_value=_response(content)
+        ):
+            return client.chat(
+                messages=[LLMMessage(role="user", content="q")], model=MODEL
+            )
+
+    def test_trace_is_moved_out_of_content(self, client: LLMClient) -> None:
+        """Only the text after the closing marker is the answer."""
+        response = self._chat(
+            client, "<unused94>thought The user wants HERV.<unused95>HERV & retrovirus"
+        )
+
+        assert response.content == "HERV & retrovirus"
+        assert response.thinking == "thought The user wants HERV."
+
+    def test_unfinished_trace_leaves_no_answer(self, client: LLMClient) -> None:
+        """A trace cut off before its end marker is not an answer."""
+        response = self._chat(client, "<unused94>thought still thinking")
+
+        assert response.content == ""
+        assert response.thinking == "thought still thinking"
+
+    def test_plain_content_is_untouched(self, client: LLMClient) -> None:
+        """Responses without the markers pass through unchanged."""
+        assert self._chat(client, "HERV").content == "HERV"
+
+
+class TestSplitInlineThinking:
+    """Edge cases of the marker split, called directly."""
+
+    @pytest.mark.parametrize(
+        ("content", "thinking", "expected"),
+        [
+            # Every block is a trace, not only the first.
+            (
+                "<unused94>t1<unused95>a1<unused94>t2<unused95>a2",
+                None,
+                ("a1 a2", "t1\nt2"),
+            ),
+            # A template that pre-fills the start marker leaves only the end.
+            ("trace<unused95>answer", None, ("answer", "trace")),
+            # An empty trace adds nothing to the provider's own trace.
+            ("<unused94><unused95>ans", "prov", ("ans", "prov")),
+            ("<unused94><unused95>ans", None, ("ans", None)),
+            # Provider trace and inline trace are both kept.
+            ("<unused94>t<unused95>ans", "prov", ("ans", "prov\nt")),
+            # Text around a trace stays separated words.
+            ("Sure.<unused94>t<unused95>HERV", None, ("Sure. HERV", "t")),
+        ],
+    )
+    def test_split(
+        self,
+        content: str,
+        thinking: str | None,
+        expected: tuple[str, str | None],
+    ) -> None:
+        """Content keeps only the text outside the traces."""
+        assert split_inline_thinking(content, thinking) == expected
+
+    def test_none_content_from_provider(self, client: LLMClient) -> None:
+        """A provider returning no content yields empty content, not a crash."""
+        with patch.object(
+            _bmlib_llm_client.LLMClient, "chat", return_value=_response(None)
+        ):
+            response = client.chat(
+                messages=[LLMMessage(role="user", content="q")], model=MODEL
+            )
+        assert response.content == ""
