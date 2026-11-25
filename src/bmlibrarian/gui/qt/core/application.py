@@ -457,9 +457,8 @@ class BMLibrarianApplication:
                 self._login_result.user_id
             )
 
-            # Check a common category to see if user has settings
-            existing_settings = settings_manager.get('agents')
-            if existing_settings:
+            # get() would return the seeded defaults, so check the user's own rows
+            if settings_manager.get_own_settings():
                 # User already has database settings, no migration needed
                 self.logger.debug("User already has database settings")
                 return

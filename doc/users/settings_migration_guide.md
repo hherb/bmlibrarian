@@ -104,9 +104,10 @@ uv run python migrate_config_to_db.py \
     --config /path/to/default_config.json
 ```
 
-These defaults are used when:
-- A user hasn't customized a particular category
-- Running in batch/CLI mode without authentication
+These defaults are not applied to the configuration at login: a user who
+hasn't saved a category keeps the value from their `config.json` (or the
+built-in default). They are what the settings manager returns for a category
+the user never saved, and what `--export --defaults` writes.
 
 ### Environment Variables
 
@@ -125,14 +126,18 @@ export POSTGRES_PASSWORD=your_db_password
 When you use BMLibrarian, settings are resolved in this priority order:
 
 ### With User Authentication:
-1. User's database settings (highest priority)
-2. Default database settings
-3. Hardcoded application defaults
+1. `BMLIB_*` environment variables (highest priority)
+2. User's database settings (only categories you saved)
+3. JSON file (`~/.bmlibrarian/config.json`)
+4. Hardcoded application defaults
 
 ### Without Authentication (CLI/Batch):
-1. Default database settings
+1. `BMLIB_*` environment variables
 2. JSON file (`~/.bmlibrarian/config.json`)
 3. Hardcoded application defaults
+
+Merging (the default; `--replace` turns it off) and `--export --user` work
+on your own saved settings only, never on the system defaults.
 
 ### Offline Mode:
 1. JSON file only

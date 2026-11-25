@@ -188,10 +188,10 @@ The CLI reports various status codes for each PDF:
 | `imported` | ✅ | Successfully imported and database updated |
 | `would_import` | 🔄 | Would import (dry run mode) |
 | `no_match` | ❌ | No matching document found in database |
-| `already_exists` | 📋 | PDF already exists at correct location |
-| `duplicate` | 📋 | PDF exists with same file size |
+| `already_exists` | 📋 | PDF already exists at correct location (linked to the document if an interrupted import left it unlinked) |
+| `duplicate` | 📋 | PDF exists with same file size (linked as above) |
 | `skipped` | ⏭️ | A different PDF is already stored for the document; it is never replaced |
-| `failed` | ⚠️ | Import failed due to error |
+| `failed` | ⚠️ | Import failed due to error, including a database error during the DOI/PMID lookup (no title-matching fallback then) |
 | `extraction_failed` | 📄 | Could not extract text from PDF |
 | `no_metadata` | 📝 | Could not extract metadata from PDF |
 
@@ -371,7 +371,7 @@ For 40,000 PDFs, expect ~70-100 hours of processing time.
 2. **Text-based PDFs only**: Cannot process scanned/image-based PDFs without OCR
 3. **English language**: LLM trained primarily on English text
 4. **Biomedical focus**: Optimized for biomedical research papers
-5. **No duplicate detection**: If document already has PDF, newer file replaces older
+5. **One PDF per document**: a different PDF for a document that already has one is skipped, never replaces it (remove the stored one first)
 
 ## Future Enhancements
 

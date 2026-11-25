@@ -241,6 +241,27 @@ class UserSettingsManager:
 
         return all_settings.copy()
 
+    def get_own_settings(self) -> Dict[str, Dict[str, Any]]:
+        """Get the settings the user saved, without system defaults.
+
+        Unlike get_all(), categories the user never saved are left out, so
+        the seeded default_settings rows cannot override local configuration.
+
+        Returns:
+            Dictionary with category names as keys and settings dicts as values.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT category, settings FROM bmlsettings.user_settings "
+                "WHERE user_id = %s",
+                (self._user_id,)
+            )
+            rows = cur.fetchall()
+        return {
+            category: settings for category, settings in rows
+            if category in VALID_CATEGORIES and isinstance(settings, dict)
+        }
+
     def reset_category(self, category: str) -> bool:
         """Reset a category to system defaults by deleting user settings.
 

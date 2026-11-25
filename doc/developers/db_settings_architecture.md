@@ -121,7 +121,18 @@ class BMLibrarianConfig:
 
 ### 2. Configuration Resolution
 
-The configuration resolution follows a priority chain:
+As built (`config.py`), there is no per-category lookup: at login
+`_sync_from_database()` merges `UserSettingsManager.get_own_settings()` (the
+user's `bmlsettings.user_settings` rows only) over the JSON/`DEFAULT_CONFIG`
+values, then applies the `BMLIB_*` environment overrides again. The order is
+env > user rows > `config.json` > `DEFAULT_CONFIG`. `default_settings` is
+left out on purpose (#438): its seed rows (Ollama host, an unapproved
+citation model, `~/knowledgebase/pdf`) used to override `config.json` and env
+vars on every login. `get()`/`get_all()` still fall back to it; the Qt
+"import your JSON config?" offer and `migrate_config_to_db.py` merge/export
+use `get_own_settings()`.
+
+The original design sketch below planned this priority chain:
 
 ```python
 def _get_category_config(self, category: str) -> Dict[str, Any]:

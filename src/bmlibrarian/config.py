@@ -646,11 +646,11 @@ class BMLibrarianConfig:
     a user context is set.
 
     The configuration resolution priority is:
-    1. User settings from database (if user context is set)
-    2. Default settings from database (if connected)
+    1. Environment variable overrides (BMLIB_*)
+    2. User settings from database (if user context is set; the database's
+       default_settings rows are not used)
     3. JSON configuration file (~/.bmlibrarian/config.json)
-    4. Environment variable overrides
-    5. Hardcoded DEFAULT_CONFIG
+    4. Hardcoded DEFAULT_CONFIG
 
     Attributes:
         _config: In-memory configuration dictionary.
@@ -769,9 +769,9 @@ class BMLibrarianConfig:
     ) -> None:
         """Set user context for database-backed settings.
 
-        When user context is set, configuration values are loaded from the
-        user's settings in the PostgreSQL database, with fallback to system
-        defaults and then to in-memory/JSON configuration.
+        When user context is set, the settings the user saved in the
+        PostgreSQL database are merged over the in-memory/JSON configuration;
+        BMLIB_* environment overrides still win.
 
         Args:
             user_id: The authenticated user's database ID.
@@ -1010,8 +1010,10 @@ class BMLibrarianConfig:
     def _sync_from_database(self) -> None:
         """Sync settings from database to in-memory configuration.
 
-        Called internally when user context is set. Loads all user settings
-        from the database and merges them into the in-memory configuration.
+        Called internally when user context is set. Merges the settings the
+        user saved (not the database's default_settings rows, which would
+        override config.json) into the in-memory configuration, then applies
+        the BMLIB_* environment overrides again so they still win (#438).
 
         While a load has failed, sync_to_database() refuses to save; a later
         successful load lifts that.
@@ -1028,14 +1030,14 @@ class BMLibrarianConfig:
             return
 
         try:
-            db_settings = self._settings_manager.get_all(use_cache=False)
+            db_settings = self._settings_manager.get_own_settings()
             for category, settings in db_settings.items():
                 if category in self._config and settings:
-                    # Merge database settings with defaults
                     self._merge_config({category: settings})
         except Exception:
             self._db_load_failed = True
             raise
+        self._load_env_overrides()
         self._db_load_failed = False
         logger.debug("Synced settings from database to in-memory config")
 

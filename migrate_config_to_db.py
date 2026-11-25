@@ -148,6 +148,8 @@ def migrate_to_user_settings(
 
         # Migrate each category
         migrated_count = 0
+        # Merge with the user's own rows only, not the seeded defaults
+        own_settings = settings_manager.get_own_settings() if merge else {}
         for category, settings in valid_config.items():
             if not isinstance(settings, dict):
                 logger.warning(f"Skipping {category}: not a dictionary")
@@ -155,7 +157,7 @@ def migrate_to_user_settings(
 
             if merge:
                 # Get existing settings and merge
-                existing = settings_manager.get(category) or {}
+                existing = own_settings.get(category, {})
                 merged = {**existing, **settings}
                 settings_manager.set(category, merged)
             else:
@@ -262,12 +264,12 @@ def export_user_settings(username: str, password: str, output_path: Path) -> boo
         # Create settings manager
         settings_manager = UserSettingsManager(conn, user.id)
 
-        # Export all categories
-        config = {}
-        for category in VALID_CATEGORIES:
-            settings = settings_manager.get(category)
-            if settings:
-                config[category] = settings
+        # Export the user's own settings, not the seeded defaults
+        config = {
+            category: settings
+            for category, settings in settings_manager.get_own_settings().items()
+            if settings
+        }
 
         # Write to file
         output_path.parent.mkdir(parents=True, exist_ok=True)

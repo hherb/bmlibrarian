@@ -212,7 +212,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """A failed settings load must not let Save overwrite stored settings (#437)."""
         manager = MagicMock()
-        manager.get_all.side_effect = RuntimeError("connection lost")
+        manager.get_own_settings.side_effect = RuntimeError("connection lost")
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 
@@ -227,7 +227,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """Loading from the database again after a failure allows saving."""
         manager = MagicMock()
-        manager.get_all.side_effect = [RuntimeError("connection lost"), {}]
+        manager.get_own_settings.side_effect = [RuntimeError("connection lost"), {}]
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 
@@ -241,7 +241,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """A 'Sync from database' request reports the failure to its caller."""
         manager = MagicMock()
-        manager.get_all.side_effect = [{}, RuntimeError("connection lost")]
+        manager.get_own_settings.side_effect = [{}, RuntimeError("connection lost")]
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 
@@ -256,7 +256,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """A malformed database reply (not a mapping) must also block saving (#437)."""
         manager = MagicMock()
-        manager.get_all.return_value = ["not", "a", "mapping"]
+        manager.get_own_settings.return_value = ["not", "a", "mapping"]
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 
@@ -271,7 +271,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """Database values replace local ones in memory and are what Save writes back."""
         manager = MagicMock()
-        manager.get_all.return_value = {'models': {'query_agent': 'from-db'}}
+        manager.get_own_settings.return_value = {'models': {'query_agent': 'from-db'}}
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 
@@ -281,6 +281,43 @@ class TestBMLibrarianConfigSyncOperations:
         saved_models = dict(c.args for c in manager.set.call_args_list)['models']
         assert saved_models['query_agent'] == 'from-db'
 
+    def test_login_keeps_env_overrides_over_database_values(
+        self,
+        config: BMLibrarianConfig,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BMLIB_* env vars still win after the user's rows are merged (#438)."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        manager = MagicMock()
+        manager.get_own_settings.return_value = {
+            'ollama': {'host': 'http://localhost:11434'},
+            'models': {'query_agent': 'from-db'},
+        }
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.get('ollama.host') == 'http://gpu:11434'
+        assert config.get('models.query_agent') == 'from-db'
+        manager.get_all.assert_not_called()  # get_all() includes the seeded defaults
+
+    def test_get_own_settings_reads_only_user_rows(self) -> None:
+        """get_own_settings() queries user_settings, not the defaults-merging function."""
+        from bmlibrarian.auth.user_settings import UserSettingsManager
+
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [
+            ('models', {'query_agent': 'mine'}),
+            ('not_a_category', {'x': 1}),
+            ('ollama', 'not a dict'),
+        ]
+        own = UserSettingsManager(conn, user_id=7).get_own_settings()
+
+        assert own == {'models': {'query_agent': 'mine'}}
+        sql, params = cursor.execute.call_args.args
+        assert 'bmlsettings.user_settings' in sql and 'get_all_user_settings' not in sql
+        assert params == (7,)
+
     def test_import_from_json_raises_when_a_category_fails_to_save(
         self,
         config: BMLibrarianConfig,
@@ -288,7 +325,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """import_from_json reports a partial database save instead of ignoring it."""
         manager = MagicMock()
-        manager.get_all.return_value = {}
+        manager.get_own_settings.return_value = {}
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
         source = tmp_path / "import.json"
@@ -304,7 +341,7 @@ class TestBMLibrarianConfigSyncOperations:
     ) -> None:
         """The refusal tells the user which control lifts it."""
         manager = MagicMock()
-        manager.get_all.side_effect = RuntimeError("connection lost")
+        manager.get_own_settings.side_effect = RuntimeError("connection lost")
         with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
             config.set_user_context(user_id=1, connection=MagicMock())
 

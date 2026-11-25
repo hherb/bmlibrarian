@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
+import psycopg
 
 from bmlibrarian.agents.base import BaseAgent
 from bmlibrarian.database import get_db_manager
@@ -352,6 +353,9 @@ class PDFMatcher(BaseAgent):
 
         Returns:
             DocumentStatus with exists, has_full_text, has_chunks, and document dict
+
+        Raises:
+            psycopg.Error: If the database lookup failed.
         """
         # Validate inputs - note: we use lenient validation here since
         # identifiers from regex extraction may have slight variations
@@ -441,9 +445,12 @@ class PDFMatcher(BaseAgent):
 
             return DocumentStatus()
 
-        except Exception as e:
+        except psycopg.Error as e:
+            # Never report a failed lookup as "not in database" (#456): the
+            # caller would fall back to title matching and could pick the
+            # wrong document.
             logger.error(f"Error checking document status: {e}")
-            return DocumentStatus()
+            raise
 
     def _row_to_full_dict(self, row: tuple) -> Dict[str, Any]:
         """
@@ -867,28 +874,43 @@ Text to analyze:
             }
 
         # The document's stored PDF (wherever it is) or a file at the target.
-        existing_path = (
+        stored_path = (
             pdf_manager._find_current_pdf_path(stored_filename) if stored_filename else None
         )
+        existing_path = stored_path
         if existing_path is None and target_path.exists():
             existing_path = target_path
 
         if existing_path is not None:
             if pdf_path.resolve() == existing_path.resolve():
-                return {
+                found = {
                     'status': 'already_exists',
                     'message': 'PDF already at correct location',
                     'doc_id': doc_id,
                     'path': str(existing_path)
                 }
-
-            if pdf_path.stat().st_size == existing_path.stat().st_size:
-                return {
+            elif pdf_path.stat().st_size == existing_path.stat().st_size:
+                found = {
                     'status': 'duplicate',
                     'message': 'PDF already exists with same size',
                     'doc_id': doc_id,
                     'existing_path': str(existing_path)
                 }
+            else:
+                found = None
+
+            if found is not None:
+                # A copy left at the target by an interrupted import is not
+                # linked to the document: point the database at it (#456).
+                if stored_path is None and not dry_run:
+                    if not self._store_pdf_path(doc_id, document, pdf_manager):
+                        return {
+                            'status': 'failed',
+                            'reason': 'Database update failed',
+                            'doc_id': doc_id
+                        }
+                    found['linked'] = True
+                return found
 
             # A different PDF is already stored. Never replace it: the incoming
             # file may be supplementary material that carries the article's DOI.
@@ -934,13 +956,7 @@ Text to analyze:
             placed = True
             logger.info(f"Copied PDF: {pdf_path} -> {target_path}")
 
-            # Update database
-            relative_path = pdf_manager.get_relative_pdf_path(document)
-            with self.db_manager.get_connection() as conn:
-                pdf_manager_with_conn = PDFManager(base_dir=self.pdf_manager.base_dir, db_conn=conn)
-                success = pdf_manager_with_conn.update_database_pdf_path(doc_id, relative_path)
-
-            if not success:
+            if not self._store_pdf_path(doc_id, document, pdf_manager):
                 # The target did not exist before this import, so removing
                 # our copy loses nothing.
                 placed = False
@@ -979,7 +995,56 @@ Text to analyze:
                 'doc_id': doc_id
             }
 
+    def _store_pdf_path(
+        self,
+        doc_id: int,
+        document: Dict[str, Any],
+        pdf_manager: PDFManager
+    ) -> bool:
+        """Point the document's pdf_filename at its file under the PDF folder.
+
+        Args:
+            doc_id: Document ID to update.
+            document: Document dict whose pdf_filename is the new file name.
+            pdf_manager: Manager that resolved the target path.
+
+        Returns:
+            True if the database was updated.
+        """
+        relative_path = pdf_manager.get_relative_pdf_path(document)
+        with self.db_manager.get_connection() as conn:
+            pdf_manager_with_conn = PDFManager(base_dir=self.pdf_manager.base_dir, db_conn=conn)
+            return pdf_manager_with_conn.update_database_pdf_path(doc_id, relative_path)
+
     def match_and_import_pdf(
+        self,
+        pdf_path: Path,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Analyze PDF, match to database, and import if match found.
+
+        See _match_and_import_pdf(); a database error is reported as a
+        'failed' result instead of a fall-back to title matching (#456).
+
+        Args:
+            pdf_path: Path to PDF file
+            dry_run: If True, only report what would be done
+
+        Returns:
+            Dictionary with complete analysis and import results.
+        """
+        try:
+            return self._match_and_import_pdf(pdf_path, dry_run)
+        except psycopg.Error as e:
+            logger.error(f"Database error while matching {pdf_path}: {e}")
+            return {
+                'pdf_path': str(pdf_path),
+                'pdf_filename': pdf_path.name,
+                'status': 'failed',
+                'error': f'Database lookup failed: {e}',
+            }
+
+    def _match_and_import_pdf(
         self,
         pdf_path: Path,
         dry_run: bool = False
