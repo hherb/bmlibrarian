@@ -187,11 +187,13 @@ The CLI reports various status codes for each PDF:
 |--------|------|---------|
 | `imported` | ✅ | Successfully imported and database updated |
 | `would_import` | 🔄 | Would import (dry run mode) |
+| `linked` | 🔗 | The PDF (or a same-size copy) was already at the target but the document had no working PDF link, e.g. after an interrupted import: the database now points at it |
+| `would_link` | 🔄 | Would link as above (dry run mode) |
 | `no_match` | ❌ | No matching document found in database |
-| `already_exists` | 📋 | PDF already exists at correct location (linked to the document if an interrupted import left it unlinked) |
-| `duplicate` | 📋 | PDF exists with same file size (linked as above) |
+| `already_exists` | 📋 | PDF already exists at correct location and is linked |
+| `duplicate` | 📋 | PDF exists with same file size and is linked |
 | `skipped` | ⏭️ | A different PDF is already stored for the document; it is never replaced |
-| `failed` | ⚠️ | Import failed due to error, including a database error during the DOI/PMID lookup (no title-matching fallback then) |
+| `failed` | ⚠️ | Import failed due to an error, e.g. a database error during any lookup or update (never followed by a title-matching fallback); in a directory import the next file is still processed |
 | `extraction_failed` | 📄 | Could not extract text from PDF |
 | `no_metadata` | 📝 | Could not extract metadata from PDF |
 

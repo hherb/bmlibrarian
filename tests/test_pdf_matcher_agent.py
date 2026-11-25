@@ -16,7 +16,7 @@ import psycopg
 import pytest
 
 from bmlibrarian.agents import BaseAgent
-from bmlibrarian.importers.pdf_matcher import PDFMatcher
+from bmlibrarian.importers.pdf_matcher import DB_UPDATE_FAILED_REASON, PDFMatcher
 from bmlibrarian.utils.browser_downloader import CHROME_DOWNLOAD_DIR_PREFIX
 
 
@@ -237,7 +237,7 @@ def test_import_failed_cleanup_still_reports_failure(matcher, placement):
         result = matcher.import_pdf_for_document(source, {"id": 1, "doi": "10.1000/x"})
 
     assert result["status"] == "failed"
-    assert result["reason"] == "Database update failed"
+    assert result["reason"] == DB_UPDATE_FAILED_REASON
 
 
 def test_import_never_replaces_pdf_stored_under_another_path(matcher, placement):
@@ -271,8 +271,7 @@ def test_orphaned_target_is_linked(matcher, placement, same_file):
         target if same_file else source, {"id": 1, "doi": "10.1000/x"}
     )
 
-    assert result["status"] == ("already_exists" if same_file else "duplicate")
-    assert result["linked"] is True
+    assert result["status"] == "linked"
     manager.return_value.update_database_pdf_path.assert_called_once_with(1, target.name)
 
 
@@ -289,7 +288,6 @@ def test_linked_pdf_is_not_rewritten(matcher, placement):
     )
 
     assert result["status"] == "duplicate"
-    assert "linked" not in result
     manager.return_value.update_database_pdf_path.assert_not_called()
 
 
@@ -307,7 +305,7 @@ def test_orphan_link_failure_is_reported(matcher, placement):
 
 
 def test_orphan_not_linked_in_dry_run(matcher, placement):
-    """A dry run reports the duplicate without writing to the database."""
+    """A dry run says it would link, without writing to the database."""
     source, target = placement
     target.parent.mkdir(parents=True)
     target.write_bytes(source.read_bytes())
@@ -315,7 +313,7 @@ def test_orphan_not_linked_in_dry_run(matcher, placement):
 
     result = matcher.import_pdf_for_document(source, {"id": 1, "doi": "10.1000/x"}, dry_run=True)
 
-    assert result["status"] == "duplicate"
+    assert result["status"] == "would_link"
     manager.return_value.update_database_pdf_path.assert_not_called()
 
 
@@ -337,3 +335,70 @@ def test_status_lookup_error_fails_instead_of_title_matching(matcher, tmp_path):
     assert "column pmid" in result["error"]
     llm.assert_not_called()
     by_title.assert_not_called()
+
+
+@pytest.mark.parametrize("method, args", [
+    ("quick_database_lookup", {"doi": "10.1000/x"}),
+    ("find_alternative_matches", {"title": "A Study"}),
+])
+def test_lookup_errors_are_raised_not_reported_as_no_match(matcher, method, args):
+    """A SQL error is never reported as 'not found' / 'no alternatives' (#456)."""
+    cur = MagicMock()
+    cur.execute.side_effect = psycopg.OperationalError("server closed the connection")
+    conn = matcher.db_manager.get_connection.return_value.__enter__.return_value
+    conn.cursor.return_value.__enter__.return_value = cur
+
+    with pytest.raises(psycopg.OperationalError):
+        getattr(matcher, method)(**args)
+
+
+def test_title_match_query_orders_documents_by_score(matcher):
+    """The title match takes the best-scoring document, not the lowest id."""
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+    conn = matcher.db_manager.get_connection.return_value.__enter__.return_value
+    conn.cursor.return_value.__enter__.return_value = cur
+
+    matcher.find_matching_document({"title": "A Study"})
+
+    sql = cur.execute.call_args.args[0]
+    assert sql.rstrip().endswith("ORDER BY sim DESC")
+
+
+def test_directory_import_reports_a_failed_file_and_continues(matcher, tmp_path):
+    """An error in one file is a 'failed' count; the batch goes on (#456)."""
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        (tmp_path / name).write_bytes(b"%PDF-1.4")
+    outcomes = iter([
+        psycopg.OperationalError("down"),
+        RuntimeError("Database pool not initialized"),
+        {"status": "linked"},
+    ])
+
+    def fake_import(pdf_path, dry_run):
+        """Raise or return the next scripted outcome."""
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    with patch.object(matcher, "_match_and_import_pdf", side_effect=fake_import):
+        stats = matcher.match_and_import_directory(tmp_path)
+
+    assert stats["failed"] == 2
+    assert stats["linked"] == 1
+    errors = [d.get("error", "") for d in stats["details"]]
+    assert errors[0].startswith("Database error: down")
+    assert errors[1].startswith("RuntimeError: Database pool")
+
+
+def test_dry_run_directory_counts_would_import_as_imported(matcher, tmp_path):
+    """A dry run's would_import/would_link are not counted as failures."""
+    for name in ("a.pdf", "b.pdf"):
+        (tmp_path / name).write_bytes(b"%PDF-1.4")
+    results = iter([{"status": "would_import"}, {"status": "would_link"}])
+
+    with patch.object(matcher, "_match_and_import_pdf", side_effect=lambda *_: next(results)):
+        stats = matcher.match_and_import_directory(tmp_path, dry_run=True)
+
+    assert (stats["imported"], stats["linked"], stats["failed"]) == (1, 1, 0)

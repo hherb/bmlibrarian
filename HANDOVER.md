@@ -17,16 +17,23 @@ off new work. Longer-term structural items live in
   `BMLIB_*` env overrides; the seeded `default_settings` rows no longer
   override `config.json`/env (owner decision 2026-11-25: order is env > user
   rows > JSON > `DEFAULT_CONFIG`; CLAUDE.md and both settings docs updated).
-  The Qt "import your JSON config?" offer and `migrate_config_to_db.py`
-  merge/`--export --user` use the user's rows only. `pdf_matcher`: a PDF at
-  the target with no live `pdf_filename` (interrupted import) is linked on
-  `already_exists`/`duplicate` (`'linked': True`; not in dry runs);
-  `check_document_status` re-raises `psycopg.Error` and
-  `match_and_import_pdf` reports it as `failed` instead of falling back to
-  title matching. Verified: suite 5034 passed, 75 skipped; the new tests fail
-  on the old code; no new ruff/mypy findings. Not run against a live login or
-  a real PDF import. Still true: Save after login writes env-overridden
-  values into the user's rows (pre-existing).
+  Saved rows of a category missing from `DEFAULT_CONFIG` (e.g. `gui`) are
+  merged too. The blocking Qt "import your JSON config?" modal (it came back
+  on every login, a "No" was never remembered) is now an INFO toast pointing
+  at Configuration → Sync to Database; `migrate_config_to_db.py`
+  merge/`--export --user` use the user's rows only; the CLI warns when the
+  saved settings failed to load. `pdf_matcher`: a PDF at the target while
+  the document has no working `pdf_filename` (interrupted import) is linked,
+  status `linked` (`would_link` in dry runs; the CLI exits 0, the directory
+  summary counts it). `check_document_status`, `quick_database_lookup` and
+  `find_alternative_matches` re-raise `psycopg.Error`;
+  `match_and_import_pdf` reports any error as `failed` for that file
+  instead of falling back to title matching or ending a directory batch.
+  Title matches now pick the best score, not the lowest document id; a
+  dry-run directory import no longer counts `would_import` as failed. Not
+  run against a live login or a real PDF import. Still open: Save after
+  login writes env-overridden values into the user's rows (pre-existing,
+  #477).
 
 - **Import/embedding fixes #442, #444, #446** (2026-11-25, branch
   `fix/import-embed-442-444-446`). `DocumentEmbedder.embed_documents` pages

@@ -60,8 +60,9 @@ class _FakeDBManager:
 class _FakeConfig:
     """Records what setup_config_with_auth passes to set_user_context."""
 
-    def __init__(self) -> None:
+    def __init__(self, load_failed: bool = False) -> None:
         self.received_connections: List[Any] = []
+        self.load_failed = load_failed
 
     def set_user_context(self, user_id: int, connection: Any,
                          session_token: Any = None) -> None:
@@ -70,10 +71,12 @@ class _FakeConfig:
     def has_user_context(self) -> bool:
         return bool(self.received_connections)
 
+    def settings_load_failed(self) -> bool:
+        return self.load_failed
 
-def test_login_passes_usable_connection_to_set_user_context(monkeypatch) -> None:
-    """The object handed to set_user_context must be a usable connection."""
-    fake_config = _FakeConfig()
+
+def _login(monkeypatch, fake_config: _FakeConfig) -> Any:
+    """Run setup_config_with_auth as alice against fakes; return its result."""
     fake_db = _FakeDBManager()
 
     import bmlibrarian.config as config_module
@@ -97,7 +100,14 @@ def test_login_passes_usable_connection_to_set_user_context(monkeypatch) -> None
         export_config=None, import_config=None,
     )
 
-    success, error = setup_config_with_auth(args)
+    return setup_config_with_auth(args)
+
+
+def test_login_passes_usable_connection_to_set_user_context(monkeypatch) -> None:
+    """The object handed to set_user_context must be a usable connection."""
+    fake_config = _FakeConfig()
+
+    success, error = _login(monkeypatch, fake_config)
 
     assert success, f"login failed: {error}"
     assert len(fake_config.received_connections) == 1
@@ -106,6 +116,14 @@ def test_login_passes_usable_connection_to_set_user_context(monkeypatch) -> None
         f"set_user_context received {type(conn).__name__!r} instead of a "
         "usable connection - get_connection() context manager was never entered"
     )
+
+
+def test_login_warns_when_saved_settings_failed_to_load(monkeypatch, capsys) -> None:
+    """The CLI tells the user that their database settings did not load."""
+    success, _ = _login(monkeypatch, _FakeConfig(load_failed=True))
+
+    assert success
+    assert "could not be loaded" in capsys.readouterr().err
 
 
 def test_settings_manager_rolls_back_on_error() -> None:

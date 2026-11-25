@@ -47,6 +47,9 @@ This document describes the technical architecture for BMLibrarian's database-ba
 └──────────────────┘      └──────────────────┘      └──────────────────┘
 ```
 
+Default Settings feed only `UserSettingsManager.get()`/`get_all()`, not the
+login merge (see Configuration Resolution, #438).
+
 ## Core Components
 
 ### 1. BMLibrarianConfig (Extended)
@@ -84,8 +87,8 @@ class BMLibrarianConfig:
     ) -> None:
         """Set user context for database-backed settings.
 
-        When user context is set, all get() operations will first check
-        the user's database settings before falling back to defaults.
+        (Original design sketch: as built, the user's rows are merged once
+        at login; see Configuration Resolution.)
 
         Args:
             user_id: The authenticated user's ID
@@ -124,13 +127,15 @@ class BMLibrarianConfig:
 As built (`config.py`), there is no per-category lookup: at login
 `_sync_from_database()` merges `UserSettingsManager.get_own_settings()` (the
 user's `bmlsettings.user_settings` rows only) over the JSON/`DEFAULT_CONFIG`
-values, then applies the `BMLIB_*` environment overrides again. The order is
-env > user rows > `config.json` > `DEFAULT_CONFIG`. `default_settings` is
+values, then applies the seven `BMLIB_*` environment overrides
+(`config.ENV_OVERRIDES`: agent models, Ollama host/timeout) again. The order
+is env > user rows > `config.json` > `DEFAULT_CONFIG`; a saved row is merged
+even for a category neither of the latter defines (e.g. `gui`). `default_settings` is
 left out on purpose (#438): its seed rows (Ollama host, an unapproved
 citation model, `~/knowledgebase/pdf`) used to override `config.json` and env
 vars on every login. `get()`/`get_all()` still fall back to it; the Qt
-"import your JSON config?" offer and `migrate_config_to_db.py` merge/export
-use `get_own_settings()`.
+post-login "Sync to Database" notice and `migrate_config_to_db.py`
+merge/export use `get_own_settings()`.
 
 The original design sketch below planned this priority chain:
 
@@ -335,9 +340,9 @@ CREATE TABLE bmlsettings.user_sessions (
 > view and the `get_all_user_settings()` function. A new category needs the
 > Python change plus one migration that extends all four SQL lists (see
 > migrations 030, 036 and 037). Without it, saving that category to the
-> database fails at runtime (CHECK), or the saved settings are never loaded
-> back on login (`get_all_user_settings()`, which `UserSettingsManager.get_all()`
-> calls).
+> database fails at runtime (CHECK), and `UserSettingsManager.get()`/`get_all()`
+> (through `get_all_user_settings()`) never return it. Login is not affected:
+> it reads the rows with `get_own_settings()`.
 > `tests/test_settings_categories_sql_sync.py` reads the migrations (no
 > database needed) and fails when the latest definition of any SQL list
 > differs from the Python set.

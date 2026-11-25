@@ -12,13 +12,11 @@ BMLibrarian now supports database-backed settings that:
 
 ## Automatic Migration (Recommended)
 
-When you log in to the BMLibrarian Qt GUI for the first time, the application will:
-
-1. Detect if you have an existing `~/.bmlibrarian/config.json` file
-2. Check if you already have settings in the database
-3. If no database settings exist, offer to import your local config
-
-Simply click **Yes** when prompted to import your settings.
+Your `~/.bmlibrarian/config.json` is used as soon as you log in; nothing
+has to be imported for it to apply. If you have no settings saved in the
+database yet, the Qt GUI shows a short notice after login. To keep your
+settings in your user profile, click **Sync to Database** in the
+Configuration tab. The notice stops once you have saved.
 
 ### What Gets Migrated
 
@@ -126,7 +124,8 @@ export POSTGRES_PASSWORD=your_db_password
 When you use BMLibrarian, settings are resolved in this priority order:
 
 ### With User Authentication:
-1. `BMLIB_*` environment variables (highest priority)
+1. `BMLIB_*` environment variables (highest priority; the agent models
+   and the Ollama host/timeout)
 2. User's database settings (only categories you saved)
 3. JSON file (`~/.bmlibrarian/config.json`)
 4. Hardcoded application defaults
@@ -136,12 +135,15 @@ When you use BMLibrarian, settings are resolved in this priority order:
 2. JSON file (`~/.bmlibrarian/config.json`)
 3. Hardcoded application defaults
 
-Merging (the default; `--replace` turns it off) and `--export --user` work
-on your own saved settings only, never on the system defaults.
-
 ### Offline Mode:
-1. JSON file only
-2. Hardcoded application defaults
+1. `BMLIB_*` environment variables
+2. JSON file (`~/.bmlibrarian/config.json`)
+3. Hardcoded application defaults
+
+When `migrate_config_to_db.py` imports into a user, merging (the default;
+`--replace` turns it off) combines the JSON with that user's own saved
+settings, never with the system defaults; `--export --user` likewise
+exports only what the user saved.
 
 ## Troubleshooting
 

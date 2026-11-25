@@ -48,6 +48,8 @@ def print_result(result: Dict[str, Any], verbose: bool = False):
     status_icon = {
         'imported': '✅',
         'would_import': '🔄',
+        'linked': '🔗',
+        'would_link': '🔄',
         'no_match': '❌',
         'already_exists': '📋',
         'duplicate': '📋',
@@ -85,6 +87,14 @@ def print_result(result: Dict[str, Any], verbose: bool = False):
             print(f"  Extracted PMID: {metadata['pmid']}")
         if metadata.get('title'):
             print(f"  Extracted title: {metadata['title'][:80]}...")
+
+    elif status == 'linked':
+        print(f"  🔗 {result.get('message', 'Linked existing PDF')}")
+        print(f"  Path: {result.get('path') or result.get('existing_path')}")
+
+    elif status == 'would_link':
+        print(f"  🔄 Would link the existing PDF to document {result.get('doc_id')} (dry run)")
+        print(f"  Path: {result.get('path') or result.get('existing_path')}")
 
     elif status in ['already_exists', 'duplicate']:
         print(f"  📋 {result.get('message', 'Already exists')}")
@@ -125,6 +135,7 @@ def print_stats(stats: Dict[str, Any]):
     print(f"Total PDFs processed:     {stats['total']}")
     print(f"Successfully imported:    {stats['imported']}")
     print(f"No database match:        {stats['no_match']}")
+    print(f"Linked existing PDF:      {stats.get('linked', 0)}")
     print(f"Already exists:           {stats['already_exists']}")
     print(f"Skipped:                  {stats['skipped']}")
     print(f"Failed:                   {stats['failed']}")
@@ -160,7 +171,10 @@ def cmd_import_file(args):
     if result['status'] == 'imported':
         print("\n✅ Import successful!")
         return 0
-    elif result['status'] == 'would_import':
+    elif result['status'] == 'linked':
+        print("\n✅ Existing PDF linked to its document")
+        return 0
+    elif result['status'] in ('would_import', 'would_link'):
         print("\n🔄 Dry run complete. Use without --dry-run to actually import.")
         return 0
     else:
@@ -210,8 +224,9 @@ def cmd_import_directory(args):
     if args.dry_run:
         print("\n🔄 Dry run complete. Use without --dry-run to actually import.")
 
-    if stats['imported'] > 0:
-        print(f"\n✅ Successfully imported {stats['imported']} PDFs")
+    if stats['imported'] > 0 or stats.get('linked', 0) > 0:
+        print(f"\n✅ Successfully imported {stats['imported']} PDFs, "
+              f"linked {stats.get('linked', 0)} existing PDFs")
         return 0
     else:
         print(f"\n⚠️  No PDFs were imported")

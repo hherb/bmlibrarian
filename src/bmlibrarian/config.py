@@ -69,6 +69,17 @@ VALID_SETTINGS_CATEGORIES = frozenset([
     'discovery', 'embeddings'
 ])
 
+# Environment variables that override a config value: name -> config path.
+ENV_OVERRIDES: Dict[str, List[str]] = {
+    "BMLIB_COUNTERFACTUAL_MODEL": ["models", "counterfactual_agent"],
+    "BMLIB_QUERY_MODEL": ["models", "query_agent"],
+    "BMLIB_SCORING_MODEL": ["models", "scoring_agent"],
+    "BMLIB_CITATION_MODEL": ["models", "citation_agent"],
+    "BMLIB_REPORTING_MODEL": ["models", "reporting_agent"],
+    "BMLIB_OLLAMA_HOST": ["ollama", "host"],
+    "BMLIB_OLLAMA_TIMEOUT": ["ollama", "timeout"],
+}
+
 
 # =============================================================================
 # Paper Weight Assessment Configuration Type Definitions
@@ -665,7 +676,7 @@ class BMLibrarianConfig:
 
         # With user context (uses database)
         config.set_user_context(user_id=1, connection=conn)
-        model = config.get_model("query_agent")  # Now loads from DB
+        model = config.get_model("query_agent")  # Now reflects the user's saved settings
     """
 
     def __init__(self) -> None:
@@ -714,18 +725,7 @@ class BMLibrarianConfig:
     
     def _load_env_overrides(self):
         """Load configuration overrides from environment variables."""
-        # Model overrides
-        env_mappings = {
-            "BMLIB_COUNTERFACTUAL_MODEL": ["models", "counterfactual_agent"],
-            "BMLIB_QUERY_MODEL": ["models", "query_agent"],
-            "BMLIB_SCORING_MODEL": ["models", "scoring_agent"],
-            "BMLIB_CITATION_MODEL": ["models", "citation_agent"],
-            "BMLIB_REPORTING_MODEL": ["models", "reporting_agent"],
-            "BMLIB_OLLAMA_HOST": ["ollama", "host"],
-            "BMLIB_OLLAMA_TIMEOUT": ["ollama", "timeout"],
-        }
-        
-        for env_var, config_path in env_mappings.items():
+        for env_var, config_path in ENV_OVERRIDES.items():
             value = os.getenv(env_var)
             if value:
                 # Navigate to the config location
@@ -1031,8 +1031,10 @@ class BMLibrarianConfig:
 
         try:
             db_settings = self._settings_manager.get_own_settings()
+            # get_own_settings() keeps only valid categories; one missing
+            # from DEFAULT_CONFIG and config.json (e.g. 'gui') is merged too.
             for category, settings in db_settings.items():
-                if category in self._config and settings:
+                if settings:
                     self._merge_config({category: settings})
         except Exception:
             self._db_load_failed = True

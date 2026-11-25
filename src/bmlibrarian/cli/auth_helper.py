@@ -8,6 +8,7 @@ import argparse
 import getpass
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, TYPE_CHECKING
@@ -353,6 +354,13 @@ def setup_config_with_auth(args: argparse.Namespace) -> Tuple[bool, Optional[str
                 session_token=result.session_token
             )
             logger.info(f"Authenticated as {result.username}")
+            if config.settings_load_failed():
+                print(
+                    "Warning: your saved settings could not be loaded from the "
+                    "database; local settings are in use and saving to the "
+                    "database is disabled.",
+                    file=sys.stderr,
+                )
 
             # Save session token if requested
             if save_session and result.session_token:

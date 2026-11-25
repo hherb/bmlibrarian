@@ -14,6 +14,7 @@ from bmlibrarian.config import (
     UserContext,
     VALID_SETTINGS_CATEGORIES,
     DEFAULT_CONFIG,
+    ENV_OVERRIDES,
     get_config,
     reload_config,
 )
@@ -24,6 +25,13 @@ def _no_user_config_file():
     """Keep the developer's ~/.bmlibrarian/config.json out of these tests."""
     with patch('bmlibrarian.utils.config_loader.load_config_with_fallback', return_value={}):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_env_overrides(monkeypatch: pytest.MonkeyPatch):
+    """Keep the developer's BMLIB_* variables out of these tests."""
+    for env_var in ENV_OVERRIDES:
+        monkeypatch.delenv(env_var, raising=False)
 
 
 class TestUserContext:
@@ -299,6 +307,19 @@ class TestBMLibrarianConfigSyncOperations:
         assert config.get('ollama.host') == 'http://gpu:11434'
         assert config.get('models.query_agent') == 'from-db'
         manager.get_all.assert_not_called()  # get_all() includes the seeded defaults
+
+    def test_login_merges_saved_category_missing_from_defaults(
+        self,
+        config: BMLibrarianConfig
+    ) -> None:
+        """A saved category absent from DEFAULT_CONFIG (e.g. gui) is not dropped."""
+        assert 'gui' not in DEFAULT_CONFIG
+        manager = MagicMock()
+        manager.get_own_settings.return_value = {'gui': {'theme': 'dark'}}
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.get('gui.theme') == 'dark'
 
     def test_get_own_settings_reads_only_user_rows(self) -> None:
         """get_own_settings() queries user_settings, not the defaults-merging function."""

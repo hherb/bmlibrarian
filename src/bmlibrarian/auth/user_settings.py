@@ -257,13 +257,22 @@ class UserSettingsManager:
                 (self._user_id,)
             )
             rows = cur.fetchall()
-        return {
-            category: settings for category, settings in rows
-            if category in VALID_CATEGORIES and isinstance(settings, dict)
-        }
+        own: Dict[str, Dict[str, Any]] = {}
+        for category, settings in rows:
+            if category in VALID_CATEGORIES and isinstance(settings, dict):
+                own[category] = settings
+            else:
+                self._logger.warning(
+                    f"Ignoring saved settings row '{category}' for user "
+                    f"{self._user_id}: not a valid category with an object value"
+                )
+        return own
 
     def reset_category(self, category: str) -> bool:
-        """Reset a category to system defaults by deleting user settings.
+        """Reset a category by deleting the user's saved settings for it.
+
+        At the next login the category comes from config.json or the
+        built-in defaults again; default_settings is not merged (#438).
 
         Args:
             category: The settings category to reset.
@@ -297,7 +306,7 @@ class UserSettingsManager:
         return True
 
     def reset_all(self) -> bool:
-        """Reset all settings to system defaults.
+        """Delete all of the user's saved settings (see reset_category()).
 
         Returns:
             True if all settings were reset successfully.

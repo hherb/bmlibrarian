@@ -54,7 +54,7 @@ BMLibrarian supports database-backed settings for authenticated users:
 - **Session Management**: Session tokens for persistent authentication
 
 **Resolution Priority Order**:
-1. `BMLIB_*` environment variables
+1. `BMLIB_*` environment variables (`config.ENV_OVERRIDES`: agent models, Ollama host/timeout)
 2. User's database settings (`bmlsettings.user_settings`, when authenticated)
 3. JSON file settings (`~/.bmlibrarian/config.json`)
 4. Hardcoded `DEFAULT_CONFIG`
@@ -64,7 +64,7 @@ its seed rows overrode `config.json` and env vars); only
 `UserSettingsManager.get()`/`get_all()` fall back to it.
 
 **Valid Settings Categories**:
-`models`, `ollama`, `agents`, `database`, `search`, `query_generation`, `gui`, `openathens`, `pdf`, `general`
+`models`, `ollama`, `agents`, `database`, `search`, `query_generation`, `gui`, `openathens`, `pdf`, `general`, `document_qa`, `discovery`, `embeddings`
 
 **Key Components**:
 - `UserService`: User registration, authentication, session management
