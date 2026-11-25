@@ -102,10 +102,11 @@ POSTGRES_PASSWORD=your_password
 
 # Optional: PDF file storage
 PDF_BASE_DIR=~/knowledgebase/pdf
-
-# Optional: Ollama server (if not localhost:11434)
-OLLAMA_BASE_URL=http://localhost:11434
 ```
+
+The Ollama server is set by `ollama.host` in the configuration file (see
+below). To override it for one shell, export `BMLIB_OLLAMA_HOST`; the
+override is never saved to the configuration file or the database.
 
 ## Configuration Structure
 
@@ -113,8 +114,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 ```json
 {
+  "ollama": {
+    "host": "http://localhost:11434"
+  },
   "general": {
-    "ollama_base_url": "http://localhost:11434",
     "database_params": {
       "host": "localhost",
       "port": 5432,
@@ -191,7 +194,9 @@ OLLAMA_BASE_URL=http://localhost:11434
 **Ollama Configuration**:
 ```json
 {
-  "ollama_base_url": "http://localhost:11434"
+  "ollama": {
+    "host": "http://localhost:11434"
+  }
 }
 ```
 - **Purpose**: Ollama server endpoint for AI model access

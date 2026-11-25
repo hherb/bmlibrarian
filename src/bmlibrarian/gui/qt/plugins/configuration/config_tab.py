@@ -306,7 +306,8 @@ class ConfigurationTabWidget(QWidget):
 
         if file_path:
             try:
-                config = self._collect_config()
+                # Leave BMLIB_* env values out of the file (#477, #480)
+                config = get_config().without_env_overrides(self._collect_config())
 
                 with open(file_path, 'w') as f:
                     json.dump(config, f, indent=2)
