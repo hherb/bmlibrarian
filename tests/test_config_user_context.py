@@ -348,9 +348,10 @@ class TestBMLibrarianConfigSyncOperations:
     def test_failed_reload_keeps_env_override(
         self,
         config: BMLibrarianConfig,
-        monkeypatch: pytest.MonkeyPatch
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path
     ) -> None:
-        """A failed load still leaves the BMLIB_* value in effect."""
+        """A failed load still leaves the BMLIB_* value in effect, not saved."""
         monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
         manager = MagicMock()
         manager.get_own_settings.side_effect = RuntimeError("connection lost")
@@ -358,6 +359,46 @@ class TestBMLibrarianConfigSyncOperations:
             config.set_user_context(user_id=1, connection=MagicMock())
 
         assert config.get('ollama.host') == 'http://gpu:11434'
+        target = tmp_path / "after_failed_load.json"
+        config.save_config(target)
+        saved = json.loads(target.read_text())
+        assert saved['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+
+    def test_login_without_saved_row_saves_value_underneath(
+        self,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user with no saved row does not get the BMLIB_* value saved (#477)."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        config = BMLibrarianConfig()  # the override is applied before login
+        manager = MagicMock()
+        manager.get_own_settings.return_value = {}
+        with patch('bmlibrarian.auth.user_settings.UserSettingsManager', return_value=manager):
+            config.set_user_context(user_id=1, connection=MagicMock())
+
+        assert config.get('ollama.host') == 'http://gpu:11434'
+        assert config.sync_to_database() is True
+        saved = dict(c.args for c in manager.set.call_args_list)
+        assert saved['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+
+    def test_import_and_reset_keep_env_override_in_effect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path
+    ) -> None:
+        """Import and reset change the value underneath; the override still wins."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        config = BMLibrarianConfig()
+        source = tmp_path / "import.json"
+        source.write_text(json.dumps({'ollama': {'host': 'http://imported:11434'}}))
+
+        config.import_from_json(source, sync_to_db=False)
+        assert config.get('ollama.host') == 'http://gpu:11434'
+        assert config._persistable_config()['ollama']['host'] == 'http://imported:11434'
+
+        config.reset_to_defaults(['ollama'])
+        assert config.get('ollama.host') == 'http://gpu:11434'
+        assert config._persistable_config()['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
 
     def test_json_save_leaves_env_overrides_out(
         self,

@@ -8,8 +8,9 @@ Supports both environment variables and configuration files.
 import json
 import os
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Tuple, TypedDict, TYPE_CHECKING
+from typing import Dict, Any, Iterator, Optional, List, Tuple, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
 from .utils.transient_retry import (
@@ -757,7 +758,9 @@ class BMLibrarianConfig:
         """Put back, in place, the values the BMLIB_* overrides replaced.
 
         A key the user changed since the override was applied keeps the
-        user's value; a key the override created is removed.
+        user's value; a key the override created is removed. Changes are
+        told apart by value, so a value set equal to the env value counts
+        as the override and is not saved.
 
         Args:
             config: A configuration dict shaped like self._config.
@@ -783,6 +786,23 @@ class BMLibrarianConfig:
         config = self._deep_copy_config(self._config)
         self._remove_env_overrides(config)
         return config
+
+    @contextmanager
+    def _env_overrides_lifted(self) -> Iterator[None]:
+        """Take the BMLIB_* overrides out while the configuration is changed.
+
+        Whatever the block writes becomes the value underneath; the
+        overrides are applied again afterwards, even if the block raises.
+
+        Yields:
+            None.
+        """
+        self._remove_env_overrides(self._config)
+        self._env_applied = {}
+        try:
+            yield
+        finally:
+            self._load_env_overrides()
 
     @staticmethod
     def _deep_copy_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1072,20 +1092,17 @@ class BMLibrarianConfig:
             logger.warning("Cannot sync from database: no user context set")
             return
 
-        self._remove_env_overrides(self._config)
-        self._env_applied = {}
-        try:
-            db_settings = self._settings_manager.get_own_settings()
-            # get_own_settings() keeps only valid categories; one missing
-            # from DEFAULT_CONFIG and config.json (e.g. 'gui') is merged too.
-            for category, settings in db_settings.items():
-                if settings:
-                    self._merge_config({category: settings})
-        except Exception:
-            self._db_load_failed = True
-            raise
-        finally:
-            self._load_env_overrides()
+        with self._env_overrides_lifted():
+            try:
+                db_settings = self._settings_manager.get_own_settings()
+                # get_own_settings() keeps only valid categories; one missing
+                # from DEFAULT_CONFIG and config.json (e.g. 'gui') is merged too.
+                for category, settings in db_settings.items():
+                    if settings:
+                        self._merge_config({category: settings})
+            except Exception:
+                self._db_load_failed = True
+                raise
         self._db_load_failed = False
         logger.debug("Synced settings from database to in-memory config")
 
@@ -1184,7 +1201,8 @@ class BMLibrarianConfig:
         imported_config = load_json_config(expanded_path)
 
         if imported_config:
-            self._merge_config(imported_config)
+            with self._env_overrides_lifted():
+                self._merge_config(imported_config)
             logger.info(f"Imported configuration from: {expanded_path}")
 
             # Optionally sync to database if user context is set
@@ -1214,9 +1232,10 @@ class BMLibrarianConfig:
         target_categories = categories or list(VALID_SETTINGS_CATEGORIES)
 
         # Reset in-memory config for specified categories
-        for category in target_categories:
-            if category in DEFAULT_CONFIG:
-                self._config[category] = self._deep_copy_config(DEFAULT_CONFIG[category])
+        with self._env_overrides_lifted():
+            for category in target_categories:
+                if category in DEFAULT_CONFIG:
+                    self._config[category] = self._deep_copy_config(DEFAULT_CONFIG[category])
 
         # If user context is set, also reset database settings
         if self._settings_manager is not None:

@@ -143,7 +143,8 @@ When you use BMLibrarian, settings are resolved in this priority order:
 `BMLIB_*` values apply only while the variable is set. Saving (Save,
 Sync to Database, Export) stores the value underneath them, not the
 environment value, so it does not outlive the variable. If you change an
-overridden setting yourself before saving, your value is saved.
+overridden setting yourself before saving, your value is saved (unless it is
+the same as the variable's value).
 
 When `migrate_config_to_db.py` imports into a user, merging (the default;
 `--replace` turns it off) combines the JSON with that user's own saved

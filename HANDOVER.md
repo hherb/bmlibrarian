@@ -16,9 +16,13 @@ off new work. Longer-term structural items live in
   (`_env_applied`); `sync_to_database()`, `save_config()` and
   `export_to_json()` save `_persistable_config()` (env values put back, a
   key the override created dropped; a key the user changed since is saved
-  as is). `_sync_from_database()` takes the overrides out before merging
-  and re-applies them in a `finally`. Verified: suite 5048 passed, 73
-  skipped; the 4 new tests fail on the old code. Not run in the Qt app.
+  as is; told apart by value, so a value set equal to the env value is not
+  saved). `_sync_from_database()`, `import_from_json()`,
+  `reset_to_defaults()` and the Settings tab's Reset change the config
+  inside `_env_overrides_lifted()` (overrides out, then applied again, also
+  on failure); that Reset no longer aliases `DEFAULT_CONFIG`. Verified:
+  suite 5050 passed, 73 skipped. Not run in the Qt app. The Configuration
+  tab's Ollama URL edits the unread `ollama.base_url` (#480).
 
 - **Login settings order #438, pdf_matcher #456** (2026-11-25, branch
   `fix/settings-pdfmatcher-438-456`). At login `_sync_from_database` merges
@@ -438,7 +442,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5048 passed, 73 skipped** in about 2 min (hermetic since #334;
+  **5050 passed, 73 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
