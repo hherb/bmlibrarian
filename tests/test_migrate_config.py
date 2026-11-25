@@ -118,23 +118,72 @@ class TestValidCategories:
         assert isinstance(VALID_CATEGORIES, frozenset)
 
 
+def _patched_user_db(own_settings):
+    """Patch the migrate script's DB and auth; return the settings manager mock."""
+    manager = MagicMock()
+    manager.get_own_settings.return_value = own_settings
+    user_service = MagicMock()
+    user_service.authenticate.return_value = (MagicMock(id=7), None)
+    patch("migrate_config_to_db.get_db_connection").start()
+    patch("bmlibrarian.auth.UserService", return_value=user_service).start()
+    patch("bmlibrarian.auth.UserSettingsManager", return_value=manager).start()
+    return manager
+
+
 class TestMigrationFunctions:
     """Tests for migration functions (require mocking)."""
 
-    @pytest.mark.skip(reason="Requires database connection - integration test")
-    def test_migrate_to_user_settings(self):
-        """Test migrating to user settings."""
-        pass
+    @pytest.fixture(autouse=True)
+    def _stop_patches(self):
+        """Undo _patched_user_db after each test."""
+        yield
+        patch.stopall()
+
+    def test_merge_uses_only_the_users_own_rows(self):
+        """Merging never mixes the seeded default_settings into the user (#438)."""
+        from migrate_config_to_db import migrate_to_user_settings
+
+        manager = _patched_user_db({"models": {"query_agent": "mine", "scoring_agent": "mine"}})
+        config = {"models": {"query_agent": "json"}, "ollama": {"host": "http://h:1"}}
+
+        assert migrate_to_user_settings("u", "p", config, merge=True)
+
+        written = dict(c.args for c in manager.set.call_args_list)
+        assert written == {
+            "models": {"query_agent": "json", "scoring_agent": "mine"},
+            "ollama": {"host": "http://h:1"},
+        }
+        manager.get.assert_not_called()
+        manager.get_all.assert_not_called()
+
+    def test_replace_writes_json_unchanged(self):
+        """With merge=False the user's rows are not read at all."""
+        from migrate_config_to_db import migrate_to_user_settings
+
+        manager = _patched_user_db({"models": {"scoring_agent": "mine"}})
+
+        assert migrate_to_user_settings("u", "p", {"models": {"query_agent": "json"}}, merge=False)
+
+        manager.get_own_settings.assert_not_called()
+        manager.set.assert_called_once_with("models", {"query_agent": "json"})
 
     @pytest.mark.skip(reason="Requires database connection - integration test")
     def test_migrate_to_defaults(self):
         """Test migrating to default settings."""
         pass
 
-    @pytest.mark.skip(reason="Requires database connection - integration test")
-    def test_export_user_settings(self):
-        """Test exporting user settings."""
-        pass
+    def test_export_writes_only_the_users_own_rows(self, tmp_path):
+        """The export holds what the user saved, not the seeded defaults (#438)."""
+        from migrate_config_to_db import export_user_settings
+
+        manager = _patched_user_db({"models": {"query_agent": "mine"}, "ollama": {}})
+        out = tmp_path / "out.json"
+
+        assert export_user_settings("u", "p", out)
+
+        assert json.loads(out.read_text()) == {"models": {"query_agent": "mine"}}
+        manager.get.assert_not_called()
+        manager.get_all.assert_not_called()
 
 
 class TestArgumentParser:

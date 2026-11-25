@@ -10,6 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Login settings order #438, pdf_matcher #456** (2026-11-25, branch
+  `fix/settings-pdfmatcher-438-456`). At login `_sync_from_database` merges
+  only the user's own `bmlsettings.user_settings` rows
+  (`UserSettingsManager.get_own_settings()`) and then re-applies the
+  `BMLIB_*` env overrides; the seeded `default_settings` rows no longer
+  override `config.json`/env (owner decision 2026-11-25: order is env > user
+  rows > JSON > `DEFAULT_CONFIG`; CLAUDE.md and both settings docs updated).
+  Saved rows of a category missing from `DEFAULT_CONFIG` (e.g. `gui`) are
+  merged too. The blocking Qt "import your JSON config?" modal (it came back
+  on every login, a "No" was never remembered) is now an INFO toast pointing
+  at Configuration → Sync to Database; `migrate_config_to_db.py`
+  merge/`--export --user` use the user's rows only; the CLI warns when the
+  saved settings failed to load. `pdf_matcher`: a PDF at the target while
+  the document has no working `pdf_filename` (interrupted import) is linked,
+  status `linked` (`would_link` in dry runs; the CLI exits 0, the directory
+  summary counts it). `check_document_status`, `quick_database_lookup` and
+  `find_alternative_matches` re-raise `psycopg.Error`;
+  `match_and_import_pdf` reports any error as `failed` for that file
+  instead of falling back to title matching or ending a directory batch.
+  Title matches now pick the best score, not the lowest document id; a
+  dry-run directory import no longer counts `would_import` as failed. Not
+  run against a live login or a real PDF import. Still open: Save after
+  login writes env-overridden values into the user's rows (pre-existing,
+  #477).
+
 - **Import/embedding fixes #442, #444, #446** (2026-11-25, branch
   `fix/import-embed-442-444-446`). `DocumentEmbedder.embed_documents` pages
   by document ID in `batch_size` pages and no longer selects `full_text`, so
@@ -399,11 +424,11 @@ value — pick one, or pull an item from ROADMAP.md:
   port taken after init); bml-db review follow-ups: #424;
   bml-library: #430, #433.
 
-- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #434–#437,
-  #439–#450, #452 fixed). Installer: #451 (setup replaces another config
-  folder's login entry), #453 (rust.yml permissions, SHA-pinned checkout).
-  Broken: #438 (seed defaults override config.json/env after login). Also
-  #472 (secret-save failures only logged, browser-fallback cookies).
+- **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; all but two
+  fixed). Installer: #451 (setup replaces another config folder's login
+  entry), #453 (rust.yml permissions, SHA-pinned checkout). Also #472
+  (secret-save failures only logged, browser-fallback cookies) and #475
+  (stale abstract chunks/embeddings after an abstract update).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -448,7 +473,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **5026 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **5034 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

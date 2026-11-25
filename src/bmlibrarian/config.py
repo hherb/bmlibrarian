@@ -69,6 +69,17 @@ VALID_SETTINGS_CATEGORIES = frozenset([
     'discovery', 'embeddings'
 ])
 
+# Environment variables that override a config value: name -> config path.
+ENV_OVERRIDES: Dict[str, List[str]] = {
+    "BMLIB_COUNTERFACTUAL_MODEL": ["models", "counterfactual_agent"],
+    "BMLIB_QUERY_MODEL": ["models", "query_agent"],
+    "BMLIB_SCORING_MODEL": ["models", "scoring_agent"],
+    "BMLIB_CITATION_MODEL": ["models", "citation_agent"],
+    "BMLIB_REPORTING_MODEL": ["models", "reporting_agent"],
+    "BMLIB_OLLAMA_HOST": ["ollama", "host"],
+    "BMLIB_OLLAMA_TIMEOUT": ["ollama", "timeout"],
+}
+
 
 # =============================================================================
 # Paper Weight Assessment Configuration Type Definitions
@@ -646,11 +657,11 @@ class BMLibrarianConfig:
     a user context is set.
 
     The configuration resolution priority is:
-    1. User settings from database (if user context is set)
-    2. Default settings from database (if connected)
+    1. Environment variable overrides (BMLIB_*)
+    2. User settings from database (if user context is set; the database's
+       default_settings rows are not used)
     3. JSON configuration file (~/.bmlibrarian/config.json)
-    4. Environment variable overrides
-    5. Hardcoded DEFAULT_CONFIG
+    4. Hardcoded DEFAULT_CONFIG
 
     Attributes:
         _config: In-memory configuration dictionary.
@@ -665,7 +676,7 @@ class BMLibrarianConfig:
 
         # With user context (uses database)
         config.set_user_context(user_id=1, connection=conn)
-        model = config.get_model("query_agent")  # Now loads from DB
+        model = config.get_model("query_agent")  # Now reflects the user's saved settings
     """
 
     def __init__(self) -> None:
@@ -714,18 +725,7 @@ class BMLibrarianConfig:
     
     def _load_env_overrides(self):
         """Load configuration overrides from environment variables."""
-        # Model overrides
-        env_mappings = {
-            "BMLIB_COUNTERFACTUAL_MODEL": ["models", "counterfactual_agent"],
-            "BMLIB_QUERY_MODEL": ["models", "query_agent"],
-            "BMLIB_SCORING_MODEL": ["models", "scoring_agent"],
-            "BMLIB_CITATION_MODEL": ["models", "citation_agent"],
-            "BMLIB_REPORTING_MODEL": ["models", "reporting_agent"],
-            "BMLIB_OLLAMA_HOST": ["ollama", "host"],
-            "BMLIB_OLLAMA_TIMEOUT": ["ollama", "timeout"],
-        }
-        
-        for env_var, config_path in env_mappings.items():
+        for env_var, config_path in ENV_OVERRIDES.items():
             value = os.getenv(env_var)
             if value:
                 # Navigate to the config location
@@ -769,9 +769,9 @@ class BMLibrarianConfig:
     ) -> None:
         """Set user context for database-backed settings.
 
-        When user context is set, configuration values are loaded from the
-        user's settings in the PostgreSQL database, with fallback to system
-        defaults and then to in-memory/JSON configuration.
+        When user context is set, the settings the user saved in the
+        PostgreSQL database are merged over the in-memory/JSON configuration;
+        BMLIB_* environment overrides still win.
 
         Args:
             user_id: The authenticated user's database ID.
@@ -1010,8 +1010,10 @@ class BMLibrarianConfig:
     def _sync_from_database(self) -> None:
         """Sync settings from database to in-memory configuration.
 
-        Called internally when user context is set. Loads all user settings
-        from the database and merges them into the in-memory configuration.
+        Called internally when user context is set. Merges the settings the
+        user saved (not the database's default_settings rows, which would
+        override config.json) into the in-memory configuration, then applies
+        the BMLIB_* environment overrides again so they still win (#438).
 
         While a load has failed, sync_to_database() refuses to save; a later
         successful load lifts that.
@@ -1028,14 +1030,16 @@ class BMLibrarianConfig:
             return
 
         try:
-            db_settings = self._settings_manager.get_all(use_cache=False)
+            db_settings = self._settings_manager.get_own_settings()
+            # get_own_settings() keeps only valid categories; one missing
+            # from DEFAULT_CONFIG and config.json (e.g. 'gui') is merged too.
             for category, settings in db_settings.items():
-                if category in self._config and settings:
-                    # Merge database settings with defaults
+                if settings:
                     self._merge_config({category: settings})
         except Exception:
             self._db_load_failed = True
             raise
+        self._load_env_overrides()
         self._db_load_failed = False
         logger.debug("Synced settings from database to in-memory config")
 

@@ -241,8 +241,38 @@ class UserSettingsManager:
 
         return all_settings.copy()
 
+    def get_own_settings(self) -> Dict[str, Dict[str, Any]]:
+        """Get the settings the user saved, without system defaults.
+
+        Unlike get_all(), categories the user never saved are left out, so
+        the seeded default_settings rows cannot override local configuration.
+
+        Returns:
+            Dictionary with category names as keys and settings dicts as values.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT category, settings FROM bmlsettings.user_settings "
+                "WHERE user_id = %s",
+                (self._user_id,)
+            )
+            rows = cur.fetchall()
+        own: Dict[str, Dict[str, Any]] = {}
+        for category, settings in rows:
+            if category in VALID_CATEGORIES and isinstance(settings, dict):
+                own[category] = settings
+            else:
+                self._logger.warning(
+                    f"Ignoring saved settings row '{category}' for user "
+                    f"{self._user_id}: not a valid category with an object value"
+                )
+        return own
+
     def reset_category(self, category: str) -> bool:
-        """Reset a category to system defaults by deleting user settings.
+        """Reset a category by deleting the user's saved settings for it.
+
+        At the next login the category comes from config.json or the
+        built-in defaults again; default_settings is not merged (#438).
 
         Args:
             category: The settings category to reset.
@@ -276,7 +306,7 @@ class UserSettingsManager:
         return True
 
     def reset_all(self) -> bool:
-        """Reset all settings to system defaults.
+        """Delete all of the user's saved settings (see reset_category()).
 
         Returns:
             True if all settings were reset successfully.

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
+import psycopg
 
 from bmlibrarian.agents.base import BaseAgent
 from bmlibrarian.database import get_db_manager
@@ -62,6 +63,9 @@ MAX_LLM_TEXT_LENGTH = 3000
 
 # Suffix of the temp file a PDF is copied to before it is moved into place.
 PARTIAL_COPY_SUFFIX = ".partial"
+
+# PDFManager.update_database_pdf_path() logs the cause and returns only False.
+DB_UPDATE_FAILED_REASON = "Database update failed (the cause is in the log)"
 
 # Low temperature so metadata is transcribed from the page, not invented.
 METADATA_EXTRACTION_TEMPERATURE = 0.1
@@ -329,9 +333,10 @@ class PDFMatcher(BaseAgent):
 
             return None
 
-        except Exception as e:
+        except psycopg.Error as e:
+            # A failed lookup is not "not in database" (#456).
             logger.error(f"Error in quick database lookup: {e}")
-            return None
+            raise
 
     def check_document_status(
         self,
@@ -352,6 +357,9 @@ class PDFMatcher(BaseAgent):
 
         Returns:
             DocumentStatus with exists, has_full_text, has_chunks, and document dict
+
+        Raises:
+            psycopg.Error: If the database lookup failed.
         """
         # Validate inputs - note: we use lenient validation here since
         # identifiers from regex extraction may have slight variations
@@ -441,9 +449,12 @@ class PDFMatcher(BaseAgent):
 
             return DocumentStatus()
 
-        except Exception as e:
+        except psycopg.Error as e:
+            # Never report a failed lookup as "not in database" (#456): the
+            # caller would fall back to title matching and could pick the
+            # wrong document.
             logger.error(f"Error checking document status: {e}")
-            return DocumentStatus()
+            raise
 
     def _row_to_full_dict(self, row: tuple) -> Dict[str, Any]:
         """
@@ -677,13 +688,17 @@ Text to analyze:
                     title = metadata['title'].strip()
                     # Use semantic search for fast title matching
                     # Lower threshold (0.6) since we're matching titles, not full documents
+                    # DISTINCT ON keeps each document's best chunk; the outer
+                    # ORDER BY then picks the best document, not the lowest id.
                     cur.execute("""
-                        SELECT DISTINCT ON (document_id)
-                            document_id as id, doi, title, publication_date,
-                            NULL as pdf_filename, NULL as pdf_url, external_id,
-                            score as sim
-                        FROM semantic_docsearch(%s, 0.6, 10)
-                        ORDER BY document_id, score DESC
+                        SELECT * FROM (
+                            SELECT DISTINCT ON (document_id)
+                                document_id as id, doi, title, publication_date,
+                                NULL as pdf_filename, NULL as pdf_url, external_id,
+                                score as sim
+                            FROM semantic_docsearch(%s, 0.6, 10)
+                            ORDER BY document_id, score DESC
+                        ) best ORDER BY sim DESC
                     """, (title,))
                     result = cur.fetchone()
                     if result:
@@ -734,12 +749,14 @@ Text to analyze:
                     fetch_limit = max_results * 2 if exclude_id else max_results
 
                     cur.execute("""
-                        SELECT DISTINCT ON (document_id)
-                            document_id as id, doi, title, publication_date,
-                            NULL as pdf_filename, NULL as pdf_url, external_id,
-                            score as sim
-                        FROM semantic_docsearch(%s, %s, %s)
-                        ORDER BY document_id, score DESC
+                        SELECT * FROM (
+                            SELECT DISTINCT ON (document_id)
+                                document_id as id, doi, title, publication_date,
+                                NULL as pdf_filename, NULL as pdf_url, external_id,
+                                score as sim
+                            FROM semantic_docsearch(%s, %s, %s)
+                            ORDER BY document_id, score DESC
+                        ) best ORDER BY sim DESC
                     """, (title, min_similarity, fetch_limit))
 
                     results = []
@@ -758,9 +775,10 @@ Text to analyze:
                         logger.info(f"Found {len(results)} alternative matches for title")
                     return results
 
-        except Exception as e:
+        except psycopg.Error as e:
+            # A failed search is not "no alternatives" (#456).
             logger.error(f"Error finding alternative matches: {e}")
-            return []
+            raise
 
     def _row_to_basic_document_dict(self, row: tuple) -> Dict[str, Any]:
         """
@@ -867,28 +885,47 @@ Text to analyze:
             }
 
         # The document's stored PDF (wherever it is) or a file at the target.
-        existing_path = (
+        stored_path = (
             pdf_manager._find_current_pdf_path(stored_filename) if stored_filename else None
         )
+        existing_path = stored_path
         if existing_path is None and target_path.exists():
             existing_path = target_path
 
         if existing_path is not None:
             if pdf_path.resolve() == existing_path.resolve():
-                return {
+                found = {
                     'status': 'already_exists',
                     'message': 'PDF already at correct location',
                     'doc_id': doc_id,
                     'path': str(existing_path)
                 }
-
-            if pdf_path.stat().st_size == existing_path.stat().st_size:
-                return {
+            elif pdf_path.stat().st_size == existing_path.stat().st_size:
+                found = {
                     'status': 'duplicate',
                     'message': 'PDF already exists with same size',
                     'doc_id': doc_id,
                     'existing_path': str(existing_path)
                 }
+            else:
+                found = None
+
+            if found is not None:
+                # The document has no working PDF link (e.g. an interrupted
+                # import left this copy): point the database at it (#456).
+                if stored_path is None:
+                    if dry_run:
+                        found['status'] = 'would_link'
+                        return found
+                    if not self._store_pdf_path(doc_id, document, pdf_manager):
+                        return {
+                            'status': 'failed',
+                            'reason': DB_UPDATE_FAILED_REASON,
+                            'doc_id': doc_id
+                        }
+                    found['status'] = 'linked'
+                    found['message'] = f'Linked existing PDF to document {doc_id}'
+                return found
 
             # A different PDF is already stored. Never replace it: the incoming
             # file may be supplementary material that carries the article's DOI.
@@ -934,20 +971,14 @@ Text to analyze:
             placed = True
             logger.info(f"Copied PDF: {pdf_path} -> {target_path}")
 
-            # Update database
-            relative_path = pdf_manager.get_relative_pdf_path(document)
-            with self.db_manager.get_connection() as conn:
-                pdf_manager_with_conn = PDFManager(base_dir=self.pdf_manager.base_dir, db_conn=conn)
-                success = pdf_manager_with_conn.update_database_pdf_path(doc_id, relative_path)
-
-            if not success:
+            if not self._store_pdf_path(doc_id, document, pdf_manager):
                 # The target did not exist before this import, so removing
                 # our copy loses nothing.
                 placed = False
                 _discard_file(target_path)
                 return {
                     'status': 'failed',
-                    'reason': 'Database update failed',
+                    'reason': DB_UPDATE_FAILED_REASON,
                     'doc_id': doc_id
                 }
             # The database now points at the file: it must never be removed.
@@ -979,7 +1010,58 @@ Text to analyze:
                 'doc_id': doc_id
             }
 
+    def _store_pdf_path(
+        self,
+        doc_id: int,
+        document: Dict[str, Any],
+        pdf_manager: PDFManager
+    ) -> bool:
+        """Point the document's pdf_filename at its file under the PDF folder.
+
+        Args:
+            doc_id: Document ID to update.
+            document: Document dict whose pdf_filename is the new file name.
+            pdf_manager: Manager that resolved the target path.
+
+        Returns:
+            True if the database was updated.
+        """
+        relative_path = pdf_manager.get_relative_pdf_path(document)
+        with self.db_manager.get_connection() as conn:
+            pdf_manager_with_conn = PDFManager(base_dir=self.pdf_manager.base_dir, db_conn=conn)
+            return pdf_manager_with_conn.update_database_pdf_path(doc_id, relative_path)
+
     def match_and_import_pdf(
+        self,
+        pdf_path: Path,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Analyze PDF, match to database, and import if match found.
+
+        See _match_and_import_pdf(). Any error, a database error included,
+        is reported as a 'failed' result for this file: never a fall-back to
+        title matching (#456), and never the end of a directory batch.
+
+        Args:
+            pdf_path: Path to PDF file
+            dry_run: If True, only report what would be done
+
+        Returns:
+            Dictionary with complete analysis and import results.
+        """
+        try:
+            return self._match_and_import_pdf(pdf_path, dry_run)
+        except Exception as e:
+            kind = 'Database error' if isinstance(e, psycopg.Error) else type(e).__name__
+            logger.error(f"{kind} while matching {pdf_path}: {e}", exc_info=True)
+            return {
+                'pdf_path': str(pdf_path),
+                'pdf_filename': pdf_path.name,
+                'status': 'failed',
+                'error': f'{kind}: {e}',
+            }
+
+    def _match_and_import_pdf(
         self,
         pdf_path: Path,
         dry_run: bool = False
@@ -991,7 +1073,8 @@ Text to analyze:
         1. Try regex extraction of DOI/PMID from first page (fast, ~100ms)
         2. If identifier found, immediately check database
         3. If document exists in database, use database metadata (skip LLM)
-        4. Only fall back to slow LLM extraction if no identifiers found
+        4. Fall back to slow LLM extraction if no identifier was found or
+           none matched a document
 
         Args:
             pdf_path: Path to PDF file
@@ -1166,11 +1249,12 @@ Text to analyze:
         else:
             pdf_files = list(directory.glob('*.pdf'))
 
-        stats = {
+        stats: Dict[str, Any] = {
             'total': len(pdf_files),
             'imported': 0,
             'no_match': 0,
             'already_exists': 0,
+            'linked': 0,
             'failed': 0,
             'skipped': 0,
             'details': []
@@ -1192,8 +1276,11 @@ Text to analyze:
 
             # Update statistics
             status = result.get('status', 'unknown')
-            if status == 'imported':
+            # A dry run counts what a real run would do.
+            if status in ('imported', 'would_import'):
                 stats['imported'] += 1
+            elif status in ('linked', 'would_link'):
+                stats['linked'] += 1
             elif status == 'no_match':
                 stats['no_match'] += 1
             elif status in ['already_exists', 'duplicate']:

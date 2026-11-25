@@ -187,11 +187,13 @@ The CLI reports various status codes for each PDF:
 |--------|------|---------|
 | `imported` | ✅ | Successfully imported and database updated |
 | `would_import` | 🔄 | Would import (dry run mode) |
+| `linked` | 🔗 | The PDF (or a same-size copy) was already at the target but the document had no working PDF link, e.g. after an interrupted import: the database now points at it |
+| `would_link` | 🔄 | Would link as above (dry run mode) |
 | `no_match` | ❌ | No matching document found in database |
-| `already_exists` | 📋 | PDF already exists at correct location |
-| `duplicate` | 📋 | PDF exists with same file size |
+| `already_exists` | 📋 | PDF already exists at correct location and is linked |
+| `duplicate` | 📋 | PDF exists with same file size and is linked |
 | `skipped` | ⏭️ | A different PDF is already stored for the document; it is never replaced |
-| `failed` | ⚠️ | Import failed due to error |
+| `failed` | ⚠️ | Import failed due to an error, e.g. a database error during any lookup or update (never followed by a title-matching fallback); in a directory import the next file is still processed |
 | `extraction_failed` | 📄 | Could not extract text from PDF |
 | `no_metadata` | 📝 | Could not extract metadata from PDF |
 
@@ -371,7 +373,7 @@ For 40,000 PDFs, expect ~70-100 hours of processing time.
 2. **Text-based PDFs only**: Cannot process scanned/image-based PDFs without OCR
 3. **English language**: LLM trained primarily on English text
 4. **Biomedical focus**: Optimized for biomedical research papers
-5. **No duplicate detection**: If document already has PDF, newer file replaces older
+5. **One PDF per document**: a different PDF for a document that already has one is skipped, never replaces it (remove the stored one first)
 
 ## Future Enhancements
 
