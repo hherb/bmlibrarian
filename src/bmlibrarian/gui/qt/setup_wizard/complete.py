@@ -119,10 +119,17 @@ class CompletePage(QWizardPage):
         elif import_results.get("medrxiv_stats"):
             summary += "  medRxiv: Import skipped or failed\n"
 
+        pubmed_stats = import_results.get("pubmed_stats", {})
+        # 'imported' from the quick test's search import, 'total_articles' from the bulk import.
+        pubmed_articles = pubmed_stats.get("imported", pubmed_stats.get("total_articles", 0))
         if import_results.get("pubmed_success"):
-            stats = import_results.get("pubmed_stats", {})
-            summary += f"  PubMed: {stats.get('imported', 0)} articles imported\n"
-        elif import_results.get("pubmed_stats"):
+            summary += f"  PubMed: {pubmed_articles:,} articles imported\n"
+        elif pubmed_stats.get("total_errors"):
+            summary += (
+                f"  PubMed: {pubmed_articles:,} articles imported, "
+                f"{pubmed_stats['total_errors']} errors (re-run the import to retry failed files)\n"
+            )
+        elif pubmed_stats:
             summary += "  PubMed: Import skipped or failed\n"
 
         if import_results.get("mesh_success"):

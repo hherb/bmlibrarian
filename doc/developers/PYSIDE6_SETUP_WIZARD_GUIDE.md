@@ -323,16 +323,17 @@ importer = PubMedBulkImporter(
     use_tracking=True
 )
 
-# Download baseline (~38M articles, ~300-400GB)
-count = importer.download_baseline(skip_existing=True)
+# Download baseline (~38M articles, ~45GB compressed)
+counts = importer.download_baseline(skip_existing=True)
+# Returns: DownloadCounts(downloaded=int, failed=int)
 
 # Download updates (new articles)
-count = importer.download_updates(skip_existing=True)
+counts = importer.download_updates(skip_existing=True)
 
-# Import downloaded files
-stats = importer.import_baseline()
-stats = importer.import_updates()
-# Returns: {'imported': int, 'skipped': int, 'errors': int}
+# Import downloaded files ('baseline', 'update', or None for both)
+stats = importer.import_all_files('baseline')
+# Returns: {'files_processed': int, 'files_skipped': int, 'total_articles': int,
+#           'total_errors': int, 'total_documents_withdrawn': int}
 ```
 
 ---

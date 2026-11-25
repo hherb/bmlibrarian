@@ -26,9 +26,15 @@ class TestValidation:
         with pytest.raises(ValueError):
             dip.validate_setting("listen_addresses", "*")
 
-    def test_injection_value_is_rejected(self) -> None:
+    @pytest.mark.parametrize("value", ["1.5GB", "2 GB", "16384", "512kB", "100B"])
+    def test_sizes_postgresql_accepts_pass(self, value: str) -> None:
+        dip.validate_setting("shared_buffers", value)
+
+    @pytest.mark.parametrize("value", [
+        "1GB'; DROP TABLE x; --", "1GB'", "1 GB; SELECT 1", "1\nGB", "1GB\n", "1.5 GiB", "1  GB", "1.GB"])
+    def test_injection_value_is_rejected(self, value: str) -> None:
         with pytest.raises(ValueError):
-            dip.validate_setting("shared_buffers", "1GB'; DROP TABLE x; --")
+            dip.validate_setting("shared_buffers", value)
 
 
 class TestPureHelpers:
@@ -128,6 +134,50 @@ class TestApplyRestore:
         with pytest.raises(dip.ImportProfileError):
             profile.apply({"max_wal_size": "64GB"})
         assert not (tmp_path / "state.json").exists()
+
+    def test_apply_refuses_a_value_restore_would_reject(self, tmp_path: Path) -> None:
+        """#440: refuse before changing anything, not at restore time."""
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server, auto_conf="shared_buffers = '1.5 GiB'\n")
+        with pytest.raises(dip.ImportProfileError, match="shared_buffers"):
+            profile.apply({"shared_buffers": "32GB"})
+        assert not (tmp_path / "state.json").exists()
+        assert server.statements == []
+
+    def test_fractional_previous_value_round_trips(self, tmp_path: Path) -> None:
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server, auto_conf="shared_buffers = '1.5GB'\n")
+        profile.apply({"shared_buffers": "32GB"})
+        server.statements.clear()
+        assert profile.restore() == dip.RESTORED
+        assert "ALTER SYSTEM SET shared_buffers = '1.5GB'" in server.statements
+
+
+    def test_failed_restart_on_apply_names_the_state_file(self, tmp_path: Path) -> None:
+        """A failed restart leaves the profile applied: the error must say how to get back."""
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server)
+
+        def broken_restart() -> None:
+            raise RuntimeError("pg_ctl start failed")
+
+        profile.restart = broken_restart
+        with pytest.raises(dip.ImportProfileError, match="state.json") as excinfo:
+            profile.apply({"shared_buffers": "32GB"})
+        assert "profile restore" in str(excinfo.value)
+        assert "postgresql.auto.conf" in str(excinfo.value)
+        assert (tmp_path / "state.json").exists()
+
+    def test_restore_of_an_old_unrestorable_state_names_the_state_file(self, tmp_path: Path) -> None:
+        """A state file written before #440 may hold a value restore refuses."""
+        server = FakeServer(tmp_path)
+        profile = make_profile(tmp_path, server)
+        (tmp_path / "state.json").write_text(json.dumps(
+            {"profile": {"shared_buffers": "32GB"}, "restore": {"shared_buffers": "1.5 GiB"}}))
+        with pytest.raises(dip.ImportProfileError, match="state.json"):
+            profile.restore()
+        assert server.statements == []
+        assert (tmp_path / "state.json").exists()
 
 
 class TestStartOptions:

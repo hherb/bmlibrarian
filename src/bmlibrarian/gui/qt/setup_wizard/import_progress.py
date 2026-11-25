@@ -5,7 +5,7 @@ Contains the worker thread and page for data import operations.
 """
 
 import logging
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QWizardPage,
@@ -38,6 +38,47 @@ if TYPE_CHECKING:
     from .import_options import ImportOptionsPage
 
 logger = logging.getLogger(__name__)
+
+IMPORT_SOURCES = ("medrxiv", "pubmed", "mesh")
+
+
+def import_problems(stats: Dict[str, Any]) -> List[str]:
+    """Return a readable line for each failed source or source with errors.
+
+    Args:
+        stats: The worker's stats: ``<source>`` result dicts and
+            ``<source>_error`` messages for sources that raised.
+
+    Returns:
+        One line per problem; empty when every source that ran succeeded.
+    """
+    problems = [f"{key.removesuffix('_error')} import failed: {value}"
+                for key, value in stats.items() if key.endswith("_error")]
+    for source in IMPORT_SOURCES:
+        errors = (stats.get(source) or {}).get("total_errors", 0)
+        if errors:
+            problems.append(f"{source}: {errors} errors (see the log; re-running retries failed files)")
+    return problems
+
+
+def source_result(stats: Dict[str, Any], source: str) -> Tuple[bool, Dict[str, Any]]:
+    """Return ``(success, stats)`` to record for one source.
+
+    A source that raised gets ``{"error": message}`` so the completion page
+    can tell "failed" from "not run"; errors inside a run are not a success.
+
+    Args:
+        stats: The worker's stats (see :func:`import_problems`).
+        source: One of :data:`IMPORT_SOURCES`.
+
+    Returns:
+        Whether the source ran without errors, and the stats to show for it.
+    """
+    error = stats.get(f"{source}_error")
+    if error is not None:
+        return False, {"error": error}
+    source_stats = stats.get(source) or {}
+    return source in stats and not source_stats.get("total_errors"), source_stats
 
 
 class ImportWorker(QThread):
@@ -86,8 +127,11 @@ class ImportWorker(QThread):
             elif self.import_mode == 4:  # MeSH only
                 self._run_mesh_only(stats)
 
+            problems = import_problems(stats)
             if self._cancelled:
                 self.finished.emit(False, "Import cancelled", stats)
+            elif problems:
+                self.finished.emit(False, "Import finished with errors: " + "; ".join(problems), stats)
             else:
                 self.finished.emit(True, "Import completed successfully!", stats)
 
@@ -177,13 +221,10 @@ class ImportWorker(QThread):
         self.progress_percent.emit(PROGRESS_COMPLETE)
 
     def _run_pubmed_full(self, stats: dict) -> None:
-        """Run full PubMed baseline import with parallel download/import.
+        """Run the full PubMed baseline download, then import it.
 
-        Uses the new parallel download/import method which:
-        - Downloads files in one thread while importing in another
-        - Ensures sequential import order (critical for corrections/retractions)
-        - Provides real-time progress feedback
-        - Handles pre-existing downloaded files
+        Files already downloaded or imported are skipped, so a re-run resumes;
+        a failed download counts as an error and the other files go on.
         """
         self.progress.emit("Starting full PubMed baseline download and import...")
         self.progress_percent.emit(0)
@@ -193,7 +234,6 @@ class ImportWorker(QThread):
 
             importer = PubMedBulkImporter()
 
-            # Use the new parallel download/import method with callbacks
             pubmed_stats = importer.download_and_import_baseline(
                 progress_callback=self._progress_callback,
                 cancel_check=self.is_cancelled,
@@ -202,7 +242,8 @@ class ImportWorker(QThread):
             stats["pubmed"] = pubmed_stats
             self._progress_callback(
                 f"PubMed baseline complete: {pubmed_stats.get('files_processed', 0)} files, "
-                f"{pubmed_stats.get('total_articles', 0):,} articles"
+                f"{pubmed_stats.get('total_articles', 0):,} articles, "
+                f"{pubmed_stats.get('total_errors', 0)} errors"
             )
         except Exception as e:
             logger.error(f"PubMed full import failed: {e}", exc_info=True)
@@ -372,21 +413,8 @@ class ImportProgressPage(QWizardPage):
 
         # Store results in wizard
         if self._wizard:
-            self._wizard.set_import_result(
-                "medrxiv",
-                "medrxiv" in stats and "medrxiv_error" not in stats,
-                stats.get("medrxiv", {}),
-            )
-            self._wizard.set_import_result(
-                "pubmed",
-                "pubmed" in stats and "pubmed_error" not in stats,
-                stats.get("pubmed", {}),
-            )
-            self._wizard.set_import_result(
-                "mesh",
-                "mesh" in stats and "mesh_error" not in stats,
-                stats.get("mesh", {}),
-            )
+            for source in IMPORT_SOURCES:
+                self._wizard.set_import_result(source, *source_result(stats, source))
 
         self.completeChanged.emit()
 

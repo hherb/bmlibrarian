@@ -32,7 +32,7 @@ Usage:
     importer.download_updates()
 
     # Import downloaded files
-    importer.import_files()
+    importer.import_all_files()
 """
 
 import gzip
@@ -41,9 +41,7 @@ import multiprocessing
 import json
 import logging
 import os
-import queue
 import re
-import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -477,150 +475,11 @@ class DownloadTracker:
                 }
 
 
-class ImportQueue:
-    """Thread-safe queue ensuring sequential file processing by file number.
+class DownloadCounts(NamedTuple):
+    """Files newly downloaded and files that failed after all retries."""
 
-    PubMed baseline files are numbered sequentially (pubmed25n0001.xml.gz,
-    pubmed25n0002.xml.gz, etc.) and must be imported in order because later
-    files may contain corrections/retractions that supersede earlier versions.
-
-    This queue accepts files in any order but only releases them for import
-    when they are the next expected sequential file.
-    """
-
-    # Regex pattern to extract file number from PubMed filenames
-    # Matches: pubmed25n0001.xml.gz, pubmed24n1274.xml.gz, etc.
-    FILE_NUMBER_PATTERN = r'pubmed\d+n(\d+)\.xml\.gz$'
-
-    def __init__(self, start_from: int = 1):
-        """
-        Initialize the import queue.
-
-        Args:
-            start_from: First file number to expect (1-indexed)
-        """
-        import re
-        self._pattern = re.compile(self.FILE_NUMBER_PATTERN)
-        self._queue: Dict[int, Path] = {}  # file_number -> filepath
-        self._next_to_import: int = start_from
-        self._lock = threading.Lock()
-        self._condition = threading.Condition(self._lock)
-        self._download_complete = False
-        self._total_files = 0
-        self._imported_count = 0
-        self._skipped_files: set = set()  # Track files that were skipped (already processed)
-
-    def _extract_file_number(self, filepath: Path) -> Optional[int]:
-        """Extract the sequential file number from a PubMed filename.
-
-        Args:
-            filepath: Path to the file
-
-        Returns:
-            The file number (1-indexed) or None if not a valid filename
-        """
-        match = self._pattern.search(filepath.name)
-        if match:
-            return int(match.group(1))
-        return None
-
-    def set_total_files(self, total: int) -> None:
-        """Set the total number of files expected."""
-        with self._lock:
-            self._total_files = total
-
-    def add_downloaded(self, filepath: Path) -> bool:
-        """
-        Add a downloaded file to the queue.
-
-        Args:
-            filepath: Path to the downloaded file
-
-        Returns:
-            True if added successfully, False if invalid filename
-        """
-        file_num = self._extract_file_number(filepath)
-        if file_num is None:
-            logger.warning(f"Could not extract file number from: {filepath.name}")
-            return False
-
-        with self._condition:
-            self._queue[file_num] = filepath
-            logger.debug(f"Added to queue: {filepath.name} (file #{file_num})")
-            self._condition.notify_all()
-            return True
-
-    def mark_skipped(self, filepath: Path) -> None:
-        """Mark a file as skipped (already processed)."""
-        file_num = self._extract_file_number(filepath)
-        if file_num is not None:
-            with self._lock:
-                self._skipped_files.add(file_num)
-
-    def get_next_for_import(self, timeout: float = 5.0) -> Optional[Path]:
-        """
-        Get the next file for import if it's the expected sequence number.
-
-        This method blocks until:
-        - The next sequential file is available
-        - The timeout expires
-        - All downloads are complete and no more files expected
-
-        Args:
-            timeout: Maximum time to wait in seconds
-
-        Returns:
-            Path to the next file to import, or None if should wait/stop
-        """
-        with self._condition:
-            deadline = time.time() + timeout
-
-            while True:
-                # Skip any files that were marked as already processed
-                while self._next_to_import in self._skipped_files:
-                    logger.debug(f"Skipping file #{self._next_to_import} (already processed)")
-                    self._next_to_import += 1
-
-                # Check if next file is available
-                if self._next_to_import in self._queue:
-                    filepath = self._queue.pop(self._next_to_import)
-                    self._next_to_import += 1
-                    self._imported_count += 1
-                    return filepath
-
-                # Check if we're done
-                if self._download_complete and not self._queue:
-                    return None
-
-                # Wait for more files or timeout
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    return None
-
-                self._condition.wait(timeout=remaining)
-
-    def mark_download_complete(self) -> None:
-        """Signal that all downloads are finished."""
-        with self._condition:
-            self._download_complete = True
-            self._condition.notify_all()
-
-    def is_complete(self) -> bool:
-        """Check if all downloads are complete and queue is empty."""
-        with self._lock:
-            return self._download_complete and not self._queue
-
-    def get_status(self) -> Dict:
-        """Get current queue status for progress reporting."""
-        with self._lock:
-            return {
-                'next_expected': self._next_to_import,
-                'queued_count': len(self._queue),
-                'imported_count': self._imported_count,
-                'total_files': self._total_files,
-                'download_complete': self._download_complete,
-                'queued_numbers': sorted(self._queue.keys())[:10]  # First 10 for display
-            }
+    downloaded: int
+    failed: int
 
 
 class PubMedBulkImporter:
@@ -724,9 +583,7 @@ class PubMedBulkImporter:
         skip_existing: bool = True,
         progress_callback: Optional[ProgressCallback] = None,
         cancel_check: Optional[CancelCheck] = None,
-        on_downloaded: Optional[Callable[[Path], None]] = None,
-        files: Optional[List[str]] = None,
-    ) -> Tuple[int, int]:
+    ) -> DownloadCounts:
         """
         Download every data file of a remote directory that is not yet present.
 
@@ -737,14 +594,11 @@ class PubMedBulkImporter:
             skip_existing: Skip files already downloaded (default: True).
             progress_callback: Optional callback for progress messages.
             cancel_check: Optional callback to check if operation should be cancelled.
-            on_downloaded: Optional callback receiving each newly verified file.
-            files: Remote file names if already listed (default: list the directory).
 
         Returns:
-            (files downloaded, files failed).
+            Files downloaded and files failed.
         """
-        if files is None:
-            files = self.downloader.list_files(directory_url)
+        files = self.downloader.list_files(directory_url)
         total_files = len(files)
         logger.info(f"Found {total_files} {file_type} files at {directory_url}")
         if progress_callback:
@@ -771,16 +625,14 @@ class PubMedBulkImporter:
             downloaded += 1
             if progress_callback:
                 progress_callback(f"[DOWNLOAD] {filename}: Complete (MD5 verified)")
-            if on_downloaded:
-                on_downloaded(path)
-        return downloaded, failed
+        return DownloadCounts(downloaded, failed)
 
     def download_baseline(
         self,
         skip_existing: bool = True,
         progress_callback: Optional[ProgressCallback] = None,
         cancel_check: Optional[CancelCheck] = None
-    ) -> int:
+    ) -> DownloadCounts:
         """
         Download PubMed baseline files (HTTPS, MD5-verified, resumable).
 
@@ -790,18 +642,18 @@ class PubMedBulkImporter:
             cancel_check: Optional callback to check if operation should be cancelled
 
         Returns:
-            Number of files downloaded
+            Files downloaded and files that failed after all retries
         """
         logger.info("Starting baseline download")
-        downloaded, failed = self._download_directory(
+        counts = self._download_directory(
             self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
             progress_callback, cancel_check)
-        logger.info(f"Baseline download complete: {downloaded} files downloaded, {failed} failed")
+        logger.info(f"Baseline download complete: {counts.downloaded} files downloaded, {counts.failed} failed")
         if progress_callback:
-            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded, {failed} failed")
-        return downloaded
+            progress_callback(f"[DOWNLOAD] Complete: {counts.downloaded} files downloaded, {counts.failed} failed")
+        return counts
 
-    def download_updates(self, skip_existing: bool = True) -> int:
+    def download_updates(self, skip_existing: bool = True) -> DownloadCounts:
         """
         Download PubMed update files (HTTPS, MD5-verified, resumable).
 
@@ -809,13 +661,13 @@ class PubMedBulkImporter:
             skip_existing: Skip files already downloaded (default: True)
 
         Returns:
-            Number of files downloaded
+            Files downloaded and files that failed after all retries
         """
         logger.info("Starting update files download")
-        downloaded, failed = self._download_directory(
+        counts = self._download_directory(
             self.UPDATE_URL, self.update_dir, 'update', skip_existing)
-        logger.info(f"Update files download complete: {downloaded} files downloaded, {failed} failed")
-        return downloaded
+        logger.info(f"Update files download complete: {counts.downloaded} files downloaded, {counts.failed} failed")
+        return counts
 
     def _get_element_text(self, elem: Optional[ET.Element]) -> str:
         """
@@ -1761,87 +1613,6 @@ class PubMedBulkImporter:
                     progress_callback(f"[IMPORT] Final withdrawal pass: {reconciled} documents marked")
         return overall_stats
 
-    def _import_worker(
-        self,
-        import_queue: ImportQueue,
-        progress_callback: Optional[ProgressCallback],
-        cancel_check: Optional[CancelCheck],
-        stats: Dict
-    ) -> None:
-        """
-        Worker thread that imports files sequentially from the queue.
-
-        This worker runs in a separate thread and imports files in sequential
-        order (by file number) as they become available in the queue.
-
-        Args:
-            import_queue: The ImportQueue to get files from
-            progress_callback: Optional callback for progress messages
-            cancel_check: Optional callback to check if operation should be cancelled
-            stats: Shared statistics dictionary (thread-safe updates)
-        """
-        logger.info("Import worker started")
-
-        while True:
-            # Check for cancellation
-            if cancel_check and cancel_check():
-                if progress_callback:
-                    progress_callback("[IMPORT] Cancelled by user")
-                break
-
-            # Get next file from queue
-            filepath = import_queue.get_next_for_import(timeout=5.0)
-
-            if filepath is None:
-                if import_queue.is_complete():
-                    logger.info("Import worker: All files processed")
-                    break
-
-                # Still waiting for files - report status
-                status = import_queue.get_status()
-                if progress_callback and status['queued_count'] > 0:
-                    progress_callback(
-                        f"[IMPORT] Waiting for file #{status['next_expected']} "
-                        f"({status['queued_count']} files queued, waiting for sequence)"
-                    )
-                continue
-
-            # Import the file
-            if progress_callback:
-                status = import_queue.get_status()
-                progress_callback(
-                    f"[IMPORT] {status['imported_count']}/{status['total_files']}: {filepath.name}"
-                )
-
-            try:
-                file_stats = self.import_file(filepath, progress_callback=progress_callback)
-
-                # Update shared statistics
-                with threading.Lock():
-                    stats['files_processed'] += 1
-                    stats['total_articles'] += file_stats['articles_imported']
-                    stats['total_errors'] += file_stats['errors']
-
-                if progress_callback:
-                    progress_callback(
-                        f"[IMPORT] {filepath.name}: {file_stats['articles_imported']:,} articles imported"
-                    )
-                    # Periodic summary
-                    if stats['files_processed'] % 10 == 0:
-                        progress_callback(
-                            f"[STATS] Imported: {stats['files_processed']} files, "
-                            f"{stats['total_articles']:,} articles"
-                        )
-
-            except Exception as e:
-                logger.error(f"Import worker error on {filepath.name}: {e}", exc_info=True)
-                if progress_callback:
-                    progress_callback(f"[IMPORT ERROR] {filepath.name}: {e}")
-                with threading.Lock():
-                    stats['total_errors'] += 1
-
-        logger.info("Import worker finished")
-
     def download_and_import_baseline(
         self,
         progress_callback: Optional[ProgressCallback] = None,
@@ -1849,17 +1620,11 @@ class PubMedBulkImporter:
         skip_existing: bool = True
     ) -> Dict:
         """
-        Download and import baseline files in parallel.
+        Download the baseline, then import every baseline file not yet imported.
 
-        Downloads happen in the main thread while imports process sequentially
-        in a separate thread. Files are imported in file-number order regardless
-        of download completion order.
-
-        This method handles:
-        - Pre-existing downloaded but unprocessed files
-        - Resume of partial downloads
-        - Sequential import order (critical for corrections/retractions)
-        - Graceful cancellation
+        A failed download is counted as an error and does not hold up the other
+        files. The import skips files already in ingest.ledger, and the
+        revision-aware merge makes the order of files irrelevant.
 
         Args:
             progress_callback: Optional callback for progress messages
@@ -1867,112 +1632,23 @@ class PubMedBulkImporter:
             skip_existing: Skip files already downloaded (default: True)
 
         Returns:
-            Dict with overall statistics including:
-            - files_downloaded: Number of files newly downloaded
-            - files_processed: Number of files imported
-            - total_articles: Total articles imported
-            - total_errors: Total errors encountered
+            The :meth:`import_all_files` statistics plus ``files_downloaded``;
+            ``total_errors`` includes failed downloads. When cancelled during
+            the download, only ``files_processed``, ``total_articles``,
+            ``total_errors`` and ``files_downloaded``.
         """
-        logger.info("Starting parallel download and import")
-
-        stats = {
-            'files_downloaded': 0,
-            'files_processed': 0,
-            'total_articles': 0,
-            'total_errors': 0,
-            'pre_existing_queued': 0
-        }
-
-        if progress_callback:
-            progress_callback("[INIT] Listing NCBI baseline files...")
-
-        try:
-            remote_files = self.downloader.list_files(self.BASELINE_URL)
-        except Exception as e:
-            logger.error(f"Failed to get file list: {e}")
-            if progress_callback:
-                progress_callback(f"[ERROR] Failed to get file list: {e}")
-            raise
-        total_files = len(remote_files)
-
-        # Create import queue
-        import_queue = ImportQueue(start_from=1)
-        import_queue.set_total_files(total_files)
-
-        # Queue pre-existing downloaded but unprocessed files
-        if progress_callback:
-            progress_callback("[INIT] Checking for pre-existing downloaded files...")
-
-        pre_existing = 0
-        already_processed = 0
-        for filepath in sorted(self.baseline_dir.glob('*.xml.gz')):
-            if self.tracker:
-                if self.tracker.is_file_processed(filepath.name):
-                    # Already processed - mark as skipped in queue
-                    import_queue.mark_skipped(filepath)
-                    already_processed += 1
-                elif self.tracker.is_file_downloaded(filepath.name):
-                    # Downloaded but not processed - add to queue
-                    import_queue.add_downloaded(filepath)
-                    pre_existing += 1
-            else:
-                # No tracker - assume file needs processing
-                import_queue.add_downloaded(filepath)
-                pre_existing += 1
-
-        stats['pre_existing_queued'] = pre_existing
-
-        if progress_callback:
-            if already_processed > 0:
-                progress_callback(f"[INIT] {already_processed} files already processed (skipping)")
-            if pre_existing > 0:
-                progress_callback(f"[INIT] {pre_existing} pre-downloaded files queued for import")
-
-        # Start import worker thread
-        import_thread = threading.Thread(
-            target=self._import_worker,
-            args=(import_queue, progress_callback, cancel_check, stats),
-            name="PubMed-ImportWorker",
-            daemon=True
-        )
-        import_thread.start()
-        logger.info("Import worker thread started")
-
-        # Download files in main thread
-        def queue_for_import(path: Path) -> None:
-            stats['files_downloaded'] += 1
-            import_queue.add_downloaded(path)
-
-        try:
-            _downloaded, failed = self._download_directory(
-                self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
-                progress_callback, cancel_check, on_downloaded=queue_for_import,
-                files=remote_files)
-            stats['total_errors'] += failed
-        finally:
-            # Signal download completion
-            import_queue.mark_download_complete()
-            if progress_callback:
-                progress_callback(f"[DOWNLOAD] All downloads complete: {stats['files_downloaded']} files")
-
-        # Wait for import to finish
-        if progress_callback:
-            progress_callback("[IMPORT] Waiting for import to complete...")
-
-        import_thread.join()
-
-        # Final summary
+        counts = self.download_baseline(skip_existing, progress_callback, cancel_check)
+        if cancel_check and cancel_check():
+            stats: Dict = {'files_processed': 0, 'total_articles': 0, 'total_errors': 0}
+        else:
+            stats = self.import_all_files('baseline', progress_callback, cancel_check)
+        stats['files_downloaded'] = counts.downloaded
+        stats['total_errors'] += counts.failed
         if progress_callback:
             progress_callback(
-                f"[COMPLETE] Downloaded: {stats['files_downloaded']}, "
+                f"[COMPLETE] Downloaded: {counts.downloaded}, "
                 f"Imported: {stats['files_processed']} files, "
                 f"{stats['total_articles']:,} articles, "
                 f"{stats['total_errors']} errors"
             )
-
-        logger.info(
-            f"Parallel download/import complete: {stats['files_downloaded']} downloaded, "
-            f"{stats['files_processed']} imported, {stats['total_articles']} articles"
-        )
-
         return stats

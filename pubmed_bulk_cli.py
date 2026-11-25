@@ -135,13 +135,13 @@ def cmd_download_baseline(args):
         )
 
         print("\nStarting baseline download...")
-        count = importer.download_baseline(skip_existing=not args.force)
+        counts = importer.download_baseline(skip_existing=not args.force)
 
         print("\n" + "=" * 70)
-        print(f"Baseline download complete: {count} files downloaded")
+        print(f"Baseline download complete: {counts.downloaded} files downloaded, {counts.failed} failed")
         print("=" * 70)
 
-        return 0
+        return 1 if counts.failed else 0
 
     except Exception as e:
         logging.error(f"Error during baseline download: {e}", exc_info=True)
@@ -167,13 +167,13 @@ def cmd_download_updates(args):
         )
 
         print("\nStarting update files download...")
-        count = importer.download_updates(skip_existing=not args.force)
+        counts = importer.download_updates(skip_existing=not args.force)
 
         print("\n" + "=" * 70)
-        print(f"Update files download complete: {count} files downloaded")
+        print(f"Update files download complete: {counts.downloaded} files downloaded, {counts.failed} failed")
         print("=" * 70)
 
-        return 0
+        return 1 if counts.failed else 0
 
     except Exception as e:
         logging.error(f"Error during update download: {e}", exc_info=True)
@@ -207,7 +207,7 @@ def cmd_import(args):
         print(f"Errors: {stats['total_errors']}")
         print("=" * 70)
 
-        return 0
+        return 1 if stats['total_errors'] else 0
 
     except Exception as e:
         logging.error(f"Error during import: {e}", exc_info=True)
@@ -371,18 +371,19 @@ def cmd_sync(args):
         )
 
         # Download phase
+        download_failures = 0
         if not args.updates_only:
             if args.from_scratch or args.baseline_only:
                 print("\n" + "=" * 70)
                 print("Phase 1: Downloading baseline files...")
                 print("=" * 70)
-                importer.download_baseline(skip_existing=not args.force)
+                download_failures += importer.download_baseline(skip_existing=not args.force).failed
 
         if not args.baseline_only:
             print("\n" + "=" * 70)
             print(f"Phase {'2' if args.from_scratch else '1'}: Downloading update files...")
             print("=" * 70)
-            importer.download_updates(skip_existing=not args.force)
+            download_failures += importer.download_updates(skip_existing=not args.force).failed
 
         # Import phase
         print("\n" + "=" * 70)
@@ -410,9 +411,10 @@ def cmd_sync(args):
         print(f"Total articles: {stats['total_articles']}")
         print(f"Withdrawn records marked: {stats.get('total_documents_withdrawn', 0)}")
         print(f"Errors: {stats['total_errors']}")
+        print(f"Failed downloads: {download_failures}")
         print("=" * 70)
 
-        return 0
+        return 1 if stats['total_errors'] or download_failures else 0
 
     except Exception as e:
         logging.error(f"Error during sync: {e}", exc_info=True)

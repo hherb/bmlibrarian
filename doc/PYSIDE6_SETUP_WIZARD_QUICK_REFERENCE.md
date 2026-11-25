@@ -271,9 +271,11 @@ stats = importer.import_by_search(query="COVID-19", max_results=100)
 from bmlibrarian.importers.pubmed_bulk_importer import PubMedBulkImporter
 
 importer = PubMedBulkImporter(data_dir="./pubmed_data")
-count = importer.download_baseline(skip_existing=True)
-stats = importer.import_baseline()
-# Returns: {'imported': int, 'skipped': int, 'errors': int}
+counts = importer.download_baseline(skip_existing=True)
+# Returns: DownloadCounts(downloaded=int, failed=int)
+stats = importer.import_all_files('baseline')
+# Returns: {'files_processed': int, 'files_skipped': int, 'total_articles': int,
+#           'total_errors': int, 'total_documents_withdrawn': int}
 ```
 
 ---

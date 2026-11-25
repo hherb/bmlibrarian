@@ -10,6 +10,28 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **PubMed import fixes #445, #440, #441** (2026-11-25, branch
+  `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
+  `download-updates`, `import` and `sync` exit 1 when any file failed
+  (`import`/`sync` also when a record could not be parsed);
+  `download_baseline`/`download_updates` return
+  `DownloadCounts(downloaded, failed)` so sync counts failed downloads too
+  (#445). The import profile accepts `1.5GB`/`2 GB`/`100B`, and `apply`
+  refuses before changing anything (`ImportProfileError`) when a current
+  `postgresql.auto.conf` value could not be restored later (#440). The setup
+  wizard's `download_and_import_baseline` is now `download_baseline` then
+  `import_all_files('baseline')`; `ImportQueue` and `_import_worker` are
+  gone (#441). **Trade-off:** the wizard no longer imports while
+  downloading, so a from-scratch baseline takes download + import time
+  instead of overlapping them (one worker, as before). Review follow-ups:
+  the wizard reports failed downloads/imports instead of "completed
+  successfully" and its completion page shows bulk article counts;
+  `pubmed_repair_cli.py repair --reimport` exits 1 on import errors; a
+  failed ALTER/restart in `apply`, or an unrestorable old state file,
+  raises `ImportProfileError` naming the state file. Verified: suite 4984
+  passed, 75 skipped; the new tests fail on the old code (the old wizard
+  path hangs). Not run against a live NCBI download or a real server.
+
 - **Security audit fixes #434, #449, #450** (2026-11-25, branch
   `fix/security-434-449-450`). OpenAthens cookies go to `requests` as a
   `RequestsCookieJar` keeping each cookie's domain, path and secure flag
@@ -126,41 +148,19 @@ off new work. Longer-term structural items live in
   recorded one (a CLI setup with `--library-dir` that stopped before the
   GGUF), not always `~/BMLibrarian`.
 
-- **bmlib #790 re-pin and two #460 items** (2026-11-16, branch
-  `chore/bmlib-790-repin`). `rust/Cargo.toml` pins bmlib main at #790's
-  merge, `6465096`. Its review changed the Europe PMC walk: days are the
-  first-index day (`FIRST_IDATE`), the settle period is 3 days, a walk short
-  of `hitCount` or holding a record not indexed on the day fails the day, and
-  an empty day costs one more request (an undated probe). The pipeline test
-  fixtures gained `firstIndexDate` and the probe route. A 200 HTML page in
-  place of JATS/PDF (`RequestOutcome::WebPage`, a Wi-Fi sign-in page,
-  XHTML included) reaches bmlib as an error, so it is never parsed or cached
-  as full text; the paper is passing, not lasting (30 days), and three in a
-  row end the phase as no network (`NO_ANSWER_LIMIT`). The app's `open_db` runs the `bml-db`
-  migrations, as the CLI does. bml-app tests no longer race for a port
-  (`SERIAL`). Verified: `cargo
-  test -- --include-ignored` 357 passed with pg_search, `-p bml-app` 22
-  passed six runs in a row; live, a fresh "Depression & anxiety" library
-  with `--skip fulltext --skip index` for 3 minutes fetched 187 papers,
-  67 days complete, 0 failed (Ctrl-C, exit 4). Not checked: Windows build
-  with the lockfile's re-picked `windows-sys` versions.
+- **bmlib #790 re-pin and two #460 items** (2026-11-16). bmlib pinned at
+  `6465096` (Europe PMC walk by `FIRST_IDATE`, 3-day settle, short walks
+  fail the day); a 200 HTML page in place of JATS/PDF
+  (`RequestOutcome::WebPage`) is never cached as full text, three in a row
+  end the phase as no network; `open_db` runs the `bml-db` migrations. Not
+  checked: Windows build with the re-picked `windows-sys` versions.
 
-- **Demo polish from #460** (2026-11-16, PR #461). The
-  app's search screen loads the search model in the background
-  (`warm_search` → `Ask::Warm`), so the first search no longer waits
-  seconds. ⌘Q and closing the window end in `RunEvent::Exit`, where
-  `pause_before_exit` hides the window and waits up to 15 s
-  (`Update::pause_and_wait`) for the update to stop after the paper in
-  flight; before, the process exited mid-paper (the old `CloseRequested`
-  pause never got the time to act). A recorded library with no papers and no
-  topic reopens on screen 4 (`LibraryCounts::needs_topic`), and an update
-  started there anyway is refused (`CHOOSE_TOPIC_FIRST`) rather than filling
-  it with medRxiv papers, after which no topic can be chosen. Verified:
-  `cargo test -p bml-app -- --include-ignored` 22 passed; the dev app opened
-  on the prepared library had the GGUF open and ~40 s of CPU before any
-  search. **Not verified by hand:** ⌘Q during an update and the screen-4
-  return (osascript may not send keystrokes here); both are rehearsal checks
-  in `doc/users/investor_demo_runbook.md`.
+- **Demo polish from #460** (2026-11-16, PR #461): search model warms in
+  the background (`warm_search`); ⌘Q/close waits up to 15 s for the update
+  to stop after the paper in flight (`pause_before_exit`); an empty
+  topic-less library reopens on screen 4 (`LibraryCounts::needs_topic`).
+  **Not verified by hand:** ⌘Q during an update and the screen-4 return
+  (rehearsal checks in `doc/users/investor_demo_runbook.md`).
 
 - **Failed settings load no longer lets Save overwrite settings, #437**
   (2026-11-15). If `_sync_from_database` fails at login, login goes on with
@@ -424,9 +424,10 @@ value — pick one, or pull an item from ROADMAP.md:
   bml-library: #430, #433.
 
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; #434–#437,
-  #439, #443, #447–#450, #452 fixed). Installer: #451 (setup replaces
-  another config folder's login entry), #453 (rust.yml permissions,
-  SHA-pinned checkout). Broken: #441, #445, #446, #438, #440, #442, #444.
+  #439–#441, #443, #445, #447–#450, #452 fixed). Installer: #451 (setup
+  replaces another config folder's login entry), #453 (rust.yml
+  permissions, SHA-pinned checkout). Broken: #446, #438, #442, #444. Also
+  #472 (secret-save failures only logged, browser-fallback cookies).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -471,7 +472,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-25:
-  **4934 passed, 75 skipped** in about 3 min (hermetic since #334;
+  **4984 passed, 75 skipped** in about 3 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
