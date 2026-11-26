@@ -783,9 +783,25 @@ class BMLibrarianConfig:
             Deep copy of the configuration with each BMLIB_* value replaced
             by the value underneath it (#477).
         """
-        config = self._deep_copy_config(self._config)
-        self._remove_env_overrides(config)
-        return config
+        return self.without_env_overrides(self._config)
+
+    def without_env_overrides(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of a config dict with the BMLIB_* values taken out.
+
+        For writing a whole configuration or a part of one (e.g. a GUI tab's
+        values) to disk, as #477 requires.
+
+        Args:
+            config: A configuration dict shaped like self._config, or a
+                subset of its categories.
+
+        Returns:
+            Deep copy of config with each env-overridden value replaced by
+            the value underneath it, or removed if the override created it.
+        """
+        stripped = self._deep_copy_config(config)
+        self._remove_env_overrides(stripped)
+        return stripped
 
     @contextmanager
     def _env_overrides_lifted(self) -> Iterator[None]:

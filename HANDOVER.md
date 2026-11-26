@@ -10,6 +10,20 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Configuration tab Ollama URL, #480** (2026-11-26, branch
+  `fix/480-ollama-url-host`). The General settings field reads and writes
+  `ollama.host` (it edited `ollama.base_url`, which nothing reads). **Save
+  As** writes `BMLibrarianConfig.without_env_overrides(collected values)`,
+  so a `BMLIB_OLLAMA_HOST` value is not saved to the file (new public method;
+  `_persistable_config()` uses it). **Save** and **Sync to Database** apply
+  the tab's values through `_apply_collected_config()`: stripped, then set
+  inside `_env_overrides_lifted()`, so after Reset or Load the env value
+  still applies in memory (review finding). The Ollama parts of
+  `doc/users/configuration_guide.md` now name `ollama.host` and
+  `BMLIB_OLLAMA_HOST`; the rest of its schema section is still out of date.
+  Verified: suite 5066 passed, 73 skipped; the widget test fails on the old
+  code. Not run in the Qt app.
+
 - **Env overrides no longer saved, #477** (2026-11-26, branch
   `fix/477-env-overrides-not-saved`). `BMLibrarianConfig` records each
   applied `BMLIB_*` override with the value underneath it
@@ -21,8 +35,7 @@ off new work. Longer-term structural items live in
   `reset_to_defaults()` and the Settings tab's Reset change the config
   inside `_env_overrides_lifted()` (overrides out, then applied again, also
   on failure); that Reset no longer aliases `DEFAULT_CONFIG`. Verified:
-  suite 5050 passed, 73 skipped. Not run in the Qt app. The Configuration
-  tab's Ollama URL edits the unread `ollama.base_url` (#480).
+  suite 5050 passed, 73 skipped. Not run in the Qt app.
 
 - **Login settings order #438, pdf_matcher #456** (2026-11-25, branch
   `fix/settings-pdfmatcher-438-456`). At login `_sync_from_database` merges
@@ -442,7 +455,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5050 passed, 73 skipped** in about 2 min (hermetic since #334;
+  **5066 passed, 73 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

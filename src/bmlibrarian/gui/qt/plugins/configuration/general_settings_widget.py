@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt
 from typing import Optional
 
 from ...resources.styles import get_font_scale
+from .....config import DEFAULT_CONFIG
 
 
 class GeneralSettingsWidget(QWidget):
@@ -269,7 +270,7 @@ class GeneralSettingsWidget(QWidget):
     def _load_values(self):
         """Load values from configuration."""
         # Ollama settings
-        ollama_url = self.config.get('ollama', {}).get('base_url', 'http://localhost:11434')
+        ollama_url = self.config.get('ollama', {}).get('host', DEFAULT_CONFIG['ollama']['host'])
         self.ollama_url_input.setText(ollama_url)
 
         # Database settings (usually from .env, but can be in config)
@@ -313,7 +314,7 @@ class GeneralSettingsWidget(QWidget):
         """
         return {
             'ollama': {
-                'base_url': self.ollama_url_input.text(),
+                'host': self.ollama_url_input.text(),
             },
             'database': {
                 'name': self.db_name_input.text(),
