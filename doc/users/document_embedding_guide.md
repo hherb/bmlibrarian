@@ -328,6 +328,24 @@ The embedder creates:
 - Chunk text = document abstract
 - Embedding stored in emb_768 or emb_1024 based on model
 
+### When an Abstract Changes
+
+Importers update an abstract when the source offers a newer version (a new
+medRxiv preprint version, a PubMed update file). A database trigger
+(migration 040, `trg_drop_stale_abstract_chunks`) then deletes the
+document's abstract chunks and their embeddings in the same transaction, so
+search no longer matches the old text. The next `embed` run finds the
+document without an embedding and embeds the new abstract; run it after
+importing updates.
+
+A chunk that a row in `public.evaluations` still references is kept for
+that evaluation's history, without embeddings. If the embedder finds its own
+chunk with text that differs from the abstract, it replaces the text and
+drops that chunk's old embeddings before storing the new one.
+
+Chunks and embeddings created before migration 040 are not checked: an
+abstract updated earlier can still have stale embeddings.
+
 ## Troubleshooting
 
 ### "ollama not installed"

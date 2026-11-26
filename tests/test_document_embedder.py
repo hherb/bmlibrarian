@@ -225,6 +225,45 @@ class TestEmbedDocumentsPaging:
             embedder.embed_documents(limit=0)
 
 
+class TestStoreChunkAndEmbedding:
+    """Reusing the abstract chunk refreshes text that no longer matches (#475)."""
+
+    @staticmethod
+    def _store(existing_chunk: tuple) -> MagicMock:
+        """Run _store_chunk_and_embedding against a fake cursor; return the cursor."""
+        embedder = DocumentEmbedder.__new__(DocumentEmbedder)
+        embedder.embedding_dimension = 1024
+        embedder.chunking_strategy_id = 2
+        embedder.model_id = 3
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [existing_chunk, None]  # chunk lookup, embedding lookup
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        embedder.db_manager = MagicMock()
+        embedder.db_manager.get_connection.return_value.__enter__.return_value = conn
+
+        assert embedder._store_chunk_and_embedding(4, 'title', 'new abstract', [0.5]) == 5
+        return cursor
+
+    @staticmethod
+    def _statements(cursor: MagicMock) -> list:
+        """Return the SQL statements the cursor ran, whitespace-normalised."""
+        return [' '.join(c.args[0].split()) for c in cursor.execute.call_args_list]
+
+    def test_stale_text_is_replaced_and_old_embeddings_dropped(self):
+        cursor = self._store((5, 'old abstract'))
+        sql = self._statements(cursor)
+        assert sql[1] == 'DELETE FROM embedding_base WHERE chunk_id = %s'
+        assert sql[2].startswith('UPDATE chunks SET text = %s')
+        assert cursor.execute.call_args_list[2].args[1] == ('new abstract', 12, 'title', 5)
+        assert sql[-1].startswith('INSERT INTO emb_1024')
+
+    def test_matching_text_is_left_alone(self):
+        sql = self._statements(self._store((5, 'new abstract')))
+        assert not any(s.startswith(('DELETE', 'UPDATE')) for s in sql)
+        assert sql[-1].startswith('INSERT INTO emb_1024')
+
+
 def test_module_constants():
     """Test that module can be imported."""
     from src.bmlibrarian.embeddings import DocumentEmbedder

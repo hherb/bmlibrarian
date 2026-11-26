@@ -10,6 +10,25 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Stale abstract chunks, #475** (2026-11-26, branch
+  `fix/475-stale-abstract-chunks`). Migration 040 adds
+  `trg_drop_stale_abstract_chunks` (AFTER UPDATE OF abstract on `document`,
+  only when the value changes): it deletes the embeddings of the document's
+  `abstract`-type chunks and the chunks no `public.evaluations` row
+  references (no cascade there). This covers every importer, and the
+  embedder's "no embedding" query picks the document up again. If
+  `DocumentEmbedder` reuses its own chunk 0 with different text, it replaces
+  the text and drops that chunk's embeddings. Pre-existing bug fixed:
+  the embedder's `ON CONFLICT` upserts on `embedding_provider`,
+  `chunking_strategies` and `chunktypes` failed on every database (no unique
+  key on those columns), so `embed` could not start; it now selects, then
+  inserts (`_get_or_insert_id`). Finding: `knowledgebase` abstract chunks
+  are legacy `adaptive_text_chunker_1500` (several per abstract,
+  `<title>` prefix), not the embedder's `abstract_single_chunk`; staleness
+  from before 040 is not backfilled (vectors are re-embedded from scratch at
+  256 d anyway). 040 applied to `bmlibrarian_dev`; it installs on
+  `knowledgebase` at its next non-test connection.
+
 - **Configuration tab Ollama URL, #480** (2026-11-26, branch
   `fix/480-ollama-url-host`). The General settings field reads and writes
   `ollama.host` (it edited `ollama.base_url`, which nothing reads). **Save
@@ -83,12 +102,11 @@ off new work. Longer-term structural items live in
   (MECA) have an unknown version and are never overwritten; a new paper with
   an invalid version is stored as v1. PDFs for v2+ are saved as
   `<doi with / → _>v<n>.pdf`, and `fetch-pdfs` no longer blanks existing full
-  text when the PDF was already on disk (#446). Open follow-up: abstract
-  updates leave the old abstract chunk/embedding in place (#475, all
-  importers). Verified: suite 5026 passed, 75 skipped; no new ruff/mypy
-  findings; 038/039 applied on `bmlibrarian_dev` (index valid, re-run
-  applies nothing, plans checked). Importers not run against
-  medRxiv/Europe PMC.
+  text when the PDF was already on disk (#446). Stale abstract chunks:
+  fixed since by migration 040 (#475). Verified: suite 5026 passed, 75
+  skipped; no new ruff/mypy findings; 038/039 applied on `bmlibrarian_dev`
+  (index valid, re-run applies nothing, plans checked). Importers not run
+  against medRxiv/Europe PMC.
 
 - **PubMed import fixes #445, #440, #441** (2026-11-25, branch
   `fix/pubmed-import-445-440-441`). `pubmed_bulk_cli` `download-baseline`,
@@ -409,8 +427,7 @@ value — pick one, or pull an item from ROADMAP.md:
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; all but two
   fixed). Installer: #451 (setup replaces another config folder's login
   entry), #453 (rust.yml permissions, SHA-pinned checkout). Also #472
-  (secret-save failures only logged, browser-fallback cookies) and #475
-  (stale abstract chunks/embeddings after an abstract update).
+  (secret-save failures only logged, browser-fallback cookies).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -455,7 +472,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5066 passed, 73 skipped** in about 2 min (hermetic since #334;
+  **5069 passed, 78 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
