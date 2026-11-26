@@ -38,17 +38,18 @@ REDIRECTOR_TEST_TARGET = "https://pubmed.ncbi.nlm.nih.gov/"
 def scoped_browser_cookies(cookies: List[Any]) -> List[Dict[str, Any]]:
     """Keep only the browser cookies that name their own domain.
 
-    Cookies come from Playwright (or a session file on disk), so they are
-    checked: one without a name, value or domain is dropped, since a cookie
-    with no domain would be sent to every host (or, in a browser, to
-    whatever host the PDF URL from imported metadata names).
+    Cookies come from Playwright, a session file on disk or a caller of the
+    browser fallback, so they are checked: one without a name, value or
+    domain is dropped, since a cookie with no domain would be sent to every
+    host (in undetected Chrome, to whatever host the PDF URL from imported
+    metadata names; Playwright rejects it and the whole download fails).
 
     Args:
         cookies: Playwright-style dicts (``name``, ``value``, ``domain``,
             optional ``path`` and ``secure``)
 
     Returns:
-        The valid cookies, unchanged
+        The valid cookies (the same dicts, not copied)
     """
     kept = []
     for cookie in cookies:
@@ -379,8 +380,9 @@ class OpenAthensAuth:
             self.session_saved = True
             logger.info(f"Loaded session from {self.session_file}")
 
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.error(f"Failed to load session: {e}")
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            # Unreadable or not a JSON object: fall back to a fresh login
+            logger.error(f"Failed to load session from {self.session_file}: {e}")
             self.session_data = None
 
     def _save_session(self) -> bool:
@@ -598,10 +600,13 @@ class OpenAthensAuth:
         """Perform interactive login using browser automation.
 
         Opens browser window for user to complete institutional login,
-        then captures and saves the authentication cookies.
+        then captures the authentication cookies and tries to save them.
 
         Returns:
-            True if login successful, False otherwise
+            True if login successful, False otherwise. A successful login
+            whose save failed also returns True; ``session_saved`` is then
+            False, and a caller with a UI should tell the user that the next
+            run will ask them to log in again.
         """
         # Clear any existing session to ensure fresh authentication
         # This prevents stale cookies from interfering with auth detection
@@ -798,7 +803,8 @@ def login_interactive_sync(config: OpenAthensConfig) -> OpenAthensAuth:
         config: OpenAthens configuration
 
     Returns:
-        OpenAthensAuth instance with active session
+        OpenAthensAuth instance with active session (check its
+        ``session_saved``: False means it lasts for this run only)
 
     Raises:
         RuntimeError: If login fails

@@ -39,6 +39,7 @@ class TestOpenAthensSessionSave:
     """A failed save is reported through the return value and ``session_saved``."""
 
     def test_save_failure_returns_false(self, tmp_path: Path) -> None:
+        """A write error gives False; a later good write gives True."""
         auth = make_auth(tmp_path)
         auth.session_data = SESSION_DATA.copy()
         with patch("bmlibrarian.utils.openathens_auth.write_private_text",
@@ -47,6 +48,7 @@ class TestOpenAthensSessionSave:
         assert auth._save_session() is True
 
     def test_loaded_session_counts_as_saved_and_clear_resets(self, tmp_path: Path) -> None:
+        """A session loaded from disk is saved; clear_session resets the flag."""
         auth = make_auth(tmp_path)
         auth.session_data = SESSION_DATA.copy()
         assert auth._save_session()
@@ -56,13 +58,26 @@ class TestOpenAthensSessionSave:
         assert reloaded.session_saved is False
 
 
+    @pytest.mark.parametrize("content", ["[1, 2]", '"text"', "{}"])
+    def test_bad_session_file_means_no_session(self, tmp_path: Path, content: str) -> None:
+        """A session file that is not a usable JSON object is ignored, not raised."""
+        auth = make_auth(tmp_path)
+        auth.session_file.parent.mkdir(parents=True)
+        auth.session_file.write_text(content)
+        reloaded = make_auth(tmp_path)
+        assert reloaded.session_data is None
+        assert reloaded.session_saved is False
+
+
 class TestScopedBrowserCookies:
     """Only cookies naming their own domain reach a browser."""
 
     def test_drops_cookies_without_domain(self) -> None:
+        """Missing, empty or non-mapping cookies are dropped; good ones kept."""
         assert scoped_browser_cookies([GOOD, *UNSCOPED]) == [GOOD]
 
     def test_playwright_path_injects_only_scoped_cookies(self, tmp_path: Path) -> None:
+        """BrowserDownloader.download_pdf hands Playwright only scoped cookies."""
         context = MagicMock()
         context.add_cookies = AsyncMock()
         context.add_init_script = AsyncMock(side_effect=RuntimeError("stop here"))
@@ -78,9 +93,10 @@ class TestScopedBrowserCookies:
 
 
 class TestCliSessionTokenSave:
-    """--save-session that fails prints a warning instead of a debug log."""
+    """--save-session that fails prints a warning to stderr instead of only logging it."""
 
     def test_failed_token_save_is_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Login still succeeds, and stderr says the session was not saved."""
         from bmlibrarian.cli import auth_helper
 
         args = SimpleNamespace(user="alice", password="pw", session_token=None, save_session=True)
@@ -124,16 +140,69 @@ class TestWizardApiKeysSave:
         return page
 
     def test_missing_env_file_is_created_private(self, page: "APIKeysPage", tmp_path: Path) -> None:
+        """A missing .env is created 0600 with the key in it."""
         assert page.validatePage() is True
         env = tmp_path / "conf" / ".env"
         assert "ANTHROPIC_API_KEY=sk-ant-test" in env.read_text()
         if os.name == "posix":
             assert stat.S_IMODE(env.stat().st_mode) == 0o600
 
-    def test_failed_save_blocks_the_page_and_says_why(self, page: "APIKeysPage") -> None:
+    def test_failed_save_blocks_the_page_and_says_why(self, page: "APIKeysPage", tmp_path: Path) -> None:
+        """A failed save keeps the page, names the file and the reason; a retry clears it."""
         with patch("bmlibrarian.gui.qt.setup_wizard.api_keys.write_private_text",
                    side_effect=OSError("disk full")):
             assert page.validatePage() is False
         assert not page.error_frame.isHidden()
         assert "disk full" in page.error_label.text()
+        assert str(tmp_path / "conf" / ".env") in page.error_label.text()
         assert "ANTHROPIC_API_KEY" not in os.environ
+        assert page.validatePage() is True
+        assert page.error_frame.isHidden()
+
+    def test_existing_section_is_replaced_and_rest_kept(self, page: "APIKeysPage", tmp_path: Path) -> None:
+        """Old keys go, the new key appears once, other settings survive."""
+        env = tmp_path / "conf" / ".env"
+        env.parent.mkdir()
+        env.write_text("POSTGRES_DB=x\n\n# Optional API Keys (for cloud AI services)\n"
+                       "ANTHROPIC_API_KEY=old\n# Other\nY=2\n")
+        assert page.validatePage() is True
+        text = env.read_text()
+        assert "old" not in text
+        assert text.count("ANTHROPIC_API_KEY=sk-ant-test") == 1
+        assert "POSTGRES_DB=x" in text and "# Other\nY=2" in text
+
+    def test_non_utf8_env_blocks_the_page(self, page: "APIKeysPage", tmp_path: Path) -> None:
+        """An undecodable .env is reported on the page and left untouched."""
+        env = tmp_path / "conf" / ".env"
+        env.parent.mkdir()
+        env.write_bytes(b"POSTGRES_DB=\xff\n")
+        assert page.validatePage() is False
+        assert not page.error_frame.isHidden()
+        assert env.read_bytes() == b"POSTGRES_DB=\xff\n"
+        assert "ANTHROPIC_API_KEY" not in os.environ
+
+    def test_failed_project_env_copy_does_not_block(
+        self, page: "APIKeysPage", tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The secondary project .env failing only logs; the user .env is saved."""
+        from bmlibrarian.gui.qt.setup_wizard import api_keys
+        from bmlibrarian.utils.path_utils import write_private_text
+
+        monkeypatch.delenv("BMLIBRARIAN_ENV_FILE")
+        monkeypatch.setattr(api_keys.Path, "home", lambda: tmp_path / "home")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("POSTGRES_DB=x\n")
+        monkeypatch.setattr(api_keys, "find_project_root", lambda: project)
+
+        def fail_for_project(path: Path, text: str, append: bool = False) -> None:
+            """write_private_text that fails only for the project .env."""
+            if Path(path).parent == project:
+                raise OSError("read-only checkout")
+            write_private_text(path, text, append=append)
+
+        monkeypatch.setattr(api_keys, "write_private_text", fail_for_project)
+        assert page.validatePage() is True
+        assert "ANTHROPIC_API_KEY=sk-ant-test" in (tmp_path / "home" / ".bmlibrarian" / ".env").read_text()
+        assert (project / ".env").read_text() == "POSTGRES_DB=x\n"
+        assert page.error_frame.isHidden()

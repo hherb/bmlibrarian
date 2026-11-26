@@ -13,20 +13,27 @@ off new work. Longer-term structural items live in
 - **Secret-save failures, browser cookies, #472** (2026-11-26, branch
   `fix/472-secret-save-cookie-scope`). `OpenAthensAuth._save_session()`
   returns whether it wrote the file; after a login whose save failed,
-  `session_saved` is False and an error says the session lasts for this run
-  only. `bmlibrarian_cli --save-session` prints a warning when the token
-  could not be saved. The setup wizard's API-keys page creates a missing
-  `.env` (0600) instead of writing nothing, and a failed save keeps the page
-  open with the reason shown (clear the fields to go on without keys). The
+  `session_saved` is False and a logged error says the session lasts for
+  this run only (no app has a login button yet; one that adds it must check
+  `session_saved`). `bmlibrarian_cli --save-session` prints a warning when
+  the token could not be saved. The setup wizard's API-keys page creates a
+  missing `.env` (0600) instead of writing nothing, and a failed save keeps
+  the page open with the file and reason shown (clear the fields to go on
+  without keys). `write_private_text` now replaces a file atomically (0600
+  temp file + `os.replace`, through symlinks), so a failed rewrite (disk
+  full) no longer empties `.env` and loses the database settings. The
   browser fallback (Playwright, persistent context, undetected Chrome) drops
   cookies without a domain (`scoped_browser_cookies()`, also used by
-  `cookie_jar_from_browser_cookies`). **Not fixed (item 5):** host-only
+  `cookie_jar_from_browser_cookies`); undetected Chrome logs how many
+  cookies Chrome accepted and warns on each refusal. An unreadable or
+  non-object OpenAthens session file now means "no session" instead of an
+  exception from `OpenAthensAuth()`. **Not fixed (#472 item 5):** host-only
   cookies still reach subdomains on the `requests` path, because
   `http.cookiejar`'s default policy has no host-only cookies and `requests`
   copies the jar into a default-policy one on every request (`shortcut:` in
-  `cookie_jar_from_browser_cookies`). Verified: suite 5076 passed, 78
-  skipped; the 7 new tests fail on the old code. Not run against a live
-  OpenAthens login or in the wizard by hand.
+  `cookie_jar_from_browser_cookies`). Verified: suite 5085 passed, 78
+  skipped; ruff/mypy no new errors. Not run against a live OpenAthens login
+  or in the wizard by hand.
 
 - **Stale abstract chunks, #475** (2026-11-26, branch
   `fix/475-stale-abstract-chunks`). Migration 040 adds
@@ -455,7 +462,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5076 passed, 78 skipped** in about 2 min (hermetic since #334;
+  **5085 passed, 78 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;

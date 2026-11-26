@@ -199,9 +199,10 @@ class APIKeysPage(QWizardPage):
                 try:
                     self._append_api_keys_to_env(anthropic_key, openai_key)
                 except (OSError, ValueError) as e:
-                    logger.error(f"Failed to save API keys: {e}")
+                    env_path = self._env_path()
+                    logger.error(f"Failed to save API keys to {env_path}: {e}")
                     self.error_label.setText(
-                        f"The API keys could not be saved: {e}\n\n"
+                        f"The API keys could not be saved to {env_path}: {e}\n\n"
                         "Fix the problem and press Next again, or clear both "
                         "key fields to continue without them."
                     )
@@ -210,9 +211,20 @@ class APIKeysPage(QWizardPage):
 
         return True
 
+    @staticmethod
+    def _env_path() -> Path:
+        """The .env file the keys go to.
+
+        Returns:
+            ``BMLIBRARIAN_ENV_FILE`` if set, else ``~/.bmlibrarian/.env``
+        """
+        custom_env_file = os.environ.get('BMLIBRARIAN_ENV_FILE')
+        return Path(custom_env_file) if custom_env_file else Path.home() / ".bmlibrarian" / ".env"
+
     def _append_api_keys_to_env(self, anthropic_key: str, openai_key: str) -> None:
         """
-        Write API keys to the user's .env file, creating it if needed.
+        Write API keys to the selected .env file (``_env_path``), creating it
+        if needed.
 
         Args:
             anthropic_key: Anthropic API key (may be empty)
@@ -220,7 +232,9 @@ class APIKeysPage(QWizardPage):
 
         Raises:
             OSError: The .env file could not be read, created, restricted or
-                written (the keys are then not saved).
+                written (the keys are then not saved; a replaced file keeps
+                its old content). Failures on the secondary project .env are
+                logged, not raised.
             ValueError: The existing .env file is not valid UTF-8.
         """
         api_keys_section = "\n# Optional API Keys (for cloud AI services)\n"
@@ -231,12 +245,8 @@ class APIKeysPage(QWizardPage):
         if openai_key:
             api_keys_section += f"OPENAI_API_KEY={openai_key}\n"
 
-        # Check for custom env file path
         custom_env_file = os.environ.get('BMLIBRARIAN_ENV_FILE')
-        if custom_env_file:
-            env_path = Path(custom_env_file)
-        else:
-            env_path = Path.home() / ".bmlibrarian" / ".env"
+        env_path = self._env_path()
 
         existing_content = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
 
@@ -275,8 +285,9 @@ class APIKeysPage(QWizardPage):
             write_private_text(env_path, new_content)
             logger.info(f"Updated API keys in {env_path}")
 
-        # Also update project .env if it exists (and not using custom env).
-        # A secondary copy for development: the user's file above is read first.
+        # Also append to the project .env if it exists and has no API-key
+        # section yet (not with a custom env file). env_loader reads it only
+        # when ~/.bmlibrarian/.env is missing, so this copy is for development.
         if not custom_env_file:
             project_env = find_project_root() / ".env"
             if project_env.exists():

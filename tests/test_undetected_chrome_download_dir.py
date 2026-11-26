@@ -295,6 +295,13 @@ class _FakeDriver:
         self.title = "Article"
         self.page_source = "<html>article</html>"
         self.current_url = "https://publisher.example/article"
+        self.cookies: List[Dict[str, Any]] = []
+
+    def add_cookie(self, cookie: Dict[str, Any]) -> None:
+        """Record the cookie; like Chrome, refuse one for another site's domain."""
+        if cookie["domain"].endswith("idp.example"):
+            raise ValueError("invalid cookie domain")
+        self.cookies.append(cookie)
 
     def set_page_load_timeout(self, timeout: int) -> None:
         """Ignore the timeout."""
@@ -557,6 +564,30 @@ class TestUndetectedChromeDownloadDir:
         assert result["status"] == "failed"
         assert result["download_unfinished"] is True
         assert save_path.read_bytes() == b""
+
+
+class TestUndetectedChromeCookies:
+    """Only cookies naming their own domain reach Chrome (#472)."""
+
+    def test_domainless_cookies_never_reach_the_url_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Domain-less cookies are dropped, not set on the PDF URL's host; rejections are counted."""
+        drivers = _install_fake_chrome(monkeypatch, download_bytes=PDF_BYTES)
+        good = {"name": "ok", "value": "1", "domain": ".publisher.example", "path": "/"}
+        foreign = {"name": "idp", "value": "2", "domain": "login.idp.example"}
+        cookies = [good, foreign, {"name": "nodomain", "value": "x"}, "junk"]
+
+        with caplog.at_level("INFO", logger=browser_downloader.logger.name):
+            download_pdf_with_undetected_chrome(
+                "https://publisher.example/article", tmp_path / "a.pdf", cookies=cookies
+            )
+
+        assert drivers[0].cookies == [
+            {"name": "ok", "value": "1", "domain": ".publisher.example", "path": "/"}
+        ]
+        assert "Injected 1 of 2 cookies" in caplog.text
+        assert any(r.levelname == "WARNING" and "'idp'" in r.getMessage() for r in caplog.records)
 
 
 class TestDownloadPdfWithBrowserFallback:

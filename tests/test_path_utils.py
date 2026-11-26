@@ -112,3 +112,29 @@ class TestWritePrivateText:
             with pytest.raises(OSError):
                 write_private_text(target, "secret")
         assert target.read_text() == "old"
+
+    def test_failed_write_keeps_old_content(self, tmp_path) -> None:
+        """A write that fails part-way (disk full) leaves the old file whole (#483 review)."""
+        target = tmp_path / ".env"
+        target.write_text("POSTGRES_PASSWORD=keep\n")
+
+        def full_disk(fd: int, *args: object, **kwargs: object) -> None:
+            """Stand-in for os.fdopen whose write fails with ENOSPC."""
+            os.close(fd)
+            raise OSError(28, "No space left on device")
+
+        with patch("bmlibrarian.utils.path_utils.os.fdopen", side_effect=full_disk):
+            with pytest.raises(OSError):
+                write_private_text(target, "new")
+        assert target.read_text() == "POSTGRES_PASSWORD=keep\n"
+        assert [p.name for p in tmp_path.iterdir()] == [".env"]
+
+    def test_replace_writes_through_a_symlink(self, tmp_path) -> None:
+        """Replacing a symlinked file updates the target, not the link."""
+        real = tmp_path / "real.env"
+        real.write_text("old")
+        link = tmp_path / ".env"
+        link.symlink_to(real)
+        write_private_text(link, "new")
+        assert link.is_symlink()
+        assert real.read_text() == "new"
