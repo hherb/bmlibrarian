@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import asyncio
 
+from .openathens_auth import scoped_browser_cookies
 from .pdf_validation import is_pdf_file
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,8 @@ class BrowserDownloader:
                 - size: File size in bytes (if successful)
                 - error: Error message (if failed)
         """
+        # A cookie without a domain would go to whatever host the URL names (#472)
+        cookies = scoped_browser_cookies(cookies) if cookies else cookies
         if not self.browser:
             return {
                 'status': 'failed',
@@ -1580,6 +1583,8 @@ async def _download_with_persistent_context(
     """
     from playwright.async_api import async_playwright
 
+    cookies = scoped_browser_cookies(cookies) if cookies else cookies  # #472
+
     # Default user data directory
     if not user_data_dir:
         user_data_dir = os.path.expanduser("~/.bmlibrarian/browser_data")
@@ -2041,6 +2046,9 @@ def download_pdf_with_undetected_chrome(
 
     from urllib.parse import urlparse, quote
 
+    # Selenium would set a domain-less cookie on the URL's host (#472)
+    cookies = scoped_browser_cookies(cookies) if cookies else cookies
+
     driver = None
     download_dir: Optional[Path] = None
     download_unfinished = False
@@ -2086,7 +2094,7 @@ def download_pdf_with_undetected_chrome(
                         selenium_cookie = {
                             'name': cookie['name'],
                             'value': cookie['value'],
-                            'domain': cookie.get('domain', parsed.netloc),
+                            'domain': cookie['domain'],
                             'path': cookie.get('path', '/'),
                         }
                         try:

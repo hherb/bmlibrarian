@@ -46,6 +46,10 @@ success = asyncio.run(auth.login_interactive())
 
 if success:
     print("Login successful!")
+    if not auth.session_saved:
+        # Logged in, but ~/.bmlibrarian/openathens_session.json could not be
+        # written: the session lasts for this run only (the log says why)
+        print("Session not saved; you will have to log in again next time")
 else:
     print("Login failed")
 

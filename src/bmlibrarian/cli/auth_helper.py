@@ -363,8 +363,13 @@ def setup_config_with_auth(args: argparse.Namespace) -> Tuple[bool, Optional[str
                 )
 
             # Save session token if requested
-            if save_session and result.session_token:
-                save_session_token(result.session_token)
+            if save_session and result.session_token and not save_session_token(result.session_token):
+                print(
+                    f"Warning: your session could not be saved to "
+                    f"{SESSION_TOKEN_FILE}; you will have to log in again next "
+                    f"time (see log output for details).",
+                    file=sys.stderr,
+                )
 
         except Exception as e:
             return False, f"Failed to setup user context: {e}"

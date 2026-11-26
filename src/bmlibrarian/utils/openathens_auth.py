@@ -35,12 +35,46 @@ REDIRECTOR_PATH_PREFIX = "/redirector/"
 REDIRECTOR_TEST_TARGET = "https://pubmed.ncbi.nlm.nih.gov/"
 
 
-def cookie_jar_from_browser_cookies(cookies: List[Dict[str, Any]]) -> requests.cookies.RequestsCookieJar:
-    """Build a ``requests`` cookie jar that keeps each browser cookie's scope.
+def scoped_browser_cookies(cookies: List[Any]) -> List[Dict[str, Any]]:
+    """Keep only the browser cookies that name their own domain.
 
     Cookies come from Playwright (or a session file on disk), so they are
     checked: one without a name, value or domain is dropped, since a cookie
-    with no domain would be sent to every host.
+    with no domain would be sent to every host (or, in a browser, to
+    whatever host the PDF URL from imported metadata names).
+
+    Args:
+        cookies: Playwright-style dicts (``name``, ``value``, ``domain``,
+            optional ``path`` and ``secure``)
+
+    Returns:
+        The valid cookies, unchanged
+    """
+    kept = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            logger.warning("Dropping malformed session cookie (not a mapping)")
+            continue
+        name, value, domain = cookie.get('name'), cookie.get('value'), cookie.get('domain')
+        if not (isinstance(name, str) and name and isinstance(value, str)
+                and isinstance(domain, str) and domain):
+            logger.warning(f"Dropping session cookie {name!r}: no name, value or domain")
+            continue
+        kept.append(cookie)
+    return kept
+
+
+def cookie_jar_from_browser_cookies(cookies: List[Any]) -> requests.cookies.RequestsCookieJar:
+    """Build a ``requests`` cookie jar that keeps each browser cookie's scope.
+
+    Cookies without a name, value or domain are dropped
+    (``scoped_browser_cookies``).
+
+    shortcut: a host-only cookie (Playwright domain without a leading dot)
+    also reaches that host's subdomains, as ``http.cookiejar``'s default
+    policy has no host-only Netscape cookies and ``requests`` copies the jar
+    into a default-policy one on every request (#472); upgrade only by
+    sending cookies without ``requests``' jar, if a subdomain is ever untrusted.
 
     Args:
         cookies: Playwright-style dicts (``name``, ``value``, ``domain``,
@@ -51,15 +85,8 @@ def cookie_jar_from_browser_cookies(cookies: List[Dict[str, Any]]) -> requests.c
         subdomains) and path
     """
     jar = requests.cookies.RequestsCookieJar()
-    for cookie in cookies:
-        if not isinstance(cookie, dict):
-            logger.warning("Dropping malformed session cookie (not a mapping)")
-            continue
-        name, value, domain = cookie.get('name'), cookie.get('value'), cookie.get('domain')
-        if not (isinstance(name, str) and name and isinstance(value, str)
-                and isinstance(domain, str) and domain):
-            logger.warning(f"Dropping session cookie {name!r}: no name, value or domain")
-            continue
+    for cookie in scoped_browser_cookies(cookies):
+        name, value, domain = cookie['name'], cookie['value'], cookie['domain']
         path = cookie.get('path')
         jar.set(
             name,
@@ -260,6 +287,9 @@ class OpenAthensAuth:
 
         self.session_file = session_file
         self.session_data: Optional[Dict[str, Any]] = None
+        # True while the current session is in session_file; False after a
+        # login whose save failed: it then lasts for this run only (#472)
+        self.session_saved: bool = False
         self.browser = None
         self.playwright = None
 
@@ -346,17 +376,23 @@ class OpenAthensAuth:
                 serialized_data = json.load(f)
 
             self.session_data = self._deserialize_session_data(serialized_data)
+            self.session_saved = True
             logger.info(f"Loaded session from {self.session_file}")
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error(f"Failed to load session: {e}")
             self.session_data = None
 
-    def _save_session(self) -> None:
-        """Save session data to file with secure permissions."""
+    def _save_session(self) -> bool:
+        """Save session data to file with secure permissions.
+
+        Returns:
+            True if the session was written, False if there was nothing to
+            save or the file could not be written or restricted (logged)
+        """
         if not self.session_data:
             logger.warning("No session data to save")
-            return
+            return False
 
         try:
             # Ensure parent directory exists with secure permissions
@@ -369,9 +405,11 @@ class OpenAthensAuth:
             write_private_text(self.session_file, json.dumps(serialized_data, indent=2))
 
             logger.info(f"Saved session to {self.session_file} with secure permissions")
+            return True
 
         except (IOError, OSError) as e:
-            logger.error(f"Failed to save session: {e}")
+            logger.error(f"Failed to save session to {self.session_file}: {e}")
+            return False
 
     def _detect_auth_success(self, cookies: List[Dict], current_url: str = "") -> bool:
         """Detect successful authentication from cookies or URL change.
@@ -537,7 +575,8 @@ class OpenAthensAuth:
         Unlike a plain ``{name: value}`` dict, the jar sends each cookie only
         to its domain (and its subdomains) and path, and secure cookies only
         over HTTPS, on the first request and on every redirect hop (#434).
-        The browser fallback does not use the jar.
+        The browser fallback takes ``get_cookies()``; its injection points
+        drop domain-less cookies with ``scoped_browser_cookies`` (#472).
 
         Returns:
             Cookie jar, empty if not authenticated
@@ -680,8 +719,13 @@ class OpenAthensAuth:
                 'user_agent': user_agent
             }
 
-            # Save session
-            self._save_session()
+            self.session_saved = self._save_session()
+            if not self.session_saved:
+                logger.error(
+                    f"Logged in, but the session could not be saved to "
+                    f"{self.session_file}: it lasts for this run only, and the "
+                    f"next run will ask you to log in again."
+                )
 
             # Cleanup
             await context.close()
@@ -735,6 +779,7 @@ class OpenAthensAuth:
     def clear_session(self) -> None:
         """Clear current session and delete session file."""
         self.session_data = None
+        self.session_saved = False
         self._last_validation_time = None
         self._last_validation_result = False
 

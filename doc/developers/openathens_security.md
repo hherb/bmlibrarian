@@ -22,7 +22,7 @@ The OpenAthens authentication module implements multiple security layers to prot
 |--------|-----------|----------------|
 | **Code Injection** | JSON serialization instead of pickle | `_serialize_session_data()` |
 | **File Access** | Created with mode 600 before any cookie is written | `path_utils.write_private_text()` |
-| **Cookie Leakage** | HTTP downloads send cookies only to their domain (and its subdomains) and path, secure ones only over HTTPS, redirects included; the browser fallback hands the raw cookie list to the browser | `get_cookie_jar()` |
+| **Cookie Leakage** | HTTP downloads send cookies only to their domain (and its subdomains) and path, secure ones only over HTTPS, redirects included (a host-only cookie also reaches that host's subdomains: `requests`' jar has no host-only cookies, #472); the browser fallback gets the cookie list with domain-less cookies dropped (`scoped_browser_cookies()`) | `get_cookie_jar()` |
 | **Session Hijacking** | Secure file storage, HTTPS enforcement | `_validate_url()` |
 | **Credential Exposure** | Never store passwords, only cookies | Session data structure |
 | **MITM Attacks** | HTTPS-only requirement | URL validation |
