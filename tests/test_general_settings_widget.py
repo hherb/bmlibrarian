@@ -25,3 +25,15 @@ def test_ollama_url_field_edits_ollama_host() -> None:
         assert widget.get_config()['ollama'] == {'host': 'http://other:11434'}
     finally:
         widget.deleteLater()
+
+
+def test_ollama_url_field_defaults_when_host_missing() -> None:
+    """Without ollama.host the field shows the default host."""
+    from bmlibrarian.config import DEFAULT_CONFIG
+
+    QApplication.instance() or QApplication([])
+    widget = GeneralSettingsWidget({})
+    try:
+        assert widget.ollama_url_input.text() == DEFAULT_CONFIG['ollama']['host']
+    finally:
+        widget.deleteLater()

@@ -422,6 +422,21 @@ class TestBMLibrarianConfigSyncOperations:
             assert 'timeout' not in saved['ollama']  # the override created it
         assert config.get('ollama.host') == 'http://gpu:11434'
 
+    def test_set_to_env_value_then_save_writes_value_underneath(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path
+    ) -> None:
+        """An untouched GUI Save sets ollama.host to the env value; the file gets the default (#480)."""
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', 'http://gpu:11434')
+        config = BMLibrarianConfig()
+        config.set('ollama.host', 'http://gpu:11434')
+
+        config.export_to_json(tmp_path / 'c.json')
+
+        saved = json.loads((tmp_path / 'c.json').read_text())
+        assert saved['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+
     def test_without_env_overrides_strips_a_partial_config(
         self,
         monkeypatch: pytest.MonkeyPatch

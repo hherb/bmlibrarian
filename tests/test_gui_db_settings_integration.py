@@ -8,9 +8,12 @@ Tests the Phase 3 GUI integration for database-backed settings:
 Note: All tests are skipped if PySide6/Qt is not available in the test environment.
 """
 
+import json
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from pathlib import Path
+from typing import Iterator
 
 # The settings/configuration tabs list Ollama models when built.
 pytestmark = pytest.mark.usefixtures("offline_model_list")
@@ -309,6 +312,63 @@ class TestConfigurationTabDatabaseSync:
             mock_box.information.assert_not_called()
             mock_box.warning.assert_called_once()
             assert "could not be loaded" in mock_box.warning.call_args.args[2]
+
+
+@skip_if_no_qt
+class TestConfigurationTabEnvOverrides:
+    """The Configuration tab never saves or drops a BMLIB_* value (#477, #480)."""
+
+    MODULE = 'bmlibrarian.gui.qt.plugins.configuration.config_tab'
+    ENV_HOST = 'http://gpu:11434'
+
+    @pytest.fixture
+    def tab(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[tuple]:
+        """A tab on a real config with BMLIB_OLLAMA_HOST set and HOME in tmp_path.
+
+        Yields:
+            (ConfigurationTabWidget, BMLibrarianConfig) pair.
+        """
+        from bmlibrarian.config import BMLibrarianConfig, ENV_OVERRIDES
+
+        for env_var in ENV_OVERRIDES:
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv('BMLIB_OLLAMA_HOST', self.ENV_HOST)
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        with patch('bmlibrarian.utils.config_loader.load_config_with_fallback', return_value={}):
+            config = BMLibrarianConfig()
+        with patch(f'{self.MODULE}.get_config', return_value=config), \
+                patch(f'{self.MODULE}.list_ollama_models', return_value=[]), \
+                patch(f'{self.MODULE}.QMessageBox'):
+            from bmlibrarian.gui.qt.plugins.configuration.config_tab import ConfigurationTabWidget
+            yield ConfigurationTabWidget(), config
+
+    def test_save_after_reset_keeps_env_value_in_memory(self, tab: tuple, tmp_path: Path) -> None:
+        """Saving the reset fields writes the default but the env value still applies."""
+        from bmlibrarian.config import DEFAULT_CONFIG
+
+        widget, config = tab
+        assert widget.general_widget.ollama_url_input.text() == self.ENV_HOST
+        widget.general_widget.update_from_config(DEFAULT_CONFIG)  # what Reset does
+
+        widget._save_to_default()
+
+        saved = json.loads((tmp_path / '.bmlibrarian' / 'config.json').read_text())
+        assert saved['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+        assert config.get('ollama.host') == self.ENV_HOST
+
+    def test_save_as_leaves_env_value_out(self, tab: tuple, tmp_path: Path) -> None:
+        """Save As writes the value underneath the env one, and keeps a user edit."""
+        from bmlibrarian.config import DEFAULT_CONFIG
+
+        widget, _ = tab
+        target = tmp_path / 'out.json'
+        with patch(f'{self.MODULE}.QFileDialog.getSaveFileName', return_value=(str(target), '')):
+            widget._save_config_as()
+            assert json.loads(target.read_text())['ollama']['host'] == DEFAULT_CONFIG['ollama']['host']
+
+            widget.general_widget.ollama_url_input.setText('http://mine:11434')
+            widget._save_config_as()
+            assert json.loads(target.read_text())['ollama']['host'] == 'http://mine:11434'
 
 
 @skip_if_no_qt

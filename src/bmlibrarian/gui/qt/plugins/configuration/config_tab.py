@@ -25,7 +25,7 @@ from pathlib import Path
 from .general_settings_widget import GeneralSettingsWidget
 from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
-from .....config import get_config, DEFAULT_CONFIG
+from .....config import BMLibrarianConfig, get_config, DEFAULT_CONFIG
 from .....llm import list_ollama_models
 from ...resources.styles import get_font_scale
 from ...resources.styles.stylesheet_generator import StylesheetGenerator
@@ -245,6 +245,23 @@ class ConfigurationTabWidget(QWidget):
 
         return config
 
+    def _apply_collected_config(self, bmlib_config: BMLibrarianConfig) -> None:
+        """Write the widgets' values into the config, under the BMLIB_* overrides.
+
+        The values are stripped first, so a field showing an env value saves
+        the value underneath, and the env values still apply afterwards
+        (#477, #480).
+
+        Args:
+            bmlib_config: The live configuration to update.
+        """
+        config = bmlib_config.without_env_overrides(self._collect_config())
+        with bmlib_config._env_overrides_lifted():
+            for category, settings in config.items():
+                if isinstance(settings, dict):
+                    for key, value in settings.items():
+                        bmlib_config.set(f"{category}.{key}", value)
+
     @Slot()
     def _save_to_default(self):
         """Save configuration to default location (~/.bmlibrarian/config.json).
@@ -252,14 +269,8 @@ class ConfigurationTabWidget(QWidget):
         If user is authenticated, also syncs to database automatically.
         """
         try:
-            config = self._collect_config()
             bmlib_config = get_config()
-
-            # Update the BMLibrarianConfig with collected settings
-            for category, settings in config.items():
-                if isinstance(settings, dict):
-                    for key, value in settings.items():
-                        bmlib_config.set(f"{category}.{key}", value)
+            self._apply_collected_config(bmlib_config)
 
             # Export to JSON file
             config_path = Path.home() / ".bmlibrarian" / "config.json"
@@ -437,14 +448,8 @@ class ConfigurationTabWidget(QWidget):
             return
 
         try:
-            config = self._collect_config()
             bmlib_config = get_config()
-
-            # Update the BMLibrarianConfig with collected settings
-            for category, settings in config.items():
-                if isinstance(settings, dict):
-                    for key, value in settings.items():
-                        bmlib_config.set(f"{category}.{key}", value)
+            self._apply_collected_config(bmlib_config)
 
             # Sync to database
             if not bmlib_config.sync_to_database():

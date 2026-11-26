@@ -15,10 +15,13 @@ off new work. Longer-term structural items live in
   `ollama.host` (it edited `ollama.base_url`, which nothing reads). **Save
   As** writes `BMLibrarianConfig.without_env_overrides(collected values)`,
   so a `BMLIB_OLLAMA_HOST` value is not saved to the file (new public method;
-  `_persistable_config()` uses it). The Ollama parts of
+  `_persistable_config()` uses it). **Save** and **Sync to Database** apply
+  the tab's values through `_apply_collected_config()`: stripped, then set
+  inside `_env_overrides_lifted()`, so after Reset or Load the env value
+  still applies in memory (review finding). The Ollama parts of
   `doc/users/configuration_guide.md` now name `ollama.host` and
   `BMLIB_OLLAMA_HOST`; the rest of its schema section is still out of date.
-  Verified: suite 5062 passed, 73 skipped; the widget test fails on the old
+  Verified: suite 5066 passed, 73 skipped; the widget test fails on the old
   code. Not run in the Qt app.
 
 - **Env overrides no longer saved, #477** (2026-11-26, branch
@@ -452,7 +455,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5062 passed, 73 skipped** in about 2 min (hermetic since #334;
+  **5066 passed, 73 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
