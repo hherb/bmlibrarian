@@ -28,6 +28,34 @@ except ImportError:
     tqdm = None
 
 
+def _get_or_insert_id(cur: Any, table: str, key_column: str, values: Dict[str, Any]) -> int:
+    """Return the ID of the ``table`` row whose ``key_column`` matches, inserting ``values`` if none does.
+
+    The lookup tables (embedding_provider, chunking_strategies, chunktypes) have
+    no unique constraint on their name column, so ``ON CONFLICT`` cannot be used.
+    ``table`` and the column names are code constants, never user input.
+
+    Args:
+        cur: Open database cursor
+        table: Table name
+        key_column: Column identifying the row; must be a key of ``values``
+        values: Column values for a new row
+
+    Returns:
+        The ID of the oldest matching row, or of the inserted one
+    """
+    cur.execute(f"SELECT id FROM {table} WHERE {key_column} = %s ORDER BY id LIMIT 1",
+                (values[key_column],))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    columns = ', '.join(values)
+    placeholders = ', '.join(['%s'] * len(values))
+    cur.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) RETURNING id",
+                tuple(values.values()))
+    return cur.fetchone()[0]
+
+
 class DocumentEmbedder:
     """
     Document embedder for creating and storing vector embeddings.
@@ -120,15 +148,8 @@ class DocumentEmbedder:
                     self.model_id = result[0]
                     logger.debug(f"Using existing model ID: {self.model_id}")
                 else:
-                    # Get Ollama provider_id (or create it)
-                    cur.execute("""
-                        INSERT INTO embedding_provider (provider_name, base_url)
-                        VALUES ('ollama', 'http://localhost:11434')
-                        ON CONFLICT (provider_name) DO UPDATE
-                        SET base_url = EXCLUDED.base_url
-                        RETURNING id
-                    """)
-                    provider_id = cur.fetchone()[0]
+                    provider_id = _get_or_insert_id(cur, 'embedding_provider', 'provider_name',
+                                                    {'provider_name': 'ollama', 'base_url': self.host})
 
                     # Insert model
                     cur.execute("""
@@ -144,25 +165,12 @@ class DocumentEmbedder:
         """Set up chunking strategy and chunk type for abstracts."""
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Get or create chunking strategy for abstracts
-                cur.execute("""
-                    INSERT INTO chunking_strategies (strategy_name, modelname, parameters)
-                    VALUES ('abstract_single_chunk', 'none', '{"description": "Single chunk for entire abstract"}')
-                    ON CONFLICT (strategy_name) DO UPDATE
-                    SET strategy_name = EXCLUDED.strategy_name
-                    RETURNING id
-                """)
-                self.chunking_strategy_id = cur.fetchone()[0]
-
-                # Get or create chunk type for abstracts
-                cur.execute("""
-                    INSERT INTO chunktypes (chunktype)
-                    VALUES ('abstract')
-                    ON CONFLICT (chunktype) DO UPDATE
-                    SET chunktype = EXCLUDED.chunktype
-                    RETURNING id
-                """)
-                self.chunktype_id = cur.fetchone()[0]
+                self.chunking_strategy_id = _get_or_insert_id(cur, 'chunking_strategies', 'strategy_name', {
+                    'strategy_name': 'abstract_single_chunk',
+                    'modelname': 'none',
+                    'parameters': '{"description": "Single chunk for entire abstract"}',
+                })
+                self.chunktype_id = _get_or_insert_id(cur, 'chunktypes', 'chunktype', {'chunktype': 'abstract'})
 
                 logger.debug(f"Chunking strategy ID: {self.chunking_strategy_id}, Chunk type ID: {self.chunktype_id}")
 
@@ -273,7 +281,7 @@ class DocumentEmbedder:
                 with conn.cursor() as cur:
                     # Check if chunk already exists
                     cur.execute("""
-                        SELECT id FROM chunks
+                        SELECT id, text FROM chunks
                         WHERE document_id = %s
                         AND chunking_strategy_id = %s
                         AND chunk_no = 0
@@ -282,7 +290,16 @@ class DocumentEmbedder:
                     existing_chunk = cur.fetchone()
 
                     if existing_chunk:
-                        chunk_id = existing_chunk[0]
+                        chunk_id, stored_text = existing_chunk
+                        if stored_text != text:
+                            # The abstract changed (#475): the stored text and every
+                            # embedding of it are stale.
+                            cur.execute("DELETE FROM embedding_base WHERE chunk_id = %s", (chunk_id,))
+                            cur.execute("""
+                                UPDATE chunks SET text = %s, chunklength = %s, document_title = %s
+                                WHERE id = %s
+                            """, (text, len(text), document_title, chunk_id))
+                            logger.info(f"Replaced stale text of chunk {chunk_id} (document {document_id})")
                         logger.debug(f"Using existing chunk ID: {chunk_id}")
                     else:
                         # Insert chunk
