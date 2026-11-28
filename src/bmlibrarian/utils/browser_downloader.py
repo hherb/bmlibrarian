@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import asyncio
 
+from .openathens_auth import scoped_browser_cookies
 from .pdf_validation import is_pdf_file
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,8 @@ class BrowserDownloader:
                 - size: File size in bytes (if successful)
                 - error: Error message (if failed)
         """
+        # Playwright rejects a cookie without a domain, failing the whole download (#472)
+        cookies = scoped_browser_cookies(cookies) if cookies else cookies
         if not self.browser:
             return {
                 'status': 'failed',
@@ -1580,6 +1583,9 @@ async def _download_with_persistent_context(
     """
     from playwright.async_api import async_playwright
 
+    # Playwright rejects a cookie without a domain, failing the whole download (#472)
+    cookies = scoped_browser_cookies(cookies) if cookies else cookies
+
     # Default user data directory
     if not user_data_dir:
         user_data_dir = os.path.expanduser("~/.bmlibrarian/browser_data")
@@ -2041,6 +2047,9 @@ def download_pdf_with_undetected_chrome(
 
     from urllib.parse import urlparse, quote
 
+    # Selenium would set a domain-less cookie on the URL's host (#472)
+    cookies = scoped_browser_cookies(cookies) if cookies else cookies
+
     driver = None
     download_dir: Optional[Path] = None
     download_unfinished = False
@@ -2080,22 +2089,25 @@ def download_pdf_with_undetected_chrome(
             try:
                 driver.get(base_url)
                 time.sleep(CHROME_COOKIE_PAGE_SETTLE_SECONDS)
+                injected = 0
                 for cookie in cookies:
-                    if 'name' in cookie and 'value' in cookie:
-                        # Selenium requires specific cookie format
-                        selenium_cookie = {
-                            'name': cookie['name'],
-                            'value': cookie['value'],
-                            'domain': cookie.get('domain', parsed.netloc),
-                            'path': cookie.get('path', '/'),
-                        }
-                        try:
-                            driver.add_cookie(selenium_cookie)
-                        except Exception as ce:
-                            logger.debug(f"Could not add cookie {cookie['name']}: {ce}")
-                logger.info(f"Injected {len(cookies)} cookies")
+                    # Selenium requires specific cookie format
+                    selenium_cookie = {
+                        'name': cookie['name'],
+                        'value': cookie['value'],
+                        'domain': cookie['domain'],
+                        'path': cookie.get('path', '/'),
+                    }
+                    try:
+                        driver.add_cookie(selenium_cookie)
+                        injected += 1
+                    except Exception as ce:
+                        # Chrome refuses cookies for a domain other than the open page's
+                        logger.warning(f"Could not add cookie {cookie['name']!r} "
+                                       f"for {cookie['domain']}: {ce}")
+                logger.info(f"Injected {injected} of {len(cookies)} cookies")
             except Exception as e:
-                logger.debug(f"Error setting cookies: {e}")
+                logger.warning(f"Error setting cookies, continuing without them: {e}")
 
         # Navigate to the target URL
         logger.info(f"Navigating to: {url}")

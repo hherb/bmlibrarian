@@ -7,8 +7,10 @@ This module provides reusable utilities for:
 - OS-agnostic path handling
 """
 
+import contextlib
 import os
 import logging
+import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Union
 
@@ -201,10 +203,13 @@ def write_private_text(path: Union[str, Path], text: str, append: bool = False) 
     """Write text to a file only its owner can read, before any secret lands in it.
 
     A new file is created with mode 0600 (no window in which the umask's
-    0644 applies). An existing file is narrowed to 0600 before it is
-    truncated or appended to, so a failed chmod raises instead of leaving
-    the secret in a world-readable file. A filesystem that ignores mode bits
-    (exFAT on macOS) gives no error and no protection.
+    0644 applies). When appending, an existing file is narrowed to 0600
+    first, so a failed chmod raises instead of leaving the secret in a
+    world-readable file. Replacing writes a 0600 temporary file next to the
+    target (through a symlink, next to its target) and renames it over the
+    target, so a failed write (disk full) leaves the old content whole. A
+    filesystem that ignores mode bits (exFAT on macOS) gives no error and no
+    protection.
 
     Args:
         path: File to write.
@@ -214,12 +219,35 @@ def write_private_text(path: Union[str, Path], text: str, append: bool = False) 
     Raises:
         OSError: The file cannot be opened, restricted or written.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else 0), PRIVATE_FILE_MODE)
+    if append:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_FILE_MODE)
+        _write_private_fd(fd, text)
+        return
+    target = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=f".{os.path.basename(target)}.",
+                               suffix=".tmp")
+    try:
+        _write_private_fd(fd, text)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _write_private_fd(fd: int, text: str) -> None:
+    """Narrow ``fd`` to 0600, then write ``text`` to it and close it.
+
+    Args:
+        fd: Open, writable file descriptor (closed on return or error).
+        text: Content (UTF-8).
+
+    Raises:
+        OSError: The file cannot be restricted or written.
+    """
     try:
         if hasattr(os, "fchmod"):  # absent on Windows before Python 3.13; mode bits mean little there
             os.fchmod(fd, PRIVATE_FILE_MODE)
-        if not append:
-            os.ftruncate(fd, 0)
     except BaseException:
         os.close(fd)
         raise

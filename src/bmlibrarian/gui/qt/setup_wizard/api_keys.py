@@ -27,7 +27,13 @@ from .utils import (
     create_frame_stylesheet,
     create_muted_label_stylesheet,
 )
-from .constants import COLOR_MUTED, FRAME_NOTE_BG, FRAME_NOTE_BORDER
+from .constants import (
+    COLOR_MUTED,
+    FRAME_NOTE_BG,
+    FRAME_NOTE_BORDER,
+    FRAME_WARNING_BG,
+    FRAME_WARNING_BORDER,
+)
 
 if TYPE_CHECKING:
     from .wizard import SetupWizard
@@ -140,6 +146,19 @@ class APIKeysPage(QWizardPage):
 
         layout.addWidget(openai_group)
 
+        # Save error (hidden until a save fails)
+        self.error_frame = QFrame()
+        self.error_frame.setObjectName("apiKeysError")
+        self.error_frame.setStyleSheet(
+            create_frame_stylesheet(scale, FRAME_WARNING_BG, FRAME_WARNING_BORDER, "apiKeysError")
+        )
+        self.error_frame.setVisible(False)
+        error_layout = QVBoxLayout(self.error_frame)
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        error_layout.addWidget(self.error_label)
+        layout.addWidget(self.error_frame)
+
         layout.addStretch()
 
         # Register fields
@@ -161,7 +180,13 @@ class APIKeysPage(QWizardPage):
             self.openai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
     def validatePage(self) -> bool:
-        """Validate the page and store values in wizard config."""
+        """Validate the page and store values in wizard config.
+
+        Returns:
+            False if keys were entered but could not be saved (the reason is
+            shown on the page), True otherwise
+        """
+        self.error_frame.setVisible(False)
         if self._wizard:
             anthropic_key = self.anthropic_key_edit.text().strip()
             openai_key = self.openai_key_edit.text().strip()
@@ -171,17 +196,46 @@ class APIKeysPage(QWizardPage):
 
             # Append API keys to .env file if any are provided
             if anthropic_key or openai_key:
-                self._append_api_keys_to_env(anthropic_key, openai_key)
+                try:
+                    self._append_api_keys_to_env(anthropic_key, openai_key)
+                except (OSError, ValueError) as e:
+                    env_path = self._env_path()
+                    logger.error(f"Failed to save API keys to {env_path}: {e}")
+                    self.error_label.setText(
+                        f"The API keys could not be saved to {env_path}: {e}\n\n"
+                        "Fix the problem and press Next again, or clear both "
+                        "key fields to continue without them."
+                    )
+                    self.error_frame.setVisible(True)
+                    return False
 
         return True
 
+    @staticmethod
+    def _env_path() -> Path:
+        """The .env file the keys go to.
+
+        Returns:
+            ``BMLIBRARIAN_ENV_FILE`` if set, else ``~/.bmlibrarian/.env``
+        """
+        custom_env_file = os.environ.get('BMLIBRARIAN_ENV_FILE')
+        return Path(custom_env_file) if custom_env_file else Path.home() / ".bmlibrarian" / ".env"
+
     def _append_api_keys_to_env(self, anthropic_key: str, openai_key: str) -> None:
         """
-        Append API keys to the existing .env file.
+        Write API keys to the selected .env file (``_env_path``), creating it
+        if needed.
 
         Args:
             anthropic_key: Anthropic API key (may be empty)
             openai_key: OpenAI API key (may be empty)
+
+        Raises:
+            OSError: The .env file could not be read, created, restricted or
+                written (the keys are then not saved; a replaced file keeps
+                its old content). Failures on the secondary project .env are
+                logged, not raised.
+            ValueError: The existing .env file is not valid UTF-8.
         """
         api_keys_section = "\n# Optional API Keys (for cloud AI services)\n"
 
@@ -191,69 +245,62 @@ class APIKeysPage(QWizardPage):
         if openai_key:
             api_keys_section += f"OPENAI_API_KEY={openai_key}\n"
 
-        # Check for custom env file path
         custom_env_file = os.environ.get('BMLIBRARIAN_ENV_FILE')
-        if custom_env_file:
-            env_path = Path(custom_env_file)
+        env_path = self._env_path()
+
+        existing_content = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+
+        # Check if API keys section already exists
+        if "# Optional API Keys" not in existing_content:
+            # Append to file (created 0600 if missing, #472)
+            env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            write_private_text(env_path, api_keys_section, append=True)
+            logger.info(f"Appended API keys to {env_path}")
         else:
-            env_path = Path.home() / ".bmlibrarian" / ".env"
+            # Update existing API keys section
+            lines = existing_content.split("\n")
+            new_lines = []
+            skip_until_next_section = False
 
-        try:
-            if env_path.exists():
-                # Read existing content
-                existing_content = env_path.read_text()
-
-                # Check if API keys section already exists
-                if "# Optional API Keys" not in existing_content:
-                    # Append to file
-                    write_private_text(env_path, api_keys_section, append=True)
-                    logger.info(f"Appended API keys to {env_path}")
+            for line in lines:
+                if line.startswith("# Optional API Keys"):
+                    skip_until_next_section = True
+                    continue
+                if skip_until_next_section:
+                    if line.startswith("#") and not line.startswith("# Optional"):
+                        skip_until_next_section = False
+                        new_lines.append(line)
+                    elif line.startswith("ANTHROPIC_API_KEY") or line.startswith("OPENAI_API_KEY"):
+                        continue
+                    elif line.strip() == "":
+                        continue
+                    else:
+                        skip_until_next_section = False
+                        new_lines.append(line)
                 else:
-                    # Update existing API keys section
-                    lines = existing_content.split("\n")
-                    new_lines = []
-                    skip_until_next_section = False
+                    new_lines.append(line)
 
-                    for line in lines:
-                        if line.startswith("# Optional API Keys"):
-                            skip_until_next_section = True
-                            continue
-                        if skip_until_next_section:
-                            if line.startswith("#") and not line.startswith("# Optional"):
-                                skip_until_next_section = False
-                                new_lines.append(line)
-                            elif line.startswith("ANTHROPIC_API_KEY") or line.startswith("OPENAI_API_KEY"):
-                                continue
-                            elif line.strip() == "":
-                                continue
-                            else:
-                                skip_until_next_section = False
-                                new_lines.append(line)
-                        else:
-                            new_lines.append(line)
+            # Add API keys section at the end
+            new_content = "\n".join(new_lines).rstrip() + api_keys_section
+            write_private_text(env_path, new_content)
+            logger.info(f"Updated API keys in {env_path}")
 
-                    # Add API keys section at the end
-                    new_content = "\n".join(new_lines).rstrip() + api_keys_section
-                    write_private_text(env_path, new_content)
-                    logger.info(f"Updated API keys in {env_path}")
+        # Also append to the project .env if it exists and has no API-key
+        # section yet (not with a custom env file). env_loader reads it only
+        # when ~/.bmlibrarian/.env is missing, so this copy is for development.
+        if not custom_env_file:
+            project_env = find_project_root() / ".env"
+            if project_env.exists():
+                try:
+                    project_content = project_env.read_text(encoding="utf-8")
+                    if "# Optional API Keys" not in project_content:
+                        write_private_text(project_env, api_keys_section, append=True)
+                        logger.info(f"Appended API keys to {project_env}")
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Could not update project .env: {e}")
 
-                # Also update project .env if it exists (and not using custom env)
-                if not custom_env_file:
-                    project_env = find_project_root() / ".env"
-                    if project_env.exists():
-                        try:
-                            project_content = project_env.read_text()
-                            if "# Optional API Keys" not in project_content:
-                                write_private_text(project_env, api_keys_section, append=True)
-                                logger.info(f"Appended API keys to {project_env}")
-                        except PermissionError as e:
-                            logger.warning(f"Could not update project .env: {e}")
-
-            # Set environment variables for current session
-            if anthropic_key:
-                os.environ["ANTHROPIC_API_KEY"] = anthropic_key
-            if openai_key:
-                os.environ["OPENAI_API_KEY"] = openai_key
-
-        except Exception as e:
-            logger.error(f"Failed to update .env with API keys: {e}")
+        # Set environment variables for current session
+        if anthropic_key:
+            os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+        if openai_key:
+            os.environ["OPENAI_API_KEY"] = openai_key

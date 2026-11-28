@@ -10,6 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Secret-save failures, browser cookies, #472** (2026-11-26, branch
+  `fix/472-secret-save-cookie-scope`). `OpenAthensAuth._save_session()`
+  returns whether it wrote the file; after a login whose save failed,
+  `session_saved` is False and a logged error says the session lasts for
+  this run only (no app has a login button yet; one that adds it must check
+  `session_saved`). `bmlibrarian_cli --save-session` prints a warning when
+  the token could not be saved. The setup wizard's API-keys page creates a
+  missing `.env` (0600) instead of writing nothing, and a failed save keeps
+  the page open with the file and reason shown (clear the fields to go on
+  without keys). `write_private_text` now replaces a file atomically (0600
+  temp file + `os.replace`, through symlinks), so a failed rewrite (disk
+  full) no longer empties `.env` and loses the database settings. The
+  browser fallback (Playwright, persistent context, undetected Chrome) drops
+  cookies without a domain (`scoped_browser_cookies()`, also used by
+  `cookie_jar_from_browser_cookies`); undetected Chrome logs how many
+  cookies Chrome accepted and warns on each refusal. An unreadable or
+  non-object OpenAthens session file now means "no session" instead of an
+  exception from `OpenAthensAuth()`. **Not fixed (#472 item 5):** host-only
+  cookies still reach subdomains on the `requests` path, because
+  `http.cookiejar`'s default policy has no host-only cookies and `requests`
+  copies the jar into a default-policy one on every request (`shortcut:` in
+  `cookie_jar_from_browser_cookies`). Verified: suite 5085 passed, 78
+  skipped; ruff/mypy no new errors. Not run against a live OpenAthens login
+  or in the wizard by hand.
+
 - **Stale abstract chunks, #475** (2026-11-26, branch
   `fix/475-stale-abstract-chunks`). Migration 040 adds
   `trg_drop_stale_abstract_chunks` (AFTER UPDATE OF abstract on `document`,
@@ -130,50 +155,16 @@ off new work. Longer-term structural items live in
   passed, 75 skipped; the new tests fail on the old code (the old wizard
   path hangs). Not run against a live NCBI download or a real server.
 
-- **Security audit fixes #434, #449, #450** (2026-11-25, branch
-  `fix/security-434-449-450`). OpenAthens cookies go to `requests` as a
-  `RequestsCookieJar` keeping each cookie's domain, path and secure flag
-  (`openathens_auth.cookie_jar_from_browser_cookies`, `get_cookie_jar()`),
-  in `PDFManager.download_pdf` and `FullTextFinder._download_from_source`;
-  a cookie without a domain is dropped (it would go to every host) (#434).
-  `utils/path_utils.write_private_text` creates files 0600, or narrows an
-  existing one before truncating, and raises if it can't; used for the
-  OpenAthens session file, the CLI session token and the setup wizard's
-  `.env` writes (#450; the wizard files hold DB passwords and API keys, the
-  same bug). Password hashes are `pbkdf2_sha256$<iters>$<salt>$<hash>`;
-  old `salt$hash` rows verify at 100,000 (`LEGACY_HASH_ITERATIONS`), counts
-  above `MAX_HASH_ITERATIONS` fail (#449). No re-hash on login and
-  `HASH_ITERATIONS` is unchanged. Checkouts older than this branch can't
-  read the new format: a user registered here can't log in from one
-  ("Invalid password"). Verified: suite 4941 passed; the new caller and
-  malformed-hash tests fail on the old code. Not run against a live
-  OpenAthens login. The browser fallback still gets the raw cookie list,
-  not the jar (#472).
-
-- **Migration runner: one transaction, one process at a time, #439**
-  (2026-11-24, branch `fix/439-migration-lock`). `MigrationManager` runs each
-  migration's SQL and its `bmlibrarian_migrations` record in one transaction
-  on one connection, holding a session advisory lock (`MIGRATION_LOCK_KEY`,
-  polled with `pg_try_advisory_lock`) and re-checking each pending file
-  under it, so two processes starting at once no longer both apply a
-  migration (the second used to fail on `UNIQUE(filename)`), and a failed
-  record rolls back the file's SQL. The exception is a file with
-  `CREATE INDEX CONCURRENTLY`: its other SQL commits first and re-runs on a
-  retry. Lines that are only `BEGIN;`/`COMMIT;` are dropped, and
-  `RESET ALL` follows each file (the pg_dump baseline empties `search_path`
-  for the session). `CREATE [UNIQUE] INDEX CONCURRENTLY` runs afterwards:
-  its index must be named (checked before any of the file runs), an INVALID
-  leftover is dropped first, and the migration is recorded only once its
-  indexes are valid. No lock is taken when nothing is pending; failing to
-  take it (lost connection, or held for over an hour) is a `MigrationError`,
-  so startup stops. Verified: `tests/test_migrations_live.py` (scratch
-  databases on PG18 :5532; four runners contending for the lock, a failed
-  record rolled back, INVALID index rebuilt, settings leak) passes; baseline
-  plus all 35 migrations applied to a fresh scratch database, a second run
-  applied none, HNSW index valid. Two first-ever runs racing on
-  `CREATE TABLE IF NOT EXISTS bmlibrarian_migrations` are covered by the
-  existing fall-through (the loser's create fails once the winner commits;
-  it then reads the table).
+- **Security audit fixes #434, #449, #450 and migration lock #439**
+  (2026-11-24/25; details in git history): OpenAthens cookies go to
+  `requests` as a domain-scoped `RequestsCookieJar`; `write_private_text`
+  creates secret files 0600 (session file, CLI token, wizard `.env`);
+  password hashes are `pbkdf2_sha256$<iters>$<salt>$<hash>` (old rows verify
+  at 100,000; older checkouts can't read the new format). `MigrationManager`
+  runs each migration and its record in one transaction under a session
+  advisory lock (`MIGRATION_LOCK_KEY`); `CREATE INDEX CONCURRENTLY` files run
+  their other SQL first and are recorded once the indexes are valid
+  (`tests/test_migrations_live.py`).
 
 - **Investor demo, 2026-11-23**: held, went fine, no follow-ups. Runbook
   `doc/users/investor_demo_runbook.md`; the prepared library (`~/.bml-demo`,
@@ -426,8 +417,7 @@ value — pick one, or pull an item from ROADMAP.md:
 
 - **2026-11-13 repo audit issues #434–#453** (filed 2026-11-14; all but two
   fixed). Installer: #451 (setup replaces another config folder's login
-  entry), #453 (rust.yml permissions, SHA-pinned checkout). Also #472
-  (secret-save failures only logged, browser-fallback cookies).
+  entry), #453 (rust.yml permissions, SHA-pinned checkout).
 
 - Remaining citation rejections: 10 of the 106 #303 pairs are below the
   similarity threshold (long multi-sentence quotes that drift). Known sentence-bounds misses: lost text with a single
@@ -472,7 +462,7 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 - **The full suite is green** since PR #336: `QT_QPA_PLATFORM=offscreen uv
   run python -m pytest tests/ -p no:cacheprovider --no-cov -q` on 2026-11-26:
-  **5069 passed, 78 skipped** in about 2 min (hermetic since #334;
+  **5085 passed, 78 skipped** in about 2 min (hermetic since #334;
   add `--run-live` for the live tests, which read the configured database). Without
   `offscreen`, `test_annotation_widget.py::...::test_explanation_field_typing`
   can fail when another app holds OS focus (`qWaitForWindowActive`). No `--continue-on-collection-errors` or marker deselection needed;
